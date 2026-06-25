@@ -208,6 +208,40 @@ impl Tool for MemoryRememberTool {
 }
 
 // ---------------------------------------------------------------------------
+// Delegation (subagents)
+// ---------------------------------------------------------------------------
+
+pub struct DelegateTool;
+
+#[async_trait]
+impl Tool for DelegateTool {
+    fn name(&self) -> &str {
+        "delegate_task"
+    }
+    fn description(&self) -> &str {
+        "Delegate a focused subtask to an isolated subagent and return its result. Use \
+         for parallelizable or self-contained work that deserves its own reasoning."
+    }
+    fn schema(&self) -> Value {
+        json!({ "type": "object", "properties": { "task": { "type": "string" } }, "required": ["task"] })
+    }
+    async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
+        if ctx.depth >= 2 {
+            return Err("maximum delegation depth (2) reached".into());
+        }
+        let task = arg_str(args, "task")?;
+        let _ = ctx.ledger.append("agent.delegate", "agent", json!({ "task": task, "depth": ctx.depth }));
+        // The subagent gets the base toolset (no further delegation by default) and a
+        // deeper context, but inherits taint — an untrusted parent yields an untrusted child.
+        let agent = crate::agent::Agent::new(ctx.gateway.clone(), crate::sub_tools(), ctx.model.clone());
+        let mut sub = ctx.clone();
+        sub.depth = ctx.depth + 1;
+        let run = agent.run(task, sub).await.map_err(|e| e.to_string())?;
+        Ok(run.answer)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Web (feature-gated)
 // ---------------------------------------------------------------------------
 

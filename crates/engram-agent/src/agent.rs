@@ -42,26 +42,38 @@ pub struct Agent {
     tools: ToolRegistry,
     model: String,
     max_steps: usize,
+    /// Personality / standing instructions (from SOUL.md), prepended to the prompt.
+    persona: Option<String>,
 }
 
 impl Agent {
     pub fn new(gateway: Arc<Gateway>, tools: ToolRegistry, model: impl Into<String>) -> Self {
-        Self { gateway, tools, model: model.into(), max_steps: 8 }
+        Self { gateway, tools, model: model.into(), max_steps: 8, persona: None }
     }
     pub fn max_steps(mut self, n: usize) -> Self {
         self.max_steps = n;
         self
     }
+    /// Set the agent's persona / standing instructions.
+    pub fn persona(mut self, persona: impl Into<String>) -> Self {
+        self.persona = Some(persona.into());
+        self
+    }
 
     pub async fn run(&self, task: &str, mut ctx: ToolCtx) -> Result<AgentRun, AgentError> {
         let tool_defs = self.tools.defs();
-        let system = format!(
+        let mut system = String::new();
+        if let Some(p) = &self.persona {
+            system.push_str(p);
+            system.push_str("\n\n");
+        }
+        system.push_str(&format!(
             "You are Engram, an autonomous agent that completes the user's task by calling tools. \
              Work step by step: call tools to gather information and take actions, observe the \
              results, and continue. When the task is done, reply in plain text with NO tool call. \
              Tools available: {}.",
             self.tools.names().join(", ")
-        );
+        ));
         let mut messages = vec![Message::system(system), Message::user(task)];
         let mut steps = Vec::new();
         let _ = ctx.ledger.append("agent.start", "agent", json!({ "task": task }));
@@ -178,6 +190,8 @@ mod tests {
             taint: Taint::Trusted,
             policy: Policy::default(),
             workdir: dir.path().to_path_buf(),
+            model: "test".into(),
+            depth: 0,
         };
         let agent = Agent::new(gateway, crate::default_tools(), "test");
         let run = agent.run("Tell me the colour of the sky.", ctx).await.unwrap();
@@ -212,9 +226,45 @@ mod tests {
             taint: Taint::Trusted,
             policy: Policy::default(), // allow_shell = false
             workdir: dir.path().to_path_buf(),
+            model: "test".into(),
+            depth: 0,
         };
         let run = Agent::new(gateway, crate::default_tools(), "test").run("run echo", ctx).await.unwrap();
         assert!(!run.steps[0].ok);
         assert!(run.steps[0].observation.contains("disabled"));
+    }
+
+    #[tokio::test]
+    async fn delegate_runs_a_subagent() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Arc::new(Ledger::open(dir.path()).unwrap());
+        let memory = Arc::new(
+            Memory::open(dir.path().join("b.db"), Arc::new(TrigramHashEmbedder::default()), ledger.clone()).unwrap(),
+        );
+        let signer = Arc::new(SkillSigner::load_or_create(dir.path().join("k")).unwrap());
+        let skills = Arc::new(Registry::open(dir.path(), signer, ledger.clone()).unwrap());
+        // Parent delegates; the subagent (sharing the scripted model) answers; parent answers.
+        let provider = ScriptedProvider::new(vec![
+            call("1", "delegate_task", json!({ "task": "compute the subresult" })),
+            final_answer("subresult: 42"),
+            final_answer("done — got subresult: 42"),
+        ]);
+        let gateway = Arc::new(Gateway::new(Box::new(provider), ledger.clone()));
+        let ctx = ToolCtx {
+            memory,
+            skills,
+            gateway: gateway.clone(),
+            ledger,
+            taint: Taint::Trusted,
+            policy: Policy::default(),
+            workdir: dir.path().to_path_buf(),
+            model: "test".into(),
+            depth: 0,
+        };
+        let run = Agent::new(gateway, crate::default_tools(), "test").run("do the thing", ctx).await.unwrap();
+        assert_eq!(run.steps.len(), 1);
+        assert_eq!(run.steps[0].tool, "delegate_task");
+        assert!(run.steps[0].observation.contains("subresult: 42"), "subagent result should bubble up");
+        assert!(run.answer.contains("done"));
     }
 }

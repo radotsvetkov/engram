@@ -19,8 +19,8 @@ pub use tool::{confine, Policy, Tool, ToolCtx, ToolRegistry};
 
 use std::sync::Arc;
 
-/// The default built-in toolset.
-pub fn default_tools() -> ToolRegistry {
+/// The common toolset (memory, files, shell, web) shared by agents and subagents.
+fn base_tools() -> ToolRegistry {
     let reg = ToolRegistry::new()
         .with(Arc::new(tools::MemoryRecallTool))
         .with(Arc::new(tools::MemoryRememberTool))
@@ -33,4 +33,14 @@ pub fn default_tools() -> ToolRegistry {
         .with(Arc::new(tools::WebFetchTool))
         .with(Arc::new(tools::WebSearchTool));
     reg
+}
+
+/// The full toolset for a top-level agent — base tools plus subagent delegation.
+pub fn default_tools() -> ToolRegistry {
+    base_tools().with(Arc::new(tools::DelegateTool))
+}
+
+/// The toolset a delegated subagent receives — base tools, no further delegation.
+pub fn sub_tools() -> ToolRegistry {
+    base_tools()
 }

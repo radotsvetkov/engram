@@ -42,6 +42,7 @@ struct App {
     bus: Bus,
     activity: Activity,
     workdir: std::path::PathBuf,
+    persona: Option<String>,
 }
 
 /// Uniform error → JSON 500.
@@ -97,6 +98,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let workdir =
         std::path::PathBuf::from(std::env::var("ENGRAM_WORKDIR").unwrap_or_else(|_| format!("{home}/work")));
     std::fs::create_dir_all(&workdir)?;
+    // Personality / standing instructions, shaping every agent run (Hermes's SOUL.md).
+    let persona = std::fs::read_to_string(format!("{home}/SOUL.md")).ok();
 
     ledger.append("core.boot", "core", json!({ "version": VERSION, "addr": addr.to_string() }))?;
 
@@ -110,6 +113,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         bus,
         activity: activity.clone(),
         workdir,
+        persona,
     };
 
     let router = Router::new()
@@ -259,6 +263,7 @@ async fn agent_handler(State(app): State<App>, Json(r): Json<AgentReq>) -> ApiRe
         allow_shell: std::env::var("ENGRAM_TOOLS_SHELL").as_deref() == Ok("1"),
         ..Default::default()
     };
+    let model = std::env::var("ENGRAM_MODEL").unwrap_or_else(|_| "claude-haiku".into());
     let ctx = engram_agent::ToolCtx {
         memory: app.memory.clone(),
         skills: app.registry.clone(),
@@ -267,10 +272,14 @@ async fn agent_handler(State(app): State<App>, Json(r): Json<AgentReq>) -> ApiRe
         taint: engram_core::Taint::Trusted,
         policy,
         workdir: app.workdir.clone(),
+        model: model.clone(),
+        depth: 0,
     };
-    let model = std::env::var("ENGRAM_MODEL").unwrap_or_else(|_| "claude-haiku".into());
-    let agent = engram_agent::Agent::new(app.gateway.clone(), engram_agent::default_tools(), model)
+    let mut agent = engram_agent::Agent::new(app.gateway.clone(), engram_agent::default_tools(), model)
         .max_steps(r.max_steps.unwrap_or(8));
+    if let Some(p) = &app.persona {
+        agent = agent.persona(p.clone());
+    }
     let run = agent.run(&r.task, ctx).await.map_err(err)?;
     Ok(Json(serde_json::to_value(run).map_err(err)?))
 }

@@ -29,6 +29,10 @@ pub struct ToolCtx {
     pub policy: Policy,
     /// Filesystem actions are confined to this directory.
     pub workdir: PathBuf,
+    /// The model id sub-agents inherit when delegating.
+    pub model: String,
+    /// Delegation depth, to bound recursive subagents.
+    pub depth: usize,
 }
 
 /// What the agent is permitted to do. Safe by default.

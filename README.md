@@ -107,6 +107,9 @@ It is configured by environment variables:
 | `ENGRAM_HOME` | `./brain` | Brain state directory: SQLite memory, ledger, and signing keys. |
 | `ENGRAM_ADDR` | `127.0.0.1:8088` | Address the HTTP API and dashboard bind to. |
 | `ENGRAM_IDLE_SECS` | `900` | Idle window, in seconds, before the core sleeps to zero. |
+| `ENGRAM_EMBED` | _(unset)_ | Set to `gateway` to embed memory through the gateway model instead of the offline trigram embedder (switching needs a fresh `ENGRAM_HOME`). |
+| `ENGRAM_LLM_BASE_URL` | _(unset)_ | OpenAI-compatible base URL for a real provider (requires building with `--features http`). |
+| `ENGRAM_LLM_API_KEY` | _(unset)_ | API key for that provider. With both set, the gateway uses the real model for completions and embeddings; otherwise an offline mock. |
 | `RUST_LOG` | `info` | Tracing filter, e.g. `debug` or `engram_core=trace`. |
 
 ```sh
@@ -114,6 +117,21 @@ It is configured by environment variables:
 ENGRAM_IDLE_SECS=30 ENGRAM_HOME=/tmp/engram RUST_LOG=debug \
   ./target/release/engramd
 ```
+
+The dashboard includes **Talk** (a conversation that writes to episodic memory, recalls
+past turns, and learns identity facts about you), **Memory Atlas**, **Skills** (run the
+seeded `shout` and `ask` skills — `ask` calls the model through the gateway from inside
+the sandbox), **Schedule**, **Live Cortex** (the audit stream), and the gateway meter.
+
+### Desktop app
+
+A native Tauri shell that wraps the dashboard and starts the daemon for you:
+
+```sh
+cd desktop/src-tauri && cargo tauri dev    # needs: cargo install tauri-cli --version '^2'
+```
+
+See [`desktop/README.md`](./desktop/README.md).
 
 ### Running the benchmark
 
@@ -144,12 +162,26 @@ Every step of the v0.1 architecture build order is built and tested.
 
 ## What's next
 
-The engine is proven end to end offline. Beyond v0.1:
+The engine is proven end to end offline, and the integration points for going online are
+in place. Delivered since the initial v0.1:
 
-- **Real transformer embedder** wired through the gateway, for synonym-level paraphrase recall on top of today's morphological recall.
-- **Tauri desktop packaging** — the same HTTP+SSE views shipped as a ~10 MB native desktop app.
-- **VPS deploy** — the generated systemd socket-activation and wake-timer units live on a $5 VPS behind a reverse proxy, with the published $0.00/idle-hour table.
-- **Async LLM and Net host capabilities for skills**, so a granted, untainted skill can call a model or the network through the metered gateway from inside the sandbox.
+- **Conversation memory** — `/v1/converse` and the Talk panel: each turn is logged to
+  episodic memory, past turns are recalled, and identity facts about you are extracted
+  and persisted across sessions.
+- **Async LLM/Net host capabilities for skills** — a granted, untainted skill calls the
+  model through the metered, audited gateway from inside the sandbox (seed `ask` skill).
+- **Real model + embedder wiring** — `ENGRAM_EMBED=gateway` plus `--features http` and a
+  provider URL/key route completions and embeddings through a real OpenAI-compatible model.
+- **Tauri desktop shell** — `desktop/` wraps the dashboard in a native window.
+
+Remaining:
+
+- **Provider key** — with a real embedding model configured, synonym-level paraphrase
+  recall (>0.85) on top of today's morphological recall; the benchmark harness measures it.
+- **VPS deploy** — the generated systemd socket-activation and wake-timer units on a $5 VPS
+  behind a reverse proxy, with the published $0.00/idle-hour table.
+- **Skill sidecar packaging** for the desktop app, and **swarms** (multiple skills
+  composing on the event bus), deferred from v0.1 by design.
 
 ## Design principles
 

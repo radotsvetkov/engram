@@ -25,6 +25,7 @@ mod channels;
 mod converse;
 mod embedder;
 mod seed;
+mod tasks;
 mod telegram;
 
 use engram_core::{run_until_idle, Activity, Bus, Ledger, Priority, Spike, VERSION};
@@ -47,6 +48,7 @@ struct App {
     persona: Option<String>,
     mcp_tools: Vec<Arc<dyn engram_agent::Tool>>,
     browser: Arc<dyn engram_agent::BrowserSession>,
+    tasks: Arc<tasks::TaskStore>,
 }
 
 /// Uniform error → JSON 500.
@@ -125,6 +127,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         persona,
         mcp_tools,
         browser: engram_agent::browser_session(),
+        tasks: Arc::new(tasks::TaskStore::open(std::path::Path::new(&home))),
     };
 
     let router = Router::new()
@@ -147,6 +150,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/ledger/verify", get(ledger_verify))
         .route("/v1/schedule", get(schedule_list).post(schedule_add))
         .route("/v1/schedule/{id}", axum::routing::delete(schedule_remove))
+        .route("/v1/tasks", get(tasks_list).post(tasks_create))
+        .route("/v1/tasks/{id}", axum::routing::patch(tasks_update).delete(tasks_delete))
+        .route("/v1/tasks/{id}/run", post(tasks_run))
         .layer(axum::middleware::from_fn_with_state(app.clone(), keep_awake))
         .with_state(app.clone());
 
@@ -392,6 +398,66 @@ async fn voice_handler(State(app): State<App>, Json(r): Json<VoiceReq>) -> ApiRe
     let audio_out = app.gateway.tts(&run.answer, voice, "voice").await.map_err(err)?;
     let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&audio_out);
     Ok(Json(json!({ "transcript": transcript, "reply": run.answer, "audio_b64": audio_b64 })))
+}
+
+async fn tasks_list(State(app): State<App>) -> ApiResult {
+    Ok(Json(serde_json::to_value(app.tasks.list()).map_err(err)?))
+}
+
+#[derive(Deserialize)]
+struct TaskCreateReq {
+    title: String,
+    #[serde(default)]
+    detail: String,
+}
+
+async fn tasks_create(State(app): State<App>, Json(r): Json<TaskCreateReq>) -> ApiResult {
+    let t = app.tasks.create(r.title, r.detail);
+    Ok(Json(serde_json::to_value(t).map_err(err)?))
+}
+
+#[derive(Deserialize)]
+struct TaskUpdateReq {
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    detail: Option<String>,
+}
+
+async fn tasks_update(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Json(r): Json<TaskUpdateReq>,
+) -> ApiResult {
+    let t = app
+        .tasks
+        .update(&id, r.status, r.title, r.detail)
+        .ok_or_else(|| ApiError("task not found".into()))?;
+    Ok(Json(serde_json::to_value(t).map_err(err)?))
+}
+
+async fn tasks_delete(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
+    Ok(Json(json!({ "removed": app.tasks.remove(&id) })))
+}
+
+/// Run a task with the agent: mark it doing, run, attach the answer + tools, mark done.
+async fn tasks_run(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
+    let task = app.tasks.get(&id).ok_or_else(|| ApiError("task not found".into()))?;
+    app.tasks.update(&id, Some("doing".into()), None, None);
+    let prompt = if task.detail.trim().is_empty() {
+        task.title.clone()
+    } else {
+        format!("{}\n\n{}", task.title, task.detail)
+    };
+    let run = run_agent_task(&app, &prompt, 10).await.map_err(ApiError)?;
+    let tools: Vec<String> = run.steps.iter().map(|s| s.tool.clone()).collect();
+    let updated = app.tasks.finish(
+        &id,
+        tasks::LastRun { answer: run.answer, tools, ts_ms: engram_core::now_ms() as i64 },
+    );
+    Ok(Json(serde_json::to_value(updated).map_err(err)?))
 }
 
 #[derive(Deserialize)]

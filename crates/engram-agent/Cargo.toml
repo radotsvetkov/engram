@@ -1,0 +1,30 @@
+[package]
+name = "engram-agent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Engram agent: the tool-use loop that lets the model take actions"
+
+[dependencies]
+engram-core = { path = "../engram-core" }
+engram-memory = { path = "../engram-memory" }
+engram-gateway = { path = "../engram-gateway" }
+engram-skills = { path = "../engram-skills" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+async-trait = "0.1"
+tokio = { workspace = true, features = ["rt", "process", "fs", "time", "io-util", "macros"] }
+# Web tools (fetch/search). On by default — an agent that can't reach the web is half an agent.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
+
+[features]
+default = ["web"]
+web = ["dep:reqwest"]
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

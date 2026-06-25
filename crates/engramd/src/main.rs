@@ -41,6 +41,7 @@ struct App {
     ledger: Arc<Ledger>,
     bus: Bus,
     activity: Activity,
+    workdir: std::path::PathBuf,
 }
 
 /// Uniform error → JSON 500.
@@ -93,6 +94,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let sched = Arc::new(Scheduler::open(&home, ledger.clone())?);
     let bus = Bus::new(1024);
     let activity = Activity::new();
+    let workdir =
+        std::path::PathBuf::from(std::env::var("ENGRAM_WORKDIR").unwrap_or_else(|_| format!("{home}/work")));
+    std::fs::create_dir_all(&workdir)?;
 
     ledger.append("core.boot", "core", json!({ "version": VERSION, "addr": addr.to_string() }))?;
 
@@ -105,6 +109,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         ledger: ledger.clone(),
         bus,
         activity: activity.clone(),
+        workdir,
     };
 
     let router = Router::new()
@@ -118,6 +123,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/skills", get(skills))
         .route("/v1/skills/{id}/run", post(run_skill))
         .route("/v1/swarm", post(run_swarm))
+        .route("/v1/agent", post(agent_handler))
         .route("/v1/converse", post(converse_handler))
         .route("/v1/ledger/tail", get(ledger_tail))
         .route("/v1/ledger/verify", get(ledger_verify))
@@ -239,6 +245,34 @@ async fn run_swarm(State(app): State<App>, Json(r): Json<SwarmReq>) -> ApiResult
         "output": String::from_utf8_lossy(&outcome.output),
         "steps": outcome.steps,
     })))
+}
+
+#[derive(Deserialize)]
+struct AgentReq {
+    task: String,
+    #[serde(default)]
+    max_steps: Option<usize>,
+}
+
+async fn agent_handler(State(app): State<App>, Json(r): Json<AgentReq>) -> ApiResult {
+    let policy = engram_agent::Policy {
+        allow_shell: std::env::var("ENGRAM_TOOLS_SHELL").as_deref() == Ok("1"),
+        ..Default::default()
+    };
+    let ctx = engram_agent::ToolCtx {
+        memory: app.memory.clone(),
+        skills: app.registry.clone(),
+        gateway: app.gateway.clone(),
+        ledger: app.ledger.clone(),
+        taint: engram_core::Taint::Trusted,
+        policy,
+        workdir: app.workdir.clone(),
+    };
+    let model = std::env::var("ENGRAM_MODEL").unwrap_or_else(|_| "claude-haiku".into());
+    let agent = engram_agent::Agent::new(app.gateway.clone(), engram_agent::default_tools(), model)
+        .max_steps(r.max_steps.unwrap_or(8));
+    let run = agent.run(&r.task, ctx).await.map_err(err)?;
+    Ok(Json(serde_json::to_value(run).map_err(err)?))
 }
 
 #[derive(Deserialize)]

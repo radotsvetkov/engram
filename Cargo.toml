@@ -9,6 +9,7 @@ members = [
     "crates/engram-gateway",
     "crates/engram-skills",
     "crates/engram-sched",
+    "crates/engram-agent",
     "crates/engramd",
     "crates/engram-bench",
 ]

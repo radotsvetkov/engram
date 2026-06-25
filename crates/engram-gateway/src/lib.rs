@@ -18,8 +18,8 @@ pub mod provider;
 pub mod types;
 
 pub use gateway::{Call, Gateway, Meter, MeterSnapshot, Price};
-pub use provider::{approx_tokens, GatewayError, MockProvider, Provider};
-pub use types::{Completion, CompletionRequest, Message, Role};
+pub use provider::{approx_tokens, GatewayError, MockProvider, Provider, ScriptedProvider};
+pub use types::{Completion, CompletionRequest, Message, Role, ToolCall, ToolDef};
 
 #[cfg(feature = "http")]
 pub use provider::HttpProvider;

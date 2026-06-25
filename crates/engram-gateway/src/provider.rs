@@ -47,7 +47,7 @@ impl Provider for MockProvider {
             .unwrap_or("");
         let text = format!("[mock:{}] ack: {}", req.model, first_words(last_user, 12));
         let tokens_out = approx_tokens(&text);
-        Ok(Completion { text, model: req.model.clone(), tokens_in, tokens_out })
+        Ok(Completion { text, model: req.model.clone(), tokens_in, tokens_out, tool_calls: Vec::new() })
     }
 
     async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, GatewayError> {
@@ -56,6 +56,39 @@ impl Provider for MockProvider {
 
     fn id(&self) -> &str {
         "mock"
+    }
+}
+
+/// A provider that replays a scripted sequence of completions — the way to drive the
+/// agent loop deterministically in tests (e.g. "first emit this tool call, then this
+/// final answer") without a live model.
+pub struct ScriptedProvider {
+    queue: std::sync::Mutex<std::collections::VecDeque<Completion>>,
+}
+
+impl ScriptedProvider {
+    pub fn new(script: Vec<Completion>) -> Self {
+        Self { queue: std::sync::Mutex::new(script.into()) }
+    }
+}
+
+#[async_trait]
+impl Provider for ScriptedProvider {
+    async fn complete(&self, req: &CompletionRequest) -> Result<Completion, GatewayError> {
+        let next = self.queue.lock().expect("scripted provider mutex").pop_front();
+        Ok(next.unwrap_or(Completion {
+            text: "done".into(),
+            model: req.model.clone(),
+            tokens_in: 0,
+            tokens_out: 1,
+            tool_calls: Vec::new(),
+        }))
+    }
+    async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, GatewayError> {
+        Ok(texts.iter().map(|t| mock_vec(t)).collect())
+    }
+    fn id(&self) -> &str {
+        "scripted"
     }
 }
 
@@ -83,12 +116,12 @@ pub use http::HttpProvider;
 
 #[cfg(feature = "http")]
 mod http {
-    //! An OpenAI-compatible HTTP provider (chat completions + embeddings). Works with
-    //! OpenAI, OpenRouter, and any compatible gateway by setting `base_url`. Compiled
-    //! only with `--features http` so offline builds stay small.
+    //! An OpenAI-compatible HTTP provider (chat completions + embeddings + tool calling).
+    //! Works with OpenAI, OpenRouter, and any compatible gateway by setting `base_url`.
+    //! Compiled only with `--features http` so offline builds stay small.
 
     use super::*;
-    use crate::types::Message;
+    use crate::types::{Message, ToolCall};
 
     pub struct HttpProvider {
         client: reqwest::Client,
@@ -108,18 +141,59 @@ mod http {
         }
     }
 
+    fn role_str(r: Role) -> &'static str {
+        match r {
+            Role::System => "system",
+            Role::User => "user",
+            Role::Assistant => "assistant",
+            Role::Tool => "tool",
+        }
+    }
+
+    fn message_json(m: &Message) -> serde_json::Value {
+        let mut o = serde_json::json!({ "role": role_str(m.role), "content": m.content });
+        if let Some(id) = &m.tool_call_id {
+            o["tool_call_id"] = serde_json::json!(id);
+        }
+        if !m.tool_calls.is_empty() {
+            o["tool_calls"] = serde_json::Value::Array(
+                m.tool_calls
+                    .iter()
+                    .map(|c| {
+                        serde_json::json!({
+                            "id": c.id,
+                            "type": "function",
+                            "function": { "name": c.name, "arguments": c.arguments.to_string() },
+                        })
+                    })
+                    .collect(),
+            );
+        }
+        o
+    }
+
     #[async_trait]
     impl Provider for HttpProvider {
         async fn complete(&self, req: &CompletionRequest) -> Result<Completion, GatewayError> {
-            let body = serde_json::json!({
+            let mut body = serde_json::json!({
                 "model": req.model,
                 "max_tokens": req.max_tokens,
                 "temperature": req.temperature,
-                "messages": req.messages.iter().map(|m: &Message| serde_json::json!({
-                    "role": match m.role { Role::System => "system", Role::User => "user", Role::Assistant => "assistant" },
-                    "content": m.content,
-                })).collect::<Vec<_>>(),
+                "messages": req.messages.iter().map(message_json).collect::<Vec<_>>(),
             });
+            if !req.tools.is_empty() {
+                body["tools"] = serde_json::Value::Array(
+                    req.tools
+                        .iter()
+                        .map(|t| {
+                            serde_json::json!({
+                                "type": "function",
+                                "function": { "name": t.name, "description": t.description, "parameters": t.parameters },
+                            })
+                        })
+                        .collect(),
+                );
+            }
             let resp = self
                 .client
                 .post(format!("{}/chat/completions", self.base_url))
@@ -134,10 +208,27 @@ mod http {
             if !status.is_success() {
                 return Err(GatewayError::Provider(format!("{status}: {json}")));
             }
-            let text = json["choices"][0]["message"]["content"].as_str().unwrap_or("").to_string();
+            let msg = &json["choices"][0]["message"];
+            let text = msg["content"].as_str().unwrap_or("").to_string();
+            let tool_calls = msg["tool_calls"]
+                .as_array()
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|c| {
+                            let f = &c["function"];
+                            let args = f["arguments"].as_str().unwrap_or("{}");
+                            Some(ToolCall {
+                                id: c["id"].as_str().unwrap_or("").to_string(),
+                                name: f["name"].as_str()?.to_string(),
+                                arguments: serde_json::from_str(args).unwrap_or(serde_json::json!({})),
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
             let tokens_in = json["usage"]["prompt_tokens"].as_u64().unwrap_or(0) as u32;
             let tokens_out = json["usage"]["completion_tokens"].as_u64().unwrap_or(0) as u32;
-            Ok(Completion { text, model: req.model.clone(), tokens_in, tokens_out })
+            Ok(Completion { text, model: req.model.clone(), tokens_in, tokens_out, tool_calls })
         }
 
         async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, GatewayError> {

@@ -55,6 +55,15 @@
 
 <div class="grid">
   <div class="panel wide">
+    <h2>Agent <span class="pill">runs tasks with tools — memory · files · shell · web</span></h2>
+    <div class="row">
+      <input id="task" placeholder="give it a task… (search the web, write a file, recall something)" />
+      <button onclick="runAgent()">run</button>
+    </div>
+    <div id="agentout"></div>
+  </div>
+
+  <div class="panel wide">
     <h2>Talk <span class="pill">remembers you · grows across sessions</span></h2>
     <div class="row">
       <input id="say" placeholder="say something… (try: my name is Rado and I like Rust)" />
@@ -117,6 +126,22 @@
 const J = (u, o) => fetch(u, o).then(r => r.json());
 const esc = s => String(s).replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
 
+async function runAgent() {
+  const el = document.getElementById('task');
+  const task = el.value.trim(); if (!task) return;
+  document.getElementById('agentout').innerHTML = '<div class="muted">working…</div>';
+  const r = await J('/v1/agent', { method: 'POST', headers: {'content-type':'application/json'},
+    body: JSON.stringify({ task }) });
+  if (r.error) { document.getElementById('agentout').innerHTML = '<div class="muted">error: ' + esc(r.error) + '</div>'; return; }
+  const steps = (r.steps || []).map(s =>
+    `<div class="spike"><span class="k">${esc(s.tool)}</span>
+     <span class="${s.ok ? 'verify-ok' : 'verify-bad'}">${s.ok ? '✓' : '✗'}</span>
+     <span class="muted">${esc(JSON.stringify(s.args))}</span></div>`).join('');
+  document.getElementById('agentout').innerHTML =
+    `<div class="hit"><div>${esc(r.answer || '')}</div>
+     ${steps ? '<div class="meta" style="margin-top:6px">tool steps (' + r.steps.length + ', ' + esc(r.stopped) + '):</div>' + steps : '<div class="meta">no tools used</div>'}</div>`;
+  refresh();
+}
 async function talk() {
   const el = document.getElementById('say');
   const text = el.value.trim(); if (!text) return;
@@ -212,6 +237,7 @@ async function refresh() {
 }
 document.getElementById('q').addEventListener('keydown', e => { if (e.key === 'Enter') recall(); });
 document.getElementById('say').addEventListener('keydown', e => { if (e.key === 'Enter') talk(); });
+document.getElementById('task').addEventListener('keydown', e => { if (e.key === 'Enter') runAgent(); });
 refresh(); setInterval(refresh, 2000);
 </script>
 </body>

@@ -644,7 +644,7 @@ mod browser_tests {
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "web")]
-pub use web::{WebFetchTool, WebSearchTool};
+pub use web::{SendMessageTool, WebFetchTool, WebSearchTool};
 
 #[cfg(feature = "web")]
 mod web {
@@ -717,6 +717,45 @@ mod web {
             } else {
                 Ok(results.into_iter().take(8).collect::<Vec<_>>().join("\n"))
             }
+        }
+    }
+
+    pub struct SendMessageTool;
+
+    #[async_trait]
+    impl Tool for SendMessageTool {
+        fn name(&self) -> &str {
+            "send_message"
+        }
+        fn description(&self) -> &str {
+            "Send a message to a chat channel via an incoming webhook (Slack / Discord / \
+             Mattermost style). Pass 'url' or set ENGRAM_WEBHOOK_URL."
+        }
+        fn schema(&self) -> Value {
+            json!({ "type": "object",
+                "properties": { "text": { "type": "string" }, "url": { "type": "string" } },
+                "required": ["text"] })
+        }
+        async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
+            let text = arg_str(args, "text")?;
+            let url = args["url"]
+                .as_str()
+                .map(String::from)
+                .or_else(|| std::env::var("ENGRAM_WEBHOOK_URL").ok())
+                .ok_or("no webhook url (pass 'url' or set ENGRAM_WEBHOOK_URL)")?;
+            let _ = ctx.ledger.append("agent.send_message", "agent", json!({ "chars": text.len() }));
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(ctx.policy.timeout_secs))
+                .build()
+                .map_err(|e| e.to_string())?;
+            // Include both "text" (Slack/Mattermost) and "content" (Discord) for compatibility.
+            let resp = client
+                .post(&url)
+                .json(&json!({ "text": text, "content": text }))
+                .send()
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(format!("sent (http {})", resp.status().as_u16()))
         }
     }
 

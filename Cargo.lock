@@ -474,6 +474,7 @@ dependencies = [
  "engram-memory",
  "engram-sched",
  "engram-skills",
+ "reqwest",
  "serde",
  "serde_json",
  "tokio",

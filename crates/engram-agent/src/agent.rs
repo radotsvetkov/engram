@@ -308,4 +308,35 @@ mod tests {
         let r = ImageGenerateTool.run(&json!({ "prompt": "a cat", "path": "cat.png" }), &ctx).await;
         assert!(r.is_err());
     }
+
+    #[tokio::test]
+    #[ignore = "network"]
+    async fn send_message_delivers_over_http() {
+        use crate::tool::Tool;
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Arc::new(Ledger::open(dir.path()).unwrap());
+        let memory = Arc::new(
+            Memory::open(dir.path().join("b.db"), Arc::new(TrigramHashEmbedder::default()), ledger.clone()).unwrap(),
+        );
+        let signer = Arc::new(SkillSigner::load_or_create(dir.path().join("k")).unwrap());
+        let skills = Arc::new(Registry::open(dir.path(), signer, ledger.clone()).unwrap());
+        let gateway = Arc::new(Gateway::new(Box::new(engram_gateway::MockProvider), ledger.clone()));
+        let ctx = ToolCtx {
+            memory,
+            skills,
+            gateway,
+            ledger,
+            taint: Taint::Trusted,
+            policy: Policy::default(),
+            workdir: dir.path().to_path_buf(),
+            model: "test".into(),
+            depth: 0,
+            browser: Arc::new(crate::tool::NoBrowser),
+        };
+        let out = crate::tools::SendMessageTool
+            .run(&json!({ "text": "engram-hi", "url": "https://httpbin.org/post" }), &ctx)
+            .await
+            .unwrap();
+        assert!(out.contains("http 200"), "got: {out}");
+    }
 }

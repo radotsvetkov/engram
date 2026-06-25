@@ -44,7 +44,8 @@ fn base_tools() -> ToolRegistry {
     #[cfg(feature = "web")]
     let reg = reg
         .with(Arc::new(tools::WebFetchTool))
-        .with(Arc::new(tools::WebSearchTool));
+        .with(Arc::new(tools::WebSearchTool))
+        .with(Arc::new(tools::SendMessageTool));
     reg
 }
 

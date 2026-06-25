@@ -24,6 +24,7 @@ use serde_json::{json, Value};
 mod converse;
 mod embedder;
 mod seed;
+mod telegram;
 
 use engram_core::{run_until_idle, Activity, Bus, Ledger, Priority, Spike, VERSION};
 use engram_gateway::{Gateway, MockProvider, Provider};
@@ -143,7 +144,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/schedule", get(schedule_list).post(schedule_add))
         .route("/v1/schedule/{id}", axum::routing::delete(schedule_remove))
         .layer(axum::middleware::from_fn_with_state(app.clone(), keep_awake))
-        .with_state(app);
+        .with_state(app.clone());
+
+    // Inbound messaging channel: run as a Telegram bot if a token is configured.
+    if let Ok(token) = std::env::var("ENGRAM_TELEGRAM_TOKEN") {
+        tracing::info!("telegram channel active");
+        telegram::spawn(app.clone(), token);
+    }
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(version = VERSION, %addr, idle_s = idle.as_secs(), "engram awake — http ready");
@@ -267,7 +274,13 @@ struct AgentReq {
     max_steps: Option<usize>,
 }
 
-async fn agent_handler(State(app): State<App>, Json(r): Json<AgentReq>) -> ApiResult {
+/// Run the agent on a task with the full configured toolset (built-ins + MCP),
+/// persona, and policy. Shared by the HTTP endpoint and the messaging channels.
+pub(crate) async fn run_agent_task(
+    app: &App,
+    task: &str,
+    max_steps: usize,
+) -> Result<engram_agent::AgentRun, String> {
     let policy = engram_agent::Policy {
         allow_shell: std::env::var("ENGRAM_TOOLS_SHELL").as_deref() == Ok("1"),
         shell_backend: match std::env::var("ENGRAM_SHELL_BACKEND").as_deref() {
@@ -293,12 +306,15 @@ async fn agent_handler(State(app): State<App>, Json(r): Json<AgentReq>) -> ApiRe
     for t in &app.mcp_tools {
         tools = tools.with(t.clone());
     }
-    let mut agent = engram_agent::Agent::new(app.gateway.clone(), tools, model)
-        .max_steps(r.max_steps.unwrap_or(8));
+    let mut agent = engram_agent::Agent::new(app.gateway.clone(), tools, model).max_steps(max_steps);
     if let Some(p) = &app.persona {
         agent = agent.persona(p.clone());
     }
-    let run = agent.run(&r.task, ctx).await.map_err(err)?;
+    agent.run(task, ctx).await.map_err(|e| e.to_string())
+}
+
+async fn agent_handler(State(app): State<App>, Json(r): Json<AgentReq>) -> ApiResult {
+    let run = run_agent_task(&app, &r.task, r.max_steps.unwrap_or(8)).await.map_err(ApiError)?;
     Ok(Json(serde_json::to_value(run).map_err(err)?))
 }
 

@@ -43,6 +43,9 @@ pub struct Task {
     pub schedule_id: Option<String>,
     pub created_ms: i64,
     pub updated_ms: i64,
+    /// Live progress while running, e.g. "step 3 · web_search".
+    #[serde(default)]
+    pub progress: Option<String>,
     #[serde(default)]
     pub run: Option<TaskRun>,
 }
@@ -111,6 +114,7 @@ impl TaskStore {
             schedule_id: None,
             created_ms: now,
             updated_ms: now,
+            progress: None,
             run: None,
         };
         let mut t = self.tasks.lock().expect("tasks mutex");
@@ -143,12 +147,22 @@ impl TaskStore {
         Some(out)
     }
 
+    /// Update the live progress label of a running task (cheap; not persisted to disk
+    /// every tick — it is transient and overwritten at finish).
+    pub fn set_progress(&self, id: &str, progress: String) {
+        let mut t = self.tasks.lock().expect("tasks mutex");
+        if let Some(task) = t.iter_mut().find(|x| x.id == id) {
+            task.progress = Some(progress);
+        }
+    }
+
     /// Attach a run to the task and set its final status ("done" or "failed").
     pub fn finish(&self, id: &str, run: TaskRun, status: &str) -> Option<Task> {
         let mut t = self.tasks.lock().expect("tasks mutex");
         let task = t.iter_mut().find(|x| x.id == id)?;
         task.run = Some(run);
         task.status = status.to_string();
+        task.progress = None;
         task.updated_ms = now_ms() as i64;
         let out = task.clone();
         self.save(&t);

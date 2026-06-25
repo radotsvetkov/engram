@@ -17,7 +17,7 @@ pub mod mcp;
 pub mod tool;
 pub mod tools;
 
-pub use agent::{Agent, AgentError, AgentRun, StepRecord};
+pub use agent::{Agent, AgentError, AgentRun, StepCallback, StepRecord};
 pub use mcp::{connect_servers, McpClient, McpTool};
 pub use tool::{confine, BrowserSession, NoBrowser, Policy, Tool, ToolCtx, ToolRegistry};
 

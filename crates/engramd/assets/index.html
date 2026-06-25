@@ -197,7 +197,7 @@ function card(t){
   const running = t.status==='doing';
   const tags = (t.tool_tags||[]).map(x=>`<span class="tag ${x}">${x}</span>`).join('');
   let foot='';
-  if(running) foot=`<div class="meta"><span class="pulse"></span> running</div><div class="bar"></div>`;
+  if(running) foot=`<div class="meta"><span class="pulse"></span> ${esc(t.progress||'thinking…')}</div><div class="bar"></div>`;
   else if(t.status==='done' && t.run) foot=`<div class="meta"><span class="check">✓</span> ${(t.run.tokens_in+t.run.tokens_out)} tok · $${(t.run.cost_usd||0).toFixed(4)} ${t.schedule_id?'· ⟳':''}</div>`;
   else if(t.status==='failed') foot=`<div class="meta"><span class="xmark">✕</span> stopped at the step limit</div>`;
   else foot=`<div class="meta">${tags||'<span class="muted">queued</span>'}</div>`;
@@ -300,9 +300,19 @@ async function openTask(id){
     }).join('');
     html+=`<div class="muted" style="font-size:11px;margin-bottom:6px">audit trail — signed</div>${stepRows||'<div class="muted">no tools used</div>'}`;
     html+=`<div class="muted" style="font-size:11px;margin-top:12px;font-family:var(--mono)">head ${t.run.ledger_head_hash.slice(0,12)}</div>`;
-  } else if(t.status==='doing'){ html+='<div class="muted">running…</div>'; }
+  } else if(t.status==='doing'){ html+=`<div class="muted">${esc(t.progress||'running…')}</div>`; }
+  html+=`<div id="schedbox" style="margin-top:14px"><div class="muted" style="font-size:11px;margin-bottom:4px">repeat this task</div>
+    <div class="row"><input id="pwhen" placeholder="every weekday at 9am"><button onclick="scheduleTask('${id}',${JSON.stringify(t.title)})">Schedule</button></div></div>`;
   html+=`<div class="row" style="margin-top:14px"><button onclick="delTask('${id}')" style="background:var(--surface-2);color:var(--danger)">Delete</button></div>`;
   body.innerHTML=html;
+}
+async function scheduleTask(id, title){
+  const el=document.getElementById('pwhen'); const when=el.value.trim(); if(!when) return;
+  const r=await J('/v1/schedule',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name:title,when,payload:{title}})});
+  const box=document.getElementById('schedbox');
+  box.innerHTML = r.error
+    ? `<div class="sub" style="color:var(--danger)">${esc(r.error)}</div>`
+    : `<div class="sub" style="color:var(--accent)">⟳ scheduled · next ${new Date(r.next_fire_ms).toLocaleString()}</div>`;
 }
 function closePanel(){ panelId=null; document.getElementById('panel').classList.remove('open'); }
 async function delTask(id){ await fetch('/v1/tasks/'+id,{method:'DELETE'}); closePanel(); await loadTasks(); renderBoard(); }

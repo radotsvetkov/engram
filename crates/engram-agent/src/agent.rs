@@ -37,6 +37,9 @@ pub struct AgentRun {
     pub stopped: &'static str,
 }
 
+/// Called after each tool step with (step number, tool name, ok) — for live progress.
+pub type StepCallback = Arc<dyn Fn(usize, String, bool) + Send + Sync>;
+
 pub struct Agent {
     gateway: Arc<Gateway>,
     tools: ToolRegistry,
@@ -44,11 +47,12 @@ pub struct Agent {
     max_steps: usize,
     /// Personality / standing instructions (from SOUL.md), prepended to the prompt.
     persona: Option<String>,
+    on_step: Option<StepCallback>,
 }
 
 impl Agent {
     pub fn new(gateway: Arc<Gateway>, tools: ToolRegistry, model: impl Into<String>) -> Self {
-        Self { gateway, tools, model: model.into(), max_steps: 8, persona: None }
+        Self { gateway, tools, model: model.into(), max_steps: 8, persona: None, on_step: None }
     }
     pub fn max_steps(mut self, n: usize) -> Self {
         self.max_steps = n;
@@ -57,6 +61,11 @@ impl Agent {
     /// Set the agent's persona / standing instructions.
     pub fn persona(mut self, persona: impl Into<String>) -> Self {
         self.persona = Some(persona.into());
+        self
+    }
+    /// Observe each step as it completes (for live UI progress).
+    pub fn on_step(mut self, cb: StepCallback) -> Self {
+        self.on_step = Some(cb);
         self
     }
 
@@ -118,6 +127,9 @@ impl Agent {
                     observation: truncated,
                     ok,
                 });
+                if let Some(cb) = &self.on_step {
+                    cb(steps.len(), call.name.clone(), ok);
+                }
             }
         }
         let _ = ctx

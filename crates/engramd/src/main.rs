@@ -297,6 +297,15 @@ pub(crate) async fn run_agent_task(
     task: &str,
     max_steps: usize,
 ) -> Result<engram_agent::AgentRun, String> {
+    run_agent_task_cb(app, task, max_steps, None).await
+}
+
+async fn run_agent_task_cb(
+    app: &App,
+    task: &str,
+    max_steps: usize,
+    on_step: Option<engram_agent::StepCallback>,
+) -> Result<engram_agent::AgentRun, String> {
     let policy = engram_agent::Policy {
         allow_shell: std::env::var("ENGRAM_TOOLS_SHELL").as_deref() == Ok("1"),
         shell_backend: match std::env::var("ENGRAM_SHELL_BACKEND").as_deref() {
@@ -327,6 +336,9 @@ pub(crate) async fn run_agent_task(
     let mut agent = engram_agent::Agent::new(app.gateway.clone(), tools, model).max_steps(max_steps);
     if let Some(p) = &app.persona {
         agent = agent.persona(p.clone());
+    }
+    if let Some(cb) = on_step {
+        agent = agent.on_step(cb);
     }
     agent.run(task, ctx).await.map_err(|e| e.to_string())
 }
@@ -466,7 +478,13 @@ pub(crate) async fn run_task_core(app: &App, id: &str) -> Result<tasks::Task, St
     };
     let before = app.gateway.meter();
     let started_ms = engram_core::now_ms() as i64;
-    let run = run_agent_task(app, &prompt, 10).await?;
+    // Stream live progress onto the card as each tool step completes.
+    let tasks = app.tasks.clone();
+    let tid = id.to_string();
+    let on_step: engram_agent::StepCallback = Arc::new(move |i, tool, _ok| {
+        tasks.set_progress(&tid, format!("step {i} · {tool}"));
+    });
+    let run = run_agent_task_cb(app, &prompt, 10, Some(on_step)).await?;
     let finished_ms = engram_core::now_ms() as i64;
     let after = app.gateway.meter();
     let (_, head) = app.ledger.head();

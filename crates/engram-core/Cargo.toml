@@ -14,7 +14,8 @@ path = "src/lib.rs"
 [dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "time", "sync", "signal"] }
 serde = { workspace = true }
-serde_json = { workspace = true }
+# raw_value lets the ledger hash the exact persisted payload bytes (float-stable).
+serde_json = { workspace = true, features = ["raw_value"] }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 # Audit ledger: fast hashing, Ed25519 signing, OS randomness, hex encoding.

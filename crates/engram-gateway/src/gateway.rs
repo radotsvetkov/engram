@@ -190,6 +190,11 @@ mod tests {
         (gw, ledger, dir)
     }
 
+    fn last_payload(ledger: &Ledger) -> serde_json::Value {
+        let last = ledger.read_all().unwrap().pop().unwrap();
+        serde_json::from_str(last.payload.get()).unwrap()
+    }
+
     #[tokio::test]
     async fn meters_and_audits_a_call() {
         let (gw, ledger, _d) = gw();
@@ -199,9 +204,8 @@ mod tests {
         let m = gw.meter();
         assert_eq!(m.calls, 1);
         assert!(m.tokens_in > 0 && m.tokens_out > 0);
-        let last = ledger.read_all().unwrap().pop().unwrap();
-        assert_eq!(last.kind, "llm.call");
-        assert_eq!(last.payload["redacted_secrets"], 0);
+        assert_eq!(ledger.read_all().unwrap().pop().unwrap().kind, "llm.call");
+        assert_eq!(last_payload(&ledger)["redacted_secrets"], 0);
     }
 
     #[tokio::test]
@@ -216,9 +220,9 @@ mod tests {
         );
         // An untrusted call must drop the secret system message.
         gw.complete(Call::new(req).tainted(Taint::Untrusted)).await.unwrap();
-        let last = ledger.read_all().unwrap().pop().unwrap();
-        assert_eq!(last.payload["redacted_secrets"], 1);
-        assert_eq!(last.payload["taint"], "untrusted");
+        let p = last_payload(&ledger);
+        assert_eq!(p["redacted_secrets"], 1);
+        assert_eq!(p["taint"], "untrusted");
     }
 
     #[tokio::test]
@@ -229,8 +233,7 @@ mod tests {
             vec![Message::system("private").secret(), Message::user("hi")],
         );
         gw.complete(Call::new(req)).await.unwrap();
-        let last = ledger.read_all().unwrap().pop().unwrap();
-        assert_eq!(last.payload["redacted_secrets"], 0);
+        assert_eq!(last_payload(&ledger)["redacted_secrets"], 0);
     }
 
     #[tokio::test]

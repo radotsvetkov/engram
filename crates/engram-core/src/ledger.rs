@@ -23,6 +23,7 @@ use std::sync::Mutex;
 
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
 
 use crate::event::now_ms;
 
@@ -63,8 +64,10 @@ pub struct Entry {
     pub kind: String,
     /// Who caused it, e.g. `"core"`, `"skill:drafter@3"`, `"user"`.
     pub actor: String,
-    /// The change itself.
-    pub payload: serde_json::Value,
+    /// The change itself, kept as the exact JSON text that was written. Storing the
+    /// raw bytes (rather than a re-parsed value) is what makes the content hash stable:
+    /// the verifier hashes the identical bytes, immune to float-formatting round-trips.
+    pub payload: Box<RawValue>,
     /// Hex of this entry's content hash (its content-address).
     pub hash: String,
     /// Hex of the Ed25519 signature over the content hash.
@@ -73,14 +76,7 @@ pub struct Entry {
 
 /// Domain-separated, length-prefixed content hash. Length prefixes make the field
 /// boundaries unambiguous, so no two distinct entries can collide by concatenation.
-fn content_hash(
-    seq: u64,
-    ts_ms: u64,
-    prev: &Hash,
-    kind: &str,
-    actor: &str,
-    payload: &serde_json::Value,
-) -> Result<Hash, LedgerError> {
+fn content_hash(seq: u64, ts_ms: u64, prev: &Hash, kind: &str, actor: &str, payload_raw: &str) -> Hash {
     let mut h = blake3::Hasher::new();
     h.update(DOMAIN);
     h.update(&seq.to_le_bytes());
@@ -88,10 +84,9 @@ fn content_hash(
     h.update(prev);
     write_field(&mut h, kind.as_bytes());
     write_field(&mut h, actor.as_bytes());
-    // serde_json sorts object keys deterministically (preserve_order is off), so this
-    // canonical form is stable across runs.
-    write_field(&mut h, &serde_json::to_vec(payload)?);
-    Ok(*h.finalize().as_bytes())
+    // Hash the exact payload bytes that get persisted — never a re-serialization.
+    write_field(&mut h, payload_raw.as_bytes());
+    *h.finalize().as_bytes()
 }
 
 fn write_field(h: &mut blake3::Hasher, bytes: &[u8]) {
@@ -154,7 +149,8 @@ impl Ledger {
 
         let seq = tip.seq + 1;
         let ts_ms = now_ms();
-        let hash = content_hash(seq, ts_ms, &tip.prev, &kind, &actor, &payload)?;
+        let payload = serde_json::value::to_raw_value(&payload)?;
+        let hash = content_hash(seq, ts_ms, &tip.prev, &kind, &actor, payload.get());
         let sig = self.signing.sign(&hash);
 
         let entry = Entry {
@@ -270,8 +266,8 @@ pub fn verify_file(path: &Path, verifying: &VerifyingKey) -> Result<u64, LedgerE
             &prev,
             &entry.kind,
             &entry.actor,
-            &entry.payload,
-        )?;
+            entry.payload.get(),
+        );
         let stored = to_hash(&entry.hash)?;
         if recomputed != stored {
             return Err(LedgerError::Broken {
@@ -415,7 +411,8 @@ mod tests {
         let bad = l.append("skill.mutate", "skill:drafter@4", json!({ "regression": true })).unwrap();
         let rev = l.revert("user", &bad.hash, "metric dropped").unwrap();
         assert_eq!(rev.kind, "revert");
-        assert_eq!(rev.payload["target"], bad.hash);
+        let payload: serde_json::Value = serde_json::from_str(rev.payload.get()).unwrap();
+        assert_eq!(payload["target"], bad.hash);
         assert_eq!(l.verify().unwrap(), 2); // both entries remain, chain intact
     }
 }

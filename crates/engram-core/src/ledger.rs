@@ -204,6 +204,36 @@ impl Ledger {
     pub fn verify(&self) -> Result<u64, LedgerError> {
         verify_file(&self.path, &self.verifying)
     }
+
+    /// Read every entry from disk (for the audit UI and tooling). Does not verify;
+    /// pair with [`verify`](Self::verify) when integrity matters.
+    pub fn read_all(&self) -> Result<Vec<Entry>, LedgerError> {
+        read_entries(&self.path)
+    }
+
+    /// Read the last `n` entries — the live tail for the "Live Cortex" feed.
+    pub fn tail(&self, n: usize) -> Result<Vec<Entry>, LedgerError> {
+        let mut all = read_entries(&self.path)?;
+        let start = all.len().saturating_sub(n);
+        Ok(all.split_off(start))
+    }
+}
+
+fn read_entries(path: &Path) -> Result<Vec<Entry>, LedgerError> {
+    let file = match File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e.into()),
+    };
+    let mut out = Vec::new();
+    for line in BufReader::new(file).lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        out.push(serde_json::from_str(&line)?);
+    }
+    Ok(out)
 }
 
 /// Verify a ledger file against a public key without holding a `Ledger`.

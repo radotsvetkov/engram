@@ -1,0 +1,27 @@
+[package]
+name = "engram-gateway"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Engram LLM gateway: one metered, taint-aware chokepoint for model and embedding access"
+
+[dependencies]
+engram-core = { path = "../engram-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+async-trait = "0.1"
+tokio = { workspace = true, features = ["rt", "macros"] }
+# Real network provider is opt-in so day-to-day builds/tests stay tiny and offline.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
+
+[features]
+default = []
+http = ["dep:reqwest"]
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
+tempfile = "3"

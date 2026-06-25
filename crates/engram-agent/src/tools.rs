@@ -64,6 +64,10 @@ pub(crate) fn shell_command(
         Some(b) if b.starts_with("ssh:") => {
             ("ssh".into(), vec![b[4..].to_string(), command.to_string()])
         }
+        Some(b) if b.starts_with("singularity:") => (
+            "singularity".into(),
+            vec!["exec".into(), b[12..].to_string(), "sh".into(), "-c".into(), command.to_string()],
+        ),
         Some(img) => {
             let mount = format!("{}:/work", workdir.display());
             (
@@ -106,6 +110,13 @@ mod shell_backend_tests {
         let (prog, args) = shell_command(Some("ssh:deploy@vps.example"), Path::new("/w"), "uptime");
         assert_eq!(prog, "ssh");
         assert_eq!(args, vec!["deploy@vps.example".to_string(), "uptime".to_string()]);
+    }
+
+    #[test]
+    fn singularity_backend_execs_in_image() {
+        let (prog, args) = shell_command(Some("singularity:img.sif"), Path::new("/w"), "id");
+        assert_eq!(prog, "singularity");
+        assert_eq!(args, vec!["exec".to_string(), "img.sif".to_string(), "sh".to_string(), "-c".to_string(), "id".to_string()]);
     }
 }
 

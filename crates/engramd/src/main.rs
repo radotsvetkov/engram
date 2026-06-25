@@ -140,6 +140,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/swarm", post(run_swarm))
         .route("/v1/agent", post(agent_handler))
         .route("/v1/voice", post(voice_handler))
+        .route("/v1/voice/stream", get(voice_stream))
         .route("/v1/channel/{platform}", post(channels::channel_handler))
         .route("/v1/converse", post(converse_handler))
         .route("/v1/ledger/tail", get(ledger_tail))
@@ -321,6 +322,51 @@ pub(crate) async fn run_agent_task(
 async fn agent_handler(State(app): State<App>, Json(r): Json<AgentReq>) -> ApiResult {
     let run = run_agent_task(&app, &r.task, r.max_steps.unwrap_or(8)).await.map_err(ApiError)?;
     Ok(Json(serde_json::to_value(run).map_err(err)?))
+}
+
+/// A live voice session over a WebSocket. The client streams audio as binary frames
+/// and sends a text "end" to close a turn; the server transcribes the accumulated
+/// audio, runs the agent, and replies with a JSON text frame (transcript + reply) and
+/// a binary frame of synthesized speech. The connection stays open for many turns — a
+/// real-time voice loop. (Per-turn STT here; word-by-word streaming STT is a provider
+/// extension.) Needs a provider with speech-to-text + text-to-speech.
+async fn voice_stream(State(app): State<App>, ws: axum::extract::ws::WebSocketUpgrade) -> Response {
+    ws.on_upgrade(move |socket| voice_session(app, socket))
+}
+
+async fn voice_session(app: App, mut socket: axum::extract::ws::WebSocket) {
+    use axum::extract::ws::Message as Ws;
+    let mut audio: Vec<u8> = Vec::new();
+    while let Some(Ok(msg)) = socket.recv().await {
+        match msg {
+            Ws::Binary(b) => audio.extend_from_slice(&b),
+            Ws::Text(t) if t.as_str() == "end" => {
+                let turn = process_voice_turn(&app, &audio).await;
+                audio.clear();
+                let send = match turn {
+                    Ok((transcript, reply, out)) => {
+                        let _ = socket
+                            .send(Ws::Text(json!({ "transcript": transcript, "reply": reply }).to_string().into()))
+                            .await;
+                        socket.send(Ws::Binary(out.into())).await
+                    }
+                    Err(e) => socket.send(Ws::Text(json!({ "error": e }).to_string().into())).await,
+                };
+                if send.is_err() {
+                    break;
+                }
+            }
+            Ws::Close(_) => break,
+            _ => {}
+        }
+    }
+}
+
+async fn process_voice_turn(app: &App, audio: &[u8]) -> Result<(String, String, Vec<u8>), String> {
+    let transcript = app.gateway.transcribe(audio, "wav", "voice").await.map_err(|e| e.to_string())?;
+    let run = run_agent_task(app, &transcript, 8).await?;
+    let out = app.gateway.tts(&run.answer, "alloy", "voice").await.map_err(|e| e.to_string())?;
+    Ok((transcript, run.answer, out))
 }
 
 #[derive(Deserialize)]

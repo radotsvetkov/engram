@@ -19,7 +19,7 @@ engram-skills = { path = "../engram-skills" }
 engram-sched = { path = "../engram-sched" }
 engram-agent = { path = "../engram-agent" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "time", "net", "sync"] }
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }

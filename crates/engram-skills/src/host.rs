@@ -418,7 +418,8 @@ fn add_llm(linker: &mut Linker<HostState>) -> Result<(), SkillError> {
                     (st.gateway.clone(), st.handle.clone(), st.taint)
                 };
                 let (Some(gateway), Some(handle)) = (gateway, handle) else { return -1 };
-                let req = CompletionRequest::new("claude-haiku", vec![Message::user(prompt)]);
+                let model = std::env::var("ENGRAM_MODEL").unwrap_or_else(|_| "claude-haiku".into());
+                let req = CompletionRequest::new(model, vec![Message::user(prompt)]);
                 let completion =
                     match handle.block_on(gateway.complete(Call::new(req).actor("skill").tainted(taint))) {
                         Ok(c) => c,

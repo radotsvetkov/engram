@@ -184,7 +184,12 @@ impl Gateway {
     }
 
     fn cost(&self, c: &Completion) -> f64 {
-        match self.prices.get(&c.model) {
+        // Exact match, else a family match so versioned ids like "claude-haiku-4-5-..."
+        // still cost against the "claude-haiku" entry.
+        let price = self.prices.get(&c.model).copied().or_else(|| {
+            self.prices.iter().find(|(k, _)| c.model.contains(k.as_str())).map(|(_, p)| *p)
+        });
+        match price {
             Some(p) => {
                 (c.tokens_in as f64 / 1_000_000.0) * p.in_per_mtok
                     + (c.tokens_out as f64 / 1_000_000.0) * p.out_per_mtok

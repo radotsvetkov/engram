@@ -53,7 +53,8 @@ pub async fn converse(memory: &Memory, gateway: &Gateway, text: &str) -> Result<
         )));
     }
     messages.push(Message::user(text));
-    let req = CompletionRequest::new("claude-haiku", messages);
+    let model = std::env::var("ENGRAM_MODEL").unwrap_or_else(|_| "claude-haiku".into());
+    let req = CompletionRequest::new(model, messages);
     let completion = gateway
         .complete(Call::new(req).actor("converse").tainted(Taint::Trusted))
         .await

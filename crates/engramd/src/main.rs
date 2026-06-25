@@ -162,6 +162,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!("telegram channel active");
         telegram::spawn(app.clone(), token);
     }
+    // Fire scheduled jobs while the daemon is awake.
+    spawn_scheduler_tick(app.clone());
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(version = VERSION, %addr, idle_s = idle.as_secs(), "engram awake — http ready");
@@ -450,10 +452,11 @@ async fn tasks_delete(State(app): State<App>, Path(id): Path<String>) -> ApiResu
 
 /// Run a task with the agent and attach a glass-box receipt: mark it doing (and fire a
 /// spike so the board shows Running), run, capture the cost delta and the signed ledger
-/// head, then mark done — or failed if the agent hit its step limit.
-async fn tasks_run(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
-    let task = app.tasks.get(&id).ok_or_else(|| ApiError("task not found".into()))?;
-    app.tasks.update(&id, Some("doing".into()), None, None);
+/// head, then mark done — or failed if the agent hit its step limit. Shared by the HTTP
+/// endpoint and the in-process scheduler.
+pub(crate) async fn run_task_core(app: &App, id: &str) -> Result<tasks::Task, String> {
+    let task = app.tasks.get(id).ok_or("task not found")?;
+    app.tasks.update(id, Some("doing".into()), None, None);
     app.bus.emit(Spike::new("task.run", Priority::Normal, json!({ "id": id })));
 
     let prompt = if task.detail.trim().is_empty() {
@@ -463,7 +466,7 @@ async fn tasks_run(State(app): State<App>, Path(id): Path<String>) -> ApiResult 
     };
     let before = app.gateway.meter();
     let started_ms = engram_core::now_ms() as i64;
-    let run = run_agent_task(&app, &prompt, 10).await.map_err(ApiError)?;
+    let run = run_agent_task(app, &prompt, 10).await?;
     let finished_ms = engram_core::now_ms() as i64;
     let after = app.gateway.meter();
     let (_, head) = app.ledger.head();
@@ -480,8 +483,30 @@ async fn tasks_run(State(app): State<App>, Path(id): Path<String>) -> ApiResult 
         started_ms,
         finished_ms,
     };
-    let updated = app.tasks.finish(&id, receipt, status);
+    app.tasks.finish(id, receipt, status).ok_or_else(|| "task vanished".into())
+}
+
+async fn tasks_run(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
+    let updated = run_task_core(&app, &id).await.map_err(ApiError)?;
     Ok(Json(serde_json::to_value(updated).map_err(err)?))
+}
+
+/// In-process scheduler: while the daemon is awake, fire due jobs by spawning a task and
+/// running it. (On a sleeping zero-idle VPS the systemd timer wakes the core instead.)
+fn spawn_scheduler_tick(app: App) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            let now = chrono::Utc::now();
+            for job in app.sched.due(now) {
+                let title = job.payload.get("title").and_then(|v| v.as_str()).unwrap_or(&job.name);
+                let task = app.tasks.create(title.to_string(), String::new(), "schedule".into());
+                tracing::info!(job = %job.name, task = %task.id, "scheduler firing a task");
+                let _ = run_task_core(&app, &task.id).await;
+                let _ = app.sched.mark_fired(&job.id, now);
+            }
+        }
+    });
 }
 
 /// The signed ledger slice for a task's run — the glass-box audit trail behind a card.

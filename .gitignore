@@ -1,0 +1,39 @@
+# Rust
+/target
+**/target
+Cargo.lock.bak
+
+# Node / desktop
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# Engram runtime state (local brain — never commit personal memory)
+/.engram/
+*.engram
+brain/**/*.db
+brain/**/*.db-wal
+brain/**/*.db-shm
+*.sqlite
+*.sqlite-*
+
+# Secrets & env
+.env
+.env.*
+!.env.example
+secrets/
+*.key
+*.pem
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+
+# Logs & temp
+*.log
+tmp/
+.cache/

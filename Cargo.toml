@@ -14,7 +14,7 @@ members = [
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.80"
-authors = ["Radoslav Tsvetkov <r.tsvetkov@hotmail.com>"]
+authors = ["Radoslav Tsvetkov <tsvetkov.rado@gmail.com>"]
 license = "MIT"
 description = "Engram — a brain-inspired, self-improving personal AI agent that costs nothing when idle"
 

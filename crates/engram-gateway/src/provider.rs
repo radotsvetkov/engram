@@ -28,6 +28,10 @@ pub trait Provider: Send + Sync {
     async fn tts(&self, _text: &str, _voice: &str) -> Result<Vec<u8>, GatewayError> {
         Err(GatewayError::Provider("text-to-speech not supported by this provider".into()))
     }
+    /// Transcribe audio bytes (of the given format, e.g. "mp3"/"wav") to text. Default: unsupported.
+    async fn transcribe(&self, _audio: &[u8], _format: &str) -> Result<String, GatewayError> {
+        Err(GatewayError::Provider("speech-to-text not supported by this provider".into()))
+    }
     /// Short stable id for the audit trail, e.g. "mock", "anthropic", "openai".
     fn id(&self) -> &str;
 }
@@ -287,6 +291,36 @@ mod http {
                 .map_err(|e| GatewayError::Provider(e.to_string()))?;
             let bytes = resp.bytes().await.map_err(|e| GatewayError::Provider(e.to_string()))?;
             Ok(bytes.to_vec())
+        }
+
+        async fn transcribe(&self, audio: &[u8], format: &str) -> Result<String, GatewayError> {
+            let model = std::env::var("ENGRAM_STT_MODEL").unwrap_or_else(|_| "whisper-1".into());
+            let mime = match format {
+                "mp3" => "audio/mpeg",
+                "wav" => "audio/wav",
+                "m4a" | "mp4" => "audio/mp4",
+                "ogg" => "audio/ogg",
+                _ => "application/octet-stream",
+            };
+            let part = reqwest::multipart::Part::bytes(audio.to_vec())
+                .file_name(format!("audio.{format}"))
+                .mime_str(mime)
+                .map_err(|e| GatewayError::Provider(e.to_string()))?;
+            let form = reqwest::multipart::Form::new()
+                .part("file", part)
+                .text("model", model)
+                .text("response_format", "json");
+            let resp = self
+                .client
+                .post(format!("{}/audio/transcriptions", self.base_url))
+                .bearer_auth(&self.api_key)
+                .multipart(form)
+                .send()
+                .await
+                .map_err(|e| GatewayError::Provider(e.to_string()))?;
+            let json: serde_json::Value =
+                resp.json().await.map_err(|e| GatewayError::Provider(e.to_string()))?;
+            Ok(json["text"].as_str().unwrap_or("").to_string())
         }
 
         async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, GatewayError> {

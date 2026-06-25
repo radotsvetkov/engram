@@ -159,6 +159,18 @@ impl Gateway {
         Ok(bytes)
     }
 
+    /// Transcribe audio bytes to text, metered and audited.
+    pub async fn transcribe(&self, audio: &[u8], format: &str, actor: &str) -> Result<String, GatewayError> {
+        let text = self.provider.transcribe(audio, format).await?;
+        self.meter.record(0, approx_tokens(&text), 0.0);
+        self.ledger.append(
+            "llm.transcribe",
+            actor,
+            json!({ "provider": self.provider.id(), "bytes": audio.len(), "chars": text.len() }),
+        )?;
+        Ok(text)
+    }
+
     /// Synthesize speech (audio bytes) from text, metered and audited.
     pub async fn tts(&self, text: &str, voice: &str, actor: &str) -> Result<Vec<u8>, GatewayError> {
         let bytes = self.provider.tts(text, voice).await?;

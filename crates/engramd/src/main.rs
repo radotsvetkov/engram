@@ -138,6 +138,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/skills/{id}/run", post(run_skill))
         .route("/v1/swarm", post(run_swarm))
         .route("/v1/agent", post(agent_handler))
+        .route("/v1/voice", post(voice_handler))
         .route("/v1/converse", post(converse_handler))
         .route("/v1/ledger/tail", get(ledger_tail))
         .route("/v1/ledger/verify", get(ledger_verify))
@@ -317,6 +318,31 @@ pub(crate) async fn run_agent_task(
 async fn agent_handler(State(app): State<App>, Json(r): Json<AgentReq>) -> ApiResult {
     let run = run_agent_task(&app, &r.task, r.max_steps.unwrap_or(8)).await.map_err(ApiError)?;
     Ok(Json(serde_json::to_value(run).map_err(err)?))
+}
+
+#[derive(Deserialize)]
+struct VoiceReq {
+    audio_b64: String,
+    #[serde(default)]
+    format: Option<String>,
+    #[serde(default)]
+    voice: Option<String>,
+}
+
+/// A voice turn: audio in → transcribe → run the agent → synthesize the reply → audio
+/// out. Needs a provider with speech-to-text and text-to-speech (build --features http).
+async fn voice_handler(State(app): State<App>, Json(r): Json<VoiceReq>) -> ApiResult {
+    use base64::Engine;
+    let audio = base64::engine::general_purpose::STANDARD
+        .decode(r.audio_b64.as_bytes())
+        .map_err(err)?;
+    let fmt = r.format.as_deref().unwrap_or("mp3");
+    let transcript = app.gateway.transcribe(&audio, fmt, "voice").await.map_err(err)?;
+    let run = run_agent_task(&app, &transcript, 8).await.map_err(ApiError)?;
+    let voice = r.voice.as_deref().unwrap_or("alloy");
+    let audio_out = app.gateway.tts(&run.answer, voice, "voice").await.map_err(err)?;
+    let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&audio_out);
+    Ok(Json(json!({ "transcript": transcript, "reply": run.answer, "audio_b64": audio_b64 })))
 }
 
 #[derive(Deserialize)]

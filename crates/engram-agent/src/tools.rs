@@ -385,6 +385,33 @@ impl Tool for TextToSpeechTool {
     }
 }
 
+pub struct TranscribeTool;
+
+#[async_trait]
+impl Tool for TranscribeTool {
+    fn name(&self) -> &str {
+        "transcribe"
+    }
+    fn description(&self) -> &str {
+        "Transcribe an audio file in the workdir to text (speech-to-text)."
+    }
+    fn schema(&self) -> Value {
+        json!({ "type": "object",
+            "properties": { "path": { "type": "string" }, "format": { "type": "string" } },
+            "required": ["path"] })
+    }
+    async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
+        let path = confine(&ctx.workdir, arg_str(args, "path")?)?;
+        let format = args["format"]
+            .as_str()
+            .map(String::from)
+            .or_else(|| path.extension().and_then(|e| e.to_str()).map(String::from))
+            .unwrap_or_else(|| "mp3".into());
+        let bytes = tokio::fs::read(&path).await.map_err(|e| e.to_string())?;
+        ctx.gateway.transcribe(&bytes, &format, "agent").await.map_err(|e| e.to_string())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Delegation (subagents)
 // ---------------------------------------------------------------------------

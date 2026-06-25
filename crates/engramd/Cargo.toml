@@ -29,6 +29,8 @@ chrono = { version = "0.4", default-features = false, features = ["std", "clock"
 wat = "1"
 # Messaging channels (Telegram getUpdates/sendMessage).
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# Voice endpoint audio encode/decode.
+base64 = "0.22"
 
 [features]
 default = []

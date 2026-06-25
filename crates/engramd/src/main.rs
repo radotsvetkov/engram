@@ -22,10 +22,11 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 mod converse;
+mod embedder;
 mod seed;
 
 use engram_core::{run_until_idle, Activity, Bus, Ledger, Priority, Spike, VERSION};
-use engram_gateway::{Gateway, MockProvider};
+use engram_gateway::{Gateway, MockProvider, Provider};
 use engram_memory::{Memory, Region, TrigramHashEmbedder, WriteReq};
 use engram_sched::{parse as parse_schedule, Scheduler};
 use engram_skills::{Registry, RunCtx, SkillHost, SkillSigner};
@@ -71,12 +72,24 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let idle = Duration::from_secs(env_u64("ENGRAM_IDLE_SECS", 900));
 
     let ledger = Arc::new(Ledger::open(&home)?);
-    let embedder = Arc::new(TrigramHashEmbedder::default());
+    let gateway = Arc::new(Gateway::new(make_provider(), ledger.clone()));
+
+    // Pick the embedder: a real model through the gateway (ENGRAM_EMBED=gateway), or
+    // the dependency-free offline default. The gateway path probes its dimension once.
+    let embedder: Arc<dyn engram_memory::Embedder> =
+        if std::env::var("ENGRAM_EMBED").as_deref() == Ok("gateway") {
+            let probe = gateway.embed(&["dimension probe".into()], "init").await?;
+            let dim = probe.first().map(|v| v.len()).unwrap_or(256);
+            tracing::info!(dim, "using gateway embedder");
+            Arc::new(embedder::GatewayEmbedder::new(gateway.clone(), dim))
+        } else {
+            Arc::new(TrigramHashEmbedder::default())
+        };
+
     let memory = Arc::new(Memory::open(format!("{home}/brain.db"), embedder, ledger.clone())?);
     let signer = Arc::new(SkillSigner::load_or_create(format!("{home}/keys/skill.key"))?);
     let registry = Arc::new(Registry::open(&home, signer, ledger.clone())?);
     seed::ensure_seed(&registry)?;
-    let gateway = Arc::new(Gateway::new(Box::new(MockProvider), ledger.clone()));
     let sched = Arc::new(Scheduler::open(&home, ledger.clone())?);
     let bus = Bus::new(1024);
     let activity = Activity::new();
@@ -310,6 +323,25 @@ fn parse_region(s: Option<&str>) -> Region {
 
 fn env_u64(key: &str, default: u64) -> u64 {
     std::env::var(key).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
+}
+
+/// Choose the model backend. With `--features http` and ENGRAM_LLM_BASE_URL +
+/// ENGRAM_LLM_API_KEY set, use a real OpenAI-compatible provider; otherwise the
+/// offline mock. This is the single switch that turns the agent from offline-demo
+/// into a real, model-backed assistant — for both completions and embeddings.
+fn make_provider() -> Box<dyn Provider> {
+    #[cfg(feature = "http")]
+    {
+        if let (Ok(base), Ok(key)) =
+            (std::env::var("ENGRAM_LLM_BASE_URL"), std::env::var("ENGRAM_LLM_API_KEY"))
+        {
+            let id = std::env::var("ENGRAM_LLM_ID").unwrap_or_else(|_| "openai".into());
+            tracing::info!(%base, "using http LLM provider");
+            return Box::new(engram_gateway::HttpProvider::new(id, base, key));
+        }
+        tracing::warn!("http feature on but ENGRAM_LLM_BASE_URL/API_KEY unset — using mock");
+    }
+    Box::new(MockProvider)
 }
 
 fn init_tracing() {

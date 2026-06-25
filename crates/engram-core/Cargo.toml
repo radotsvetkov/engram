@@ -1,0 +1,37 @@
+[package]
+name = "engram-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Engram reactive kernel: the neural event bus, wake/sleep lifecycle, taint, and entrypoints"
+
+[lib]
+name = "engram_core"
+path = "src/lib.rs"
+
+[[bin]]
+name = "engramd"
+path = "src/bin/engramd.rs"
+
+[dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "time", "sync", "signal"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+# `test-util` enables paused virtual time (start_paused / advance) for deterministic
+# lifecycle tests without real sleeping.
+tokio = { workspace = true, features = ["rt", "macros", "time", "sync", "signal", "test-util"] }
+
+[features]
+default = ["standalone"]
+# Bind a TCP port directly — dev and simple always-on VPS.
+standalone = []
+# Accept inherited sockets from systemd (LISTEN_FDS) — zero resident process at idle.
+socket-activation = []
+# AWS Lambda entrypoint — serverless, pay-per-invoke.
+lambda = []

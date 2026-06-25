@@ -1,0 +1,33 @@
+[workspace]
+resolver = "2"
+members = ["crates/engram-core"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+authors = ["Radoslav Tsvetkov <r.tsvetkov@hotmail.com>"]
+license = "MIT"
+description = "Engram — a brain-inspired, self-improving personal AI agent that costs nothing when idle"
+
+[workspace.dependencies]
+tokio = { version = "1", default-features = false }
+anyhow = "1"
+thiserror = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Size is a headline metric (<15MB stripped musl). Optimise the release build for
+# a small, fast-to-load binary; correctness of panics is traded for size in prod.
+[profile.release]
+opt-level = "z"
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# Faster local iteration without sacrificing debuggability.
+[profile.dev]
+opt-level = 0

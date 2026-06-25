@@ -1,0 +1,5 @@
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
+# Prod targets: single static musl binary for $5 VPS (socket-activated) and Arm serverless.
+targets = ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"]

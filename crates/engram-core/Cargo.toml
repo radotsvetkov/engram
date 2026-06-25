@@ -11,16 +11,11 @@ description = "Engram reactive kernel: the neural event bus, wake/sleep lifecycl
 name = "engram_core"
 path = "src/lib.rs"
 
-[[bin]]
-name = "engramd"
-path = "src/bin/engramd.rs"
-
 [dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "time", "sync", "signal"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
 thiserror = { workspace = true }
 # Audit ledger: fast hashing, Ed25519 signing, OS randomness, hex encoding.
 blake3 = "1"

@@ -1,0 +1,31 @@
+[package]
+name = "engramd"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Engram daemon: wires memory, skills, gateway, scheduler, and ledger into a running agent"
+
+[[bin]]
+name = "engramd"
+path = "src/main.rs"
+
+[dependencies]
+engram-core = { path = "../engram-core" }
+engram-memory = { path = "../engram-memory" }
+engram-gateway = { path = "../engram-gateway" }
+engram-skills = { path = "../engram-skills" }
+engram-sched = { path = "../engram-sched" }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "time", "net", "sync"] }
+axum = "0.8"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+
+[features]
+default = []
+# Enable a real network LLM provider (otherwise the offline mock is used).
+http = ["engram-gateway/http"]

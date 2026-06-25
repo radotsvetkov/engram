@@ -6,6 +6,7 @@ members = [
     "crates/engram-gateway",
     "crates/engram-skills",
     "crates/engram-sched",
+    "crates/engramd",
 ]
 
 [workspace.package]

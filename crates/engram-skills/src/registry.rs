@@ -171,6 +171,22 @@ impl Registry {
         Ok(self.versions(id)?.into_iter().max().unwrap_or(0) + 1)
     }
 
+    /// All installed skill ids.
+    pub fn skills(&self) -> Result<Vec<String>> {
+        let mut out = Vec::new();
+        if let Ok(rd) = fs::read_dir(self.dir.join("skills")) {
+            for e in rd.flatten() {
+                if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                    if let Some(n) = e.file_name().to_str() {
+                        out.push(n.to_string());
+                    }
+                }
+            }
+        }
+        out.sort();
+        Ok(out)
+    }
+
     /// Point `active` at `version` (used by promote and revert). Records the change.
     pub fn set_active(&self, id: &str, version: u32, actor: &str, kind: &str) -> Result<()> {
         if !self.skill_dir(id).join(format!("v{version}.wasm")).exists() {

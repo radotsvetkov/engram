@@ -54,6 +54,15 @@
 </header>
 
 <div class="grid">
+  <div class="panel wide">
+    <h2>Talk <span class="pill">remembers you · grows across sessions</span></h2>
+    <div class="row">
+      <input id="say" placeholder="say something… (try: my name is Rado and I like Rust)" />
+      <button onclick="talk()">send</button>
+    </div>
+    <div id="reply"></div>
+  </div>
+
   <div class="panel">
     <h2>Memory Atlas <span class="pill" id="memstats"></span></h2>
     <div class="row">
@@ -107,6 +116,19 @@
 <script>
 const J = (u, o) => fetch(u, o).then(r => r.json());
 const esc = s => String(s).replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+
+async function talk() {
+  const el = document.getElementById('say');
+  const text = el.value.trim(); if (!text) return;
+  const r = await J('/v1/converse', { method: 'POST', headers: {'content-type':'application/json'},
+    body: JSON.stringify({ text }) });
+  el.value = '';
+  document.getElementById('reply').innerHTML =
+    `<div class="hit"><div>${esc(r.reply || r.error || '')}</div>
+     ${(r.recalled||[]).length ? `<div class="meta">recalled: ${r.recalled.map(esc).join(' · ')}</div>` : ''}
+     ${(r.learned||[]).length ? `<div class="meta">learned: <span style="color:var(--accent)">${r.learned.map(esc).join(' · ')}</span></div>` : ''}</div>`;
+  refresh();
+}
 
 async function recall() {
   const q = document.getElementById('q').value.trim();
@@ -189,6 +211,7 @@ async function refresh() {
   m_out.textContent = m.tokens_out; m_cost.textContent = '$' + (m.cost_usd||0).toFixed(4);
 }
 document.getElementById('q').addEventListener('keydown', e => { if (e.key === 'Enter') recall(); });
+document.getElementById('say').addEventListener('keydown', e => { if (e.key === 'Enter') talk(); });
 refresh(); setInterval(refresh, 2000);
 </script>
 </body>

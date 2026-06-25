@@ -21,6 +21,7 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+mod converse;
 mod seed;
 
 use engram_core::{run_until_idle, Activity, Bus, Ledger, Priority, Spike, VERSION};
@@ -103,6 +104,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/forget", post(forget))
         .route("/v1/skills", get(skills))
         .route("/v1/skills/{id}/run", post(run_skill))
+        .route("/v1/converse", post(converse_handler))
         .route("/v1/ledger/tail", get(ledger_tail))
         .route("/v1/ledger/verify", get(ledger_verify))
         .route("/v1/schedule", get(schedule_list).post(schedule_add))
@@ -200,6 +202,22 @@ struct ForgetReq {
 async fn forget(State(app): State<App>, Json(r): Json<ForgetReq>) -> ApiResult {
     let ok = app.memory.forget(r.id, "user", "via api").map_err(err)?;
     Ok(Json(json!({ "forgotten": ok })))
+}
+
+#[derive(Deserialize)]
+struct ConverseReq {
+    text: String,
+}
+
+async fn converse_handler(State(app): State<App>, Json(r): Json<ConverseReq>) -> ApiResult {
+    let turn = converse::converse(&app.memory, &app.gateway, &r.text)
+        .await
+        .map_err(ApiError)?;
+    Ok(Json(json!({
+        "reply": turn.reply,
+        "recalled": turn.recalled,
+        "learned": turn.learned,
+    })))
 }
 
 async fn skills(State(app): State<App>) -> ApiResult {

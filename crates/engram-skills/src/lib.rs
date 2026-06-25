@@ -19,9 +19,11 @@ pub mod host;
 pub mod learn;
 pub mod manifest;
 pub mod registry;
+pub mod swarm;
 
 pub use capability::Capability;
 pub use host::{Outcome, RunCtx, SkillError, SkillHost};
 pub use learn::{improve, score_version, Decision};
 pub use manifest::{module_hash, verify, Manifest, ManifestError, SignedSkill, SkillSigner};
 pub use registry::{NewSkill, RecordedRun, Registry, RegistryError};
+pub use swarm::{run_pipeline, PipelineOutcome, StepTrace};

@@ -117,6 +117,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/forget", post(forget))
         .route("/v1/skills", get(skills))
         .route("/v1/skills/{id}/run", post(run_skill))
+        .route("/v1/swarm", post(run_swarm))
         .route("/v1/converse", post(converse_handler))
         .route("/v1/ledger/tail", get(ledger_tail))
         .route("/v1/ledger/verify", get(ledger_verify))
@@ -215,6 +216,29 @@ struct ForgetReq {
 async fn forget(State(app): State<App>, Json(r): Json<ForgetReq>) -> ApiResult {
     let ok = app.memory.forget(r.id, "user", "via api").map_err(err)?;
     Ok(Json(json!({ "forgotten": ok })))
+}
+
+#[derive(Deserialize)]
+struct SwarmReq {
+    steps: Vec<String>,
+    input: String,
+}
+
+async fn run_swarm(State(app): State<App>, Json(r): Json<SwarmReq>) -> ApiResult {
+    let outcome = engram_skills::run_pipeline(
+        &app.host,
+        &app.registry,
+        &r.steps,
+        r.input.as_bytes(),
+        Some(app.memory.clone()),
+        Some(app.gateway.clone()),
+    )
+    .await
+    .map_err(err)?;
+    Ok(Json(json!({
+        "output": String::from_utf8_lossy(&outcome.output),
+        "steps": outcome.steps,
+    })))
 }
 
 #[derive(Deserialize)]

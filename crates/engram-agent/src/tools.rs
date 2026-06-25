@@ -49,6 +49,52 @@ pub(crate) fn html_to_text(html: &str) -> String {
 // Shell
 // ---------------------------------------------------------------------------
 
+/// Build the (program, args) to run `command` under the configured backend. `Some(image)`
+/// runs it sandboxed in a network-isolated container; `None` runs it locally.
+pub(crate) fn shell_command(
+    image: Option<&str>,
+    workdir: &std::path::Path,
+    command: &str,
+) -> (String, Vec<String>) {
+    match image {
+        Some(img) => {
+            let mount = format!("{}:/work", workdir.display());
+            (
+                "docker".into(),
+                vec![
+                    "run".into(), "--rm".into(), "--network".into(), "none".into(),
+                    "-v".into(), mount, "-w".into(), "/work".into(),
+                    img.to_string(), "sh".into(), "-c".into(), command.to_string(),
+                ],
+            )
+        }
+        None => ("sh".into(), vec!["-c".into(), command.to_string()]),
+    }
+}
+
+#[cfg(test)]
+mod shell_backend_tests {
+    use super::shell_command;
+    use std::path::Path;
+
+    #[test]
+    fn local_backend() {
+        let (prog, args) = shell_command(None, Path::new("/w"), "ls -la");
+        assert_eq!(prog, "sh");
+        assert_eq!(args, vec!["-c".to_string(), "ls -la".to_string()]);
+    }
+
+    #[test]
+    fn docker_backend_is_network_isolated() {
+        let (prog, args) = shell_command(Some("alpine"), Path::new("/w"), "echo hi");
+        assert_eq!(prog, "docker");
+        assert!(args.contains(&"--network".to_string()) && args.contains(&"none".to_string()));
+        assert!(args.contains(&"alpine".to_string()));
+        assert!(args.contains(&"echo hi".to_string()));
+        assert!(args.contains(&"/w:/work".to_string()));
+    }
+}
+
 pub struct ShellTool;
 
 #[async_trait]
@@ -71,10 +117,15 @@ impl Tool for ShellTool {
             return Err("shell refused: this run read untrusted content (injection guard)".into());
         }
         let command = arg_str(args, "command")?;
-        let _ = ctx.ledger.append("agent.shell", "agent", json!({ "command": command }));
-        let fut = tokio::process::Command::new("sh")
-            .arg("-c")
-            .arg(command)
+        let backend = ctx.policy.shell_backend.as_deref();
+        let _ = ctx.ledger.append(
+            "agent.shell",
+            "agent",
+            json!({ "command": command, "backend": backend.unwrap_or("local") }),
+        );
+        let (program, cmd_args) = shell_command(backend, &ctx.workdir, command);
+        let fut = tokio::process::Command::new(&program)
+            .args(&cmd_args)
             .current_dir(&ctx.workdir)
             .output();
         let out = tokio::time::timeout(Duration::from_secs(ctx.policy.timeout_secs), fut)

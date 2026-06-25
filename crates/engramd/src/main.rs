@@ -268,6 +268,10 @@ struct AgentReq {
 async fn agent_handler(State(app): State<App>, Json(r): Json<AgentReq>) -> ApiResult {
     let policy = engram_agent::Policy {
         allow_shell: std::env::var("ENGRAM_TOOLS_SHELL").as_deref() == Ok("1"),
+        shell_backend: match std::env::var("ENGRAM_SHELL_BACKEND").as_deref() {
+            Ok("docker") => Some(std::env::var("ENGRAM_DOCKER_IMAGE").unwrap_or_else(|_| "alpine".into())),
+            _ => None,
+        },
         ..Default::default()
     };
     let model = std::env::var("ENGRAM_MODEL").unwrap_or_else(|_| "claude-haiku".into());

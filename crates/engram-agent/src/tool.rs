@@ -46,11 +46,20 @@ pub struct Policy {
     pub max_obs_len: usize,
     /// Per-command / per-fetch timeout, seconds.
     pub timeout_secs: u64,
+    /// Execution backend for the shell tool: `None` runs locally; `Some(image)` runs in
+    /// a network-isolated `docker run` against that image (sandboxed code execution).
+    pub shell_backend: Option<String>,
 }
 
 impl Default for Policy {
     fn default() -> Self {
-        Policy { allow_shell: false, allow_write: true, max_obs_len: 6000, timeout_secs: 30 }
+        Policy {
+            allow_shell: false,
+            allow_write: true,
+            max_obs_len: 6000,
+            timeout_secs: 30,
+            shell_backend: None,
+        }
     }
 }
 

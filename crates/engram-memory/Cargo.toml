@@ -1,0 +1,20 @@
+[package]
+name = "engram-memory"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Engram memory broker: hybrid semantic+keyword recall over a single embedded SQLite brain"
+
+[dependencies]
+engram-core = { path = "../engram-core" }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+blake3 = "1"
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,19 @@
+[package]
+name = "engram-sched"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Engram scheduler: deterministic natural-language recurrence and unattended wake"
+
+[dependencies]
+engram-core = { path = "../engram-core" }
+chrono = { version = "0.4", default-features = false, features = ["std", "serde", "alloc"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

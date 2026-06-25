@@ -11,10 +11,12 @@
 //! and secret context are revoked for the rest of the run.
 
 pub mod agent;
+pub mod mcp;
 pub mod tool;
 pub mod tools;
 
 pub use agent::{Agent, AgentError, AgentRun, StepRecord};
+pub use mcp::{connect_servers, McpClient, McpTool};
 pub use tool::{confine, Policy, Tool, ToolCtx, ToolRegistry};
 
 use std::sync::Arc;

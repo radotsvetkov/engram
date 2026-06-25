@@ -43,6 +43,7 @@ struct App {
     activity: Activity,
     workdir: std::path::PathBuf,
     persona: Option<String>,
+    mcp_tools: Vec<Arc<dyn engram_agent::Tool>>,
 }
 
 /// Uniform error → JSON 500.
@@ -100,6 +101,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(&workdir)?;
     // Personality / standing instructions, shaping every agent run (Hermes's SOUL.md).
     let persona = std::fs::read_to_string(format!("{home}/SOUL.md")).ok();
+    // Connect any MCP servers listed in mcp.json and borrow their tools.
+    let mcp_tools = load_mcp(&home).await;
+    if !mcp_tools.is_empty() {
+        tracing::info!(count = mcp_tools.len(), "mcp tools available to the agent");
+    }
 
     ledger.append("core.boot", "core", json!({ "version": VERSION, "addr": addr.to_string() }))?;
 
@@ -114,6 +120,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         activity: activity.clone(),
         workdir,
         persona,
+        mcp_tools,
     };
 
     let router = Router::new()
@@ -275,7 +282,11 @@ async fn agent_handler(State(app): State<App>, Json(r): Json<AgentReq>) -> ApiRe
         model: model.clone(),
         depth: 0,
     };
-    let mut agent = engram_agent::Agent::new(app.gateway.clone(), engram_agent::default_tools(), model)
+    let mut tools = engram_agent::default_tools();
+    for t in &app.mcp_tools {
+        tools = tools.with(t.clone());
+    }
+    let mut agent = engram_agent::Agent::new(app.gateway.clone(), tools, model)
         .max_steps(r.max_steps.unwrap_or(8));
     if let Some(p) = &app.persona {
         agent = agent.persona(p.clone());
@@ -390,6 +401,32 @@ fn parse_region(s: Option<&str>) -> Region {
 
 fn env_u64(key: &str, default: u64) -> u64 {
     std::env::var(key).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
+}
+
+#[derive(Deserialize)]
+struct McpServerCfg {
+    name: String,
+    command: String,
+    #[serde(default)]
+    args: Vec<String>,
+}
+
+/// Load MCP servers from `<home>/mcp.json` (a JSON array of {name, command, args}) and
+/// connect them, returning their tools. Missing or invalid config is non-fatal.
+async fn load_mcp(home: &str) -> Vec<Arc<dyn engram_agent::Tool>> {
+    let Ok(text) = std::fs::read_to_string(format!("{home}/mcp.json")) else {
+        return Vec::new();
+    };
+    let cfg: Vec<McpServerCfg> = match serde_json::from_str(&text) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, "invalid mcp.json — ignoring");
+            return Vec::new();
+        }
+    };
+    let configs: Vec<(String, String, Vec<String>)> =
+        cfg.into_iter().map(|c| (c.name, c.command, c.args)).collect();
+    engram_agent::connect_servers(&configs).await
 }
 
 /// Choose the model backend. With `--features http` and ENGRAM_LLM_BASE_URL +

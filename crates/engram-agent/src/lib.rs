@@ -27,7 +27,9 @@ fn base_tools() -> ToolRegistry {
         .with(Arc::new(tools::ReadFileTool))
         .with(Arc::new(tools::WriteFileTool))
         .with(Arc::new(tools::ListDirTool))
-        .with(Arc::new(tools::ShellTool));
+        .with(Arc::new(tools::ShellTool))
+        .with(Arc::new(tools::BrowserReadTool))
+        .with(Arc::new(tools::BrowserScreenshotTool));
     #[cfg(feature = "web")]
     let reg = reg
         .with(Arc::new(tools::WebFetchTool))

@@ -16,6 +16,35 @@ fn arg_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
     args[key].as_str().ok_or_else(|| format!("missing string argument '{key}'"))
 }
 
+/// Strip HTML to roughly readable text (drops script/style, collapses whitespace).
+pub(crate) fn html_to_text(html: &str) -> String {
+    let mut s = String::with_capacity(html.len() / 2);
+    let mut in_tag = false;
+    let mut skip_depth = 0i32;
+    let lower = html.to_lowercase();
+    let bytes = html.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if lower[i..].starts_with("<script") || lower[i..].starts_with("<style") {
+            skip_depth += 1;
+        }
+        if lower[i..].starts_with("</script") || lower[i..].starts_with("</style") {
+            skip_depth = (skip_depth - 1).max(0);
+        }
+        let c = bytes[i] as char;
+        if c == '<' {
+            in_tag = true;
+        } else if c == '>' {
+            in_tag = false;
+            s.push(' ');
+        } else if !in_tag && skip_depth == 0 {
+            s.push(c);
+        }
+        i += 1;
+    }
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 // ---------------------------------------------------------------------------
 // Shell
 // ---------------------------------------------------------------------------
@@ -242,6 +271,145 @@ impl Tool for DelegateTool {
 }
 
 // ---------------------------------------------------------------------------
+// Browser (headless Chrome via subprocess — real JS rendering, no extra deps)
+// ---------------------------------------------------------------------------
+
+fn find_chrome() -> Option<String> {
+    if let Ok(p) = std::env::var("ENGRAM_CHROME") {
+        if std::path::Path::new(&p).exists() {
+            return Some(p);
+        }
+    }
+    const CANDIDATES: &[&str] = &[
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+        "/usr/bin/google-chrome",
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+    ];
+    CANDIDATES.iter().find(|p| std::path::Path::new(p).exists()).map(|s| s.to_string())
+}
+
+const CHROME_FLAGS: &[&str] =
+    &["--headless", "--disable-gpu", "--no-sandbox", "--no-first-run", "--disable-extensions"];
+
+async fn chrome_dump_dom(url: &str, timeout: u64) -> Result<String, String> {
+    let chrome = find_chrome().ok_or("no Chrome/Chromium found (set ENGRAM_CHROME)")?;
+    let fut = tokio::process::Command::new(&chrome)
+        .args(CHROME_FLAGS)
+        .arg("--dump-dom")
+        .arg(url)
+        .output();
+    let out = tokio::time::timeout(Duration::from_secs(timeout), fut)
+        .await
+        .map_err(|_| "browser timed out".to_string())?
+        .map_err(|e| e.to_string())?;
+    if out.stdout.is_empty() {
+        return Err(format!(
+            "browser produced no output: {}",
+            String::from_utf8_lossy(&out.stderr).chars().take(200).collect::<String>()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+async fn chrome_screenshot(url: &str, out_path: &std::path::Path, timeout: u64) -> Result<(), String> {
+    let chrome = find_chrome().ok_or("no Chrome/Chromium found (set ENGRAM_CHROME)")?;
+    let fut = tokio::process::Command::new(&chrome)
+        .args(CHROME_FLAGS)
+        .arg("--hide-scrollbars")
+        .arg("--window-size=1280,1024")
+        .arg(format!("--screenshot={}", out_path.display()))
+        .arg(url)
+        .output();
+    tokio::time::timeout(Duration::from_secs(timeout), fut)
+        .await
+        .map_err(|_| "browser timed out".to_string())?
+        .map_err(|e| e.to_string())?;
+    if !out_path.exists() {
+        return Err("screenshot was not produced".into());
+    }
+    Ok(())
+}
+
+pub struct BrowserReadTool;
+
+#[async_trait]
+impl Tool for BrowserReadTool {
+    fn name(&self) -> &str {
+        "browser_read"
+    }
+    fn description(&self) -> &str {
+        "Open a URL in a headless browser (running its JavaScript) and return the rendered \
+         page text. Use for JS-heavy pages and SPAs where web_fetch returns little."
+    }
+    fn schema(&self) -> Value {
+        json!({ "type": "object", "properties": { "url": { "type": "string" } }, "required": ["url"] })
+    }
+    fn taints(&self) -> bool {
+        true
+    }
+    async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
+        let url = arg_str(args, "url")?;
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
+            return Err("url must be http(s)".into());
+        }
+        let _ = ctx.ledger.append("agent.browser_read", "agent", json!({ "url": url }));
+        let html = chrome_dump_dom(url, ctx.policy.timeout_secs.max(30)).await?;
+        Ok(html_to_text(&html))
+    }
+}
+
+pub struct BrowserScreenshotTool;
+
+#[async_trait]
+impl Tool for BrowserScreenshotTool {
+    fn name(&self) -> &str {
+        "browser_screenshot"
+    }
+    fn description(&self) -> &str {
+        "Open a URL in a headless browser and save a PNG screenshot to a file in the workdir."
+    }
+    fn schema(&self) -> Value {
+        json!({ "type": "object",
+            "properties": { "url": { "type": "string" }, "path": { "type": "string" } },
+            "required": ["url", "path"] })
+    }
+    fn taints(&self) -> bool {
+        true
+    }
+    async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
+        let url = arg_str(args, "url")?;
+        let path = confine(&ctx.workdir, arg_str(args, "path")?)?;
+        let _ = ctx.ledger.append("agent.browser_screenshot", "agent", json!({ "url": url }));
+        chrome_screenshot(url, &path, ctx.policy.timeout_secs.max(30)).await?;
+        Ok(format!("saved screenshot to {}", path.display()))
+    }
+}
+
+#[cfg(test)]
+mod browser_tests {
+    use super::*;
+
+    #[tokio::test]
+    #[ignore = "needs Chrome"]
+    async fn reads_a_real_page_with_js() {
+        let html = chrome_dump_dom("https://example.com", 30).await.unwrap();
+        assert!(html_to_text(&html).contains("Example Domain"));
+    }
+
+    #[tokio::test]
+    #[ignore = "needs Chrome"]
+    async fn screenshots_a_page() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("shot.png");
+        chrome_screenshot("https://example.com", &out, 30).await.unwrap();
+        assert!(out.exists() && std::fs::metadata(&out).unwrap().len() > 0);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Web (feature-gated)
 // ---------------------------------------------------------------------------
 
@@ -251,36 +419,6 @@ pub use web::{WebFetchTool, WebSearchTool};
 #[cfg(feature = "web")]
 mod web {
     use super::*;
-
-    /// Strip HTML to roughly readable text.
-    fn html_to_text(html: &str) -> String {
-        let mut s = String::with_capacity(html.len() / 2);
-        let mut in_tag = false;
-        let mut skip_depth = 0i32;
-        let lower = html.to_lowercase();
-        let bytes = html.as_bytes();
-        let mut i = 0;
-        while i < bytes.len() {
-            if lower[i..].starts_with("<script") || lower[i..].starts_with("<style") {
-                skip_depth += 1;
-            }
-            if lower[i..].starts_with("</script") || lower[i..].starts_with("</style") {
-                skip_depth = (skip_depth - 1).max(0);
-            }
-            let c = bytes[i] as char;
-            if c == '<' {
-                in_tag = true;
-            } else if c == '>' {
-                in_tag = false;
-                s.push(' ');
-            } else if !in_tag && skip_depth == 0 {
-                s.push(c);
-            }
-            i += 1;
-        }
-        // Collapse whitespace.
-        s.split_whitespace().collect::<Vec<_>>().join(" ")
-    }
 
     async fn get_text(url: &str, timeout: u64) -> Result<String, String> {
         let client = reqwest::Client::builder()
@@ -315,7 +453,7 @@ mod web {
             }
             let _ = ctx.ledger.append("agent.web_fetch", "agent", json!({ "url": url }));
             let html = get_text(url, ctx.policy.timeout_secs).await?;
-            Ok(html_to_text(&html))
+            Ok(super::html_to_text(&html))
         }
     }
 
@@ -393,7 +531,7 @@ mod web {
         #[test]
         fn strips_html_to_text() {
             let html = "<html><head><style>x{}</style></head><body><h1>Hi</h1><script>bad()</script><p>there</p></body></html>";
-            let text = html_to_text(html);
+            let text = super::super::html_to_text(html);
             assert!(text.contains("Hi") && text.contains("there"));
             assert!(!text.contains("bad") && !text.contains('{'));
         }

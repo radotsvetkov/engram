@@ -192,6 +192,7 @@ mod tests {
             workdir: dir.path().to_path_buf(),
             model: "test".into(),
             depth: 0,
+            browser: Arc::new(crate::tool::NoBrowser),
         };
         let agent = Agent::new(gateway, crate::default_tools(), "test");
         let run = agent.run("Tell me the colour of the sky.", ctx).await.unwrap();
@@ -228,6 +229,7 @@ mod tests {
             workdir: dir.path().to_path_buf(),
             model: "test".into(),
             depth: 0,
+            browser: Arc::new(crate::tool::NoBrowser),
         };
         let run = Agent::new(gateway, crate::default_tools(), "test").run("run echo", ctx).await.unwrap();
         assert!(!run.steps[0].ok);
@@ -260,6 +262,7 @@ mod tests {
             workdir: dir.path().to_path_buf(),
             model: "test".into(),
             depth: 0,
+            browser: Arc::new(crate::tool::NoBrowser),
         };
         let run = Agent::new(gateway, crate::default_tools(), "test").run("do the thing", ctx).await.unwrap();
         assert_eq!(run.steps.len(), 1);

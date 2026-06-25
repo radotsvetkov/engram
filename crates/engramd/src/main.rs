@@ -44,6 +44,7 @@ struct App {
     workdir: std::path::PathBuf,
     persona: Option<String>,
     mcp_tools: Vec<Arc<dyn engram_agent::Tool>>,
+    browser: Arc<dyn engram_agent::BrowserSession>,
 }
 
 /// Uniform error → JSON 500.
@@ -121,6 +122,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         workdir,
         persona,
         mcp_tools,
+        browser: engram_agent::browser_session(),
     };
 
     let router = Router::new()
@@ -285,6 +287,7 @@ async fn agent_handler(State(app): State<App>, Json(r): Json<AgentReq>) -> ApiRe
         workdir: app.workdir.clone(),
         model: model.clone(),
         depth: 0,
+        browser: app.browser.clone(),
     };
     let mut tools = engram_agent::default_tools();
     for t in &app.mcp_tools {

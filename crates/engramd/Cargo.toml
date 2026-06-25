@@ -32,3 +32,5 @@ wat = "1"
 default = []
 # Enable a real network LLM provider (otherwise the offline mock is used).
 http = ["engram-gateway/http"]
+# Enable interactive browser automation (Chrome DevTools Protocol).
+browser-cdp = ["engram-agent/browser-cdp"]

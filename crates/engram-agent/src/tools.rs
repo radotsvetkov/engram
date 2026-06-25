@@ -325,7 +325,7 @@ impl Tool for DelegateTool {
 // Browser (headless Chrome via subprocess — real JS rendering, no extra deps)
 // ---------------------------------------------------------------------------
 
-fn find_chrome() -> Option<String> {
+pub(crate) fn find_chrome() -> Option<String> {
     if let Ok(p) = std::env::var("ENGRAM_CHROME") {
         if std::path::Path::new(&p).exists() {
             return Some(p);
@@ -436,6 +436,99 @@ impl Tool for BrowserScreenshotTool {
         let _ = ctx.ledger.append("agent.browser_screenshot", "agent", json!({ "url": url }));
         chrome_screenshot(url, &path, ctx.policy.timeout_secs.max(30)).await?;
         Ok(format!("saved screenshot to {}", path.display()))
+    }
+}
+
+// Interactive browser tools — drive a persistent session via ctx.browser.
+
+pub struct BrowserOpenTool;
+
+#[async_trait]
+impl Tool for BrowserOpenTool {
+    fn name(&self) -> &str {
+        "browser_open"
+    }
+    fn description(&self) -> &str {
+        "Navigate the persistent interactive browser to a URL and return the page text. \
+         Follow with browser_click / browser_type / browser_extract for multi-step tasks."
+    }
+    fn schema(&self) -> Value {
+        json!({ "type": "object", "properties": { "url": { "type": "string" } }, "required": ["url"] })
+    }
+    fn taints(&self) -> bool {
+        true
+    }
+    async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
+        let url = arg_str(args, "url")?;
+        let _ = ctx.ledger.append("agent.browser_open", "agent", json!({ "url": url }));
+        ctx.browser.open(url).await
+    }
+}
+
+pub struct BrowserClickTool;
+
+#[async_trait]
+impl Tool for BrowserClickTool {
+    fn name(&self) -> &str {
+        "browser_click"
+    }
+    fn description(&self) -> &str {
+        "Click the first element matching a CSS selector in the current browser page."
+    }
+    fn schema(&self) -> Value {
+        json!({ "type": "object", "properties": { "selector": { "type": "string" } }, "required": ["selector"] })
+    }
+    fn taints(&self) -> bool {
+        true
+    }
+    async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
+        let _ = ctx.ledger.append("agent.browser_click", "agent", json!({}));
+        ctx.browser.click(arg_str(args, "selector")?).await
+    }
+}
+
+pub struct BrowserTypeTool;
+
+#[async_trait]
+impl Tool for BrowserTypeTool {
+    fn name(&self) -> &str {
+        "browser_type"
+    }
+    fn description(&self) -> &str {
+        "Type text into the first element matching a CSS selector in the current page."
+    }
+    fn schema(&self) -> Value {
+        json!({ "type": "object",
+            "properties": { "selector": { "type": "string" }, "text": { "type": "string" } },
+            "required": ["selector", "text"] })
+    }
+    fn taints(&self) -> bool {
+        true
+    }
+    async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
+        let _ = ctx.ledger.append("agent.browser_type", "agent", json!({}));
+        ctx.browser.type_text(arg_str(args, "selector")?, arg_str(args, "text")?).await
+    }
+}
+
+pub struct BrowserExtractTool;
+
+#[async_trait]
+impl Tool for BrowserExtractTool {
+    fn name(&self) -> &str {
+        "browser_extract"
+    }
+    fn description(&self) -> &str {
+        "Extract text from the current browser page, optionally limited to a CSS selector."
+    }
+    fn schema(&self) -> Value {
+        json!({ "type": "object", "properties": { "selector": { "type": "string" } } })
+    }
+    fn taints(&self) -> bool {
+        true
+    }
+    async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
+        ctx.browser.extract(args["selector"].as_str()).await
     }
 }
 

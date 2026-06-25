@@ -16,6 +16,46 @@ use engram_memory::Memory;
 use engram_skills::Registry;
 use serde_json::Value;
 
+/// A persistent, interactive browser the agent can drive across tool calls: navigate,
+/// click, type, extract, screenshot. The default [`NoBrowser`] errors with guidance; a
+/// real Chrome-DevTools-Protocol session is wired in with `--features browser-cdp`.
+#[async_trait]
+pub trait BrowserSession: Send + Sync {
+    async fn open(&self, url: &str) -> Result<String, String>;
+    async fn click(&self, selector: &str) -> Result<String, String>;
+    async fn type_text(&self, selector: &str, text: &str) -> Result<String, String>;
+    async fn extract(&self, selector: Option<&str>) -> Result<String, String>;
+    async fn screenshot(&self, path: &std::path::Path) -> Result<(), String>;
+}
+
+/// Placeholder used when no interactive browser is built in.
+pub struct NoBrowser;
+
+impl NoBrowser {
+    fn unavailable() -> String {
+        "interactive browser not enabled (build engramd with --features browser-cdp)".into()
+    }
+}
+
+#[async_trait]
+impl BrowserSession for NoBrowser {
+    async fn open(&self, _: &str) -> Result<String, String> {
+        Err(Self::unavailable())
+    }
+    async fn click(&self, _: &str) -> Result<String, String> {
+        Err(Self::unavailable())
+    }
+    async fn type_text(&self, _: &str, _: &str) -> Result<String, String> {
+        Err(Self::unavailable())
+    }
+    async fn extract(&self, _: Option<&str>) -> Result<String, String> {
+        Err(Self::unavailable())
+    }
+    async fn screenshot(&self, _: &std::path::Path) -> Result<(), String> {
+        Err(Self::unavailable())
+    }
+}
+
 /// What a tool may rely on at call time.
 #[derive(Clone)]
 pub struct ToolCtx {
@@ -33,6 +73,8 @@ pub struct ToolCtx {
     pub model: String,
     /// Delegation depth, to bound recursive subagents.
     pub depth: usize,
+    /// The interactive browser session (no-op unless built with `browser-cdp`).
+    pub browser: Arc<dyn BrowserSession>,
 }
 
 /// What the agent is permitted to do. Safe by default.

@@ -11,13 +11,15 @@
 //! and secret context are revoked for the rest of the run.
 
 pub mod agent;
+#[cfg(feature = "browser-cdp")]
+pub mod browser_cdp;
 pub mod mcp;
 pub mod tool;
 pub mod tools;
 
 pub use agent::{Agent, AgentError, AgentRun, StepRecord};
 pub use mcp::{connect_servers, McpClient, McpTool};
-pub use tool::{confine, Policy, Tool, ToolCtx, ToolRegistry};
+pub use tool::{confine, BrowserSession, NoBrowser, Policy, Tool, ToolCtx, ToolRegistry};
 
 use std::sync::Arc;
 
@@ -31,7 +33,11 @@ fn base_tools() -> ToolRegistry {
         .with(Arc::new(tools::ListDirTool))
         .with(Arc::new(tools::ShellTool))
         .with(Arc::new(tools::BrowserReadTool))
-        .with(Arc::new(tools::BrowserScreenshotTool));
+        .with(Arc::new(tools::BrowserScreenshotTool))
+        .with(Arc::new(tools::BrowserOpenTool))
+        .with(Arc::new(tools::BrowserClickTool))
+        .with(Arc::new(tools::BrowserTypeTool))
+        .with(Arc::new(tools::BrowserExtractTool));
     #[cfg(feature = "web")]
     let reg = reg
         .with(Arc::new(tools::WebFetchTool))
@@ -47,4 +53,17 @@ pub fn default_tools() -> ToolRegistry {
 /// The toolset a delegated subagent receives — base tools, no further delegation.
 pub fn sub_tools() -> ToolRegistry {
     base_tools()
+}
+
+/// Build the interactive browser session: a real CDP-backed Chrome when built with
+/// `browser-cdp` and Chrome is present, otherwise a no-op that errors with guidance.
+pub fn browser_session() -> Arc<dyn BrowserSession> {
+    #[cfg(feature = "browser-cdp")]
+    {
+        if let Some(chrome) = tools::find_chrome() {
+            let port = std::env::var("ENGRAM_CDP_PORT").ok().and_then(|s| s.parse().ok()).unwrap_or(9222);
+            return Arc::new(browser_cdp::CdpBrowser::new(chrome, port));
+        }
+    }
+    Arc::new(NoBrowser)
 }

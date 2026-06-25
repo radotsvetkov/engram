@@ -21,11 +21,18 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+thiserror = { workspace = true }
+# Audit ledger: fast hashing, Ed25519 signing, OS randomness, hex encoding.
+blake3 = "1"
+ed25519-dalek = "2"
+getrandom = "0.2"
+hex = "0.4"
 
 [dev-dependencies]
 # `test-util` enables paused virtual time (start_paused / advance) for deterministic
 # lifecycle tests without real sleeping.
 tokio = { workspace = true, features = ["rt", "macros", "time", "sync", "signal", "test-util"] }
+tempfile = "3"
 
 [features]
 default = ["standalone"]

@@ -43,11 +43,28 @@ pub struct Message {
     pub tool_call_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<ToolCall>,
+    /// Base64-encoded PNG images attached to this message (for vision).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<String>,
 }
 
 impl Message {
     fn base(role: Role, content: impl Into<String>) -> Self {
-        Self { role, content: content.into(), secret: false, tool_call_id: None, tool_calls: Vec::new() }
+        Self {
+            role,
+            content: content.into(),
+            secret: false,
+            tool_call_id: None,
+            tool_calls: Vec::new(),
+            images: Vec::new(),
+        }
+    }
+
+    /// A user message with an attached image (base64 PNG) for vision models.
+    pub fn user_with_image(content: impl Into<String>, image_b64: impl Into<String>) -> Self {
+        let mut m = Self::base(Role::User, content);
+        m.images.push(image_b64.into());
+        m
     }
     pub fn system(content: impl Into<String>) -> Self {
         Self::base(Role::System, content)

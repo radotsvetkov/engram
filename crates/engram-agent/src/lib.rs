@@ -37,7 +37,10 @@ fn base_tools() -> ToolRegistry {
         .with(Arc::new(tools::BrowserOpenTool))
         .with(Arc::new(tools::BrowserClickTool))
         .with(Arc::new(tools::BrowserTypeTool))
-        .with(Arc::new(tools::BrowserExtractTool));
+        .with(Arc::new(tools::BrowserExtractTool))
+        .with(Arc::new(tools::VisionAnalyzeTool))
+        .with(Arc::new(tools::ImageGenerateTool))
+        .with(Arc::new(tools::TextToSpeechTool));
     #[cfg(feature = "web")]
     let reg = reg
         .with(Arc::new(tools::WebFetchTool))

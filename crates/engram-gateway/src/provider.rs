@@ -20,6 +20,14 @@ pub enum GatewayError {
 pub trait Provider: Send + Sync {
     async fn complete(&self, req: &CompletionRequest) -> Result<Completion, GatewayError>;
     async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, GatewayError>;
+    /// Generate an image from a prompt, returning PNG bytes. Default: unsupported.
+    async fn generate_image(&self, _prompt: &str) -> Result<Vec<u8>, GatewayError> {
+        Err(GatewayError::Provider("image generation not supported by this provider".into()))
+    }
+    /// Synthesize speech from text, returning audio bytes (mp3). Default: unsupported.
+    async fn tts(&self, _text: &str, _voice: &str) -> Result<Vec<u8>, GatewayError> {
+        Err(GatewayError::Provider("text-to-speech not supported by this provider".into()))
+    }
     /// Short stable id for the audit trail, e.g. "mock", "anthropic", "openai".
     fn id(&self) -> &str;
 }
@@ -169,6 +177,17 @@ mod http {
                     .collect(),
             );
         }
+        if !m.images.is_empty() {
+            // Multimodal content: text part plus image_url parts (data URLs).
+            let mut parts = vec![serde_json::json!({ "type": "text", "text": m.content })];
+            for img in &m.images {
+                parts.push(serde_json::json!({
+                    "type": "image_url",
+                    "image_url": { "url": format!("data:image/png;base64,{img}") }
+                }));
+            }
+            o["content"] = serde_json::Value::Array(parts);
+        }
         o
     }
 
@@ -229,6 +248,45 @@ mod http {
             let tokens_in = json["usage"]["prompt_tokens"].as_u64().unwrap_or(0) as u32;
             let tokens_out = json["usage"]["completion_tokens"].as_u64().unwrap_or(0) as u32;
             Ok(Completion { text, model: req.model.clone(), tokens_in, tokens_out, tool_calls })
+        }
+
+        async fn generate_image(&self, prompt: &str) -> Result<Vec<u8>, GatewayError> {
+            use base64::Engine;
+            let model = std::env::var("ENGRAM_IMAGE_MODEL").unwrap_or_else(|_| "gpt-image-1".into());
+            let body = serde_json::json!({
+                "model": model, "prompt": prompt, "n": 1, "size": "1024x1024", "response_format": "b64_json"
+            });
+            let resp = self
+                .client
+                .post(format!("{}/images/generations", self.base_url))
+                .bearer_auth(&self.api_key)
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| GatewayError::Provider(e.to_string()))?;
+            let json: serde_json::Value =
+                resp.json().await.map_err(|e| GatewayError::Provider(e.to_string()))?;
+            let b64 = json["data"][0]["b64_json"]
+                .as_str()
+                .ok_or_else(|| GatewayError::Provider(format!("no image in response: {json}")))?;
+            base64::engine::general_purpose::STANDARD
+                .decode(b64)
+                .map_err(|e| GatewayError::Provider(e.to_string()))
+        }
+
+        async fn tts(&self, text: &str, voice: &str) -> Result<Vec<u8>, GatewayError> {
+            let model = std::env::var("ENGRAM_TTS_MODEL").unwrap_or_else(|_| "tts-1".into());
+            let body = serde_json::json!({ "model": model, "input": text, "voice": voice });
+            let resp = self
+                .client
+                .post(format!("{}/audio/speech", self.base_url))
+                .bearer_auth(&self.api_key)
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| GatewayError::Provider(e.to_string()))?;
+            let bytes = resp.bytes().await.map_err(|e| GatewayError::Provider(e.to_string()))?;
+            Ok(bytes.to_vec())
         }
 
         async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, GatewayError> {

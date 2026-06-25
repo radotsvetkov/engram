@@ -270,4 +270,42 @@ mod tests {
         assert!(run.steps[0].observation.contains("subresult: 42"), "subagent result should bubble up");
         assert!(run.answer.contains("done"));
     }
+
+    #[tokio::test]
+    async fn media_tools_plumbing() {
+        use crate::tool::Tool;
+        use crate::tools::{ImageGenerateTool, VisionAnalyzeTool};
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Arc::new(Ledger::open(dir.path()).unwrap());
+        let memory = Arc::new(
+            Memory::open(dir.path().join("b.db"), Arc::new(TrigramHashEmbedder::default()), ledger.clone()).unwrap(),
+        );
+        let signer = Arc::new(SkillSigner::load_or_create(dir.path().join("k")).unwrap());
+        let skills = Arc::new(Registry::open(dir.path(), signer, ledger.clone()).unwrap());
+        let gateway = Arc::new(Gateway::new(Box::new(engram_gateway::MockProvider), ledger.clone()));
+        let ctx = ToolCtx {
+            memory,
+            skills,
+            gateway: gateway.clone(),
+            ledger,
+            taint: Taint::Trusted,
+            policy: Policy::default(),
+            workdir: dir.path().to_path_buf(),
+            model: "test".into(),
+            depth: 0,
+            browser: Arc::new(crate::tool::NoBrowser),
+        };
+
+        // vision_analyze reads the image, encodes it, and reaches the model (mock here).
+        std::fs::write(dir.path().join("img.png"), b"\x89PNG\r\n\x1a\nfake").unwrap();
+        let out = VisionAnalyzeTool
+            .run(&json!({ "path": "img.png", "question": "describe this" }), &ctx)
+            .await
+            .unwrap();
+        assert!(out.contains("mock"), "vision should reach the model, got: {out}");
+
+        // image_generate is unsupported on the mock provider — it must fail gracefully.
+        let r = ImageGenerateTool.run(&json!({ "prompt": "a cat", "path": "cat.png" }), &ctx).await;
+        assert!(r.is_err());
+    }
 }

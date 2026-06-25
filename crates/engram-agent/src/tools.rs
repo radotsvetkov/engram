@@ -7,6 +7,8 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
+use base64::Engine;
+use engram_gateway::{Call, CompletionRequest, Message};
 use engram_memory::{Region, WriteReq};
 use serde_json::{json, Value};
 
@@ -284,6 +286,90 @@ impl Tool for MemoryRememberTool {
             .remember(WriteReq::new(region, text).taint(ctx.taint).actor("agent"))
             .map_err(|e| e.to_string())?;
         Ok(format!("remembered as #{}", rec.id))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Media (vision, image generation, speech) — through the gateway
+// ---------------------------------------------------------------------------
+
+pub struct VisionAnalyzeTool;
+
+#[async_trait]
+impl Tool for VisionAnalyzeTool {
+    fn name(&self) -> &str {
+        "vision_analyze"
+    }
+    fn description(&self) -> &str {
+        "Look at an image file in the workdir (e.g. a screenshot) and answer a question about it."
+    }
+    fn schema(&self) -> Value {
+        json!({ "type": "object",
+            "properties": { "path": { "type": "string" }, "question": { "type": "string" } },
+            "required": ["path", "question"] })
+    }
+    async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
+        let path = confine(&ctx.workdir, arg_str(args, "path")?)?;
+        let question = arg_str(args, "question")?;
+        let bytes = tokio::fs::read(&path).await.map_err(|e| e.to_string())?;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        let model = std::env::var("ENGRAM_VISION_MODEL").unwrap_or_else(|_| ctx.model.clone());
+        let req = CompletionRequest::new(model, vec![Message::user_with_image(question, b64)]);
+        let completion = ctx
+            .gateway
+            .complete(Call::new(req).actor("agent").tainted(ctx.taint))
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(completion.text)
+    }
+}
+
+pub struct ImageGenerateTool;
+
+#[async_trait]
+impl Tool for ImageGenerateTool {
+    fn name(&self) -> &str {
+        "image_generate"
+    }
+    fn description(&self) -> &str {
+        "Generate an image from a text prompt and save it as a PNG in the workdir."
+    }
+    fn schema(&self) -> Value {
+        json!({ "type": "object",
+            "properties": { "prompt": { "type": "string" }, "path": { "type": "string" } },
+            "required": ["prompt", "path"] })
+    }
+    async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
+        let prompt = arg_str(args, "prompt")?;
+        let path = confine(&ctx.workdir, arg_str(args, "path")?)?;
+        let bytes = ctx.gateway.generate_image(prompt, "agent").await.map_err(|e| e.to_string())?;
+        tokio::fs::write(&path, &bytes).await.map_err(|e| e.to_string())?;
+        Ok(format!("saved {}-byte image to {}", bytes.len(), path.display()))
+    }
+}
+
+pub struct TextToSpeechTool;
+
+#[async_trait]
+impl Tool for TextToSpeechTool {
+    fn name(&self) -> &str {
+        "text_to_speech"
+    }
+    fn description(&self) -> &str {
+        "Synthesize speech from text and save the audio file in the workdir."
+    }
+    fn schema(&self) -> Value {
+        json!({ "type": "object",
+            "properties": { "text": { "type": "string" }, "path": { "type": "string" }, "voice": { "type": "string" } },
+            "required": ["text", "path"] })
+    }
+    async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
+        let text = arg_str(args, "text")?;
+        let path = confine(&ctx.workdir, arg_str(args, "path")?)?;
+        let voice = args["voice"].as_str().unwrap_or("alloy");
+        let bytes = ctx.gateway.tts(text, voice, "agent").await.map_err(|e| e.to_string())?;
+        tokio::fs::write(&path, &bytes).await.map_err(|e| e.to_string())?;
+        Ok(format!("saved {}-byte audio to {}", bytes.len(), path.display()))
     }
 }
 

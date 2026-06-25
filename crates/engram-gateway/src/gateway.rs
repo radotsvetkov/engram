@@ -147,6 +147,30 @@ impl Gateway {
         Ok(out)
     }
 
+    /// Generate an image (PNG bytes) from a prompt, metered and audited.
+    pub async fn generate_image(&self, prompt: &str, actor: &str) -> Result<Vec<u8>, GatewayError> {
+        let bytes = self.provider.generate_image(prompt).await?;
+        self.meter.record(approx_tokens(prompt), 0, 0.0);
+        self.ledger.append(
+            "llm.image",
+            actor,
+            json!({ "provider": self.provider.id(), "prompt_len": prompt.len(), "bytes": bytes.len() }),
+        )?;
+        Ok(bytes)
+    }
+
+    /// Synthesize speech (audio bytes) from text, metered and audited.
+    pub async fn tts(&self, text: &str, voice: &str, actor: &str) -> Result<Vec<u8>, GatewayError> {
+        let bytes = self.provider.tts(text, voice).await?;
+        self.meter.record(approx_tokens(text), 0, 0.0);
+        self.ledger.append(
+            "llm.tts",
+            actor,
+            json!({ "provider": self.provider.id(), "chars": text.len(), "bytes": bytes.len() }),
+        )?;
+        Ok(bytes)
+    }
+
     fn cost(&self, c: &Completion) -> f64 {
         match self.prices.get(&c.model) {
             Some(p) => {

@@ -17,10 +17,11 @@ async-trait = "0.1"
 tokio = { workspace = true, features = ["rt", "macros"] }
 # Real network provider is opt-in so day-to-day builds/tests stay tiny and offline.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
+base64 = { version = "0.22", optional = true }
 
 [features]
 default = []
-http = ["dep:reqwest"]
+http = ["dep:reqwest", "dep:base64"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }

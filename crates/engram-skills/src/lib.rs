@@ -16,8 +16,12 @@
 
 pub mod capability;
 pub mod host;
+pub mod learn;
 pub mod manifest;
+pub mod registry;
 
 pub use capability::Capability;
 pub use host::{Outcome, RunCtx, SkillError, SkillHost};
+pub use learn::{improve, score_version, Decision};
 pub use manifest::{module_hash, verify, Manifest, ManifestError, SignedSkill, SkillSigner};
+pub use registry::{NewSkill, RecordedRun, Registry, RegistryError};

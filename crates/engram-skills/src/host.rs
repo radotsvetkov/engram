@@ -155,6 +155,9 @@ impl SkillHost {
         if effective.contains(&Capability::MemoryWrite) {
             add_remember(&mut linker)?;
         }
+        if effective.contains(&Capability::Net) {
+            add_net(&mut linker)?;
+        }
 
         let instance = linker
             .instantiate(&mut store, &module)
@@ -318,6 +321,29 @@ fn add_remember(linker: &mut Linker<HostState>) -> Result<(), SkillError> {
     Ok(())
 }
 
+fn add_net(linker: &mut Linker<HostState>) -> Result<(), SkillError> {
+    linker
+        .func_wrap(
+            "engram",
+            "net",
+            |mut caller: Caller<'_, HostState>, ptr: i32, len: i32| -> i32 {
+                // The Net capability is an *egress* capability. It is only ever linked
+                // for a trusted run (taint revokes it before we get here), so reaching
+                // this function already means the taint gate let the run through. In
+                // v0.1 the call itself is a no-op stub — real outbound fetch lands with
+                // the egress proxy — but the gating it demonstrates is the point.
+                if let Some(url) = read_str(&caller, ptr, len) {
+                    let st = caller.data_mut();
+                    st.logs.push(format!("net: {url}"));
+                    st.host_calls += 1;
+                }
+                -1
+            },
+        )
+        .map_err(|e| SkillError::Wasm(e.to_string()))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -430,5 +456,37 @@ mod tests {
         let text = String::from_utf8_lossy(&out.output);
         assert!(text.contains("blue"), "recall should surface the stored fact, got: {text}");
         assert_eq!(out.host_calls, 1);
+    }
+
+    // A skill that imports the egress capability `engram.net`.
+    fn net_skill() -> Vec<u8> {
+        let wat = format!(
+            r#"(module
+                (import "engram" "net" (func $net (param i32 i32) (result i32)))
+                (memory (export "memory") 1)
+                {ALLOC}
+                (func (export "run") (param $ptr i32) (param $len i32) (result i64)
+                    (drop (call $net (local.get $ptr) (local.get $len)))
+                    (i64.const 0)))"#
+        );
+        wat::parse_str(&wat).unwrap()
+    }
+
+    #[test]
+    fn taint_revokes_egress_at_the_sandbox_boundary() {
+        let host = SkillHost::new();
+        let wasm = net_skill();
+        // Trusted run with Net granted: the egress import is satisfied, so it runs.
+        let trusted = RunCtx::pure().granted(vec![Capability::Net]);
+        assert!(host.run(&wasm, b"http://example.com", trusted).is_ok());
+
+        // Untrusted run (it read web/memory content): Net is revoked, the import is
+        // unsatisfied, and the skill is denied at instantiation — injection cannot
+        // reach the network. This is the no-egress half of the taint rule, enforced
+        // at the boundary, not by trusting the skill to behave.
+        let tainted = RunCtx::pure()
+            .granted(vec![Capability::Net])
+            .taint(Taint::Untrusted);
+        assert!(host.run(&wasm, b"http://example.com", tainted).is_err());
     }
 }

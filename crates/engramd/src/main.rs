@@ -285,6 +285,7 @@ pub(crate) async fn run_agent_task(
         allow_shell: std::env::var("ENGRAM_TOOLS_SHELL").as_deref() == Ok("1"),
         shell_backend: match std::env::var("ENGRAM_SHELL_BACKEND").as_deref() {
             Ok("docker") => Some(std::env::var("ENGRAM_DOCKER_IMAGE").unwrap_or_else(|_| "alpine".into())),
+            Ok("ssh") => std::env::var("ENGRAM_SSH_HOST").ok().map(|h| format!("ssh:{h}")),
             _ => None,
         },
         ..Default::default()

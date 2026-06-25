@@ -51,14 +51,19 @@ pub(crate) fn html_to_text(html: &str) -> String {
 // Shell
 // ---------------------------------------------------------------------------
 
-/// Build the (program, args) to run `command` under the configured backend. `Some(image)`
-/// runs it sandboxed in a network-isolated container; `None` runs it locally.
+/// Build the (program, args) to run `command` under the configured backend:
+/// - `None` → local (`sh -c`)
+/// - `Some("ssh:user@host")` → remote over SSH
+/// - `Some(image)` → sandboxed, network-isolated `docker run` against that image
 pub(crate) fn shell_command(
-    image: Option<&str>,
+    backend: Option<&str>,
     workdir: &std::path::Path,
     command: &str,
 ) -> (String, Vec<String>) {
-    match image {
+    match backend {
+        Some(b) if b.starts_with("ssh:") => {
+            ("ssh".into(), vec![b[4..].to_string(), command.to_string()])
+        }
         Some(img) => {
             let mount = format!("{}:/work", workdir.display());
             (
@@ -94,6 +99,13 @@ mod shell_backend_tests {
         assert!(args.contains(&"alpine".to_string()));
         assert!(args.contains(&"echo hi".to_string()));
         assert!(args.contains(&"/w:/work".to_string()));
+    }
+
+    #[test]
+    fn ssh_backend_runs_remotely() {
+        let (prog, args) = shell_command(Some("ssh:deploy@vps.example"), Path::new("/w"), "uptime");
+        assert_eq!(prog, "ssh");
+        assert_eq!(args, vec!["deploy@vps.example".to_string(), "uptime".to_string()]);
     }
 }
 

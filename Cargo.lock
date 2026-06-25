@@ -341,6 +341,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "engram-bench"
+version = "0.1.0"
+dependencies = [
+ "engram-core",
+ "engram-memory",
+ "tempfile",
+]
+
+[[package]]
 name = "engram-core"
 version = "0.1.0"
 dependencies = [

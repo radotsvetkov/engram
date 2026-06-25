@@ -1,0 +1,17 @@
+[package]
+name = "engram-bench"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Engram benchmarks: paraphrase recall and footprint, the numbers we beat Hermes on"
+
+[[bin]]
+name = "engram-bench"
+path = "src/main.rs"
+
+[dependencies]
+engram-core = { path = "../engram-core" }
+engram-memory = { path = "../engram-memory" }
+tempfile = "3"

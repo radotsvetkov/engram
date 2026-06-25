@@ -135,6 +135,29 @@ async function addJob() {
   if (r.error) alert(r.error); else { document.getElementById('swhen').value=''; refresh(); }
 }
 async function delJob(id) { await fetch('/v1/schedule/' + encodeURIComponent(id), {method:'DELETE'}); refresh(); }
+async function runSkill(id) {
+  const input = document.getElementById('in_' + id).value;
+  const r = await J('/v1/skills/' + encodeURIComponent(id) + '/run',
+    { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify({ input }) });
+  document.getElementById('out_' + id).textContent = r.error
+    ? ('error: ' + r.error)
+    : ('→ ' + r.output + '   (' + r.fuel_used + ' fuel · ' + r.host_calls + ' host calls)');
+}
+let skillsSig = '';
+function renderSkills(sk) {
+  const sig = JSON.stringify(sk.skills || []);
+  if (sig === skillsSig) return; // don't clobber inputs mid-typing
+  skillsSig = sig;
+  document.getElementById('skills').innerHTML = (sk.skills || []).length
+    ? sk.skills.map(s => `<div class="hit"><b>${esc(s.id)}</b>
+        <span class="meta">active v${s.active ?? '—'} · ${s.versions.length} ver</span>
+        <div class="row" style="margin-top:6px">
+          <input id="in_${esc(s.id)}" placeholder="input text" />
+          <button onclick="runSkill('${esc(s.id)}')">run</button>
+        </div>
+        <div id="out_${esc(s.id)}" class="meta"></div></div>`).join('')
+    : '<div class="muted">no skills installed yet</div>';
+}
 
 const PRIO = { '0':'reflex','1':'high','2':'normal','3':'low' };
 async function refresh() {
@@ -154,10 +177,7 @@ async function refresh() {
   document.getElementById('memstats').textContent =
     stats.total + ' facts · ' + Object.entries(stats.by_tier||{}).map(([k,v])=>v+' '+k).join(' / ');
 
-  document.getElementById('skills').innerHTML = (sk.skills||[]).length
-    ? sk.skills.map(s => `<div class="hit">${esc(s.id)}
-        <span class="meta">active v${s.active ?? '—'} · ${s.versions.length} version(s)</span></div>`).join('')
-    : '<div class="muted">no skills installed yet</div>';
+  renderSkills(sk);
 
   document.getElementById('jobs').innerHTML = (jobs||[]).length
     ? jobs.map(j => `<div class="hit">${esc(j.name)}

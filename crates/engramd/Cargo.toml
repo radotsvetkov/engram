@@ -24,6 +24,8 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+# Compiles the built-in seed skill from WAT at first boot.
+wat = "1"
 
 [features]
 default = []

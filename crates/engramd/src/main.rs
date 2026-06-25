@@ -21,6 +21,8 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+mod seed;
+
 use engram_core::{run_until_idle, Activity, Bus, Ledger, Priority, Spike, VERSION};
 use engram_gateway::{Gateway, MockProvider};
 use engram_memory::{Memory, Region, TrigramHashEmbedder, WriteReq};
@@ -72,6 +74,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let memory = Arc::new(Memory::open(format!("{home}/brain.db"), embedder, ledger.clone())?);
     let signer = Arc::new(SkillSigner::load_or_create(format!("{home}/keys/skill.key"))?);
     let registry = Arc::new(Registry::open(&home, signer, ledger.clone())?);
+    seed::ensure_seed(&registry)?;
     let gateway = Arc::new(Gateway::new(Box::new(MockProvider), ledger.clone()));
     let sched = Arc::new(Scheduler::open(&home, ledger.clone())?);
     let bus = Bus::new(1024);

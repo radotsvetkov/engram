@@ -8,14 +8,23 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use engram_agent::StepRecord;
 use engram_core::now_ms;
 use serde::{Deserialize, Serialize};
 
+/// A glass-box record of one agent run on a task: the answer, every step verbatim, and
+/// the trust/cost facts (tokens, cost, and the signed ledger head pinned at finish).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LastRun {
+pub struct TaskRun {
     pub answer: String,
-    pub tools: Vec<String>,
-    pub ts_ms: i64,
+    pub steps: Vec<StepRecord>,
+    pub stopped: String,
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+    pub cost_usd: f64,
+    pub ledger_head_hash: String,
+    pub started_ms: i64,
+    pub finished_ms: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,12 +33,42 @@ pub struct Task {
     pub title: String,
     #[serde(default)]
     pub detail: String,
-    /// "todo" | "doing" | "done".
+    /// "todo" | "doing" | "done" | "failed" | "scheduled".
     pub status: String,
+    #[serde(default = "default_origin")]
+    pub origin: String,
+    #[serde(default)]
+    pub tool_tags: Vec<String>,
+    #[serde(default)]
+    pub schedule_id: Option<String>,
     pub created_ms: i64,
     pub updated_ms: i64,
     #[serde(default)]
-    pub last_run: Option<LastRun>,
+    pub run: Option<TaskRun>,
+}
+
+fn default_origin() -> String {
+    "manual".into()
+}
+
+/// Guess which capabilities a task will use, from its words — drives the card's tags.
+fn infer_tags(text: &str) -> Vec<String> {
+    let t = text.to_lowercase();
+    let mut tags = Vec::new();
+    let has = |words: &[&str]| words.iter().any(|w| t.contains(w));
+    if has(&["search", "google", "web", "online", "url", "http", "news", "look up"]) {
+        tags.push("web".into());
+    }
+    if has(&["browser", "click", "navigate", "screenshot", "page", "website", "site"]) {
+        tags.push("browser".into());
+    }
+    if has(&["file", "write", "read", "save", "folder", "directory", "csv", "pdf"]) {
+        tags.push("files".into());
+    }
+    if has(&["run", "command", "shell", "script", "build", "install", "compile"]) {
+        tags.push("shell".into());
+    }
+    tags
 }
 
 pub struct TaskStore {
@@ -59,16 +98,20 @@ impl TaskStore {
         self.tasks.lock().expect("tasks mutex").iter().find(|t| t.id == id).cloned()
     }
 
-    pub fn create(&self, title: String, detail: String) -> Task {
+    pub fn create(&self, title: String, detail: String, origin: String) -> Task {
         let now = now_ms() as i64;
+        let tool_tags = infer_tags(&format!("{title} {detail}"));
         let task = Task {
             id: format!("t-{now}-{}", slug(&title)),
             title,
             detail,
             status: "todo".into(),
+            origin,
+            tool_tags,
+            schedule_id: None,
             created_ms: now,
             updated_ms: now,
-            last_run: None,
+            run: None,
         };
         let mut t = self.tasks.lock().expect("tasks mutex");
         t.insert(0, task.clone());
@@ -100,12 +143,12 @@ impl TaskStore {
         Some(out)
     }
 
-    /// Record an agent run on the task and mark it done.
-    pub fn finish(&self, id: &str, run: LastRun) -> Option<Task> {
+    /// Attach a run to the task and set its final status ("done" or "failed").
+    pub fn finish(&self, id: &str, run: TaskRun, status: &str) -> Option<Task> {
         let mut t = self.tasks.lock().expect("tasks mutex");
         let task = t.iter_mut().find(|x| x.id == id)?;
-        task.last_run = Some(run);
-        task.status = "done".into();
+        task.run = Some(run);
+        task.status = status.to_string();
         task.updated_ms = now_ms() as i64;
         let out = task.clone();
         self.save(&t);

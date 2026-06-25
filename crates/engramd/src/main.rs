@@ -153,6 +153,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/tasks", get(tasks_list).post(tasks_create))
         .route("/v1/tasks/{id}", axum::routing::patch(tasks_update).delete(tasks_delete))
         .route("/v1/tasks/{id}/run", post(tasks_run))
+        .route("/v1/tasks/{id}/audit", get(task_audit))
         .layer(axum::middleware::from_fn_with_state(app.clone(), keep_awake))
         .with_state(app.clone());
 
@@ -200,7 +201,10 @@ async fn dashboard() -> Html<&'static str> {
 }
 
 async fn health() -> ApiResult {
-    Ok(Json(json!({ "ok": true, "version": VERSION })))
+    // "offline" when no real model provider is configured — the UI surfaces this honestly
+    // rather than returning fake answers.
+    let offline = std::env::var("ENGRAM_LLM_BASE_URL").is_err();
+    Ok(Json(json!({ "ok": true, "version": VERSION, "offline": offline })))
 }
 
 async fn meter(State(app): State<App>) -> ApiResult {
@@ -409,10 +413,12 @@ struct TaskCreateReq {
     title: String,
     #[serde(default)]
     detail: String,
+    #[serde(default)]
+    origin: Option<String>,
 }
 
 async fn tasks_create(State(app): State<App>, Json(r): Json<TaskCreateReq>) -> ApiResult {
-    let t = app.tasks.create(r.title, r.detail);
+    let t = app.tasks.create(r.title, r.detail, r.origin.unwrap_or_else(|| "manual".into()));
     Ok(Json(serde_json::to_value(t).map_err(err)?))
 }
 
@@ -442,22 +448,59 @@ async fn tasks_delete(State(app): State<App>, Path(id): Path<String>) -> ApiResu
     Ok(Json(json!({ "removed": app.tasks.remove(&id) })))
 }
 
-/// Run a task with the agent: mark it doing, run, attach the answer + tools, mark done.
+/// Run a task with the agent and attach a glass-box receipt: mark it doing (and fire a
+/// spike so the board shows Running), run, capture the cost delta and the signed ledger
+/// head, then mark done — or failed if the agent hit its step limit.
 async fn tasks_run(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
     let task = app.tasks.get(&id).ok_or_else(|| ApiError("task not found".into()))?;
     app.tasks.update(&id, Some("doing".into()), None, None);
+    app.bus.emit(Spike::new("task.run", Priority::Normal, json!({ "id": id })));
+
     let prompt = if task.detail.trim().is_empty() {
         task.title.clone()
     } else {
         format!("{}\n\n{}", task.title, task.detail)
     };
+    let before = app.gateway.meter();
+    let started_ms = engram_core::now_ms() as i64;
     let run = run_agent_task(&app, &prompt, 10).await.map_err(ApiError)?;
-    let tools: Vec<String> = run.steps.iter().map(|s| s.tool.clone()).collect();
-    let updated = app.tasks.finish(
-        &id,
-        tasks::LastRun { answer: run.answer, tools, ts_ms: engram_core::now_ms() as i64 },
-    );
+    let finished_ms = engram_core::now_ms() as i64;
+    let after = app.gateway.meter();
+    let (_, head) = app.ledger.head();
+
+    let status = if run.stopped == "limit" { "failed" } else { "done" };
+    let receipt = tasks::TaskRun {
+        answer: run.answer,
+        steps: run.steps,
+        stopped: run.stopped.to_string(),
+        tokens_in: after.tokens_in.saturating_sub(before.tokens_in),
+        tokens_out: after.tokens_out.saturating_sub(before.tokens_out),
+        cost_usd: (after.cost_usd - before.cost_usd).max(0.0),
+        ledger_head_hash: head,
+        started_ms,
+        finished_ms,
+    };
+    let updated = app.tasks.finish(&id, receipt, status);
     Ok(Json(serde_json::to_value(updated).map_err(err)?))
+}
+
+/// The signed ledger slice for a task's run — the glass-box audit trail behind a card.
+async fn task_audit(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
+    let task = app.tasks.get(&id).ok_or_else(|| ApiError("task not found".into()))?;
+    let Some(run) = &task.run else {
+        return Ok(Json(json!({ "entries": [] })));
+    };
+    let entries: Vec<_> = app
+        .ledger
+        .read_all()
+        .map_err(err)?
+        .into_iter()
+        .filter(|e| {
+            let ts = e.ts_ms as i64;
+            ts >= run.started_ms && ts <= run.finished_ms + 5
+        })
+        .collect();
+    Ok(Json(json!({ "entries": entries, "head": run.ledger_head_hash })))
 }
 
 #[derive(Deserialize)]

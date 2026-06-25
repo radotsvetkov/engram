@@ -6,239 +6,390 @@
 <title>Engram</title>
 <style>
   :root {
-    --bg: #0b0e14; --panel: #11161f; --line: #1d2531; --txt: #c9d4e3;
-    --dim: #6b7689; --accent: #5eead4; --accent2: #818cf8; --warn: #fbbf24; --bad: #fb7185;
+    --surface-0:#0c0d0f; --surface-1:#131417; --surface-2:#181a1e;
+    --border:rgba(255,255,255,.07); --border-strong:rgba(255,255,255,.12);
+    --text-primary:#e8e9ec; --text-secondary:#a3a7af; --text-muted:#6c7078;
+    --accent:#45c8a8; --accent-ink:#04342c;
+    --warning:#e0a23c; --danger:#e2675f;
+    --web:#85b7eb; --web-bg:#101a24; --files:#ef9f27; --files-bg:#1a1812;
+    --radius:8px; --font-voice:Georgia, 'Times New Roman', serif;
+    --sans:-apple-system,'Inter',system-ui,sans-serif; --mono:ui-monospace,Menlo,monospace;
   }
-  * { box-sizing: border-box; }
-  body { margin: 0; font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
-         background: var(--bg); color: var(--txt); }
-  header { padding: 14px 20px; border-bottom: 1px solid var(--line); display: flex;
-           align-items: baseline; gap: 14px; }
-  header h1 { margin: 0; font-size: 18px; letter-spacing: 1px; }
-  header h1 b { color: var(--accent); }
-  header .sub { color: var(--dim); font-size: 12px; }
-  header .right { margin-left: auto; color: var(--dim); font-size: 12px; }
-  header .ok { color: var(--accent); }
-  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; padding: 14px 20px; }
-  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
-  .panel h2 { margin: 0 0 10px; font-size: 12px; text-transform: uppercase; letter-spacing: 1px;
-              color: var(--dim); display: flex; align-items: center; gap: 8px; }
-  .panel.wide { grid-column: 1 / 3; }
-  input, button, select {
-    font: inherit; background: #0d121b; color: var(--txt);
-    border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px;
-  }
-  button { cursor: pointer; border-color: var(--accent2); color: #dfe3ff; }
-  button:hover { background: #161d2b; }
-  .row { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
-  .row input { flex: 1; min-width: 120px; }
-  .feed { max-height: 320px; overflow: auto; }
-  .spike { display: flex; gap: 8px; padding: 4px 0; border-bottom: 1px solid #151b25; font-size: 12px; }
-  .spike .k { color: var(--accent2); min-width: 130px; }
-  .spike .a { color: var(--dim); }
-  .hit { padding: 7px 0; border-bottom: 1px solid #151b25; }
-  .hit .meta { color: var(--dim); font-size: 11px; }
-  .tag { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 11px;
-         background: #182030; color: var(--accent); margin-right: 4px; }
-  .pill { font-size: 11px; color: var(--dim); }
-  .stat { display: inline-block; margin-right: 16px; }
-  .stat b { color: var(--accent); font-size: 18px; }
-  .muted { color: var(--dim); }
-  .verify-ok { color: var(--accent); } .verify-bad { color: var(--bad); }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; }
+  body { background:var(--surface-0); color:var(--text-primary); font:13px/1.5 var(--sans);
+    -webkit-font-smoothing:antialiased; }
+  button,input,textarea { font:inherit; color:inherit; }
+  ::placeholder { color:var(--text-muted); }
+  ::-webkit-scrollbar { width:9px; height:9px; } ::-webkit-scrollbar-thumb { background:#23262c; border-radius:6px; }
+
+  .app { display:grid; grid-template-columns:148px 1fr; height:100vh; }
+
+  /* Rail */
+  .rail { background:var(--surface-1); border-right:1px solid var(--border); display:flex; flex-direction:column; padding:14px 8px; }
+  .brand { display:flex; align-items:center; gap:8px; padding:4px 8px 14px; }
+  .dot { width:9px; height:9px; border-radius:50%; background:var(--accent); }
+  .brand b { font-weight:500; letter-spacing:.3px; }
+  .nav { display:flex; flex-direction:column; gap:2px; }
+  .nav a { display:flex; align-items:center; gap:9px; padding:7px 9px; border-radius:var(--radius);
+    color:var(--text-secondary); cursor:pointer; text-decoration:none; }
+  .nav a:hover { background:var(--surface-2); color:var(--text-primary); }
+  .nav a.active { background:var(--surface-2); color:var(--text-primary); }
+  .nav a svg { width:15px; height:15px; opacity:.85; }
+  .rail .spacer { flex:1; }
+  .status { font-size:11px; color:var(--text-muted); padding:8px; line-height:1.4; }
+  .status .live { color:var(--accent); }
+
+  /* Main */
+  .main { display:flex; flex-direction:column; min-width:0; }
+  .topbar { height:44px; flex:none; display:flex; align-items:center; gap:10px; padding:0 16px;
+    border-bottom:1px solid var(--border); }
+  .topbar h1 { font-size:15px; font-weight:500; margin:0; }
+  .topbar .right { margin-left:auto; display:flex; gap:8px; align-items:center; }
+  .chip { font-size:12px; color:var(--text-secondary); background:var(--surface-2);
+    border:1px solid var(--border); border-radius:var(--radius); padding:4px 9px; cursor:default; transition:color .4s; }
+  .chip.ok b { color:var(--accent); font-weight:500; }
+  .chip.bad { color:var(--danger); border-color:rgba(226,103,95,.4); }
+  .banner { background:rgba(226,103,95,.12); color:var(--danger); border-bottom:1px solid rgba(226,103,95,.3);
+    padding:8px 16px; font-size:12px; }
+  .offline { background:rgba(224,162,60,.1); color:var(--warning); border-bottom:1px solid rgba(224,162,60,.25);
+    padding:7px 16px; font-size:12px; }
+  .view { flex:1; min-height:0; overflow:auto; }
+
+  /* Composer */
+  .composer { background:var(--surface-1); border:1px solid var(--border-strong); border-radius:12px; padding:10px 12px; }
+  .composer textarea { width:100%; background:none; border:none; resize:none; outline:none; min-height:22px; max-height:160px; }
+  .composer .hint { display:flex; align-items:center; margin-top:6px; }
+  .composer .hint small { color:var(--text-muted); font-size:11px; }
+  .composer .send { margin-left:auto; background:var(--accent); color:var(--accent-ink); border:none;
+    border-radius:6px; padding:5px 12px; font-weight:500; cursor:pointer; }
+  .composer .send:hover { filter:brightness(1.06); }
+
+  /* Board */
+  .board-wrap { display:flex; flex-direction:column; height:100%; }
+  .board { flex:1; display:grid; grid-template-columns:repeat(3,1fr); gap:10px; padding:16px; overflow:auto; }
+  .col { background:var(--surface-1); border:1px solid var(--border); border-radius:12px; padding:10px;
+    display:flex; flex-direction:column; gap:8px; min-height:0; }
+  .col.dragover { border-color:var(--accent); }
+  .col h3 { margin:2px 4px 6px; font-size:12px; color:var(--text-secondary); font-weight:500;
+    text-transform:uppercase; letter-spacing:.6px; display:flex; gap:6px; }
+  .col h3 span { color:var(--text-muted); }
+  .cards { display:flex; flex-direction:column; gap:8px; overflow:auto; }
+  .card { background:var(--surface-2); border:1px solid var(--border); border-radius:12px; padding:11px 12px; cursor:pointer; }
+  .card:hover { border-color:var(--border-strong); }
+  .card.running { border:1.5px solid var(--accent); border-radius:0; }
+  .card .t { line-height:1.35; }
+  .card .meta { display:flex; gap:6px; align-items:center; margin-top:8px; flex-wrap:wrap; font-size:11px; color:var(--text-muted); }
+  .tag { font-size:11px; padding:1px 6px; border-radius:6px; }
+  .tag.web { color:var(--web); background:var(--web-bg); } .tag.files { color:var(--files); background:var(--files-bg); }
+  .tag.browser { color:var(--web); background:var(--web-bg); } .tag.shell { color:var(--files); background:var(--files-bg); }
+  .pulse { width:7px; height:7px; border-radius:50%; background:var(--accent); animation:pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:.4} 50%{opacity:1} }
+  .bar { height:3px; border-radius:3px; background:linear-gradient(90deg,transparent,var(--accent),transparent);
+    background-size:200% 100%; animation:shimmer 1.4s linear infinite; margin-top:8px; }
+  @keyframes shimmer { 0%{background-position:200% 0} 100%{background-position:-200% 0} }
+  .check { color:var(--accent); } .xmark { color:var(--danger); }
+  .empty { text-align:center; color:var(--text-muted); padding:48px 16px; }
+  .empty b { color:var(--text-secondary); font-weight:500; display:block; margin-bottom:12px; font-size:15px; }
+  .examplechips { display:flex; gap:8px; justify-content:center; flex-wrap:wrap; }
+  .examplechips button { background:var(--surface-2); border:1px solid var(--border); color:var(--text-secondary);
+    border-radius:16px; padding:5px 12px; cursor:pointer; }
+
+  /* Detail panel */
+  .panel { position:fixed; top:0; right:0; width:340px; height:100vh; background:var(--surface-1);
+    border-left:1px solid var(--border-strong); transform:translateX(100%); transition:transform .2s ease-out;
+    display:flex; flex-direction:column; z-index:20; }
+  .panel.open { transform:translateX(0); }
+  .panel header { display:flex; align-items:center; gap:8px; padding:14px; border-bottom:1px solid var(--border); }
+  .panel header .x { margin-left:auto; cursor:pointer; color:var(--text-muted); background:none; border:none; font-size:16px; }
+  .panel .body { flex:1; overflow:auto; padding:14px; }
+  .pill { font-size:11px; padding:2px 8px; border-radius:6px; background:var(--surface-2); color:var(--text-secondary); }
+  .pill.done { color:var(--accent); } .pill.failed { color:var(--danger); } .pill.doing { color:var(--accent); }
+  .answer { font-family:var(--font-voice); font-size:15px; line-height:1.5; margin:14px 0; }
+  .step { padding:8px 0; border-bottom:1px solid var(--border); }
+  .step .top { display:flex; gap:8px; align-items:center; }
+  .step .verb { flex:1; } .step .stamp { font-family:var(--mono); font-size:11px; color:var(--text-muted); cursor:pointer; }
+  .step.bad .verb { color:var(--danger); }
+  .step .obs { margin-top:6px; font-size:12px; color:var(--text-secondary); white-space:pre-wrap;
+    background:var(--surface-2); border-radius:6px; padding:8px; max-height:160px; overflow:auto; }
+
+  /* Generic chat/list */
+  .chat { max-width:720px; margin:0 auto; padding:24px 16px; display:flex; flex-direction:column; gap:14px; height:100%; }
+  .feed { flex:1; overflow:auto; display:flex; flex-direction:column; gap:14px; }
+  .msg.user { align-self:flex-end; background:var(--surface-2); border:1px solid var(--border); border-radius:12px; padding:9px 12px; max-width:80%; }
+  .msg.engram { font-family:var(--font-voice); font-size:15px; line-height:1.55; max-width:90%; }
+  .msg .note { font-size:11px; color:var(--text-muted); margin-top:4px; }
+  .panes { padding:16px; display:flex; flex-direction:column; gap:14px; max-width:920px; }
+  .pane { background:var(--surface-1); border:1px solid var(--border); border-radius:12px; padding:14px; }
+  .pane h2 { margin:0 0 10px; font-size:13px; color:var(--text-secondary); font-weight:500; }
+  .row { display:flex; gap:8px; margin-bottom:8px; }
+  .row input,.row select { flex:1; background:var(--surface-2); border:1px solid var(--border); border-radius:6px; padding:7px 9px; outline:none; }
+  .row button { background:var(--accent); color:var(--accent-ink); border:none; border-radius:6px; padding:7px 12px; font-weight:500; cursor:pointer; }
+  .item { padding:8px 0; border-bottom:1px solid var(--border); }
+  .item .sub { font-size:11px; color:var(--text-muted); }
+  .muted { color:var(--text-muted); }
+  @media (prefers-reduced-motion: reduce) { .pulse,.bar { animation:none; } }
 </style>
 </head>
 <body>
-<header>
-  <h1><b>engram</b> <span class="sub">a brain you can watch grow</span></h1>
-  <div class="right">ledger <span id="verify" class="ok">…</span> · <span id="ver"></span></div>
-</header>
-
-<div class="grid">
-  <div class="panel wide">
-    <h2>Agent <span class="pill">runs tasks with tools — memory · files · shell · web</span></h2>
-    <div class="row">
-      <input id="task" placeholder="give it a task… (search the web, write a file, recall something)" />
-      <button onclick="runAgent()">run</button>
-    </div>
-    <div id="agentout"></div>
-  </div>
-
-  <div class="panel wide">
-    <h2>Talk <span class="pill">remembers you · grows across sessions</span></h2>
-    <div class="row">
-      <input id="say" placeholder="say something… (try: my name is Rado and I like Rust)" />
-      <button onclick="talk()">send</button>
-    </div>
-    <div id="reply"></div>
-  </div>
-
-  <div class="panel">
-    <h2>Memory Atlas <span class="pill" id="memstats"></span></h2>
-    <div class="row">
-      <input id="q" placeholder="recall… (try a paraphrase)" />
-      <button onclick="recall()">recall</button>
-    </div>
-    <div class="row">
-      <select id="region">
-        <option value="semantic">semantic</option>
-        <option value="identity">identity</option>
-        <option value="episodic">episodic</option>
-        <option value="procedural">procedural</option>
-      </select>
-      <input id="newfact" placeholder="remember a fact…" />
-      <button onclick="remember()">remember</button>
-    </div>
-    <div id="hits"></div>
-  </div>
-
-  <div class="panel">
-    <h2>Live Cortex <span class="pill">audit stream</span></h2>
-    <div id="feed" class="feed"></div>
-  </div>
-
-  <div class="panel">
-    <h2>Skills <span class="pill">procedural memory</span></h2>
-    <div id="skills" class="muted">no skills installed yet</div>
-  </div>
-
-  <div class="panel">
-    <h2>Schedule <span class="pill">focused automation</span></h2>
-    <div class="row">
-      <input id="sname" placeholder="name" style="flex:.6" />
-      <input id="swhen" placeholder="every weekday at 9am" />
-      <button onclick="addJob()">add</button>
-    </div>
-    <div id="jobs" class="muted">no jobs</div>
-  </div>
-
-  <div class="panel wide">
-    <h2>Gateway meter <span class="pill">tokens · cost · calls</span></h2>
-    <div id="meter">
-      <span class="stat"><b id="m_calls">0</b> calls</span>
-      <span class="stat"><b id="m_in">0</b> tokens in</span>
-      <span class="stat"><b id="m_out">0</b> tokens out</span>
-      <span class="stat"><b id="m_cost">$0.00</b> cost</span>
-    </div>
+<div class="app">
+  <nav class="rail">
+    <div class="brand"><span class="dot"></span><b>engram</b></div>
+    <div class="nav" id="nav"></div>
+    <div class="spacer"></div>
+    <div class="status" id="status">waking…</div>
+  </nav>
+  <div class="main">
+    <div id="banner"></div>
+    <header class="topbar">
+      <h1 id="viewname">Tasks</h1>
+      <div class="right">
+        <span class="chip ok" id="ledgerChip" title="every action is signed into a hash-chained ledger">ledger …</span>
+        <span class="chip" id="costChip" title="model spend today">$0.00</span>
+      </div>
+    </header>
+    <div class="view" id="view"></div>
   </div>
 </div>
+<div class="panel" id="panel"><header><span class="pill" id="pStatus"></span><b id="pTitle"></b><button class="x" onclick="closePanel()">✕</button></header><div class="body" id="pBody"></div></div>
 
 <script>
-const J = (u, o) => fetch(u, o).then(r => r.json());
-const esc = s => String(s).replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+const J = (u,o) => fetch(u,o).then(r=>r.json());
+const esc = s => String(s??'').replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+const ICONS = {
+  Chat:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a8 8 0 0 1-11.5 7.2L3 21l1.8-6.5A8 8 0 1 1 21 12z"/></svg>',
+  Tasks:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="5" height="16" rx="1"/><rect x="10" y="4" width="5" height="10" rx="1"/><rect x="17" y="4" width="4" height="13" rx="1"/></svg>',
+  Schedule:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+  Memory:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3a4 4 0 0 0-4 4 4 4 0 0 0-2 7 3 3 0 0 0 3 4 3 3 0 0 0 6 0 3 3 0 0 0 3-4 4 4 0 0 0-2-7 4 4 0 0 0-4-4z"/></svg>',
+  Skills:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l2.4 5 5.6.5-4.2 3.7 1.3 5.5L12 19l-5.1 2.7 1.3-5.5L4 12.5 9.6 12z"/></svg>',
+};
+const VIEWS = ['Chat','Tasks','Schedule','Memory','Skills'];
+let state = { route:'Tasks', tasks:[], offline:false };
 
-async function runAgent() {
-  const el = document.getElementById('task');
-  const task = el.value.trim(); if (!task) return;
-  document.getElementById('agentout').innerHTML = '<div class="muted">working…</div>';
-  const r = await J('/v1/agent', { method: 'POST', headers: {'content-type':'application/json'},
-    body: JSON.stringify({ task }) });
-  if (r.error) { document.getElementById('agentout').innerHTML = '<div class="muted">error: ' + esc(r.error) + '</div>'; return; }
-  const steps = (r.steps || []).map(s =>
-    `<div class="spike"><span class="k">${esc(s.tool)}</span>
-     <span class="${s.ok ? 'verify-ok' : 'verify-bad'}">${s.ok ? '✓' : '✗'}</span>
-     <span class="muted">${esc(JSON.stringify(s.args))}</span></div>`).join('');
-  document.getElementById('agentout').innerHTML =
-    `<div class="hit"><div>${esc(r.answer || '')}</div>
-     ${steps ? '<div class="meta" style="margin-top:6px">tool steps (' + r.steps.length + ', ' + esc(r.stopped) + '):</div>' + steps : '<div class="meta">no tools used</div>'}</div>`;
-  refresh();
+function renderNav(){
+  document.getElementById('nav').innerHTML = VIEWS.map(v=>
+    `<a class="${state.route===v?'active':''}" onclick="go('${v}')">${ICONS[v]} ${v}</a>`).join('');
 }
-async function talk() {
-  const el = document.getElementById('say');
-  const text = el.value.trim(); if (!text) return;
-  const r = await J('/v1/converse', { method: 'POST', headers: {'content-type':'application/json'},
-    body: JSON.stringify({ text }) });
-  el.value = '';
-  document.getElementById('reply').innerHTML =
-    `<div class="hit"><div>${esc(r.reply || r.error || '')}</div>
-     ${(r.recalled||[]).length ? `<div class="meta">recalled: ${r.recalled.map(esc).join(' · ')}</div>` : ''}
-     ${(r.learned||[]).length ? `<div class="meta">learned: <span style="color:var(--accent)">${r.learned.map(esc).join(' · ')}</span></div>` : ''}</div>`;
-  refresh();
-}
+function go(v){ state.route=v; document.getElementById('viewname').textContent=v; renderNav(); renderView(); }
 
-async function recall() {
-  const q = document.getElementById('q').value.trim();
-  if (!q) return;
-  const hits = await J('/v1/recall?k=6&q=' + encodeURIComponent(q));
-  document.getElementById('hits').innerHTML = (hits.length ? hits : []).map(h =>
-    `<div class="hit"><div>${esc(h.record.text)}</div>
-     <div class="meta"><span class="tag">${h.record.region}</span>
-     score ${h.score.toFixed(3)}
-     ${h.keyword_rank ? '· kw#' + h.keyword_rank : ''}
-     ${h.semantic_rank ? '· sem#' + h.semantic_rank : ''}</div></div>`).join('')
-    || '<div class="muted">no matches</div>';
-}
-async function remember() {
-  const el = document.getElementById('newfact');
-  const text = el.value.trim(); if (!text) return;
-  await J('/v1/remember', { method: 'POST', headers: {'content-type':'application/json'},
-    body: JSON.stringify({ region: document.getElementById('region').value, text }) });
-  el.value = ''; refresh();
-}
-async function addJob() {
-  const name = document.getElementById('sname').value.trim() || 'job';
-  const when = document.getElementById('swhen').value.trim(); if (!when) return;
-  const r = await J('/v1/schedule', { method: 'POST', headers: {'content-type':'application/json'},
-    body: JSON.stringify({ name, when, payload: {} }) });
-  if (r.error) alert(r.error); else { document.getElementById('swhen').value=''; refresh(); }
-}
-async function delJob(id) { await fetch('/v1/schedule/' + encodeURIComponent(id), {method:'DELETE'}); refresh(); }
-async function runSkill(id) {
-  const input = document.getElementById('in_' + id).value;
-  const r = await J('/v1/skills/' + encodeURIComponent(id) + '/run',
-    { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify({ input }) });
-  document.getElementById('out_' + id).textContent = r.error
-    ? ('error: ' + r.error)
-    : ('→ ' + r.output + '   (' + r.fuel_used + ' fuel · ' + r.host_calls + ' host calls)');
-}
-let skillsSig = '';
-function renderSkills(sk) {
-  const sig = JSON.stringify(sk.skills || []);
-  if (sig === skillsSig) return; // don't clobber inputs mid-typing
-  skillsSig = sig;
-  document.getElementById('skills').innerHTML = (sk.skills || []).length
-    ? sk.skills.map(s => `<div class="hit"><b>${esc(s.id)}</b>
-        <span class="meta">active v${s.active ?? '—'} · ${s.versions.length} ver</span>
-        <div class="row" style="margin-top:6px">
-          <input id="in_${esc(s.id)}" placeholder="input text" />
-          <button onclick="runSkill('${esc(s.id)}')">run</button>
-        </div>
-        <div id="out_${esc(s.id)}" class="meta"></div></div>`).join('')
-    : '<div class="muted">no skills installed yet</div>';
+// ---- top bar trust spine ----
+let lastLedger='', lastCost='';
+async function poll(){
+  try {
+    const [v,m,h] = await Promise.all([J('/v1/ledger/verify'),J('/v1/meter'),J('/health')]);
+    const lc=document.getElementById('ledgerChip');
+    if(v.ok){ lc.className='chip ok'; lc.innerHTML='ledger verified · <b>'+v.entries+'</b>'; document.getElementById('banner').innerHTML=''; }
+    else { lc.className='chip bad'; lc.textContent='tamper detected';
+      document.getElementById('banner').innerHTML='<div class="banner">Tamper detected — the audit chain doesn’t verify. Showing the last good state.</div>'; }
+    document.getElementById('costChip').textContent='$'+(m.cost_usd||0).toFixed(4)+' today';
+    state.offline = !!h.offline;
+    document.getElementById('status').innerHTML = 'awake <span class="live">·</span> v'+h.version;
+    if(state.offline && state.route!=='Tasks' && state.route!=='Chat'){} // notice shown per-view
+  } catch(e){}
 }
 
-const PRIO = { '0':'reflex','1':'high','2':'normal','3':'low' };
-async function refresh() {
-  const [feed, stats, sk, jobs, m, v, h] = await Promise.all([
-    J('/v1/ledger/tail?n=40'), J('/v1/memory/stats'), J('/v1/skills'),
-    J('/v1/schedule'), J('/v1/meter'), J('/v1/ledger/verify'), J('/health')
-  ]);
-  document.getElementById('ver').textContent = 'v' + h.version;
-  document.getElementById('verify').textContent = v.ok ? ('✓ ' + v.entries + ' entries') : '✗ broken';
-  document.getElementById('verify').className = v.ok ? 'verify-ok' : 'verify-bad';
+// ---- Tasks board ----
+async function loadTasks(){ state.tasks = await J('/v1/tasks'); }
+const STATUS_COLS = { todo:'todo', doing:'doing', failed:'done', done:'done', scheduled:'todo' };
+function offlineNotice(){ return state.offline ? '<div class="offline">Running in offline demo mode — add a model key to think for real.</div>' : ''; }
 
-  document.getElementById('feed').innerHTML = feed.slice().reverse().map(e =>
-    `<div class="spike"><span class="k">${esc(e.kind)}</span>
-     <span class="a">${esc(e.actor)}</span>
-     <span class="muted">#${e.seq}</span></div>`).join('');
-
-  document.getElementById('memstats').textContent =
-    stats.total + ' facts · ' + Object.entries(stats.by_tier||{}).map(([k,v])=>v+' '+k).join(' / ');
-
-  renderSkills(sk);
-
-  document.getElementById('jobs').innerHTML = (jobs||[]).length
-    ? jobs.map(j => `<div class="hit">${esc(j.name)}
-        <span class="meta">next ${new Date(j.next_fire_ms).toLocaleString()}</span>
-        <button onclick="delJob('${j.id}')" style="float:right;padding:2px 6px">×</button></div>`).join('')
-    : '<div class="muted">no jobs</div>';
-
-  m_calls.textContent = m.calls; m_in.textContent = m.tokens_in;
-  m_out.textContent = m.tokens_out; m_cost.textContent = '$' + (m.cost_usd||0).toFixed(4);
+function card(t){
+  const running = t.status==='doing';
+  const tags = (t.tool_tags||[]).map(x=>`<span class="tag ${x}">${x}</span>`).join('');
+  let foot='';
+  if(running) foot=`<div class="meta"><span class="pulse"></span> running</div><div class="bar"></div>`;
+  else if(t.status==='done' && t.run) foot=`<div class="meta"><span class="check">✓</span> ${(t.run.tokens_in+t.run.tokens_out)} tok · $${(t.run.cost_usd||0).toFixed(4)} ${t.schedule_id?'· ⟳':''}</div>`;
+  else if(t.status==='failed') foot=`<div class="meta"><span class="xmark">✕</span> stopped at the step limit</div>`;
+  else foot=`<div class="meta">${tags||'<span class="muted">queued</span>'}</div>`;
+  return `<div class="card ${running?'running':''}" draggable="true" data-id="${t.id}"
+     ondragstart="drag(event,'${t.id}')" onclick="openTask('${t.id}')">
+     <div class="t">${esc(t.title)}</div>${foot}</div>`;
 }
-document.getElementById('q').addEventListener('keydown', e => { if (e.key === 'Enter') recall(); });
-document.getElementById('say').addEventListener('keydown', e => { if (e.key === 'Enter') talk(); });
-document.getElementById('task').addEventListener('keydown', e => { if (e.key === 'Enter') runAgent(); });
-refresh(); setInterval(refresh, 2000);
+function renderBoard(){
+  const cols={todo:[],doing:[],done:[]};
+  state.tasks.forEach(t=>cols[STATUS_COLS[t.status]||'todo'].push(t));
+  const v=document.getElementById('view');
+  if(state.tasks.length===0){
+    v.innerHTML = `<div class="board-wrap">${offlineNotice()}
+      <div class="empty"><b>Tell Engram what to do.</b>
+        <div class="examplechips">
+          <button onclick="prefill('Summarize this week\\'s top Rust news')">Summarize Rust news</button>
+          <button onclick="prefill('Find me 3 quotes about curiosity')">Find 3 quotes</button>
+        </div></div>
+      <div style="padding:16px">${composerHtml()}</div></div>`;
+    wireComposer(); return;
+  }
+  const colHtml=(key,label)=>`<div class="col" data-col="${key}" ondragover="dover(event)" ondragleave="dleave(event)" ondrop="drop(event,'${key}')">
+     <h3>${label} <span>${cols[key].length}</span></h3><div class="cards">${cols[key].map(card).join('')}</div></div>`;
+  v.innerHTML = `<div class="board-wrap">${offlineNotice()}
+    <div class="board">${colHtml('todo','To do')}${colHtml('doing','Running')}${colHtml('done','Done')}</div>
+    <div style="padding:0 16px 16px">${composerHtml()}</div></div>`;
+  wireComposer();
+}
+
+// ---- composer + intent routing ----
+function composerHtml(){
+  return `<div class="composer">
+    <textarea id="composer" rows="1" placeholder="Tell Engram what to do…"></textarea>
+    <div class="hint"><small>↵ answer · ⌘↵ task · ⇧⌘↵ task &amp; run</small>
+      <button class="send" onclick="submitComposer(false)">Create task</button></div></div>`;
+}
+function prefill(t){ const c=document.getElementById('composer'); if(c){ c.value=t; c.focus(); } }
+function wireComposer(){
+  const c=document.getElementById('composer'); if(!c) return;
+  c.addEventListener('input',()=>{ c.style.height='auto'; c.style.height=Math.min(c.scrollHeight,160)+'px'; });
+  c.addEventListener('keydown',e=>{
+    if(e.key!=='Enter') return;
+    e.preventDefault();
+    if(e.metaKey||e.ctrlKey) submitComposer(e.shiftKey); // ⌘ create, ⇧⌘ create+run
+    else converseInline(c.value);                         // ↵ answer
+  });
+}
+async function converseInline(text){
+  text=text.trim(); if(!text) return;
+  const c=document.getElementById('composer'); c.value=''; c.style.height='auto';
+  go('Chat'); chatSay(text);
+}
+async function submitComposer(run){
+  const c=document.getElementById('composer'); const title=c.value.trim(); if(!title) return;
+  c.value=''; c.style.height='auto';
+  const t = await J('/v1/tasks',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({title,origin:'chat'})});
+  await loadTasks(); if(state.route==='Tasks') renderBoard();
+  if(run){ runTask(t.id); }
+}
+async function runTask(id){
+  await loadTasks(); if(state.route==='Tasks') renderBoard();
+  J('/v1/tasks/'+id+'/run',{method:'POST'}).then(async()=>{ await loadTasks(); if(state.route==='Tasks') renderBoard(); if(panelId===id) openTask(id); });
+  setTimeout(async()=>{ await loadTasks(); if(state.route==='Tasks') renderBoard(); }, 600);
+}
+
+// ---- drag ----
+let dragId=null;
+function drag(e,id){ dragId=id; }
+function dover(e){ e.preventDefault(); e.currentTarget.classList.add('dragover'); }
+function dleave(e){ e.currentTarget.classList.remove('dragover'); }
+async function drop(e,col){
+  e.preventDefault(); e.currentTarget.classList.remove('dragover');
+  if(!dragId) return; const id=dragId; dragId=null;
+  if(col==='doing'){ runTask(id); return; }
+  const status = col==='done' ? 'done' : 'todo';
+  await J('/v1/tasks/'+id,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({status})});
+  await loadTasks(); renderBoard();
+}
+
+// ---- detail panel + audit ----
+let panelId=null;
+async function openTask(id){
+  panelId=id; const t=state.tasks.find(x=>x.id===id); if(!t) return;
+  document.getElementById('panel').classList.add('open');
+  document.getElementById('pTitle').textContent=t.title;
+  const ps=document.getElementById('pStatus'); ps.textContent=t.status; ps.className='pill '+t.status;
+  const body=document.getElementById('pBody');
+  let html='';
+  if(t.status==='todo') html+=`<div class="row"><button onclick="runTask('${id}')">Run now</button></div>`;
+  if(t.run){
+    html+=`<div class="answer">${esc(t.run.answer)}</div>`;
+    const audit = await J('/v1/tasks/'+id+'/audit').catch(()=>({entries:[]}));
+    const stepRows = (t.run.steps||[]).map((s,i)=>{
+      const e=(audit.entries||[]).filter(x=>x.kind&&x.kind.startsWith('agent.tool'))[i];
+      const stamp = e ? `${e.seq} · ${e.hash.slice(0,8)}` : '';
+      return `<div class="step ${s.ok?'':'bad'}"><div class="top"><span class="verb">${esc(s.tool)}</span>
+        <span class="${s.ok?'check':'xmark'}">${s.ok?'✓':'✕'}</span>
+        <span class="stamp" onclick="navigator.clipboard.writeText('${e?e.hash:''}')">${stamp}</span></div>
+        ${s.ok?'':`<div class="obs">${esc(s.observation)}</div>`}</div>`;
+    }).join('');
+    html+=`<div class="muted" style="font-size:11px;margin-bottom:6px">audit trail — signed</div>${stepRows||'<div class="muted">no tools used</div>'}`;
+    html+=`<div class="muted" style="font-size:11px;margin-top:12px;font-family:var(--mono)">head ${t.run.ledger_head_hash.slice(0,12)}</div>`;
+  } else if(t.status==='doing'){ html+='<div class="muted">running…</div>'; }
+  html+=`<div class="row" style="margin-top:14px"><button onclick="delTask('${id}')" style="background:var(--surface-2);color:var(--danger)">Delete</button></div>`;
+  body.innerHTML=html;
+}
+function closePanel(){ panelId=null; document.getElementById('panel').classList.remove('open'); }
+async function delTask(id){ await fetch('/v1/tasks/'+id,{method:'DELETE'}); closePanel(); await loadTasks(); renderBoard(); }
+
+// ---- Chat ----
+let chatLog=[];
+function renderChat(){
+  document.getElementById('view').innerHTML = `<div class="chat">${offlineNotice()}
+    <div class="feed" id="feed"></div>${composerHtml()}</div>`;
+  document.getElementById('composer').placeholder='Ask Engram anything…';
+  wireComposer(); paintFeed();
+}
+function paintFeed(){
+  const f=document.getElementById('feed'); if(!f) return;
+  f.innerHTML = chatLog.map(m=>{
+    if(m.role==='user') return `<div class="msg user">${esc(m.text)}</div>`;
+    const note=(m.recalled?.length||m.learned?.length)?`<div class="note">${m.recalled?.length?'recalled: '+m.recalled.slice(0,2).map(esc).join(' · '):''} ${m.learned?.length?'· learned: '+m.learned.map(esc).join(' · '):''}</div>`:'';
+    return `<div><div class="msg engram">${esc(m.text)}</div>${note}</div>`;
+  }).join('');
+  f.scrollTop=f.scrollHeight;
+}
+async function chatSay(text){
+  chatLog.push({role:'user',text}); paintFeed();
+  const r = await J('/v1/converse',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text})});
+  chatLog.push({role:'engram',text:r.reply||r.error||'',recalled:r.recalled,learned:r.learned}); paintFeed();
+}
+
+// ---- Schedule ----
+async function renderSchedule(){
+  const jobs = await J('/v1/schedule');
+  document.getElementById('view').innerHTML = `<div class="panes"><div class="pane">
+    <h2>Schedule a recurring run</h2>
+    <div class="row"><input id="sname" placeholder="name" style="flex:.5"><input id="swhen" placeholder="every Monday at 9am"><button onclick="addJob()">Add</button></div>
+    <div id="jobs">${(jobs||[]).length? jobs.map(j=>`<div class="item">${esc(j.name)}<div class="sub">next ${new Date(j.next_fire_ms).toLocaleString()}</div></div>`).join('') : '<div class="muted">Nothing scheduled. Try “every Monday at 9, summarize my week”.</div>'}</div>
+  </div></div>`;
+}
+async function addJob(){ const name=document.getElementById('sname').value.trim()||'job'; const when=document.getElementById('swhen').value.trim(); if(!when)return;
+  const r=await J('/v1/schedule',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name,when,payload:{}})});
+  if(r.error) alert(r.error); else renderSchedule(); }
+
+// ---- Memory ----
+async function renderMemory(){
+  const stats = await J('/v1/memory/stats');
+  document.getElementById('view').innerHTML = `<div class="panes">
+    <div class="pane"><h2>Memory Atlas — ${stats.total} facts</h2>
+      <div class="row"><input id="q" placeholder="recall… try a paraphrase"><button onclick="recall()">Recall</button></div>
+      <div class="row"><select id="region"><option>semantic</option><option>identity</option><option>episodic</option><option>procedural</option></select>
+        <input id="fact" placeholder="remember a fact…"><button onclick="remember()">Remember</button></div>
+      <div id="hits" class="muted">Engram hasn’t learned anything yet — it will as you talk.</div>
+    </div></div>`;
+}
+async function recall(){ const q=document.getElementById('q').value.trim(); if(!q)return;
+  const hits=await J('/v1/recall?k=6&q='+encodeURIComponent(q));
+  document.getElementById('hits').innerHTML = hits.length? hits.map(h=>`<div class="item">${esc(h.record.text)}<div class="sub">${h.record.region} · score ${h.score.toFixed(3)} ${h.semantic_rank?'· semantic':''}</div></div>`).join('') : '<div class="muted">no matches</div>'; }
+async function remember(){ const text=document.getElementById('fact').value.trim(); if(!text)return;
+  await J('/v1/remember',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({region:document.getElementById('region').value,text})});
+  document.getElementById('fact').value=''; renderMemory(); }
+
+// ---- Skills ----
+async function renderSkills(){
+  const sk = await J('/v1/skills');
+  document.getElementById('view').innerHTML = `<div class="panes"><div class="pane"><h2>Skills — procedural memory</h2>
+    ${(sk.skills||[]).map(s=>`<div class="item"><b>${esc(s.id)}</b> <span class="sub">active v${s.active??'—'} · ${s.versions.length} version(s)</span>
+      <div class="row" style="margin-top:6px"><input id="in_${esc(s.id)}" placeholder="input"><button onclick="runSkill('${esc(s.id)}')">Run</button></div>
+      <div id="out_${esc(s.id)}" class="sub"></div></div>`).join('')||'<div class="muted">no skills yet</div>'}</div></div>`;
+}
+async function runSkill(id){ const input=document.getElementById('in_'+id).value;
+  const r=await J('/v1/skills/'+encodeURIComponent(id)+'/run',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({input})});
+  document.getElementById('out_'+id).textContent = r.error?('error: '+r.error):('→ '+r.output); }
+
+function renderView(){
+  if(state.route==='Tasks') renderBoard();
+  else if(state.route==='Chat') renderChat();
+  else if(state.route==='Schedule') renderSchedule();
+  else if(state.route==='Memory') renderMemory();
+  else if(state.route==='Skills') renderSkills();
+}
+
+async function boot(){
+  renderNav();
+  await loadTasks();
+  // Front door: Chat when the board is empty, Tasks once there's work.
+  state.route = state.tasks.length ? 'Tasks' : 'Chat';
+  document.getElementById('viewname').textContent=state.route; renderNav(); renderView();
+  poll(); setInterval(async()=>{ await poll(); if(state.route==='Tasks'){ await loadTasks(); renderBoard(); } }, 2000);
+}
+boot();
 </script>
 </body>
 </html>

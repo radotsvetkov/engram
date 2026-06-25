@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use engram_core::Taint;
 use engram_gateway::{Call, CompletionRequest, Gateway, Message};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::tool::{ToolCtx, ToolRegistry};
@@ -21,7 +21,7 @@ pub enum AgentError {
     Gateway(#[from] engram_gateway::GatewayError),
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StepRecord {
     pub tool: String,
     pub args: serde_json::Value,

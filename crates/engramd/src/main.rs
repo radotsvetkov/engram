@@ -21,6 +21,7 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+mod channels;
 mod converse;
 mod embedder;
 mod seed;
@@ -139,6 +140,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/swarm", post(run_swarm))
         .route("/v1/agent", post(agent_handler))
         .route("/v1/voice", post(voice_handler))
+        .route("/v1/channel/{platform}", post(channels::channel_handler))
         .route("/v1/converse", post(converse_handler))
         .route("/v1/ledger/tail", get(ledger_tail))
         .route("/v1/ledger/verify", get(ledger_verify))

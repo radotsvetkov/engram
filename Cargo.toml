@@ -1,5 +1,8 @@
 [workspace]
 resolver = "2"
+# The Tauri desktop shell is its own crate (pulls heavy GUI deps) — keep it out of the
+# core workspace build/tests; build it with `cargo tauri` from desktop/.
+exclude = ["desktop"]
 members = [
     "crates/engram-core",
     "crates/engram-memory",

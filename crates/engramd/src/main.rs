@@ -241,14 +241,15 @@ async fn run_skill(
     Json(r): Json<RunSkillReq>,
 ) -> ApiResult {
     let (signed, wasm) = app.registry.load_active(&id).map_err(err)?;
-    let caps = signed.manifest.capabilities.clone();
     let ctx = RunCtx::pure()
-        .granted(caps)
-        .memory(app.memory.clone(), Region::ALL.to_vec());
+        .memory(app.memory.clone(), Region::ALL.to_vec())
+        .gateway(app.gateway.clone());
     let vk = *app.registry.verifying();
+    // Async path so skills granted the LLM/Net capability can reach the gateway.
     let outcome = app
         .host
-        .run_signed(&signed, &wasm, &vk, r.input.as_bytes(), ctx)
+        .run_signed_async(&signed, &wasm, &vk, r.input.as_bytes(), ctx)
+        .await
         .map_err(err)?;
     Ok(Json(json!({
         "output": String::from_utf8_lossy(&outcome.output),

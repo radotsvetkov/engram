@@ -10,6 +10,8 @@ description = "Engram skill runtime: capability-sandboxed WASM programs that lea
 [dependencies]
 engram-core = { path = "../engram-core" }
 engram-memory = { path = "../engram-memory" }
+engram-gateway = { path = "../engram-gateway" }
+tokio = { workspace = true, features = ["rt"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -25,3 +27,4 @@ hex = "0.4"
 [dev-dependencies]
 wat = "1"
 tempfile = "3"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

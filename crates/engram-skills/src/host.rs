@@ -12,7 +12,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use engram_core::Taint;
+use engram_gateway::{Call, CompletionRequest, Gateway, Message};
 use engram_memory::{Memory, Region, WriteReq};
+use tokio::runtime::Handle;
 use wasmi::{Caller, Engine, Extern, Linker, Module, Store};
 
 use crate::capability::Capability;
@@ -33,6 +35,7 @@ pub struct RunCtx {
     pub granted: Vec<Capability>,
     pub memory: Option<Arc<Memory>>,
     pub regions: Vec<Region>,
+    pub gateway: Option<Arc<Gateway>>,
     pub taint: Taint,
     pub fuel: u64,
 }
@@ -44,9 +47,15 @@ impl RunCtx {
             granted: vec![],
             memory: None,
             regions: vec![],
+            gateway: None,
             taint: Taint::Trusted,
             fuel: 5_000_000,
         }
+    }
+    /// Give the run access to the LLM gateway (needed for the `Llm` capability).
+    pub fn gateway(mut self, g: Arc<Gateway>) -> Self {
+        self.gateway = Some(g);
+        self
     }
     pub fn granted(mut self, caps: Vec<Capability>) -> Self {
         self.granted = caps;
@@ -81,6 +90,8 @@ pub struct Outcome {
 pub struct HostState {
     memory: Option<Arc<Memory>>,
     regions: Vec<Region>,
+    gateway: Option<Arc<Gateway>>,
+    handle: Option<Handle>,
     taint: Taint,
     logs: Vec<String>,
     host_calls: u64,
@@ -122,88 +133,132 @@ impl SkillHost {
         self.run(wasm, input, ctx)
     }
 
-    /// Run raw WASM with an explicit capability grant (used in tests and tooling).
+    /// Run raw WASM with an explicit capability grant (synchronous). LLM/Net egress is
+    /// unavailable on this path — use [`run_async`](Self::run_async) for those.
     pub fn run(&self, wasm: &[u8], input: &[u8], ctx: RunCtx) -> Result<Outcome, SkillError> {
-        let module = Module::new(&self.engine, wasm).map_err(|e| SkillError::Wasm(e.to_string()))?;
-
-        let state = HostState {
-            memory: ctx.memory.clone(),
-            regions: ctx.regions.clone(),
-            taint: ctx.taint,
-            logs: Vec::new(),
-            host_calls: 0,
-        };
-        let mut store = Store::new(&self.engine, state);
-        store
-            .set_fuel(ctx.fuel)
-            .map_err(|e| SkillError::Wasm(e.to_string()))?;
-
-        // Deny-by-default linking, with egress capabilities revoked under taint.
-        let egress_revoked = ctx.taint.is_untrusted();
-        let effective: Vec<Capability> = ctx
-            .granted
-            .iter()
-            .copied()
-            .filter(|c| !(egress_revoked && c.is_egress()))
-            .collect();
-
-        let mut linker = Linker::<HostState>::new(&self.engine);
-        add_log(&mut linker)?;
-        if effective.contains(&Capability::MemoryRead) {
-            add_recall(&mut linker)?;
-        }
-        if effective.contains(&Capability::MemoryWrite) {
-            add_remember(&mut linker)?;
-        }
-        if effective.contains(&Capability::Net) {
-            add_net(&mut linker)?;
-        }
-
-        let instance = linker
-            .instantiate(&mut store, &module)
-            .map_err(|e| SkillError::Wasm(e.to_string()))?
-            .start(&mut store)
-            .map_err(|e| SkillError::Wasm(e.to_string()))?;
-
-        let memory = instance
-            .get_memory(&store, "memory")
-            .ok_or_else(|| SkillError::Abi("skill exports no `memory`".into()))?;
-        let alloc = instance
-            .get_typed_func::<i32, i32>(&store, "alloc")
-            .map_err(|e| SkillError::Abi(format!("missing `alloc`: {e}")))?;
-        let run = instance
-            .get_typed_func::<(i32, i32), i64>(&store, "run")
-            .map_err(|e| SkillError::Abi(format!("missing `run`: {e}")))?;
-
-        let started = Instant::now();
-        let in_ptr = alloc
-            .call(&mut store, input.len() as i32)
-            .map_err(|e| SkillError::Wasm(e.to_string()))?;
-        memory
-            .write(&mut store, in_ptr as usize, input)
-            .map_err(|e| SkillError::Abi(e.to_string()))?;
-        let packed = run
-            .call(&mut store, (in_ptr, input.len() as i32))
-            .map_err(|e| SkillError::Wasm(e.to_string()))?;
-        let duration_us = started.elapsed().as_micros();
-
-        let out_ptr = ((packed >> 32) & 0xffff_ffff) as usize;
-        let out_len = (packed & 0xffff_ffff) as usize;
-        let mut output = vec![0u8; out_len];
-        memory
-            .read(&store, out_ptr, &mut output)
-            .map_err(|e| SkillError::Abi(e.to_string()))?;
-
-        let fuel_left = store.get_fuel().unwrap_or(0);
-        let st = store.data();
-        Ok(Outcome {
-            output,
-            fuel_used: ctx.fuel.saturating_sub(fuel_left),
-            duration_us,
-            host_calls: st.host_calls,
-            logs: st.logs.clone(),
-        })
+        run_inner(&self.engine, wasm, input, ctx, None)
     }
+
+    /// Run raw WASM with async host capabilities (LLM, Net) available. The skill runs on
+    /// a blocking thread so its synchronous host functions can drive async gateway calls
+    /// without stalling a runtime worker.
+    pub async fn run_async(&self, wasm: &[u8], input: &[u8], ctx: RunCtx) -> Result<Outcome, SkillError> {
+        let engine = self.engine.clone();
+        let wasm = wasm.to_vec();
+        let input = input.to_vec();
+        let handle = Handle::current();
+        tokio::task::spawn_blocking(move || run_inner(&engine, &wasm, &input, ctx, Some(handle)))
+            .await
+            .map_err(|e| SkillError::Wasm(e.to_string()))?
+    }
+
+    /// Verify a signed skill, then run it (async) with its declared capabilities,
+    /// including LLM/Net when granted and the run is trusted.
+    pub async fn run_signed_async(
+        &self,
+        signed: &SignedSkill,
+        wasm: &[u8],
+        vk: &ed25519_dalek::VerifyingKey,
+        input: &[u8],
+        ctx: RunCtx,
+    ) -> Result<Outcome, SkillError> {
+        manifest::verify(signed, wasm, vk)?;
+        let ctx = ctx.granted(signed.manifest.capabilities.clone());
+        self.run_async(wasm, input, ctx).await
+    }
+}
+
+/// Core run logic shared by the sync and async entrypoints. `handle` is `Some` only on
+/// the async path, which is what lets the LLM host function drive gateway calls.
+fn run_inner(
+    engine: &Engine,
+    wasm: &[u8],
+    input: &[u8],
+    ctx: RunCtx,
+    handle: Option<Handle>,
+) -> Result<Outcome, SkillError> {
+    let module = Module::new(engine, wasm).map_err(|e| SkillError::Wasm(e.to_string()))?;
+
+    let state = HostState {
+        memory: ctx.memory.clone(),
+        regions: ctx.regions.clone(),
+        gateway: ctx.gateway.clone(),
+        handle,
+        taint: ctx.taint,
+        logs: Vec::new(),
+        host_calls: 0,
+    };
+    let mut store = Store::new(engine, state);
+    store.set_fuel(ctx.fuel).map_err(|e| SkillError::Wasm(e.to_string()))?;
+
+    // Deny-by-default linking, with egress capabilities revoked under taint.
+    let egress_revoked = ctx.taint.is_untrusted();
+    let effective: Vec<Capability> = ctx
+        .granted
+        .iter()
+        .copied()
+        .filter(|c| !(egress_revoked && c.is_egress()))
+        .collect();
+
+    let mut linker = Linker::<HostState>::new(engine);
+    add_log(&mut linker)?;
+    if effective.contains(&Capability::MemoryRead) {
+        add_recall(&mut linker)?;
+    }
+    if effective.contains(&Capability::MemoryWrite) {
+        add_remember(&mut linker)?;
+    }
+    if effective.contains(&Capability::Net) {
+        add_net(&mut linker)?;
+    }
+    if effective.contains(&Capability::Llm) {
+        add_llm(&mut linker)?;
+    }
+
+    let instance = linker
+        .instantiate(&mut store, &module)
+        .map_err(|e| SkillError::Wasm(e.to_string()))?
+        .start(&mut store)
+        .map_err(|e| SkillError::Wasm(e.to_string()))?;
+
+    let memory = instance
+        .get_memory(&store, "memory")
+        .ok_or_else(|| SkillError::Abi("skill exports no `memory`".into()))?;
+    let alloc = instance
+        .get_typed_func::<i32, i32>(&store, "alloc")
+        .map_err(|e| SkillError::Abi(format!("missing `alloc`: {e}")))?;
+    let run = instance
+        .get_typed_func::<(i32, i32), i64>(&store, "run")
+        .map_err(|e| SkillError::Abi(format!("missing `run`: {e}")))?;
+
+    let started = Instant::now();
+    let in_ptr = alloc
+        .call(&mut store, input.len() as i32)
+        .map_err(|e| SkillError::Wasm(e.to_string()))?;
+    memory
+        .write(&mut store, in_ptr as usize, input)
+        .map_err(|e| SkillError::Abi(e.to_string()))?;
+    let packed = run
+        .call(&mut store, (in_ptr, input.len() as i32))
+        .map_err(|e| SkillError::Wasm(e.to_string()))?;
+    let duration_us = started.elapsed().as_micros();
+
+    let out_ptr = ((packed >> 32) & 0xffff_ffff) as usize;
+    let out_len = (packed & 0xffff_ffff) as usize;
+    let mut output = vec![0u8; out_len];
+    memory
+        .read(&store, out_ptr, &mut output)
+        .map_err(|e| SkillError::Abi(e.to_string()))?;
+
+    let fuel_left = store.get_fuel().unwrap_or(0);
+    let st = store.data();
+    Ok(Outcome {
+        output,
+        fuel_used: ctx.fuel.saturating_sub(fuel_left),
+        duration_us,
+        host_calls: st.host_calls,
+        logs: st.logs.clone(),
+    })
 }
 
 /// Read a UTF-8 string out of guest memory; returns None if out of bounds.
@@ -338,6 +393,51 @@ fn add_net(linker: &mut Linker<HostState>) -> Result<(), SkillError> {
                     st.host_calls += 1;
                 }
                 -1
+            },
+        )
+        .map_err(|e| SkillError::Wasm(e.to_string()))?;
+    Ok(())
+}
+
+/// The `llm` egress capability: the skill passes a prompt, the host runs it through the
+/// taint-aware, metered, audited gateway and writes the reply back. Only linked for a
+/// trusted run (taint revokes it), and only works on the async path (it needs a runtime
+/// handle to drive the gateway). The run's taint flows into the gateway call.
+fn add_llm(linker: &mut Linker<HostState>) -> Result<(), SkillError> {
+    linker
+        .func_wrap(
+            "engram",
+            "llm",
+            |mut caller: Caller<'_, HostState>, ptr: i32, len: i32, out_ptr: i32, out_cap: i32| -> i32 {
+                let prompt = match read_str(&caller, ptr, len) {
+                    Some(p) => p,
+                    None => return -1,
+                };
+                let (gateway, handle, taint) = {
+                    let st = caller.data();
+                    (st.gateway.clone(), st.handle.clone(), st.taint)
+                };
+                let (Some(gateway), Some(handle)) = (gateway, handle) else { return -1 };
+                let req = CompletionRequest::new("claude-haiku", vec![Message::user(prompt)]);
+                let completion =
+                    match handle.block_on(gateway.complete(Call::new(req).actor("skill").tainted(taint))) {
+                        Ok(c) => c,
+                        Err(_) => return -1,
+                    };
+                let bytes = completion.text.into_bytes();
+                let mem = match caller.get_export("memory") {
+                    Some(Extern::Memory(m)) => m,
+                    _ => return -1,
+                };
+                let n = bytes.len().min(out_cap.max(0) as usize);
+                let (data, state) = mem.data_and_store_mut(&mut caller);
+                let (s, e) = (out_ptr as usize, out_ptr as usize + n);
+                if e > data.len() {
+                    return -1;
+                }
+                data[s..e].copy_from_slice(&bytes[..n]);
+                state.host_calls += 1;
+                bytes.len() as i32
             },
         )
         .map_err(|e| SkillError::Wasm(e.to_string()))?;
@@ -488,5 +588,39 @@ mod tests {
             .granted(vec![Capability::Net])
             .taint(Taint::Untrusted);
         assert!(host.run(&wasm, b"http://example.com", tainted).is_err());
+    }
+
+    // A skill that imports the LLM egress capability and forwards its input as a prompt.
+    fn llm_skill() -> Vec<u8> {
+        let wat = format!(
+            r#"(module
+                (import "engram" "llm" (func $llm (param i32 i32 i32 i32) (result i32)))
+                (memory (export "memory") 2)
+                {ALLOC}
+                (func (export "run") (param $ptr i32) (param $len i32) (result i64)
+                    (local $n i32)
+                    (local.set $n
+                        (call $llm (local.get $ptr) (local.get $len) (i32.const 4096) (i32.const 4096)))
+                    (if (i32.gt_s (local.get $n) (i32.const 4096)) (then (local.set $n (i32.const 4096))))
+                    (if (i32.lt_s (local.get $n) (i32.const 0)) (then (local.set $n (i32.const 0))))
+                    (i64.or (i64.shl (i64.extend_i32_u (i32.const 4096)) (i64.const 32))
+                            (i64.extend_i32_u (local.get $n)))))"#
+        );
+        wat::parse_str(&wat).unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn llm_capability_calls_gateway() {
+        use engram_gateway::{Gateway, MockProvider};
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Arc::new(Ledger::open(dir.path()).unwrap());
+        let gateway = Arc::new(Gateway::new(Box::new(MockProvider), ledger));
+        let host = SkillHost::new();
+        let ctx = RunCtx::pure().granted(vec![Capability::Llm]).gateway(gateway);
+        // A skill reaches the model only through the audited gateway, on the async path.
+        let out = host.run_async(&llm_skill(), b"say hello", ctx).await.unwrap();
+        let text = String::from_utf8_lossy(&out.output);
+        assert!(text.contains("mock"), "skill should receive the model reply, got: {text}");
+        assert_eq!(out.host_calls, 1);
     }
 }

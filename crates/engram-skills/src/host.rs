@@ -245,6 +245,16 @@ fn run_inner(
 
     let out_ptr = ((packed >> 32) & 0xffff_ffff) as usize;
     let out_len = (packed & 0xffff_ffff) as usize;
+    // The guest packs these return values itself; validate the region against actual guest
+    // memory and a hard ceiling before allocating, so a hostile skill can't drive an
+    // unbounded host allocation (OOM/DoS).
+    const MAX_SKILL_OUTPUT: usize = 16 * 1024 * 1024;
+    let mem_size = memory.data(&store).len();
+    if out_len > MAX_SKILL_OUTPUT || out_ptr.checked_add(out_len).map_or(true, |end| end > mem_size) {
+        return Err(SkillError::Abi(format!(
+            "skill output region out of bounds: ptr={out_ptr} len={out_len} mem={mem_size}"
+        )));
+    }
     let mut output = vec![0u8; out_len];
     memory
         .read(&store, out_ptr, &mut output)

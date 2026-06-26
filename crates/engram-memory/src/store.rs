@@ -169,8 +169,11 @@ impl Memory {
         )?;
 
         let meta_str = serde_json::to_string(&req.metadata)?;
-        let conn = self.conn.lock().expect("memory mutex poisoned");
-        conn.execute(
+        let mut conn = self.conn.lock().expect("memory mutex poisoned");
+        // One transaction so the row and its FTS index are all-or-nothing — a failure
+        // can never leave the fact searchable-but-missing or present-but-unsearchable.
+        let tx = conn.transaction()?;
+        tx.execute(
             "INSERT INTO facts(region,text,importance,taint,tier,source,metadata,embedding,content_hash,ledger_seq,created_ms,last_access_ms) \
              VALUES(?1,?2,?3,?4,'warm',?5,?6,?7,?8,?9,?10,?10)",
             params![
@@ -186,11 +189,12 @@ impl Memory {
                 now,
             ],
         )?;
-        let id = conn.last_insert_rowid();
-        conn.execute(
+        let id = tx.last_insert_rowid();
+        tx.execute(
             "INSERT INTO facts_fts(rowid, text) VALUES(?1, ?2)",
             params![id, req.text],
         )?;
+        tx.commit()?;
 
         Ok(Record {
             id,

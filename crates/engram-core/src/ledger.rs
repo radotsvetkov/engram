@@ -221,32 +221,27 @@ fn read_entries(path: &Path) -> Result<Vec<Entry>, LedgerError> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(e.into()),
     };
-    let mut out = Vec::new();
-    for line in BufReader::new(file).lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
+    let raw: Vec<String> = BufReader::new(file).lines().collect::<Result<_, _>>()?;
+    let nonempty: Vec<&str> = raw.iter().map(String::as_str).filter(|l| !l.trim().is_empty()).collect();
+    let mut out = Vec::with_capacity(nonempty.len());
+    for (i, line) in nonempty.iter().enumerate() {
+        match serde_json::from_str::<Entry>(line) {
+            Ok(e) => out.push(e),
+            // Tolerate a single unparseable *trailing* line — an append interrupted by a
+            // crash/partial write. A parse failure on any earlier line is real corruption.
+            Err(_) if i + 1 == nonempty.len() => break,
+            Err(e) => return Err(e.into()),
         }
-        out.push(serde_json::from_str(&line)?);
     }
     Ok(out)
 }
 
 /// Verify a ledger file against a public key without holding a `Ledger`.
 pub fn verify_file(path: &Path, verifying: &VerifyingKey) -> Result<u64, LedgerError> {
-    let file = match File::open(path) {
-        Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
-        Err(e) => return Err(e.into()),
-    };
+    let entries = read_entries(path)?;
     let mut prev = GENESIS;
     let mut expect_seq = 0u64;
-    for line in BufReader::new(file).lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let entry: Entry = serde_json::from_str(&line)?;
+    for entry in &entries {
         expect_seq += 1;
         if entry.seq != expect_seq {
             return Err(LedgerError::Broken {
@@ -291,23 +286,10 @@ pub fn verify_file(path: &Path, verifying: &VerifyingKey) -> Result<u64, LedgerE
 }
 
 fn replay_tip(path: &Path) -> Result<(u64, Hash), LedgerError> {
-    let file = match File::open(path) {
-        Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((0, GENESIS)),
-        Err(e) => return Err(e.into()),
-    };
-    let mut seq = 0u64;
-    let mut prev = GENESIS;
-    for line in BufReader::new(file).lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let entry: Entry = serde_json::from_str(&line)?;
-        seq = entry.seq;
-        prev = to_hash(&entry.hash)?;
+    match read_entries(path)?.last() {
+        Some(entry) => Ok((entry.seq, to_hash(&entry.hash)?)),
+        None => Ok((0, GENESIS)),
     }
-    Ok((seq, prev))
 }
 
 fn load_or_create_key(path: &Path) -> Result<SigningKey, LedgerError> {
@@ -402,6 +384,28 @@ mod tests {
             LedgerError::Broken { seq, .. } => assert_eq!(seq, 1),
             other => panic!("expected Broken, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn tolerates_a_partial_trailing_line() {
+        let dir = temp();
+        let path = dir.path().join("ledger.jsonl");
+        let verifying;
+        {
+            let l = Ledger::open(dir.path()).unwrap();
+            l.append("a", "core", json!(1)).unwrap();
+            l.append("b", "core", json!(2)).unwrap();
+            verifying = l.verifying;
+        }
+        // Simulate a crash mid-append: a truncated JSON fragment with no trailing newline.
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        f.write_all(b"{\"seq\":3,\"kind\":\"c\",\"actor\":\"core\",\"payl").unwrap();
+        drop(f);
+        // The ledger still loads (not bricked) and verifies its complete prefix.
+        let l = Ledger::open(dir.path()).unwrap();
+        assert_eq!(l.head().0, 2);
+        assert_eq!(verify_file(&path, &verifying).unwrap(), 2);
     }
 
     #[test]

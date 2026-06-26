@@ -180,5 +180,49 @@ pub fn confine(workdir: &std::path::Path, rel: &str) -> Result<PathBuf, String> 
     if !out.starts_with(workdir) {
         return Err(format!("path '{rel}' escapes the workdir"));
     }
+    // Lexical checks miss symlinks: a link *inside* the workdir can still point outside.
+    // Canonicalize the deepest existing ancestor of the target and require it to remain
+    // within the canonical workdir, so a symlinked escape is rejected.
+    let base = std::fs::canonicalize(workdir).unwrap_or_else(|_| workdir.to_path_buf());
+    let mut probe = out.as_path();
+    let resolved = loop {
+        match std::fs::canonicalize(probe) {
+            Ok(p) => break Some(p),
+            Err(_) => match probe.parent() {
+                Some(parent) => probe = parent,
+                None => break None,
+            },
+        }
+    };
+    if let Some(real) = resolved {
+        if !real.starts_with(&base) {
+            return Err(format!("path '{rel}' escapes the workdir via a symlink"));
+        }
+    }
     Ok(out)
+}
+
+#[cfg(test)]
+mod confine_tests {
+    use super::confine;
+
+    #[test]
+    fn blocks_parent_escape_allows_inside() {
+        let work = tempfile::tempdir().unwrap();
+        assert!(confine(work.path(), "../etc/passwd").is_err());
+        assert!(confine(work.path(), "notes/today.md").is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn blocks_symlink_escape() {
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.txt"), "top secret").unwrap();
+        let work = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), work.path().join("escape")).unwrap();
+        // Reading through an in-workdir symlink that points outside must be rejected.
+        assert!(confine(work.path(), "escape/secret.txt").is_err());
+        // A plain path inside the workdir is still fine.
+        assert!(confine(work.path(), "ok.txt").is_ok());
+    }
 }

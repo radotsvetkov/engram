@@ -163,8 +163,24 @@
 const TOKEN = window.__ENGRAM_TOKEN || '';
 const AUTH = TOKEN ? {Authorization:'Bearer '+TOKEN} : {};
 const tok = u => TOKEN ? (u + (u.includes('?')?'&':'?') + 'token=' + encodeURIComponent(TOKEN)) : u;
-const J = (u,o={}) => fetch(u,{...o, headers:{...AUTH, ...(o.headers||{})}}).then(r=>r.json());
+const J = async (u,o={}) => {
+  let r;
+  try { r = await fetch(u,{...o, headers:{...AUTH, ...(o.headers||{})}}); }
+  catch(_){ throw new Error('network unreachable'); }
+  if(!r.ok){ let m='HTTP '+r.status; try{ const b=await r.json(); if(b&&b.error) m=b.error; }catch(_){} throw new Error(m); }
+  return r.json();
+};
 const esc = s => String(s??'').replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+// Non-clobbering toast for action failures (keeps the persistent tamper/offline banner).
+function notify(msg){
+  let t=document.getElementById('toast');
+  if(!t){ t=document.createElement('div'); t.id='toast';
+    t.style.cssText='position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:var(--surface-2);color:var(--text);padding:9px 14px;border-radius:8px;border:1px solid var(--danger);z-index:60;font-size:13px;transition:opacity .3s';
+    document.body.appendChild(t); }
+  t.textContent=msg; t.style.opacity='1';
+  clearTimeout(t._h); t._h=setTimeout(()=>{ t.style.opacity='0'; }, 4000);
+}
+window.addEventListener('unhandledrejection', e=>{ notify('Couldn’t reach Engram — '+((e.reason&&e.reason.message)||'try again')); });
 const ICONS = {
   Chat:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a8 8 0 0 1-11.5 7.2L3 21l1.8-6.5A8 8 0 1 1 21 12z"/></svg>',
   Tasks:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="5" height="16" rx="1"/><rect x="10" y="4" width="5" height="10" rx="1"/><rect x="17" y="4" width="4" height="13" rx="1"/></svg>',
@@ -216,7 +232,10 @@ function card(t){
      <div class="t">${esc(t.title)}</div>${foot}</div>`;
 }
 function renderBoard(){
-  const cv = document.getElementById('composer')?.value || '';  // preserve in-progress typing
+  const comp = document.getElementById('composer');
+  const cv = comp?.value || '';                         // preserve in-progress typing
+  const wasFocused = document.activeElement === comp;   // …and focus + caret
+  const selStart = comp?.selectionStart, selEnd = comp?.selectionEnd;
   const cols={todo:[],doing:[],done:[]};
   state.tasks.forEach(t=>cols[STATUS_COLS[t.status]||'todo'].push(t));
   const v=document.getElementById('view');
@@ -224,7 +243,7 @@ function renderBoard(){
     v.innerHTML = `<div class="board-wrap">${offlineNotice()}
       <div class="empty"><b>Tell Engram what to do.</b>
         <div class="examplechips">
-          <button onclick="prefill('Summarize this week\\'s top Rust news')">Summarize Rust news</button>
+          <button onclick="prefill('Summarize this week\'s top Rust news')">Summarize Rust news</button>
           <button onclick="prefill('Find me 3 quotes about curiosity')">Find 3 quotes</button>
         </div></div>
       <div style="padding:16px">${composerHtml()}</div></div>`;
@@ -236,7 +255,9 @@ function renderBoard(){
       <div style="padding:0 16px 16px">${composerHtml()}</div></div>`;
   }
   wireComposer();
-  const c=document.getElementById('composer'); if(c && cv){ c.value=cv; c.style.height='auto'; c.style.height=Math.min(c.scrollHeight,160)+'px'; }
+  const c=document.getElementById('composer');
+  if(c && cv){ c.value=cv; c.style.height='auto'; c.style.height=Math.min(c.scrollHeight,160)+'px'; }
+  if(c && wasFocused){ c.focus(); try{ c.setSelectionRange(selStart??c.value.length, selEnd??c.value.length); }catch(_){} }
 }
 
 // ---- composer + intent routing ----
@@ -321,12 +342,13 @@ async function openTask(id){
     html+=`<div class="muted" style="font-size:11px;margin-top:12px;font-family:var(--mono)">head ${t.run.ledger_head_hash.slice(0,12)}</div>`;
   } else if(t.status==='doing'){ html+=`<div class="muted">${esc(t.progress||'running…')}</div>`; }
   html+=`<div id="schedbox" style="margin-top:14px"><div class="muted" style="font-size:11px;margin-bottom:4px">repeat this task</div>
-    <div class="row"><input id="pwhen" placeholder="every weekday at 9am" oninput="schedPreview('pwhen','pwhenprev')"><button onclick="scheduleTask('${id}',${JSON.stringify(t.title)})">Schedule</button></div>
+    <div class="row"><input id="pwhen" placeholder="every weekday at 9am" oninput="schedPreview('pwhen','pwhenprev')"><button onclick="scheduleTask('${id}')">Schedule</button></div>
     <div id="pwhenprev" class="sub"></div></div>`;
   html+=`<div class="row" style="margin-top:14px"><button onclick="delTask('${id}')" style="background:var(--surface-2);color:var(--danger)">Delete</button></div>`;
   body.innerHTML=html;
 }
-async function scheduleTask(id, title){
+async function scheduleTask(id){
+  const t=state.tasks.find(x=>x.id===id); const title=t?t.title:'';   // read from state, never the DOM
   const el=document.getElementById('pwhen'); const when=el.value.trim(); if(!when) return;
   const r=await J('/v1/schedule',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name:title,when,payload:{title}})});
   const box=document.getElementById('schedbox');
@@ -383,8 +405,13 @@ function paintFeed(){
 }
 async function chatSay(text){
   chatLog.push({role:'user',text}); paintFeed();
-  const r = await J('/v1/converse',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text})});
-  chatLog.push({role:'engram',text:r.reply||r.error||'',recalled:r.recalled,learned:r.learned}); paintFeed();
+  try {
+    const r = await J('/v1/converse',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text})});
+    chatLog.push({role:'engram',text:r.reply||r.error||'',recalled:r.recalled,learned:r.learned});
+  } catch(e){
+    chatLog.push({role:'engram',text:'(couldn’t reach Engram — '+(e.message||'try again')+')'});
+  }
+  paintFeed();
 }
 
 // ---- Schedule ----

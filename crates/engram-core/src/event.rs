@@ -1,12 +1,12 @@
 //! The neural substrate.
 //!
-//! A *spike* is the unit of activity — a neuron fires it, others react. Spikes flow
+//! A *spike* is the unit of activity - a neuron fires it, others react. Spikes flow
 //! across four **priority lanes**, fastest first, so reflexes preempt deliberation
 //! exactly as they do in a nervous system. The bus is in-process (Tokio broadcast
 //! channels) and lives only while the core is awake; there is no parked daemon.
 //!
 //! Every spike carries a [`Taint`] tag. Anything derived from untrusted input (the
-//! web, stored memory of unknown origin) is `Untrusted`, and taint is *monotonic* —
+//! web, stored memory of unknown origin) is `Untrusted`, and taint is *monotonic* -
 //! it only ever spreads. Downstream, an untrusted run is dropped to no-egress /
 //! no-secrets, which is what breaks the prompt-injection → exfiltration chain.
 
@@ -136,7 +136,7 @@ impl Bus {
     }
 
     /// Fire a spike onto its lane. Returns the spike id. Delivery to zero listeners
-    /// is not an error — a neuron that no one observes still fired.
+    /// is not an error - a neuron that no one observes still fired.
     pub fn emit(&self, spike: Spike) -> u64 {
         let id = spike.id;
         let _ = self.lanes[spike.priority.index()].send(Arc::new(spike));
@@ -144,7 +144,7 @@ impl Bus {
         id
     }
 
-    /// Total spikes emitted since boot — drives the "neurons firing" view.
+    /// Total spikes emitted since boot - drives the "neurons firing" view.
     pub fn emitted(&self) -> u64 {
         self.emitted.load(Ordering::Relaxed)
     }

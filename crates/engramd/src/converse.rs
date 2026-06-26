@@ -1,4 +1,4 @@
-//! Conversation — where remembering, recalling, and the model of *you* come together.
+//! Conversation - where remembering, recalling, and the model of *you* come together.
 //!
 //! Each turn: the user's message is written to **episodic** memory, relevant past
 //! memories are recalled across identity / episodic / semantic regions (this is the
@@ -46,7 +46,7 @@ pub async fn converse_stream(
     let recalled: Vec<String> = hits.iter().map(|h| h.record.text.clone()).collect();
 
     // 3. Deepen the model of the user from what they just said. A changed *singular*
-    //    attribute (name, where they live/work) supersedes the prior value — the old fact
+    //    attribute (name, where they live/work) supersedes the prior value - the old fact
     //    becomes history (kept, ledgered) and stops surfacing, so recall isn't confidently
     //    wrong. Additive facts (likes, uses) accumulate.
     let learned = extract_identity(text);
@@ -110,14 +110,14 @@ struct Learned {
     supersede: bool,
 }
 
-/// Cheap, transparent identity extraction. Deliberately simple and auditable — every
+/// Cheap, transparent identity extraction. Deliberately simple and auditable - every
 /// inferred fact lands in the identity region and the ledger, where it can be seen and
 /// forgotten. Singular attributes (name, where you live/work, who you are) supersede the
 /// prior value; preferences (like/love/prefer/use) accumulate. (A model-based extractor can
 /// replace this behind the same write path.)
 fn extract_identity(text: &str) -> Vec<Learned> {
     // (pattern, output prefix, supersede-prior?). Supersede is reserved for genuinely
-    // singular attributes whose output prefix is *unique and unambiguous* — name, where
+    // singular attributes whose output prefix is *unique and unambiguous* - name, where
     // you live, where you work. "i'm/i am" → "User is " is deliberately NOT superseding:
     // its prefix is a generic catch-all ("User is happy", "User is a developer", "User is
     // tired" all share it), so superseding on it would let a passing mood bury a durable

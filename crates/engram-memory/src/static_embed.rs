@@ -1,8 +1,8 @@
-//! Static (model2vec) embeddings — real synonym/paraphrase capture, in pure Rust.
+//! Static (model2vec) embeddings - real synonym/paraphrase capture, in pure Rust.
 //!
 //! A model2vec model is a distilled static embedding table: a `[vocab, dim]` matrix where
 //! every token already carries the PCA-reduced, zipf-weighted meaning learned by a real
-//! sentence transformer. There is **no neural network at inference** — embedding a string
+//! sentence transformer. There is **no neural network at inference** - embedding a string
 //! is just: tokenize (BERT WordPiece) → look up each token's row → mean → L2-normalize. So
 //! this needs no ONNX runtime and no heavy ML crate: a hand-rolled WordPiece tokenizer, the
 //! vocab from `tokenizer.json`, and the matrix read straight out of `model.safetensors`. The
@@ -71,7 +71,7 @@ impl StaticEmbedder {
         let off = emb["data_offsets"].as_array().ok_or("no data_offsets")?;
         let s = off.first().and_then(|v| v.as_u64()).ok_or("bad data_offsets")? as usize;
         let e = off.get(1).and_then(|v| v.as_u64()).ok_or("bad data_offsets")? as usize;
-        // Checked arithmetic — a malformed model must error, never panic on overflow.
+        // Checked arithmetic - a malformed model must error, never panic on overflow.
         let start = header_end.checked_add(s).ok_or("data_offsets overflow")?;
         let end = header_end.checked_add(e).ok_or("data_offsets overflow")?;
         let data = raw.get(start..end).ok_or("embeddings data out of bounds")?;
@@ -150,7 +150,7 @@ fn push_char(ch: char, cur: &mut String, words: &mut Vec<String>) {
     }
 }
 
-/// Fold a common (lower-case) accented Latin letter to its base — an approximation of
+/// Fold a common (lower-case) accented Latin letter to its base - an approximation of
 /// BertNormalizer's accent stripping for the European-script common case (full NFD would
 /// need a Unicode crate; English, the bench workload, is unaffected either way).
 fn fold_accent(c: char) -> char {

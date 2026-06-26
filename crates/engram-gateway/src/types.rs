@@ -1,5 +1,5 @@
 //! Provider-agnostic request/response shapes. The common denominator across Anthropic,
-//! OpenAI, and OpenRouter-style chat + embedding APIs — including **tool calling**,
+//! OpenAI, and OpenRouter-style chat + embedding APIs - including **tool calling**,
 //! which is what turns the gateway from a text oracle into the engine of an agent.
 
 use serde::{Deserialize, Serialize};

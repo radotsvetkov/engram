@@ -1,4 +1,4 @@
-//! Seed skills — the procedural memory a fresh brain is born with.
+//! Seed skills - the procedural memory a fresh brain is born with.
 //!
 //! On first boot (when no skills exist yet) the daemon installs one tiny, real WASM
 //! skill and records a few accepted runs for it, so the dashboard immediately shows a
@@ -33,8 +33,8 @@ const SHOUT_WAT: &str = r#"
 "#;
 
 /// An "ask" skill: forwards its input to the model through the gateway (the `llm`
-/// egress capability). Demonstrates a sandboxed skill reaching the LLM — taint-gated,
-/// metered, and audited — from the dashboard.
+/// egress capability). Demonstrates a sandboxed skill reaching the LLM - taint-gated,
+/// metered, and audited - from the dashboard.
 const ASK_WAT: &str = r#"
 (module
   (import "engram" "llm" (func $llm (param i32 i32 i32 i32) (result i32)))

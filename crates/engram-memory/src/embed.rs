@@ -1,4 +1,4 @@
-//! Embeddings — turning text into a vector so meaning, not just words, can be
+//! Embeddings - turning text into a vector so meaning, not just words, can be
 //! matched.
 //!
 //! The real semantic win over a keyword-only agent comes from a transformer
@@ -7,7 +7,7 @@
 //! tested offline, this module ships a dependency-free default: a hashed bag of word
 //! tokens and character trigrams. It is deterministic and captures morphology and
 //! word-order robustness (so `prefers` matches `preferences`) that exact keyword
-//! search misses — a genuine step up — while the heavier model plugs into the same
+//! search misses - a genuine step up - while the heavier model plugs into the same
 //! [`Embedder`] trait when present.
 
 /// Anything that can turn text into a fixed-width vector.
@@ -35,7 +35,7 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
     }
 }
 
-/// FNV-1a, a small deterministic hash — stable across platforms and versions, which
+/// FNV-1a, a small deterministic hash - stable across platforms and versions, which
 /// matters because embeddings are persisted.
 fn fnv1a(bytes: &[u8]) -> u64 {
     let mut h = 0xcbf29ce484222325u64;

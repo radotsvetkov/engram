@@ -32,9 +32,9 @@ tempfile = "3"
 
 [features]
 default = ["standalone"]
-# Bind a TCP port directly — dev and simple always-on VPS.
+# Bind a TCP port directly - dev and simple always-on VPS.
 standalone = []
-# Accept inherited sockets from systemd (LISTEN_FDS) — zero resident process at idle.
+# Accept inherited sockets from systemd (LISTEN_FDS) - zero resident process at idle.
 socket-activation = []
-# AWS Lambda entrypoint — serverless, pay-per-invoke.
+# AWS Lambda entrypoint - serverless, pay-per-invoke.
 lambda = []

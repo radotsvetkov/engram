@@ -34,8 +34,10 @@
   .nav a { display:flex; align-items:center; gap:9px; padding:7px 9px; border-radius:var(--radius);
     color:var(--text-secondary); cursor:pointer; text-decoration:none; }
   .nav a:hover { background:var(--surface-2); color:var(--text-primary); }
-  .nav a.active { background:var(--surface-2); color:var(--text-primary); }
-  .nav a svg { width:15px; height:15px; opacity:.85; }
+  .nav a.active { background:var(--surface-2); color:var(--text-primary); box-shadow:inset 2px 0 0 var(--accent); }
+  .nav a svg { width:16px; height:16px; opacity:.65; transition:opacity .15s; }
+  .nav a:hover svg { opacity:.9; }
+  .nav a.active svg { opacity:1; color:var(--accent); }
   .rail .spacer { flex:1; }
   .status { font-size:11px; color:var(--text-muted); padding:8px; line-height:1.4; }
   .status .live { color:var(--accent); }
@@ -50,6 +52,10 @@
     border:1px solid var(--border); border-radius:var(--radius); padding:4px 9px; cursor:default; transition:color .4s; }
   .chip.ok b { color:var(--accent); font-weight:500; }
   .chip.bad { color:var(--danger); border-color:rgba(226,103,95,.4); }
+  .stopbtn { display:inline-flex; align-items:center; gap:5px; background:var(--surface-2); color:var(--text-secondary);
+    border:1px solid var(--border); border-radius:var(--radius); padding:4px 9px; font-size:12px; cursor:pointer; transition:.15s; }
+  .stopbtn:hover { color:var(--danger); border-color:rgba(226,103,95,.45); background:rgba(226,103,95,.08); }
+  .stopbtn svg { width:13px; height:13px; }
   .banner { background:rgba(226,103,95,.12); color:var(--danger); border-bottom:1px solid rgba(226,103,95,.3);
     padding:8px 16px; font-size:12px; }
   .offline { background:rgba(224,162,60,.1); color:var(--warning); border-bottom:1px solid rgba(224,162,60,.25);
@@ -77,7 +83,7 @@
   .cards { display:flex; flex-direction:column; gap:8px; overflow:auto; }
   .card { background:var(--surface-2); border:1px solid var(--border); border-radius:12px; padding:11px 12px; cursor:pointer; }
   .card:hover { border-color:var(--border-strong); }
-  .card.running { border:1.5px solid var(--accent); border-radius:0; }
+  .card.running { border:1.5px solid var(--accent); box-shadow:0 0 0 3px rgba(69,200,168,.08); }
   .card .t { line-height:1.35; }
   .card .meta { display:flex; gap:6px; align-items:center; margin-top:8px; flex-wrap:wrap; font-size:11px; color:var(--text-muted); }
   .tag { font-size:11px; padding:1px 6px; border-radius:6px; }
@@ -148,7 +154,7 @@
     <header class="topbar">
       <h1 id="viewname">Tasks</h1>
       <div class="right">
-        <button id="haltBtn" onclick="toggleHalt()" title="emergency stop — halts every running task at its next step" style="background:var(--surface-2);color:var(--danger);border:1px solid var(--danger);border-radius:8px;padding:5px 10px;cursor:pointer;font-size:12px">⏹ Stop</button>
+        <button id="haltBtn" class="stopbtn" onclick="toggleHalt()" title="Emergency stop: halts every running task at its next step"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2.5"/></svg><span id="haltLabel">Stop</span></button>
         <span class="chip ok" id="ledgerChip" role="status" aria-live="polite" title="every action is signed into a hash-chained ledger">ledger …</span>
         <span class="chip" id="costChip" role="status" aria-live="polite" title="model spend today">$0.00</span>
       </div>
@@ -181,22 +187,24 @@ function notify(msg){
   t.textContent=msg; t.style.opacity='1';
   clearTimeout(t._h); t._h=setTimeout(()=>{ t.style.opacity='0'; }, 4000);
 }
-window.addEventListener('unhandledrejection', e=>{ notify('Couldn’t reach Engram — '+((e.reason&&e.reason.message)||'try again')); });
+window.addEventListener('unhandledrejection', e=>{ notify('Couldn’t reach Engram - '+((e.reason&&e.reason.message)||'try again')); });
 // Emergency stop: halts every running task at its next step boundary; toggles to Resume.
 let halted=false;
 async function toggleHalt(){
   const next=!halted;
   try{ await J('/v1/halt',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({on:next})}); halted=next; }
   catch(_){ notify('Couldn’t reach Engram'); return; }
-  const b=document.getElementById('haltBtn'); if(b) b.textContent = halted?'▶ Resume':'⏹ Stop';
-  notify(halted?'Emergency stop engaged — running tasks will halt':'Resumed');
+  const lbl=document.getElementById('haltLabel'); if(lbl) lbl.textContent = halted?'Resume':'Stop';
+  notify(halted?'Emergency stop engaged - running tasks will halt':'Resumed');
 }
+// Clean, cohesive line icons: 24px grid, 1.75 stroke, round caps and joins.
+const SVG = p => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
 const ICONS = {
-  Chat:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a8 8 0 0 1-11.5 7.2L3 21l1.8-6.5A8 8 0 1 1 21 12z"/></svg>',
-  Tasks:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="5" height="16" rx="1"/><rect x="10" y="4" width="5" height="10" rx="1"/><rect x="17" y="4" width="4" height="13" rx="1"/></svg>',
-  Schedule:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
-  Memory:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3a4 4 0 0 0-4 4 4 4 0 0 0-2 7 3 3 0 0 0 3 4 3 3 0 0 0 6 0 3 3 0 0 0 3-4 4 4 0 0 0-2-7 4 4 0 0 0-4-4z"/></svg>',
-  Skills:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l2.4 5 5.6.5-4.2 3.7 1.3 5.5L12 19l-5.1 2.7 1.3-5.5L4 12.5 9.6 12z"/></svg>',
+  Chat: SVG('<path d="M20 11.5a7.5 7.5 0 0 1-10.84 6.71L4 20l1.79-5.16A7.5 7.5 0 1 1 20 11.5Z"/><path d="M8.5 10.5h7M8.5 13.5h4"/>'),
+  Tasks: SVG('<rect x="3" y="4" width="5" height="16" rx="1.4"/><rect x="9.5" y="4" width="5" height="10.5" rx="1.4"/><rect x="16" y="4" width="5" height="13" rx="1.4"/>'),
+  Schedule: SVG('<rect x="3" y="5" width="18" height="16" rx="2.5"/><path d="M3 9.5h18M8 3v3.5M16 3v3.5"/><path d="M12 13.5v3l2 1.2"/>'),
+  Memory: SVG('<path d="M14.5 4.2A2.6 2.6 0 0 0 12 6.1a2.6 2.6 0 0 0-2.5-1.9 2.6 2.6 0 0 0-2.6 2.6c0 .3 0 .5.1.8a2.8 2.8 0 0 0-1.5 2.5 2.8 2.8 0 0 0 .8 2 2.6 2.6 0 0 0 1.7 4.4 2.6 2.6 0 0 0 4 .6 2.6 2.6 0 0 0 4-.6 2.6 2.6 0 0 0 1.7-4.4 2.8 2.8 0 0 0 .8-2 2.8 2.8 0 0 0-1.5-2.5c.1-.3.1-.5.1-.8a2.6 2.6 0 0 0-2.6-2.6Z"/><path d="M12 6.1v12.5"/>'),
+  Skills: SVG('<path d="M12 3.2l1.7 4.5 4.5 1.7-4.5 1.7L12 15.6l-1.7-4.5L5.8 9.4l4.5-1.7L12 3.2Z"/><path d="M18.4 14.2l.8 2.1 2.1.8-2.1.8-.8 2.1-.8-2.1-2.1-.8 2.1-.8.8-2.1Z"/>'),
 };
 const VIEWS = ['Chat','Tasks','Schedule','Memory','Skills'];
 let state = { route:'Tasks', tasks:[], offline:false };
@@ -218,7 +226,7 @@ async function poll(){
     const lc=document.getElementById('ledgerChip');
     if(v.ok){ lc.className='chip ok'; lc.innerHTML='ledger verified · <b>'+v.entries+'</b>'; document.getElementById('banner').innerHTML=''; }
     else { lc.className='chip bad'; lc.textContent='tamper detected';
-      document.getElementById('banner').innerHTML='<div class="banner" role="alert">Tamper detected — the audit chain doesn’t verify. Showing the last good state.</div>'; }
+      document.getElementById('banner').innerHTML='<div class="banner" role="alert">Tamper detected - the audit chain doesn’t verify. Showing the last good state.</div>'; }
     document.getElementById('costChip').textContent='$'+(m.cost_usd||0).toFixed(4)+' today';
     state.offline = !!h.offline;
     document.getElementById('status').innerHTML = 'awake <span class="live">·</span> v'+h.version;
@@ -229,7 +237,7 @@ async function poll(){
 // ---- Tasks board ----
 async function loadTasks(){ state.tasks = await J('/v1/tasks'); }
 const STATUS_COLS = { todo:'todo', doing:'doing', failed:'done', done:'done', scheduled:'todo' };
-function offlineNotice(){ return state.offline ? '<div class="offline" role="status">Running in offline demo mode — add a model key to think for real.</div>' : ''; }
+function offlineNotice(){ return state.offline ? '<div class="offline" role="status">Running in offline demo mode - add a model key to think for real.</div>' : ''; }
 
 function card(t){
   const running = t.status==='doing';
@@ -317,8 +325,8 @@ async function previewTask(id){
   try{
     const run=await J('/v1/agent',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({task:prompt,dry_run:true})});
     const steps=(run.steps||[]).map(s=>`<div class="step ${s.ok?'':'bad'}"><div class="top"><span class="verb">${esc(s.tool)}</span></div><div class="obs">${esc(s.observation)}</div></div>`).join('');
-    if(out) out.innerHTML=`<div class="muted" style="font-size:11px;margin:8px 0 4px">preview — nothing was executed</div>${steps||'<div class="muted">no actions planned</div>'}<div class="answer">${esc(run.answer||'')}</div>`;
-  }catch(e){ if(out) out.textContent='(preview failed — '+(e.message||'try again')+')'; }
+    if(out) out.innerHTML=`<div class="muted" style="font-size:11px;margin:8px 0 4px">preview - nothing was executed</div>${steps||'<div class="muted">no actions planned</div>'}<div class="answer">${esc(run.answer||'')}</div>`;
+  }catch(e){ if(out) out.textContent='(preview failed - '+(e.message||'try again')+')'; }
 }
 
 // ---- drag ----
@@ -346,7 +354,7 @@ async function openTask(id){
   const ps=document.getElementById('pStatus'); ps.textContent=t.status; ps.className='pill '+t.status;
   const body=document.getElementById('pBody');
   let html='';
-  if(t.status==='todo') html+=`<div class="row"><button onclick="runTask('${id}')">Run now</button><button class="ghost" onclick="previewTask('${id}')" title="see what the agent would do — nothing is executed">Preview</button></div><div id="previewOut" class="sub"></div>`;
+  if(t.status==='todo') html+=`<div class="row"><button onclick="runTask('${id}')">Run now</button><button class="ghost" onclick="previewTask('${id}')" title="see what the agent would do - nothing is executed">Preview</button></div><div id="previewOut" class="sub"></div>`;
   if(t.run){
     const denied=(t.run.steps||[]).find(s=>!s.ok && /shell/i.test(s.tool) && /disabled|refused/i.test(s.observation));
     if(denied){
@@ -356,7 +364,7 @@ async function openTask(id){
           <button class="ghost" onclick="closePanel()">Skip</button></div></div>`;
     }
     html+=`<div class="answer">${esc(t.run.answer)}</div>`;
-    // The agent's own plan (latest update_plan call), as a live checklist — glass-box intent.
+    // The agent's own plan (latest update_plan call), as a live checklist - glass-box intent.
     const planStep=[...(t.run.steps||[])].reverse().find(s=>s.tool==='update_plan'&&s.args&&Array.isArray(s.args.steps));
     if(planStep){
       const items=planStep.args.steps.map(st=>{
@@ -375,7 +383,7 @@ async function openTask(id){
         <span class="stamp" onclick="navigator.clipboard.writeText('${s.ledger_hash||''}')">${stamp}</span></div>
         ${s.ok?'':`<div class="obs">${esc(s.observation)}</div>`}</div>`;
     }).join('');
-    html+=`<div class="muted" style="font-size:11px;margin-bottom:6px">audit trail — signed</div>${stepRows||'<div class="muted">no tools used</div>'}`;
+    html+=`<div class="muted" style="font-size:11px;margin-bottom:6px">audit trail - signed</div>${stepRows||'<div class="muted">no tools used</div>'}`;
     html+=`<div class="muted" style="font-size:11px;margin-top:12px;font-family:var(--mono)">head ${t.run.ledger_head_hash.slice(0,12)}</div>`;
   } else if(t.status==='doing'){ html+=`<div class="muted">${esc(t.progress||'running…')}</div>`; }
   html+=`<div id="schedbox" style="margin-top:14px"><div class="muted" style="font-size:11px;margin-bottom:4px">repeat this task</div>
@@ -463,12 +471,12 @@ async function chatSay(text){
         const data=dl.join('\n');
         if(ev==='token'){ msg.text+=data; paintFeed(); }
         else if(ev==='done'){ try{const d=JSON.parse(data); if(d.reply) msg.text=d.reply; msg.recalled=d.recalled; msg.learned=d.learned;}catch(_){} paintFeed(); }
-        else if(ev==='error'){ msg.text='(couldn’t reach Engram — '+data+')'; paintFeed(); }
+        else if(ev==='error'){ msg.text='(couldn’t reach Engram - '+data+')'; paintFeed(); }
       }
     }
     if(!msg.text){ msg.text='(no reply)'; paintFeed(); }
   } catch(e){
-    msg.text=msg.text||'(couldn’t reach Engram — '+(e.message||'try again')+')'; paintFeed();
+    msg.text=msg.text||'(couldn’t reach Engram - '+(e.message||'try again')+')'; paintFeed();
   }
 }
 
@@ -487,8 +495,8 @@ async function addJob(){ const name=document.getElementById('sname').value.trim(
   if(r.error) alert(r.error); else renderSchedule(); }
 
 // ---- Memory ----
-const REGION_LABEL = { identity:'Identity — who you are', semantic:'Semantic — knowledge',
-  episodic:'Episodic — conversations', procedural:'Skills — how-to' };
+const REGION_LABEL = { identity:'Identity - who you are', semantic:'Semantic - knowledge',
+  episodic:'Episodic - conversations', procedural:'Skills - how-to' };
 async function renderMemory(){
   const stats = await J('/v1/memory/stats');
   const regions=['identity','semantic','episodic','procedural'];
@@ -502,7 +510,7 @@ async function renderMemory(){
   }).join('');
   const tiers=stats.by_tier||{};
   document.getElementById('view').innerHTML = `<div class="panes">
-    <div class="pane"><h2>The brain — ${stats.total} memories across its regions</h2>
+    <div class="pane"><h2>The brain - ${stats.total} memories across its regions</h2>
       ${bars}
       <div class="sub" style="margin-top:8px">${(tiers.warm||0)} warm · ${(tiers.cold||0)} cold (consolidated)</div>
     </div>
@@ -510,7 +518,7 @@ async function renderMemory(){
       <div class="row"><input id="q" placeholder="recall… try a paraphrase"><button onclick="recall()">Recall</button></div>
       <div class="row"><select id="region"><option>semantic</option><option>identity</option><option>episodic</option><option>procedural</option></select>
         <input id="fact" placeholder="remember a fact…"><button onclick="remember()">Remember</button></div>
-      <div id="hits" class="muted">${stats.total? 'Search what Engram knows.' : 'Engram hasn’t learned anything yet — it will as you talk.'}</div>
+      <div id="hits" class="muted">${stats.total? 'Search what Engram knows.' : 'Engram hasn’t learned anything yet - it will as you talk.'}</div>
     </div></div>`;
 }
 async function recall(){ const q=document.getElementById('q').value.trim(); if(!q)return;
@@ -523,8 +531,8 @@ async function remember(){ const text=document.getElementById('fact').value.trim
 // ---- Skills ----
 async function renderSkills(){
   const sk = await J('/v1/skills');
-  document.getElementById('view').innerHTML = `<div class="panes"><div class="pane"><h2>Skills — procedural memory</h2>
-    ${(sk.skills||[]).map(s=>`<div class="item"><b>${esc(s.id)}</b> <span class="sub">active v${s.active??'—'} · ${s.versions.length} version(s)</span>
+  document.getElementById('view').innerHTML = `<div class="panes"><div class="pane"><h2>Skills - procedural memory</h2>
+    ${(sk.skills||[]).map(s=>`<div class="item"><b>${esc(s.id)}</b> <span class="sub">active v${s.active??'-'} · ${s.versions.length} version(s)</span>
       <div class="row" style="margin-top:6px"><input id="in_${esc(s.id)}" placeholder="input"><button onclick="runSkill('${esc(s.id)}')">Run</button></div>
       <div id="out_${esc(s.id)}" class="sub"></div></div>`).join('')||'<div class="muted">no skills yet</div>'}</div></div>`;
 }
@@ -547,7 +555,7 @@ async function refreshTasks(){
   const sig=JSON.stringify(state.tasks);
   if(sig!==lastTasksSig){ lastTasksSig=sig; if(state.route==='Tasks') renderBoard(); if(panelId) openTask(panelId); }
 }
-// Live updates over Server-Sent Events — instant board changes, no constant polling.
+// Live updates over Server-Sent Events - instant board changes, no constant polling.
 function connectEvents(){
   try {
     const es=new EventSource(tok('/v1/events'));

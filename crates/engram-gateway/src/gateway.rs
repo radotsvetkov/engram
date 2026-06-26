@@ -1,4 +1,4 @@
-//! The gateway — the single chokepoint every model and embedding call passes
+//! The gateway - the single chokepoint every model and embedding call passes
 //! through. One place to meter cost, enforce the taint rule, and write the audit
 //! trail, so no skill or subsystem can reach a model off the record.
 
@@ -102,7 +102,7 @@ impl Gateway {
 
     /// Run a completion. **The taint rule**: an untrusted call (its context derived
     /// from the web or unknown memory) has every secret-bearing message stripped
-    /// before it reaches the model — half of breaking the injection→exfiltration
+    /// before it reaches the model - half of breaking the injection→exfiltration
     /// chain. The redaction is metered and written to the audit ledger.
     pub async fn complete(&self, mut call: Call) -> Result<Completion, GatewayError> {
         let mut redacted = 0usize;

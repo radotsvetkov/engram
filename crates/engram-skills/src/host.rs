@@ -3,7 +3,7 @@
 //! A skill is a WASM module that exports `alloc` (a bump allocator) and `run`. The
 //! host writes the input into the guest's linear memory, calls `run(ptr, len)`, and
 //! reads back a packed `(out_ptr, out_len)`. The guest can only reach the host
-//! through the `engram.*` imports the [`Linker`] provides — and the linker only
+//! through the `engram.*` imports the [`Linker`] provides - and the linker only
 //! provides the ones the skill's manifest was granted. Anything else fails to link,
 //! so an over-reaching skill never starts. Every run is fuel-bounded, so a runaway
 //! skill traps instead of hanging the core.
@@ -134,7 +134,7 @@ impl SkillHost {
     }
 
     /// Run raw WASM with an explicit capability grant (synchronous). LLM/Net egress is
-    /// unavailable on this path — use [`run_async`](Self::run_async) for those.
+    /// unavailable on this path - use [`run_async`](Self::run_async) for those.
     pub fn run(&self, wasm: &[u8], input: &[u8], ctx: RunCtx) -> Result<Outcome, SkillError> {
         run_inner(&self.engine, wasm, input, ctx, None)
     }
@@ -322,7 +322,7 @@ fn add_recall(linker: &mut Linker<HostState>) -> Result<(), SkillError> {
                     (st.memory.clone(), st.regions.clone())
                 };
                 let Some(memory) = memory else { return -1 };
-                // Skills get trusted-provenance memory only — untrusted content can't
+                // Skills get trusted-provenance memory only - untrusted content can't
                 // re-enter a skill as trusted context (memory-poisoning guard).
                 let hits = match memory.recall_trusted(&query, &regions, 5) {
                     Ok(h) => h,
@@ -397,8 +397,8 @@ fn add_net(linker: &mut Linker<HostState>) -> Result<(), SkillError> {
                 // The Net capability is an *egress* capability. It is only ever linked
                 // for a trusted run (taint revokes it before we get here), so reaching
                 // this function already means the taint gate let the run through. In
-                // v0.1 the call itself is a no-op stub — real outbound fetch lands with
-                // the egress proxy — but the gating it demonstrates is the point.
+                // v0.1 the call itself is a no-op stub - real outbound fetch lands with
+                // the egress proxy - but the gating it demonstrates is the point.
                 if let Some(url) = read_str(&caller, ptr, len) {
                     let st = caller.data_mut();
                     st.logs.push(format!("net: {url}"));
@@ -511,7 +511,7 @@ mod tests {
 
     #[test]
     fn deny_by_default_blocks_ungranted_import() {
-        // Imports engram.recall but is granted nothing — must fail to instantiate.
+        // Imports engram.recall but is granted nothing - must fail to instantiate.
         let wat = format!(
             r#"(module
                 (import "engram" "recall" (func $recall (param i32 i32 i32 i32) (result i32)))
@@ -594,7 +594,7 @@ mod tests {
         assert!(host.run(&wasm, b"http://example.com", trusted).is_ok());
 
         // Untrusted run (it read web/memory content): Net is revoked, the import is
-        // unsatisfied, and the skill is denied at instantiation — injection cannot
+        // unsatisfied, and the skill is denied at instantiation - injection cannot
         // reach the network. This is the no-egress half of the taint rule, enforced
         // at the boundary, not by trusting the skill to behave.
         let tainted = RunCtx::pure()

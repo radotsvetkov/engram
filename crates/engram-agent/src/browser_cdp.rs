@@ -2,7 +2,7 @@
 //!
 //! A persistent headless-Chrome session the agent drives across tool calls: navigate,
 //! click, type, extract, screenshot. It launches Chrome with a debugging port, attaches
-//! to a page target over a websocket, and issues CDP commands — using `Runtime.evaluate`
+//! to a page target over a websocket, and issues CDP commands - using `Runtime.evaluate`
 //! for clicks/typing/extraction and `Page.captureScreenshot` for images. Deliberately
 //! minimal (no heavyweight CDP crate); compiled only with `--features browser-cdp`.
 
@@ -140,7 +140,7 @@ impl BrowserSession for CdpBrowser {
         Self::cmd(conn, "Page.enable", json!({})).await?;
         Self::cmd(conn, "Page.navigate", json!({ "url": url })).await?;
         // Wait until we're on the navigated page (not the initial about:blank) AND it has
-        // finished loading — otherwise we'd read the blank page that was complete instantly.
+        // finished loading - otherwise we'd read the blank page that was complete instantly.
         for _ in 0..80 {
             let ready = Self::eval(
                 conn,
@@ -212,7 +212,7 @@ mod tests {
     #[ignore = "needs Chrome"]
     async fn navigates_types_clicks_and_extracts() {
         // A deterministic local page: typing into #in then clicking #btn copies the
-        // value into #out — proving navigate + type + click + extract end to end.
+        // value into #out - proving navigate + type + click + extract end to end.
         let dir = tempfile::tempdir().unwrap();
         let page = dir.path().join("t.html");
         std::fs::write(

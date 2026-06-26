@@ -4,7 +4,7 @@
 //! search and a stored embedding for semantic search, all in one WAL file that
 //! survives the core sleeping to zero. [`Memory::recall`] runs both searches and
 //! fuses them with Reciprocal Rank Fusion, so a paraphrased query with no shared
-//! words still surfaces the right memory — exactly where a keyword-only agent
+//! words still surfaces the right memory - exactly where a keyword-only agent
 //! returns nothing.
 //!
 //! Every write, forget, and consolidation is recorded in the [`Ledger`] first, so
@@ -47,7 +47,7 @@ type Result<T> = std::result::Result<T, MemoryError>;
 pub struct WriteReq {
     pub region: Region,
     pub text: String,
-    /// 0.0–1.0; higher resists forgetting and consolidation demotion.
+    /// 0.0-1.0; higher resists forgetting and consolidation demotion.
     pub importance: f32,
     pub taint: Taint,
     pub source: Option<String>,
@@ -86,7 +86,7 @@ impl WriteReq {
     }
 }
 
-/// A stored memory (embedding omitted — it is an internal index, not content).
+/// A stored memory (embedding omitted - it is an internal index, not content).
 #[derive(Debug, Clone, Serialize)]
 pub struct Record {
     pub id: i64,
@@ -105,7 +105,7 @@ pub struct Record {
 }
 
 /// A recall result with its fused score and the rank each arm gave it (so the UI can
-/// show *why* a memory surfaced — keyword, semantic, or both).
+/// show *why* a memory surfaced - keyword, semantic, or both).
 #[derive(Debug, Clone, Serialize)]
 pub struct Hit {
     pub record: Record,
@@ -218,7 +218,7 @@ impl Memory {
 
         let meta_str = serde_json::to_string(&req.metadata)?;
         let mut conn = self.conn.lock().expect("memory mutex poisoned");
-        // One transaction so the row and its FTS index are all-or-nothing — a failure
+        // One transaction so the row and its FTS index are all-or-nothing - a failure
         // can never leave the fact searchable-but-missing or present-but-unsearchable.
         let tx = conn.transaction()?;
         tx.execute(
@@ -264,12 +264,12 @@ impl Memory {
     /// Hybrid recall: BM25 keyword search and vector semantic search, fused by RRF.
     /// `regions` empty means search the whole brain.
     /// Hybrid recall across `regions`, returning the top `k`. Includes ALL provenance
-    /// (even memories written during an untrusted run) — for transparency / audit views.
+    /// (even memories written during an untrusted run) - for transparency / audit views.
     pub fn recall(&self, query: &str, regions: &[Region], k: usize) -> Result<Vec<Hit>> {
         self.recall_inner(query, regions, k, false)
     }
 
-    /// Like [`Memory::recall`], but EXCLUDES untrusted-provenance memories — this is what a
+    /// Like [`Memory::recall`], but EXCLUDES untrusted-provenance memories - this is what a
     /// model should get as trusted context. Content read during a tainted run is stored
     /// with its provenance yet never silently re-surfaces here, closing the memory-poisoning
     /// vector (injected text can't become trusted memory and steer a later clean run).
@@ -397,8 +397,8 @@ impl Memory {
         Ok(true)
     }
 
-    /// Mark `old_id` as superseded by `by_id`: the old fact becomes history — kept (not
-    /// deleted) and still in the ledger, but no longer surfaced by recall — while the new
+    /// Mark `old_id` as superseded by `by_id`: the old fact becomes history - kept (not
+    /// deleted) and still in the ledger, but no longer surfaced by recall - while the new
     /// fact is the current truth. This is how a changed fact ("moved to Munich") evolves
     /// without erasing the past. Returns false if `old_id` wasn't a current, live memory.
     pub fn supersede(&self, old_id: i64, by_id: i64) -> Result<bool> {
@@ -417,7 +417,7 @@ impl Memory {
     }
 
     /// IDs of current (live, non-superseded) memories in `region` whose text starts with
-    /// `prefix` — used to find the prior singular fact a new one replaces.
+    /// `prefix` - used to find the prior singular fact a new one replaces.
     pub fn current_with_prefix(&self, region: Region, prefix: &str) -> Result<Vec<i64>> {
         let conn = self.conn.lock().expect("memory mutex poisoned");
         let mut stmt = conn.prepare(
@@ -464,7 +464,7 @@ impl Memory {
         get_record(&conn, id)
     }
 
-    /// The most recent `n` memories in a region, oldest-first — used to reload a
+    /// The most recent `n` memories in a region, oldest-first - used to reload a
     /// conversation from episodic memory so the chat survives a refresh.
     pub fn recent(&self, region: Region, n: usize) -> Result<Vec<Record>> {
         let conn = self.conn.lock().expect("memory mutex poisoned");
@@ -482,7 +482,7 @@ impl Memory {
     }
 
     /// Consolidate: demote warm memories that are stale *and* low-importance to the
-    /// cold tier — the machine analogue of sleep moving the day's noise out of the
+    /// cold tier - the machine analogue of sleep moving the day's noise out of the
     /// way while keeping what mattered close.
     pub fn consolidate(&self, warm_age: Duration) -> Result<i64> {
         let now = now_ms() as i64;
@@ -654,7 +654,7 @@ mod tests {
 
         // No shared whole-word tokens with the stored text ("preferred"/"theming"
         // are different tokens than "preferences"/"theme"), so keyword search alone
-        // returns nothing — yet hybrid recall still surfaces the right memory.
+        // returns nothing - yet hybrid recall still surfaces the right memory.
         assert!(build_match("preferred theming")
             .map(|q| !q.contains("preferences"))
             .unwrap_or(true));
@@ -692,7 +692,7 @@ mod tests {
 
         // The transparency recall sees both…
         assert_eq!(m.recall("cheap VPS", &[Region::Semantic], 5).unwrap().len(), 2);
-        // …but model-facing recall returns only the trusted one — injected memory can't
+        // …but model-facing recall returns only the trusted one - injected memory can't
         // re-surface as trusted context and poison a clean run.
         let trusted = m.recall_trusted("cheap VPS", &[Region::Semantic], 5).unwrap();
         assert_eq!(trusted.len(), 1);
@@ -708,13 +708,13 @@ mod tests {
             let m = Memory::open(&path, Arc::new(TrigramHashEmbedder::new(256)), ledger.clone()).unwrap();
             m.remember(WriteReq::new(Region::Semantic, "Engram runs on a cheap VPS")).unwrap();
         }
-        // Reopen under a different-dimension embedder — a new embedding space.
+        // Reopen under a different-dimension embedder - a new embedding space.
         let m = Memory::open(&path, Arc::new(TrigramHashEmbedder::new(128)), ledger.clone()).unwrap();
         // The migration ran and is recorded…
         assert!(ledger.read_all().unwrap().iter().any(|e| e.kind == "memory.reembed"));
         // …and recall still works against the re-embedded vectors.
         assert_eq!(m.recall("cheap VPS", &[Region::Semantic], 5).unwrap().len(), 1);
-        // Reopening with the SAME embedder is a no-op — no second migration.
+        // Reopening with the SAME embedder is a no-op - no second migration.
         let before = ledger.read_all().unwrap().iter().filter(|e| e.kind == "memory.reembed").count();
         let _again = Memory::open(&path, Arc::new(TrigramHashEmbedder::new(128)), ledger.clone()).unwrap();
         let after = ledger.read_all().unwrap().iter().filter(|e| e.kind == "memory.reembed").count();
@@ -731,7 +731,7 @@ mod tests {
 
         assert!(m.supersede(berlin.id, munich.id).unwrap());
 
-        // Only the current truth recalls — the stale fact can't be confidently wrong.
+        // Only the current truth recalls - the stale fact can't be confidently wrong.
         let hits = m.recall("where the user lives", &[Region::Identity], 5).unwrap();
         assert!(hits.iter().all(|h| h.record.id != berlin.id), "superseded fact must not recall");
         assert!(hits.iter().any(|h| h.record.id == munich.id));

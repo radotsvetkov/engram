@@ -1,7 +1,7 @@
-//! # Engram scheduler — focused automation that wakes from nothing
+//! # Engram scheduler - focused automation that wakes from nothing
 //!
 //! - [`recur`] turns natural language ("every weekday at 9am") into a deterministic
-//!   [`recur::Recurrence`] and computes the next fire — no model call, fully testable.
+//!   [`recur::Recurrence`] and computes the next fire - no model call, fully testable.
 //! - [`sched::Scheduler`] persists jobs, surfaces what is due, and reschedules forward
 //!   across sleep without stampeding, recording each change in the audit ledger.
 //! - [`systemd`] emits the socket-activation and timer units that make zero-idle and

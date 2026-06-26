@@ -1,7 +1,7 @@
 //! The tool abstraction and registry.
 //!
 //! A tool is a named, JSON-Schema-described action the model can call. The registry
-//! collects their schemas for the model and dispatches calls back to them — the same
+//! collects their schemas for the model and dispatches calls back to them - the same
 //! shape as Hermes's central tool registry, but with Engram's guarantees bolted in:
 //! every call is auditable, and dangerous tools are **taint-gated** so an action a
 //! skill/agent took *after reading untrusted content* can be refused by construction.
@@ -64,7 +64,7 @@ pub struct ToolCtx {
     pub gateway: Arc<Gateway>,
     pub ledger: Arc<Ledger>,
     /// The run's current taint. `Untrusted` once any tool has read attacker-influenceable
-    /// content (e.g. a web page) — dangerous tools refuse to act under it.
+    /// content (e.g. a web page) - dangerous tools refuse to act under it.
     pub taint: Taint,
     pub policy: Policy,
     /// Filesystem actions are confined to this directory.
@@ -126,14 +126,14 @@ pub trait Tool: Send + Sync {
     }
     /// True if this tool can carry data *out* to an attacker-influenceable destination
     /// (the web, a webhook, an MCP server, a browser navigation). Such tools are refused
-    /// once the run is tainted — the no-egress half of the taint rule, enforced centrally
+    /// once the run is tainted - the no-egress half of the taint rule, enforced centrally
     /// at the agent's dispatch boundary so every tool (native and MCP) is covered.
     fn is_egress(&self) -> bool {
         false
     }
     /// True if this tool changes the world outside the brain (writes files, runs shell,
     /// sends messages, drives the browser, calls an MCP server). In dry-run/preview mode
-    /// these are not executed — the agent is told what it *would* do, so a plan can be
+    /// these are not executed - the agent is told what it *would* do, so a plan can be
     /// inspected before anything happens. Internal, reversible writes (memory) are not
     /// side-effecting.
     fn side_effecting(&self) -> bool {

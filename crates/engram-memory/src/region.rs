@@ -1,4 +1,4 @@
-//! Brain regions. Memory is not one undifferentiated pool — it is partitioned the
+//! Brain regions. Memory is not one undifferentiated pool - it is partitioned the
 //! way a brain is, and recall consults the regions that fit the *kind* of task at
 //! hand (recall by experience type).
 
@@ -13,7 +13,7 @@ pub enum Region {
     Episodic,
     /// Consolidated knowledge and facts about the world.
     Semantic,
-    /// The deepening model of the user — preferences, traits, projects.
+    /// The deepening model of the user - preferences, traits, projects.
     Identity,
     /// Knowledge *about* skills (their purpose, when to use them).
     Procedural,

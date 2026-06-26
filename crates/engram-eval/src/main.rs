@@ -1,4 +1,4 @@
-//! engram-eval — run a deterministic, offline regression suite of agent-harness replay
+//! engram-eval - run a deterministic, offline regression suite of agent-harness replay
 //! cases. `engram-eval` runs the built-in suite; `engram-eval <dir>` runs every `*.json`
 //! case in a directory. Exit 0 = all pass, 1 = a regression, 2 = setup error.
 
@@ -37,7 +37,7 @@ async fn main() {
                 }
             }
             Err(e) => {
-                println!("ERROR {} — {e}", case.name);
+                println!("ERROR {} - {e}", case.name);
                 failed += 1;
             }
         }

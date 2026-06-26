@@ -1,10 +1,10 @@
-//! # Engram memory — the brain on disk
+//! # Engram memory - the brain on disk
 //!
 //! Hybrid, region-partitioned, tiered memory in a single embedded SQLite file.
 //!
 //! - [`store::Memory`] is the broker: `remember` and `recall`, where recall fuses
 //!   **keyword** (FTS5/BM25) and **semantic** (vector cosine) results so paraphrased
-//!   queries still hit — the recall-quality win over a keyword-only agent.
+//!   queries still hit - the recall-quality win over a keyword-only agent.
 //! - [`region::Region`] partitions memory like brain regions; recall consults the
 //!   regions that match the task.
 //! - [`embed::Embedder`] abstracts embeddings; the bundled [`embed::TrigramHashEmbedder`]

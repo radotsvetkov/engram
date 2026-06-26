@@ -1,13 +1,14 @@
-//! engram-eval — deterministic, offline regression testing for the agent harness.
+//! engram-eval - deterministic, offline regression testing for the agent harness.
 //!
 //! "Tested by vibes" is the near-universal complaint about agents: you change a prompt,
 //! a tool, or the loop, and you cannot tell whether behavior regressed. This harness
 //! answers it. An eval **case** records a task plus the exact model completions a run
-//! received (a recording of real model output); replaying it drives the *real* agent and
-//! *real* tools through a [`ScriptedProvider`] — no model, no network, fully deterministic
-//! — and asserts the resulting tool sequence, answer, and stop reason against a baseline.
-//! Change the harness, re-run the suite, and a regression shows up as a failing case, not
-//! a hunch. The same ledger/replay substrate that makes Engram auditable makes it testable.
+//! received (a recording of real model output). Replaying it drives the *real* agent and
+//! *real* tools through a [`ScriptedProvider`], with no model and no network, fully
+//! deterministic, then checks the resulting tool sequence, answer, and stop reason against a
+//! baseline. Change the harness, re-run the suite, and a regression shows up as a failing
+//! case rather than a hunch. The same ledger and replay substrate that makes Engram
+//! auditable also makes it testable.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -160,7 +161,7 @@ fn answer(text: &str) -> Completion {
     Completion { text: text.into(), model: "eval".into(), tokens_in: 5, tokens_out: 5, tool_calls: vec![] }
 }
 
-/// The built-in regression suite — exercises core harness behaviors using only
+/// The built-in regression suite - exercises core harness behaviors using only
 /// deterministic, offline-safe tools (memory + planning), so it runs anywhere with no
 /// model and no network.
 pub fn builtin_cases() -> Vec<Case> {

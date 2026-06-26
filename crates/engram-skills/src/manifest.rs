@@ -72,7 +72,7 @@ pub struct SignedSkill {
     pub sig: String,
 }
 
-/// BLAKE3 hex of WASM bytes — the value that goes in `Manifest::module_hash`.
+/// BLAKE3 hex of WASM bytes - the value that goes in `Manifest::module_hash`.
 pub fn module_hash(wasm: &[u8]) -> String {
     blake3::hash(wasm).to_hex().to_string()
 }

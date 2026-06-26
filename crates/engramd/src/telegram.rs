@@ -1,9 +1,9 @@
-//! Telegram inbound channel — run Engram as a bot.
+//! Telegram inbound channel - run Engram as a bot.
 //!
 //! When `ENGRAM_TELEGRAM_TOKEN` is set, this long-polls Telegram's getUpdates, runs the
 //! agent (full toolset, memory, persona) on each incoming message, and replies. It is
 //! the messaging-gateway pattern: one transport, the same agent behind it. Other
-//! platforms (Discord, Slack, …) follow the identical shape — poll/receive, run the
+//! platforms (Discord, Slack, …) follow the identical shape - poll/receive, run the
 //! agent, send the reply.
 
 use std::time::Duration;

@@ -1,4 +1,4 @@
-//! Built-in tools — the actions an Engram agent can take.
+//! Built-in tools - the actions an Engram agent can take.
 //!
 //! Each is small and auditable. Filesystem tools are confined to the workdir; the
 //! shell is off by default and refused outright once the run is tainted; web tools
@@ -20,7 +20,7 @@ fn arg_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
 
 /// Reject non-public destinations (SSRF guard): only http(s), and never loopback,
 /// private, link-local (incl. the 169.254.169.254 cloud-metadata IP), or unspecified
-/// addresses — so the agent can't be tricked into reaching its own unauthenticated API
+/// addresses - so the agent can't be tricked into reaching its own unauthenticated API
 /// or a cloud metadata service. Resolves hostnames and checks every resulting IP.
 pub(crate) async fn guard_url(url: &str) -> Result<(), String> {
     let u = url.trim();
@@ -336,7 +336,7 @@ impl Tool for ListDirTool {
 // Planning
 // ---------------------------------------------------------------------------
 
-/// An explicit, ledgered to-do list the agent maintains across a multi-step task —
+/// An explicit, ledgered to-do list the agent maintains across a multi-step task -
 /// frontier-harness planning, surfaced in the glass-box receipt so the user sees intent.
 pub struct UpdatePlanTool;
 
@@ -347,7 +347,7 @@ impl Tool for UpdatePlanTool {
     }
     fn description(&self) -> &str {
         "Record or update your step-by-step plan for a multi-step task. Call it early to \
-         outline the steps, then again to mark progress as you go — it keeps you on track and \
+         outline the steps, then again to mark progress as you go - it keeps you on track and \
          shows the user your plan. Each step has a 'title' and a 'status' (todo, doing, done)."
     }
     fn schema(&self) -> Value {
@@ -403,7 +403,7 @@ impl Tool for MemoryRecallTool {
         let query = arg_str(args, "query")?;
         let k = args["k"].as_u64().unwrap_or(5) as usize;
         // A trusted run gets trusted-provenance memories only (injected web/memory content
-        // can't poison it). An already-tainted run may see all — its egress is blocked
+        // can't poison it). An already-tainted run may see all - its egress is blocked
         // anyway and it can legitimately use what it just researched.
         let hits = if ctx.taint.is_untrusted() {
             ctx.memory.recall(query, &[], k)
@@ -451,7 +451,7 @@ impl Tool for MemoryRememberTool {
 }
 
 // ---------------------------------------------------------------------------
-// Media (vision, image generation, speech) — through the gateway
+// Media (vision, image generation, speech) - through the gateway
 // ---------------------------------------------------------------------------
 
 pub struct VisionAnalyzeTool;
@@ -592,7 +592,7 @@ impl Tool for DelegateTool {
         let task = arg_str(args, "task")?;
         let _ = ctx.ledger.append("agent.delegate", "agent", json!({ "task": task, "depth": ctx.depth }));
         // The subagent gets the base toolset (no further delegation by default) and a
-        // deeper context, but inherits taint — an untrusted parent yields an untrusted child.
+        // deeper context, but inherits taint - an untrusted parent yields an untrusted child.
         let agent = crate::agent::Agent::new(ctx.gateway.clone(), crate::sub_tools(), ctx.model.clone());
         let mut sub = ctx.clone();
         sub.depth = ctx.depth + 1;
@@ -602,7 +602,7 @@ impl Tool for DelegateTool {
 }
 
 // ---------------------------------------------------------------------------
-// Browser (headless Chrome via subprocess — real JS rendering, no extra deps)
+// Browser (headless Chrome via subprocess - real JS rendering, no extra deps)
 // ---------------------------------------------------------------------------
 
 pub(crate) fn find_chrome() -> Option<String> {
@@ -724,7 +724,7 @@ impl Tool for BrowserScreenshotTool {
     }
 }
 
-// Interactive browser tools — drive a persistent session via ctx.browser.
+// Interactive browser tools - drive a persistent session via ctx.browser.
 
 pub struct BrowserOpenTool;
 

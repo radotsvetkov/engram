@@ -1,4 +1,4 @@
-//! Capabilities — what a skill is allowed to touch.
+//! Capabilities - what a skill is allowed to touch.
 //!
 //! The sandbox is **deny-by-default**: a skill receives a host function only if its
 //! signed manifest requests the matching capability. Importing anything ungranted
@@ -30,7 +30,7 @@ impl Capability {
     }
 
     /// Capabilities that can carry data *out* of the process. These are revoked for a
-    /// run that has read untrusted input — the no-egress half of the taint rule.
+    /// run that has read untrusted input - the no-egress half of the taint rule.
     pub fn is_egress(self) -> bool {
         matches!(self, Capability::Llm | Capability::Net)
     }

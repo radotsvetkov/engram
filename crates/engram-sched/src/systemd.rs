@@ -1,4 +1,4 @@
-//! systemd unit generation — how zero-idle and scheduled wake actually happen on a VPS.
+//! systemd unit generation - how zero-idle and scheduled wake actually happen on a VPS.
 //!
 //! Socket activation is the mechanism behind the headline "0 MB at idle": systemd
 //! owns the listening socket, and only spawns `engramd` when a connection arrives.

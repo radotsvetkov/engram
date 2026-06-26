@@ -1,9 +1,9 @@
-//! The agent loop — where the model stops talking and starts *doing*.
+//! The agent loop - where the model stops talking and starts *doing*.
 //!
 //! Given a task, the agent advertises its tools to the model, lets the model call
 //! them, runs each call, feeds the observation back, and repeats until the model
 //! answers with no further tool call (or a step budget is hit). Every step is
-//! ledgered, and the run's taint is raised the moment a tool reads untrusted content —
+//! ledgered, and the run's taint is raised the moment a tool reads untrusted content -
 //! after which the shell and secret context are off the table for the rest of the run.
 
 use std::sync::Arc;
@@ -38,7 +38,7 @@ pub struct StepRecord {
     pub observation: String,
     pub ok: bool,
     /// The seq + hash of *this step's* `agent.tool` ledger entry, captured inline. Pairing
-    /// the receipt to the ledger by these exact values is correct even when runs overlap —
+    /// the receipt to the ledger by these exact values is correct even when runs overlap -
     /// unlike matching by a timestamp window and step index.
     #[serde(default)]
     pub ledger_seq: u64,
@@ -54,7 +54,7 @@ pub struct AgentRun {
     pub stopped: &'static str,
 }
 
-/// Called after each tool step with (step number, tool name, ok) — for live progress.
+/// Called after each tool step with (step number, tool name, ok) - for live progress.
 pub type StepCallback = Arc<dyn Fn(usize, String, bool) + Send + Sync>;
 
 pub struct Agent {
@@ -67,7 +67,7 @@ pub struct Agent {
     on_step: Option<StepCallback>,
     /// Run one verify-before-finish reflection pass before accepting the final answer.
     reflect: bool,
-    /// Hard ceiling on total tokens (in+out) a run may spend before it stops — a runaway
+    /// Hard ceiling on total tokens (in+out) a run may spend before it stops - a runaway
     /// cost guard. `None` = unbounded (still bounded by `max_steps`).
     token_budget: Option<u32>,
     /// A shared kill switch: when set true, the run stops at the next step boundary.
@@ -88,7 +88,7 @@ impl Agent {
             halt: None,
         }
     }
-    /// Stop the run once total tokens (in+out) reach this ceiling — a runaway-cost guard.
+    /// Stop the run once total tokens (in+out) reach this ceiling - a runaway-cost guard.
     pub fn token_budget(mut self, tokens: u32) -> Self {
         self.token_budget = Some(tokens);
         self
@@ -132,7 +132,7 @@ impl Agent {
              Work step by step: call tools to gather information and take actions, observe the \
              results, and continue. For a multi-step task, call update_plan early to outline your \
              plan, and update it as you make progress. You may call several independent tools in \
-             one turn — they run in parallel. When the task is done, reply in plain text with NO \
+             one turn - they run in parallel. When the task is done, reply in plain text with NO \
              tool call. Tools available: {}.",
             self.tools.names().join(", ")
         ));
@@ -142,7 +142,7 @@ impl Agent {
         let mut last_sig = String::new();
         let mut repeat = 0usize;
         // Drive the runaway-cost guard off the shared gateway meter so it counts the model
-        // calls AND the compaction summarizer AND any delegated subagents — not just this
+        // calls AND the compaction summarizer AND any delegated subagents - not just this
         // loop's own completions.
         let start_spend = {
             let s = self.gateway.meter();
@@ -177,7 +177,7 @@ impl Agent {
             }
 
             // Keep the working context within budget so a long run never overflows the
-            // model's window — summarize older turns, keep the freshest verbatim.
+            // model's window - summarize older turns, keep the freshest verbatim.
             self.maybe_compact(&mut messages, &ctx).await;
 
             let req = CompletionRequest::new(&self.model, messages.clone())
@@ -252,7 +252,7 @@ impl Agent {
             }
 
             // Stuck-loop guard: the same WHOLE turn (its tool calls + args) repeated several
-            // times running is a runaway making no progress — stop before it burns the
+            // times running is a runaway making no progress - stop before it burns the
             // budget. Tracked per *turn*, not per call, so a single-turn parallel fan-out of
             // identical calls is fine while a genuine cross-turn loop is still caught.
             let batch_sig = completion
@@ -318,7 +318,7 @@ impl Agent {
     }
 
     /// Execute a turn's tool calls concurrently, returning `(observation, ok, executed)` per
-    /// call in the original order — `executed` is false for previewed (dry-run) or refused
+    /// call in the original order - `executed` is false for previewed (dry-run) or refused
     /// (egress-blocked) calls, so they don't raise taint. Each task gets its own cheap `ctx`
     /// clone (all `Arc`s), and the no-egress gate uses the pre-batch taint decision.
     async fn run_tools(
@@ -340,14 +340,14 @@ impl Agent {
                     // what would have happened so the plan can be previewed safely. Not
                     // executed → must not raise taint.
                     Some(t) if dry_run && t.side_effecting() => (
-                        format!("DRY RUN — would call {name}({args}); not executed"),
+                        format!("DRY RUN - would call {name}({args}); not executed"),
                         true,
                         false,
                     ),
-                    // The no-egress half of the taint rule — refuse an egress tool once the
+                    // The no-egress half of the taint rule - refuse an egress tool once the
                     // run has read untrusted content. Covers native and MCP tools alike.
                     Some(t) if egress_blocked && t.is_egress() => (
-                        "error: egress refused — this run read untrusted content (injection guard)".to_string(),
+                        "error: egress refused - this run read untrusted content (injection guard)".to_string(),
                         false,
                         false,
                     ),
@@ -451,7 +451,7 @@ fn truncate(s: &str, max: usize) -> String {
     format!("{}… [truncated {} bytes]", &s[..end], s.len() - end)
 }
 
-/// Rough token footprint of one message — its text plus any tool-call names/arguments.
+/// Rough token footprint of one message - its text plus any tool-call names/arguments.
 fn msg_tokens(m: &Message) -> u32 {
     let mut t = approx_tokens(&m.content);
     for c in &m.tool_calls {
@@ -610,7 +610,7 @@ mod tests {
         let provider = ScriptedProvider::new(vec![
             call("1", "delegate_task", json!({ "task": "compute the subresult" })),
             final_answer("subresult: 42"),
-            final_answer("done — got subresult: 42"),
+            final_answer("done - got subresult: 42"),
         ]);
         let gateway = Arc::new(Gateway::new(Box::new(provider), ledger.clone()));
         let ctx = ToolCtx {
@@ -665,7 +665,7 @@ mod tests {
             .unwrap();
         assert!(out.contains("mock"), "vision should reach the model, got: {out}");
 
-        // image_generate is unsupported on the mock provider — it must fail gracefully.
+        // image_generate is unsupported on the mock provider - it must fail gracefully.
         let r = ImageGenerateTool.run(&json!({ "prompt": "a cat", "path": "cat.png" }), &ctx).await;
         assert!(r.is_err());
     }
@@ -1119,7 +1119,7 @@ mod tests {
         ));
         let ctx = ctx_for(dir.path(), &ledger, &gateway);
         let run = Agent::new(gateway, crate::default_tools(), "test").max_steps(10).run("go", ctx).await.unwrap();
-        // The same [A,B] batch repeated across turns IS a stuck loop — caught at the turn level.
+        // The same [A,B] batch repeated across turns IS a stuck loop - caught at the turn level.
         assert_eq!(run.stopped, "loop");
     }
 }

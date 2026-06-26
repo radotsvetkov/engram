@@ -1,11 +1,11 @@
-//! The scheduler — persisted jobs that fire even across sleep.
+//! The scheduler - persisted jobs that fire even across sleep.
 //!
 //! Jobs are stored as plain JSON (`jobs.json`); each holds its [`Recurrence`] and a
 //! precomputed `next_fire_ms`. The core does not stay resident to wait: the deploy
 //! layer reads [`Scheduler::next_wake`] and arms a systemd timer (or platform cron)
 //! for that instant, which wakes the socket-activated core, which runs what is due
 //! and sleeps again. If the machine was asleep past several fires, rescheduling
-//! advances to the next *future* occurrence — one catch-up run, never a stampede.
+//! advances to the next *future* occurrence - one catch-up run, never a stampede.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -33,7 +33,7 @@ pub enum SchedError {
 
 type Result<T> = std::result::Result<T, SchedError>;
 
-/// A scheduled unit of work. `payload` is opaque to the scheduler — it is whatever
+/// A scheduled unit of work. `payload` is opaque to the scheduler - it is whatever
 /// the core needs to run the job (a skill id, a prompt, a command).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {

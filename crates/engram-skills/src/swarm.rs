@@ -1,9 +1,9 @@
-//! Swarms — skills composing to solve a bigger problem than any one of them.
+//! Swarms - skills composing to solve a bigger problem than any one of them.
 //!
 //! The simplest, most useful composition is a **pipeline**: the input flows through a
 //! sequence of skills, each one's output becoming the next one's input. Because every
 //! step runs through the same signed, capability-sandboxed, fuel-bounded host, a swarm
-//! is exactly as safe as a single skill — and the whole run is recorded in the ledger
+//! is exactly as safe as a single skill - and the whole run is recorded in the ledger
 //! with a per-step trace. Richer topologies (fan-out, voting) build on this same loop.
 
 use std::sync::Arc;

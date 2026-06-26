@@ -58,7 +58,7 @@ pub fn approx_tokens(text: &str) -> u32 {
 }
 
 /// A deterministic, offline provider. It never makes a network call, so the whole
-/// gateway — metering, taint redaction, audit — is testable without credentials.
+/// gateway - metering, taint redaction, audit - is testable without credentials.
 pub struct MockProvider;
 
 #[async_trait]
@@ -86,7 +86,7 @@ impl Provider for MockProvider {
     }
 }
 
-/// A provider that replays a scripted sequence of completions — the way to drive the
+/// A provider that replays a scripted sequence of completions - the way to drive the
 /// agent loop deterministically in tests (e.g. "first emit this tool call, then this
 /// final answer") without a live model.
 pub struct ScriptedProvider {
@@ -123,7 +123,7 @@ fn first_words(s: &str, n: usize) -> String {
     s.split_whitespace().take(n).collect::<Vec<_>>().join(" ")
 }
 
-/// A tiny deterministic 8-dim vector — enough to exercise the embed path offline.
+/// A tiny deterministic 8-dim vector - enough to exercise the embed path offline.
 fn mock_vec(text: &str) -> Vec<f32> {
     let mut v = [0f32; 8];
     for (i, b) in text.bytes().enumerate() {
@@ -147,7 +147,7 @@ pub use http::HttpProvider;
 mod anthropic {
     //! A native Anthropic Messages-API provider. Unlike the OpenAI-compatible path, this
     //! puts the system prompt in its own field, uses `tool_use`/`tool_result` content
-    //! blocks, authenticates with `x-api-key`, and — the reason it exists — marks the
+    //! blocks, authenticates with `x-api-key`, and - the reason it exists - marks the
     //! stable tools+system prefix with `cache_control`, so Anthropic prompt-caches it
     //! across the agent loop's many turns (large cost/latency win on long runs).
 
@@ -173,7 +173,7 @@ mod anthropic {
         }
     }
 
-    /// Append `block` to the last message if it has the same role, else start a new one —
+    /// Append `block` to the last message if it has the same role, else start a new one -
     /// so consecutive tool results (from parallel tool calls) collapse into one user
     /// message with several `tool_result` blocks, keeping Anthropic's role alternation.
     fn push_block(msgs: &mut Vec<serde_json::Value>, role: &str, block: serde_json::Value) {
@@ -242,7 +242,7 @@ mod anthropic {
         }
         // A cache breakpoint at the end of the conversation: Anthropic caches the whole
         // prefix up to here (tools + system + every prior turn) and, on the next turn, reads
-        // the longest matching cached prefix — so the big, growing agent-loop context is
+        // the longest matching cached prefix - so the big, growing agent-loop context is
         // re-read at ~0.1x instead of reprocessed each step.
         if let Some(last) = msgs.last_mut() {
             if let Some(blocks) = last["content"].as_array_mut() {
@@ -389,7 +389,7 @@ mod anthropic {
                         ccreate += u["cache_creation_input_tokens"].as_u64().unwrap_or(0);
                     }
                     Some("message_delta") => {
-                        // usage.output_tokens in message_delta is cumulative — take it, not add.
+                        // usage.output_tokens in message_delta is cumulative - take it, not add.
                         tout = v["usage"]["output_tokens"].as_u64().unwrap_or(tout);
                     }
                     _ => {}
@@ -406,7 +406,7 @@ mod anthropic {
 
         async fn embed(&self, _texts: &[String]) -> Result<Vec<Vec<f32>>, GatewayError> {
             Err(GatewayError::Provider(
-                "anthropic has no embeddings endpoint — use the offline embedder or a separate provider"
+                "anthropic has no embeddings endpoint - use the offline embedder or a separate provider"
                     .into(),
             ))
         }

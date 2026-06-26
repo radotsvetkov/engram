@@ -1,4 +1,4 @@
-//! The audit ledger — Engram's incorruptible memory of what it did.
+//! The audit ledger - Engram's incorruptible memory of what it did.
 //!
 //! Every state change worth trusting (a memory write, a skill mutation, a revert)
 //! is appended here *before or as* it happens. The ledger is:
@@ -6,14 +6,14 @@
 //! - **Append-only**: entries are never edited or deleted, only added.
 //! - **Content-addressed**: each entry's id is the BLAKE3 hash of its contents.
 //! - **Hash-chained**: each entry commits to the previous entry's hash, so altering
-//!   any past entry breaks every hash after it — tampering is detectable in O(n).
+//!   any past entry breaks every hash after it - tampering is detectable in O(n).
 //! - **Signed**: each entry is signed with the core's Ed25519 key, which lives on
 //!   disk at `0600` and is *never* handed to a skill/WASM. A forged entry cannot be
 //!   signed.
 //!
 //! This is what makes "transparent and auditable" real: the desktop (or anyone with
 //! the public key) can replay the chain and prove nothing was rewritten. A "revert"
-//! is itself an appended entry pointing at a prior good hash — history is added to,
+//! is itself an appended entry pointing at a prior good hash - history is added to,
 //! never erased.
 
 use std::fs::{File, OpenOptions};
@@ -84,7 +84,7 @@ fn content_hash(seq: u64, ts_ms: u64, prev: &Hash, kind: &str, actor: &str, payl
     h.update(prev);
     write_field(&mut h, kind.as_bytes());
     write_field(&mut h, actor.as_bytes());
-    // Hash the exact payload bytes that get persisted — never a re-serialization.
+    // Hash the exact payload bytes that get persisted - never a re-serialization.
     write_field(&mut h, payload_raw.as_bytes());
     *h.finalize().as_bytes()
 }
@@ -110,7 +110,7 @@ pub struct Ledger {
     path: PathBuf,
     tip: Mutex<Tip>,
     signing: SigningKey,
-    /// Public key — hand this to the desktop/auditor to verify the chain.
+    /// Public key - hand this to the desktop/auditor to verify the chain.
     pub verifying: VerifyingKey,
 }
 
@@ -213,7 +213,7 @@ impl Ledger {
         read_entries(&self.path)
     }
 
-    /// Read the last `n` entries — the live tail for the "Live Cortex" feed.
+    /// Read the last `n` entries - the live tail for the "Live Cortex" feed.
     pub fn tail(&self, n: usize) -> Result<Vec<Entry>, LedgerError> {
         let mut all = read_entries(&self.path)?;
         let start = all.len().saturating_sub(n);
@@ -233,7 +233,7 @@ fn read_entries(path: &Path) -> Result<Vec<Entry>, LedgerError> {
     for (i, line) in nonempty.iter().enumerate() {
         match serde_json::from_str::<Entry>(line) {
             Ok(e) => out.push(e),
-            // Tolerate a single unparseable *trailing* line — an append interrupted by a
+            // Tolerate a single unparseable *trailing* line - an append interrupted by a
             // crash/partial write. A parse failure on any earlier line is real corruption.
             Err(_) if i + 1 == nonempty.len() => break,
             Err(e) => return Err(e.into()),
@@ -242,7 +242,7 @@ fn read_entries(path: &Path) -> Result<Vec<Entry>, LedgerError> {
     Ok(out)
 }
 
-/// Build a public key from its hex encoding — for offline, third-party verification.
+/// Build a public key from its hex encoding - for offline, third-party verification.
 pub fn verifying_key_from_hex(s: &str) -> Result<VerifyingKey, LedgerError> {
     let bytes = hex::decode(s.trim()).map_err(|_| LedgerError::Key)?;
     let arr: [u8; 32] = bytes.as_slice().try_into().map_err(|_| LedgerError::Key)?;

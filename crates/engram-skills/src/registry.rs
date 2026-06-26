@@ -1,9 +1,9 @@
-//! The skill registry — procedural memory on disk.
+//! The skill registry - procedural memory on disk.
 //!
 //! Skills live under `skills/<id>/`: each version is a `v<N>.wasm` blob plus a signed
 //! `manifest-v<N>.json`, with an `active` pointer naming the version in use. The
-//! registry also keeps `runs.jsonl` — the recorded inputs and accepted outputs a
-//! skill has seen — which is what lets the learning loop replay a candidate version
+//! registry also keeps `runs.jsonl` - the recorded inputs and accepted outputs a
+//! skill has seen - which is what lets the learning loop replay a candidate version
 //! against real history instead of guessing. Every install and activation is
 //! recorded in the audit ledger.
 
@@ -224,7 +224,7 @@ impl Registry {
         Ok(())
     }
 
-    /// Accepted runs (reward ≥ 0.75) as (input, gold) pairs — the replay set.
+    /// Accepted runs (reward ≥ 0.75) as (input, gold) pairs - the replay set.
     pub fn accepted_runs(&self, id: &str) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
         let p = self.skill_dir(id).join("runs.jsonl");
         let content = match fs::read_to_string(&p) {

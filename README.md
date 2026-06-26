@@ -1,10 +1,12 @@
 # Engram
 
-**A personal AI agent with a brain you can watch grow — that costs nothing to run when idle.**
+**A personal AI agent with a brain you can watch grow, that costs almost nothing to run while it sits idle.**
 
-Engram is a self-improving personal AI agent modeled on how a brain actually works, then translated to a machine that costs almost nothing to run. It is a single static Rust binary that sleeps to zero RAM between requests and wakes in milliseconds — versus an always-on Python+Node multi-hundred-MB runtime chain on a perpetually billing VPS. Its memory is hybrid semantic+keyword and region-partitioned, so it recalls paraphrased facts a keyword-only store returns zero hits for. Its skills are not prompts but small self-improving programs that run in a default-deny WASM sandbox and rewrite themselves from measured outcomes. Every memory write and skill mutation is signed, append-only, and one-click reversible, and a dashboard renders the brain — firing neurons, memory tiers, skills, the model of you — so growth is felt and governed, not silently committed to a Markdown folder you are told to audit later.
+Engram is a personal AI agent built loosely on how a brain works: it keeps what matters, forgets the rest, and gets better the more you use it. It runs as a single small Rust binary that drops to zero RAM when nothing is happening and wakes in a few milliseconds, so you are not paying for an always-on Python and Node stack idling on a VPS all month.
 
-Engram v0.1 is complete. Every step of the architecture build order is built and tested: the reactive kernel and signed audit ledger, hybrid memory, the metered taint-aware gateway, capability-sandboxed WASM skills with a self-improving learning loop, the deterministic scheduler, the daemon that wires it all into a running agent with a live dashboard, and the benchmark harness. The whole workspace builds offline with no network dependency and passes `cargo test --workspace`.
+Its memory searches by meaning and by keyword at the same time, so a paraphrased question still finds the right fact even when it shares no words with how you first wrote it. Skills are not prompts. They are small programs that run in a locked-down WASM sandbox and rewrite themselves based on how well they actually performed. Anything the agent does to its own memory or skills is signed, append-only, and reversible in one click, and the dashboard shows it as it happens rather than quietly writing to a folder you are told to review later.
+
+v0.1 is finished and tested: the reactive core and the signed ledger, hybrid memory, the metered gateway, the sandboxed skills and their learning loop, the scheduler, the daemon that ties it all together, and the benchmarks. It all builds offline with no network, and passes `cargo test --workspace`.
 
 See [`VISION.md`](./VISION.md) for the north-star vision, [`docs/ADR-0001-architecture.md`](./docs/ADR-0001-architecture.md) for the architecture decision record that turns that vision into concrete calls, and [`docs/THREAT-MODEL.md`](./docs/THREAT-MODEL.md) for the security model.
 
@@ -15,7 +17,7 @@ See [`VISION.md`](./VISION.md) for the north-star vision, [`docs/ADR-0001-archit
 | Working memory (prefrontal) | **Hot** store, in-RAM | the current task and context |
 | Hippocampus | **Episodic** encoder + consolidator | recent experiences, conversations |
 | Neocortex | **Semantic** store (warm→cold) | consolidated long-term knowledge |
-| Basal ganglia | **Procedural** store | skills / habits — the self-improving programs |
+| Basal ganglia | **Procedural** store | skills / habits, the self-improving programs |
 | Amygdala | **Salience** tagging | what matters, what to keep, what to forget |
 | Neurons / synapses | **Reactive event bus** | fire on events; synaptic weights = learning |
 | Sleep / consolidation | **Idle consolidation** | move warm→cold, strengthen used traces, prune the rest |
@@ -25,62 +27,62 @@ See [`VISION.md`](./VISION.md) for the north-star vision, [`docs/ADR-0001-archit
 
 Engram is a Rust workspace of small, single-purpose crates. Capability comes from the right primitives and the right isolation boundaries, not from lines of code. Every crate that mutates state writes to the audit ledger first, so the whole system is tamper-evident and reversible by construction.
 
-**`crates/engram-core` — the reactive kernel.** The brainstem, now a pure library (its old demo binary was removed; the daemon lives in `engramd`). It owns the primitives everything else fires through:
+**`crates/engram-core`, the reactive kernel.** The brainstem, now a pure library (its old demo binary was removed; the daemon lives in `engramd`). It owns the primitives everything else fires through:
 
-- **Event bus (`event`)** — the neural substrate. A *spike* is the unit of activity; spikes flow across four priority lanes (Reflex → High → Normal → Low) on an in-process Tokio broadcast bus that exists *only while the core is awake*. There is no parked daemon. Every spike carries a monotonic provenance taint: anything derived from untrusted input is `Untrusted`, and taint only ever spreads — the basis for breaking the prompt-injection → exfiltration chain.
-- **Lifecycle (`lifecycle`)** — wake/sleep. The core runs while there is activity and resolves to exit after an idle window (or on SIGINT/SIGTERM). On a socket-activated VPS this means no resident process between requests — the near-zero-idle property in one small module. Tested under Tokio's paused virtual clock, so the idle behavior is verified without real sleeping.
-- **Audit ledger (`ledger`)** — an append-only, content-addressed (BLAKE3), hash-chained, Ed25519-signed record of every state change. Each entry commits to the previous entry's hash, so altering any past entry breaks every hash after it and tampering is detected on replay. The signing key lives on disk at `0600` and is never handed to a skill. A "revert" is itself an appended entry pointing at a prior good hash — history is added to, never erased. The public key is published to `<ENGRAM_HOME>/ledger.pub`, and **`engramd verify [HOME]`** replays the chain against it **offline, without starting or trusting the daemon** (exit 0 = intact, 1 = tampered at a named seq). A run can be exported as a self-contained, independently-verifiable receipt via `GET /v1/tasks/{id}/receipt`. *Honest boundary:* this is tamper-evident against post-hoc edits and any party without the signing key — **not** against a fully-compromised host that holds the key; hardware-backed keys / external co-signing (deferred) are what would make it tamper-*proof* against host compromise. See [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md) (T8).
+- **Event bus (`event`)**: the neural substrate. A *spike* is the unit of activity; spikes flow across four priority lanes (Reflex → High → Normal → Low) on an in-process Tokio broadcast bus that exists *only while the core is awake*. There is no parked daemon. Every spike carries a monotonic provenance taint: anything derived from untrusted input is `Untrusted`, and taint only ever spreads, the basis for breaking the prompt-injection → exfiltration chain.
+- **Lifecycle (`lifecycle`)**: wake/sleep. The core runs while there is activity and resolves to exit after an idle window (or on SIGINT/SIGTERM). On a socket-activated VPS this means no resident process between requests, the near-zero-idle property in one small module. Tested under Tokio's paused virtual clock, so the idle behavior is verified without real sleeping.
+- **Audit ledger (`ledger`)**: an append-only, content-addressed (BLAKE3), hash-chained, Ed25519-signed record of every state change. Each entry commits to the previous entry's hash, so altering any past entry breaks every hash after it and tampering is detected on replay. The signing key lives on disk at `0600` and is never handed to a skill. A "revert" is itself an appended entry pointing at a prior good hash, history is added to, never erased. The public key is published to `<ENGRAM_HOME>/ledger.pub`, and **`engramd verify [HOME]`** replays the chain against it **offline, without starting or trusting the daemon** (exit 0 = intact, 1 = tampered at a named seq). A run can be exported as a self-contained, independently-verifiable receipt via `GET /v1/tasks/{id}/receipt`. *Honest boundary:* this is tamper-evident against post-hoc edits and any party without the signing key, **not** against a fully-compromised host that holds the key; hardware-backed keys / external co-signing (deferred) are what would make it tamper-*proof* against host compromise. See [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md) (T8).
 
-**`crates/engram-memory` — the brain on disk.** Hybrid, region-partitioned, tiered memory in a single embedded SQLite (WAL) file that survives the core sleeping to zero.
+**`crates/engram-memory`, the brain on disk.** Hybrid, region-partitioned, tiered memory in a single embedded SQLite (WAL) file that survives the core sleeping to zero.
 
-- **Memory broker (`store`)** — `remember` and `recall`. Recall fuses a **keyword** arm (FTS5 / BM25) and a **semantic** arm (brute-force vector cosine over candidate rows) with Reciprocal Rank Fusion, so a paraphrased query with no shared words still surfaces the right memory — exactly where a keyword-only agent returns nothing. Each hit reports which arm carried it, so the UI can show *why* a memory surfaced. Writes are ledgered before they land; `forget`/`restore` and idle `consolidate` (warm→cold demotion of stale, low-importance facts) are all recorded and reversible.
-- **Regions (`region`)** — memory is partitioned the way a brain is (Episodic, Semantic, Identity, Procedural), and recall consults only the regions that fit the task type, so a question about *who you are* does not scan every conversation you ever had.
-- **Embeddings (`embed` / `static_embed`)** — an `Embedder` trait with a dependency-free default (signed feature hashing over word tokens and character trigrams, L2-normalized) that keeps the binary tiny and the pipeline testable offline, plus a **pure-Rust static (model2vec) embedder** for real synonym/paraphrase recall (`ENGRAM_EMBED=static`) — a distilled embedding table read straight from `model.safetensors`, no ONNX runtime, no ML crate. A provider embedding model also plugs into the same trait through the gateway. Changing embedders re-embeds existing memories into the new space.
+- **Memory broker (`store`)**: `remember` and `recall`. Recall fuses a **keyword** arm (FTS5 / BM25) and a **semantic** arm (brute-force vector cosine over candidate rows) with Reciprocal Rank Fusion, so a paraphrased query with no shared words still surfaces the right memory, exactly where a keyword-only agent returns nothing. Each hit reports which arm carried it, so the UI can show *why* a memory surfaced. Writes are ledgered before they land; `forget`/`restore` and idle `consolidate` (warm→cold demotion of stale, low-importance facts) are all recorded and reversible.
+- **Regions (`region`)**: memory is partitioned the way a brain is (Episodic, Semantic, Identity, Procedural), and recall consults only the regions that fit the task type, so a question about *who you are* does not scan every conversation you ever had.
+- **Embeddings (`embed` / `static_embed`)**: an `Embedder` trait with a dependency-free default (signed feature hashing over word tokens and character trigrams, L2-normalized) that keeps the binary tiny and the pipeline testable offline, plus a **pure-Rust static (model2vec) embedder** for real synonym/paraphrase recall (`ENGRAM_EMBED=static`), a distilled embedding table read straight from `model.safetensors`, no ONNX runtime, no ML crate. A provider embedding model also plugs into the same trait through the gateway. Changing embedders re-embeds existing memories into the new space.
 
-**`crates/engram-gateway` — the LLM gateway.** The single audited choke-point every model and embedding call passes through, so nothing reaches a model off the record. Provider-agnostic behind a `Provider` trait: an offline `MockProvider` runs everywhere with no credentials, and an `HttpProvider` (behind `--features http`, OpenAI-compatible, for Anthropic / OpenAI / OpenRouter) is opt-in so default builds stay small and offline. It meters tokens and cost per call, and enforces the first half of the taint rule — an untrusted call has its secret-bearing context stripped before it reaches the model, with the redaction metered and ledgered.
+**`crates/engram-gateway`, the LLM gateway.** The single audited choke-point every model and embedding call passes through, so nothing reaches a model off the record. Provider-agnostic behind a `Provider` trait: an offline `MockProvider` runs everywhere with no credentials, and an `HttpProvider` (behind `--features http`, OpenAI-compatible, for Anthropic / OpenAI / OpenRouter) is opt-in so default builds stay small and offline. It meters tokens and cost per call, and enforces the first half of the taint rule, an untrusted call has its secret-bearing context stripped before it reaches the model, with the redaction metered and ledgered.
 
-**`crates/engram-skills` — the skill runtime.** Skills are not prompts; they are small signed WASM programs that run in a capability-sandboxed, fuel-bounded host (via `wasmi`, a pure-Rust interpreter chosen for a tiny binary and a deterministic deny-by-default sandbox). A skill receives a host function only if its signed manifest was granted the matching capability; importing anything ungranted fails to link, so an over-reaching skill never starts, and a runaway skill traps on fuel exhaustion instead of hanging the core. A registry versions skills and their recorded runs. On top of it sits the **self-improving learning loop**: a candidate version is replayed against the inputs the skill has actually seen, scored on the skill's own metric, A/B-gated head-to-head against the incumbent, promoted only on a measured win with consent — and one `set_active` away from being reverted. **Egress capabilities (LLM, Net) are revoked automatically for any run that read untrusted input** — the no-egress half of the taint rule, proven at the sandbox boundary.
+**`crates/engram-skills`, the skill runtime.** Skills are not prompts; they are small signed WASM programs that run in a capability-sandboxed, fuel-bounded host (via `wasmi`, a pure-Rust interpreter chosen for a tiny binary and a deterministic deny-by-default sandbox). A skill receives a host function only if its signed manifest was granted the matching capability; importing anything ungranted fails to link, so an over-reaching skill never starts, and a runaway skill traps on fuel exhaustion instead of hanging the core. A registry versions skills and their recorded runs. On top of it sits the **self-improving learning loop**: a candidate version is replayed against the inputs the skill has actually seen, scored on the skill's own metric, A/B-gated head-to-head against the incumbent, promoted only on a measured win with consent, and one `set_active` away from being reverted. **Egress capabilities (LLM, Net) are revoked automatically for any run that read untrusted input**: the no-egress half of the taint rule, proven at the sandbox boundary.
 
-**`crates/engram-sched` — the scheduler.** Deterministic natural-language → recurrence parsing ("every weekday at 9am") with no model call, persisted jobs that reschedule forward across sleep with skip-on-missed so a suspended VPS does not stampede on wake, and generators for the systemd socket-activation and wake-timer units that make zero-idle and scheduled wake real on a $5 VPS. Every change is recorded in the audit ledger.
+**`crates/engram-sched`, the scheduler.** Deterministic natural-language → recurrence parsing ("every weekday at 9am") with no model call, persisted jobs that reschedule forward across sleep with skip-on-missed so a suspended VPS does not stampede on wake, and generators for the systemd socket-activation and wake-timer units that make zero-idle and scheduled wake real on a $5 VPS. Every change is recorded in the audit ledger.
 
-**`crates/engram-agent` — the tool-use loop.** This is where the model stops talking and starts *doing*. The agent advertises its tools to the model, runs the calls the model makes, feeds each observation back, and repeats until the model answers with no further tool call (or a step budget is hit). It is exposed at **`POST /v1/agent`** and driven from the dashboard's **Agent** panel; the same loop runs behind every messaging channel. Every step is ledgered, so a run is a replayable trace, not a black box. The loop is frontier-grade: a turn's independent tool calls run **in parallel**, model calls **retry with backoff**, the transcript is **compacted** (older turns summarized) so long runs don't overflow the context window, the agent maintains an explicit **plan** (`update_plan`, shown as a live checklist) and runs a **verify-before-finish reflection** pass — all while the no-egress taint gate holds. With a native Anthropic key it adds **prompt caching** of the tools+system prefix and **token streaming**.
+**`crates/engram-agent`, the tool-use loop.** This is where the model stops talking and starts *doing*. The agent advertises its tools to the model, runs the calls the model makes, feeds each observation back, and repeats until the model answers with no further tool call (or a step budget is hit). It is exposed at **`POST /v1/agent`** and driven from the dashboard's **Agent** panel; the same loop runs behind every messaging channel. Every step is ledgered, so a run is a replayable trace, not a black box. The loop is frontier-grade: a turn's independent tool calls run **in parallel**, model calls **retry with backoff**, the transcript is **compacted** (older turns summarized) so long runs don't overflow the context window, the agent maintains an explicit **plan** (`update_plan`, shown as a live checklist) and runs a **verify-before-finish reflection** pass, all while the no-egress taint gate holds. With a native Anthropic key it adds **prompt caching** of the tools+system prefix and **token streaming**.
 
 The built-in tools are deliberately small and auditable:
 
-- **`memory_recall` / `memory_remember`** — search and write the agent's own hybrid long-term memory (the same broker the rest of the system uses), so facts learned in one run survive into the next. Writes inherit the run's taint, so injected content cannot launder itself into a trusted fact.
-- **`read_file` / `write_file` / `list_dir`** — filesystem access **confined to the workdir** by path normalization that rejects `..` escapes; writing is policy-gated.
-- **`shell`** — run a command with three backends: **local** (`sh -c`), **Docker** (`docker run --network none` against a configured image — sandboxed code execution with the network cut), and **SSH** (run on a remote host). Off by default, and refused outright once the run is tainted.
-- **`web_search` / `web_fetch`** — real web access with no API key, via DuckDuckGo's HTML endpoint and a plain fetch, returning readable text (default `web` feature).
-- **`browser_read`** (headless `--dump-dom`, runs the page's JavaScript) and the interactive **`browser_open` / `browser_click` / `browser_type` / `browser_extract`** plus **`browser_screenshot`** — a persistent Chrome session driven over the Chrome DevTools Protocol (`--features browser-cdp`), for JS-heavy pages and multi-step flows a plain fetch can't reach.
-- **`delegate_task`** — spawn an isolated subagent on a focused subtask and return its result; subagents inherit the parent's taint and are depth-bounded so recursion can't run away.
-- **`vision_analyze`, `image_generate`, `text_to_speech`** — multimodal actions routed through the metered, audited gateway (look at a screenshot, generate a PNG, synthesize audio).
-- **`send_message`** — post to a Slack/Discord/Mattermost-style incoming webhook; paired with a **Telegram** inbound channel (`ENGRAM_TELEGRAM_TOKEN`) that long-polls messages, runs the agent on each, and replies — one transport, the same agent behind it.
-- **The MCP client** — connect to any Model Context Protocol server listed in `<ENGRAM_HOME>/mcp.json` (JSON-RPC 2.0 over a subprocess's stdio); each remote tool is wrapped as a native, ledgered Engram tool. Rather than hand-coding dozens of integrations, the agent borrows the whole MCP ecosystem, audited through the same ledger as everything else.
+- **`memory_recall` / `memory_remember`**: search and write the agent's own hybrid long-term memory (the same broker the rest of the system uses), so facts learned in one run survive into the next. Writes inherit the run's taint, so injected content cannot launder itself into a trusted fact.
+- **`read_file` / `write_file` / `list_dir`**: filesystem access **confined to the workdir** by path normalization that rejects `..` escapes; writing is policy-gated.
+- **`shell`**: run a command with three backends: **local** (`sh -c`), **Docker** (`docker run --network none` against a configured image, sandboxed code execution with the network cut), and **SSH** (run on a remote host). Off by default, and refused outright once the run is tainted.
+- **`web_search` / `web_fetch`**: real web access with no API key, via DuckDuckGo's HTML endpoint and a plain fetch, returning readable text (default `web` feature).
+- **`browser_read`** (headless `--dump-dom`, runs the page's JavaScript) and the interactive **`browser_open` / `browser_click` / `browser_type` / `browser_extract`** plus **`browser_screenshot`**: a persistent Chrome session driven over the Chrome DevTools Protocol (`--features browser-cdp`), for JS-heavy pages and multi-step flows a plain fetch can't reach.
+- **`delegate_task`**: spawn an isolated subagent on a focused subtask and return its result; subagents inherit the parent's taint and are depth-bounded so recursion can't run away.
+- **`vision_analyze`, `image_generate`, `text_to_speech`**: multimodal actions routed through the metered, audited gateway (look at a screenshot, generate a PNG, synthesize audio).
+- **`send_message`**: post to a Slack/Discord/Mattermost-style incoming webhook; paired with a **Telegram** inbound channel (`ENGRAM_TELEGRAM_TOKEN`) that long-polls messages, runs the agent on each, and replies, one transport, the same agent behind it.
+- **The MCP client**: connect to any Model Context Protocol server listed in `<ENGRAM_HOME>/mcp.json` (JSON-RPC 2.0 over a subprocess's stdio); each remote tool is wrapped as a native, ledgered Engram tool. Rather than hand-coding dozens of integrations, the agent borrows the whole MCP ecosystem, audited through the same ledger as everything else.
 
 The security edges here are what a bolted-on tool loop cannot retrofit:
 
-- **Every tool call is ledgered** — signed, hash-chained, replayable. The run is auditable by construction, not by a log you are asked to trust.
+- **Every tool call is ledgered**: signed, hash-chained, replayable. The run is auditable by construction, not by a log you are asked to trust.
 - **The filesystem is workdir-confined** and the **shell is off by default**; the dangerous capabilities are closed unless you open them.
-- **The run is *tainted* the instant a web or browser tool reads untrusted content**, and taint only ever spreads. After that point the `shell` is refused and the model's secret-bearing context is stripped before the next call — the prompt-injection → exfiltration chain is broken at the boundary, not by a hoped-for prompt. The same taint flows into subagents and into any memory the run writes.
+- **The run is *tainted* the instant a web or browser tool reads untrusted content**, and taint only ever spreads. After that point the `shell` is refused and the model's secret-bearing context is stripped before the next call, the prompt-injection → exfiltration chain is broken at the boundary, not by a hoped-for prompt. The same taint flows into subagents and into any memory the run writes.
 
-**`crates/engramd` — the daemon.** This is where the parts become an agent. It opens the ledger, the hybrid memory, the skill registry, the gateway, the scheduler, and the agent's toolset (built-ins plus any MCP servers), and exposes them over a small local HTTP API plus the redesigned desktop control center (see [Desktop](#desktop)). That single page gives you a Kanban board fed by a chat composer, glass-box signed task cards, an ambient trust/cost spine, and views for **Chat / Tasks / Schedule / Memory / Skills** — all over Server-Sent Events. Every request keeps the brain awake and fires a spike; after an idle window with no requests the process exits to zero, so on a socket-activated VPS there is nothing resident between uses.
+**`crates/engramd`, the daemon.** This is where the parts become an agent. It opens the ledger, the hybrid memory, the skill registry, the gateway, the scheduler, and the agent's toolset (built-ins plus any MCP servers), and exposes them over a small local HTTP API plus the redesigned desktop control center (see [Desktop](#desktop)). That single page gives you a Kanban board fed by a chat composer, glass-box signed task cards, an ambient trust/cost spine, and views for **Chat / Tasks / Schedule / Memory / Skills**: all over Server-Sent Events. Every request keeps the brain awake and fires a spike; after an idle window with no requests the process exits to zero, so on a socket-activated VPS there is nothing resident between uses.
 
-**`crates/engram-bench` — the benchmark harness.** A reproducible paraphrase recall harness that writes a labelled fact/query set plus distractors into the real memory broker and reports recall@10, MRR, and the zero-lexical-overlap subset where a keyword index scores zero by construction.
+**`crates/engram-bench`, the benchmark harness.** A reproducible paraphrase recall harness that writes a labelled fact/query set plus distractors into the real memory broker and reports recall@10, MRR, and the zero-lexical-overlap subset where a keyword index scores zero by construction.
 
-**`crates/engram-eval` — deterministic harness regression testing.** Answers "tested by vibes": an eval *case* records a task plus the exact model completions a run received, and replaying it drives the *real* agent and *real* tools through the scripted provider — no model, no network, fully deterministic — asserting the tool sequence, answer, and stop reason against a baseline. Change a prompt, a tool, or the loop, re-run `engram-eval`, and a regression is a failing case, not a hunch. `engram-eval` runs the built-in suite (tool-use, planning, the token-budget stop, the loop guard); `engram-eval <dir>` runs every `*.json` case in a directory.
+**`crates/engram-eval`, deterministic harness regression testing.** Answers "tested by vibes": an eval *case* records a task plus the exact model completions a run received, and replaying it drives the *real* agent and *real* tools through the scripted provider, no model, no network, fully deterministic, asserting the tool sequence, answer, and stop reason against a baseline. Change a prompt, a tool, or the loop, re-run `engram-eval`, and a regression is a failing case, not a hunch. `engram-eval` runs the built-in suite (tool-use, planning, the token-budget stop, the loop guard); `engram-eval <dir>` runs every `*.json` case in a directory.
 
 ## Desktop
 
-The dashboard is now a redesigned single-page **control center** — one self-contained `index.html` (HTML + CSS + vanilla JS, no build step, no framework) served at `/` by `engramd` (`crates/engramd/assets/index.html`). It is a calm, dark, Claude-like window: a left rail (**Chat / Tasks / Schedule / Memory / Skills**) and one work surface, with an ambient **trust spine** in the top bar that answers the two questions other agent UIs leave open — *is this safe?* and *what's it costing?*. A live **"ledger verified · N"** chip (flipping to a red tamper banner the moment the audit chain fails to verify) sits next to a **"today's cost"** chip, so the agent's integrity and spend are always in view, not buried in a separate admin tool.
+The dashboard is now a redesigned single-page **control center**: one self-contained `index.html` (HTML + CSS + vanilla JS, no build step, no framework) served at `/` by `engramd` (`crates/engramd/assets/index.html`). It is a calm, dark, Claude-like window: a left rail (**Chat / Tasks / Schedule / Memory / Skills**) and one work surface, with an ambient **trust spine** in the top bar that answers the two questions other agent UIs leave open, *is this safe?* and *what's it costing?*. A live **"ledger verified · N"** chip (flipping to a red tamper banner the moment the audit chain fails to verify) sits next to a **"today's cost"** chip, so the agent's integrity and spend are always in view, not buried in a separate admin tool.
 
-- **A Kanban board at the heart.** Three columns — **To do / Running / Done** — with a **chat composer as the only input**, and intent routing on a single keystroke: **Enter** answers in Chat, **⌘+Enter** creates a task, **⇧+⌘+Enter** creates *and runs* it. Dragging a card between columns runs, cancels, or re-queues it. A running card shows live **"step N · tool"** progress as the agent works.
-- **Glass-box task cards.** Clicking a card opens a detail panel with the agent's answer *and* the signed ledger audit slice for that run — each tool step paired with its ledger sequence number and BLAKE3 hash (click to copy), plus the pinned ledger head. It is a tamper-evident receipt, not just a log: the card proves what the agent did.
-- **Graduated, calm autonomy.** Read-only steps run silently. When a side-effecting tool is blocked — the `shell`, off by default — the panel surfaces a plain-language **"Allow & re-run"** approval card instead of a stack trace. Granting it flips a runtime policy that is itself written to the ledger, so even a consent change is on the record.
+- **A Kanban board at the heart.** Three columns, **To do / Running / Done**: with a **chat composer as the only input**, and intent routing on a single keystroke: **Enter** answers in Chat, **⌘+Enter** creates a task, **⇧+⌘+Enter** creates *and runs* it. Dragging a card between columns runs, cancels, or re-queues it. A running card shows live **"step N · tool"** progress as the agent works.
+- **Glass-box task cards.** Clicking a card opens a detail panel with the agent's answer *and* the signed ledger audit slice for that run, each tool step paired with its ledger sequence number and BLAKE3 hash (click to copy), plus the pinned ledger head. It is a tamper-evident receipt, not just a log: the card proves what the agent did.
+- **Graduated, calm autonomy.** Read-only steps run silently. When a side-effecting tool is blocked, the `shell`, off by default, the panel surfaces a plain-language **"Allow & re-run"** approval card instead of a stack trace. Granting it flips a runtime policy that is itself written to the ledger, so even a consent change is on the record.
 - **Visible scheduling.** A natural-language **"when"** field with a **live next-fire preview** as you type (no model call), plus an in-process scheduler tick that fires due jobs as ordinary board cards. (For true zero-idle wake while the daemon is asleep, the generated systemd timers do the waking.)
 - **Honest offline mode.** With no model key configured, the UI shows an explicit *"add a model key to think for real"* banner rather than returning fake answers.
 - **Live and persistent.** Updates stream over **Server-Sent Events** (the connection is deliberately time-bounded so a held-open stream can never block the daemon's zero-idle exit; the browser reconnects seamlessly). Chat **persists across reloads** from episodic memory, every view is **deep-linkable via `#hash`**, and a **Memory** view renders the brain's regions (Identity / Semantic / Episodic / Procedural) with their warm/cold tiers.
 
-The desktop sits on a small task model (`crates/engramd/src/tasks.rs`): a `Task` moves `todo → doing → done | failed | scheduled`, and a completed run carries a `TaskRun` receipt — the answer, every step verbatim, token and cost deltas, and the signed ledger head pinned at finish. The native [Tauri shell](#desktop-app) wraps exactly this page in a window.
+The desktop sits on a small task model (`crates/engramd/src/tasks.rs`): a `Task` moves `todo → doing → done | failed | scheduled`, and a completed run carries a `TaskRun` receipt, the answer, every step verbatim, token and cost deltas, and the signed ledger head pinned at finish. The native [Tauri shell](#desktop-app) wraps exactly this page in a window.
 
 The control center is driven by these endpoints, alongside the existing `/v1/agent`, `/v1/converse` (and `/v1/converse/stream` for token-by-token replies), `/v1/swarm`, `/v1/skills`, `/v1/remember` · `/v1/recall` · `/v1/forget`, `/v1/memory/stats`, `/v1/meter`, `/v1/ledger/tail` · `/v1/ledger/verify`, and `/v1/schedule`:
 
@@ -89,10 +91,10 @@ The control center is driven by these endpoints, alongside the existing `/v1/age
 | `/v1/tasks` | GET / POST | list the board / create a task |
 | `/v1/tasks/{id}` | PATCH / DELETE | move a card between columns / delete it |
 | `/v1/tasks/{id}/run` | POST | run the task with the agent and attach a `TaskRun` receipt |
-| `/v1/tasks/{id}/audit` | GET | the signed ledger slice for that run — the glass-box receipt |
+| `/v1/tasks/{id}/audit` | GET | the signed ledger slice for that run, the glass-box receipt |
 | `/v1/policy` | GET / POST | read or set the runtime shell consent (the "Allow & re-run" toggle), itself ledgered |
 | `/v1/schedule/preview` | GET | parse a natural-language "when" and return the next fire, without creating a job |
-| `/v1/memory/recent` | GET | recent records by region — backs persistent chat and the Memory view |
+| `/v1/memory/recent` | GET | recent records by region, backs persistent chat and the Memory view |
 | `/v1/events` | GET (SSE) | the live event stream the board updates from (bounded to protect zero-idle) |
 | `/v1/voice` | POST | one voice turn: audio in → transcribe → run → synthesize → audio out |
 | `/v1/voice/stream` | GET (WebSocket) | a multi-turn live voice session |
@@ -106,13 +108,13 @@ Measured by `cargo run -p engram-bench` over a 25-fact corpus and 17 paraphrase 
 |---|---|---|---|
 | trigram-hash (offline default) | 94% | 0.779 | 90% |
 | **static model2vec (pure-Rust)** | **100%** | **0.887** | **100%** |
-| keyword-only baseline | — | — | 0% (by construction) |
+| keyword-only baseline |, |, | 0% (by construction) |
 
-The static embedder closes the synonym gap the trigram default can't — *"purchasing a car"* recalls *"she bought a new automobile last week"* (no shared word or character-trigram). It needs no ONNX runtime or ML crate: inference is tokenize → look up each token's row in the distilled `[vocab, dim]` matrix → mean → normalize, all in pure Rust. The full-agent binary stays **5.6 MB** and idle RAM stays **0 MB**; the ~30 MB model is a data directory fetched at deploy time (`scripts/build_embedder.py`), never bundled. Enable with `ENGRAM_EMBED=static`; existing memories are re-embedded into the new space automatically.
+The static embedder closes the synonym gap the trigram default can't, *"purchasing a car"* recalls *"she bought a new automobile last week"* (no shared word or character-trigram). It needs no ONNX runtime or ML crate: inference is tokenize → look up each token's row in the distilled `[vocab, dim]` matrix → mean → normalize, all in pure Rust. The full-agent binary stays **5.6 MB** and idle RAM stays **0 MB**; the ~30 MB model is a data directory fetched at deploy time (`scripts/build_embedder.py`), never bundled. Enable with `ENGRAM_EMBED=static`; existing memories are re-embedded into the new space automatically.
 
 ## vs Hermes
 
-The thesis is that Engram now *matches* [Nous Hermes](https://github.com/nousresearch/hermes-agent) on the agentic surface — the tool-use loop, sandboxed code execution, files, web, an interactive browser, vision/image/speech, memory, MCP, subagents, messaging, and personality — while *exceeding* it on the things Hermes cannot retrofit: footprint, zero-idle cost, hybrid recall, security-by-construction, a signed audit ledger, and a measured learning loop. This section is deliberately honest about where Engram is still behind.
+The thesis is that Engram now *matches* [Nous Hermes](https://github.com/nousresearch/hermes-agent) on the agentic surface, the tool-use loop, sandboxed code execution, files, web, an interactive browser, vision/image/speech, memory, MCP, subagents, messaging, and personality, while *exceeding* it on the things Hermes cannot retrofit: footprint, zero-idle cost, hybrid recall, security-by-construction, a signed audit ledger, and a measured learning loop. This section is deliberately honest about where Engram is still behind.
 
 ### Where Engram now matches Hermes
 
@@ -150,8 +152,8 @@ The thesis is that Engram now *matches* [Nous Hermes](https://github.com/nousres
 
 These are honest gaps, not spin:
 
-- **Voice mode** — not built. Engram does text-to-speech as a tool, but there is no live voice-conversation loop.
-- **Breadth of integrations** — Hermes ships 20+ messaging platforms and ~6 execution backends. Engram has **Telegram + outbound webhook** for messaging and **local / Docker / SSH** shell backends plus the **WASM** skill sandbox. The MCP client narrows this gap (any MCP server becomes available) but the out-of-the-box surface is smaller.
+- **Voice mode**: not built. Engram does text-to-speech as a tool, but there is no live voice-conversation loop.
+- **Breadth of integrations**: Hermes ships 20+ messaging platforms and ~6 execution backends. Engram has **Telegram + outbound webhook** for messaging and **local / Docker / SSH** shell backends plus the **WASM** skill sandbox. The MCP client narrows this gap (any MCP server becomes available) but the out-of-the-box surface is smaller.
 - **Live media and real recall need a provider key.** `vision_analyze`, `image_generate`, `text_to_speech`, and synonym-level (>0.85) semantic recall route through a real model: they require building with `--features http` and configuring a provider, and fall back to the offline mock otherwise. The default offline build still does the agentic loop, files, shell, web, the interactive browser, and morphological recall.
 
 ## Build & run
@@ -187,7 +189,7 @@ It is configured by environment variables:
 | `ENGRAM_IDLE_SECS` | `900` | Idle window, in seconds, before the core sleeps to zero. |
 | `ENGRAM_EMBED` | _(unset)_ | `static` uses the pure-Rust model2vec embedder (real synonym recall; fetch a model with `scripts/build_embedder.py`). `gateway` embeds through the provider model. Unset uses the offline trigram default. Switching embedders re-embeds existing memories into the new space automatically. |
 | `ENGRAM_STATIC_MODEL` | `<ENGRAM_HOME>/embedder` | Directory of the model2vec model (`tokenizer.json` + `model.safetensors`) used when `ENGRAM_EMBED=static`. |
-| `ENGRAM_ANTHROPIC_API_KEY` | _(unset)_ | When set (with `--features http`), uses the native Anthropic provider — the Messages API with **prompt caching** of the tools+system prefix and token streaming. Takes priority over the OpenAI-compatible path; `ENGRAM_LLM_BASE_URL` optionally overrides the host. |
+| `ENGRAM_ANTHROPIC_API_KEY` | _(unset)_ | When set (with `--features http`), uses the native Anthropic provider, the Messages API with **prompt caching** of the tools+system prefix and token streaming. Takes priority over the OpenAI-compatible path; `ENGRAM_LLM_BASE_URL` optionally overrides the host. |
 | `ENGRAM_LLM_BASE_URL` | _(unset)_ | OpenAI-compatible base URL for a real provider (requires building with `--features http`). |
 | `ENGRAM_LLM_API_KEY` | _(unset)_ | API key for that provider. With both set, the gateway uses the real model for completions and embeddings; otherwise an offline mock. |
 | `ENGRAM_MODEL` | `claude-haiku` | Model id the agent uses for the tool-use loop and delegated subagents. |
@@ -270,7 +272,7 @@ Every step of the v0.1 architecture build order is built and tested.
 | 7 | Taint rule: egress revoked on untrusted-data runs at the sandbox boundary | **Done** |
 | 8 | Learning loop: replay eval, A/B promotion gate, signed versions, revert | **Done** |
 | 9 | `engram-sched`: NL→recurrence, persisted jobs, systemd socket + timer units | **Done** |
-| 10 | `engramd`: the daemon — HTTP API + desktop control center (Kanban board, glass-box signed task cards, trust/cost spine, Chat, Schedule, Memory, Skills, SSE) | **Done** |
+| 10 | `engramd`: the daemon, HTTP API + desktop control center (Kanban board, glass-box signed task cards, trust/cost spine, Chat, Schedule, Memory, Skills, SSE) | **Done** |
 | 11 | `engram-bench`: paraphrase recall harness | **Done** |
 | 12 | `engram-agent`: tool-use loop, built-in tools (memory, files, shell, web, browser, media, delegate, messaging), MCP client, taint guard | **Done** |
 
@@ -279,37 +281,37 @@ Every step of the v0.1 architecture build order is built and tested.
 The engine is proven end to end offline, and the integration points for going online are
 in place. Delivered since the initial v0.1:
 
-- **The agentic layer** — `engram-agent`: the tool-use loop at `/v1/agent` and the
+- **The agentic layer**: `engram-agent`: the tool-use loop at `/v1/agent` and the
   dashboard Agent panel, with built-in tools for memory, files, the multi-backend shell,
   web, the interactive browser, vision/image/speech, subagent delegation, and messaging,
-  plus an MCP client — all under the workdir confinement and taint guard described above.
-- **Conversation memory** — `/v1/converse` and the Talk panel: each turn is logged to
+  plus an MCP client - all under the workdir confinement and taint guard described above.
+- **Conversation memory**: `/v1/converse` and the Talk panel: each turn is logged to
   episodic memory, past turns are recalled, and identity facts about you are extracted
   and persisted across sessions.
-- **Async LLM/Net host capabilities for skills** — a granted, untainted skill calls the
+- **Async LLM/Net host capabilities for skills**: a granted, untainted skill calls the
   model through the metered, audited gateway from inside the sandbox (seed `ask` skill).
-- **Real model + embedder wiring** — `ENGRAM_EMBED=gateway` plus `--features http` and a
+- **Real model + embedder wiring**: `ENGRAM_EMBED=gateway` plus `--features http` and a
   provider URL/key route completions and embeddings through a real OpenAI-compatible model.
-- **Swarms** — `/v1/swarm` composes multiple skills into a pipeline over shared input.
-- **Desktop control center** — the dashboard, redesigned into one calm single-page window:
+- **Swarms**: `/v1/swarm` composes multiple skills into a pipeline over shared input.
+- **Desktop control center**: the dashboard, redesigned into one calm single-page window:
   a Kanban board fed by a chat composer with intent routing, glass-box signed task cards,
   an ambient trust/cost spine, graduated shell-approval autonomy, live scheduling, honest
   offline mode, and SSE-driven updates (see [Desktop](#desktop)).
-- **Tauri desktop shell** — `desktop/` wraps that control center in a native window.
+- **Tauri desktop shell**: `desktop/` wraps that control center in a native window.
 
 Remaining:
 
-- **Provider key (optional)** — synonym-level paraphrase recall already ships **locally** via
+- **Provider key (optional)**: synonym-level paraphrase recall already ships **locally** via
   the pure-Rust static embedder (`ENGRAM_EMBED=static`; measured 100% recall@10 vs trigram's
   94%). A provider key with `--features http` is only needed to drive completions through a
   real model (Anthropic-native or OpenAI-compatible) and to light up live vision, image
   generation, and speech.
-- **VPS deploy** — the generated systemd socket-activation and wake-timer units on a $5 VPS
+- **VPS deploy**: the generated systemd socket-activation and wake-timer units on a $5 VPS
   behind a reverse proxy, with the published $0.00/idle-hour table.
-- **Hardware-backed audit keys** — TPM/Secure-Enclave/YubiKey or external co-signing to make
+- **Hardware-backed audit keys**: TPM/Secure-Enclave/YubiKey or external co-signing to make
   the ledger tamper-*proof against host compromise* (today it is tamper-*evident*; the
   boundary is stated honestly in the threat model).
-- **Voice mode** and **broader messaging/execution breadth** — the honest gaps against
+- **Voice mode** and **broader messaging/execution breadth**: the honest gaps against
   Hermes noted above; the MCP client narrows the integration gap in the meantime.
 
 ## Design principles
@@ -317,7 +319,7 @@ Remaining:
 - **Less is more.** The smallest design that delivers the vision wins. Capability comes from architecture and the right primitives, not from lines of code.
 - **Transparent and auditable.** Every memory write, skill mutation, tool call, and autonomous action is logged, attributable, and reversible. The audit ledger is signed and hash-chained, so you can replay it and prove nothing was rewritten. You can watch the brain think.
 - **Near-zero idle.** A Rust core means a single small binary, tiny resident memory, and instant wake. It sleeps to nothing on a $5 VPS or a serverless trigger and wakes on an event. You should be able to forget it is running.
-- **Skills are programs, not prompts.** A skill is executable, versioned, sandboxed, and self-improving: it measures its own success and rewrites itself toward it — under an explicit capability model, with every mutation signed and reversible.
+- **Skills are programs, not prompts.** A skill is executable, versioned, sandboxed, and self-improving: it measures its own success and rewrites itself toward it - under an explicit capability model, with every mutation signed and reversible.
 
 ## License
 

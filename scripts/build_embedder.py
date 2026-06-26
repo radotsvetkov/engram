@@ -3,8 +3,8 @@
 
 A model2vec model is a distilled static embedding table (a vocab + a [vocab, dim] matrix)
 that gives real synonym/paraphrase recall with no neural network at inference. Engram reads
-it directly in pure Rust, so this script just downloads the two files it needs —
-`tokenizer.json` and `model.safetensors` — into the target directory. No Python ML deps.
+it directly in pure Rust, so this script just downloads the two files it needs -
+`tokenizer.json` and `model.safetensors` - into the target directory. No Python ML deps.
 
 Usage:
     python3 scripts/build_embedder.py [--model minishlab/potion-base-8M] [--out DIR]

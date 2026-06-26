@@ -1,4 +1,4 @@
-//! `engramd` — the Engram daemon.
+//! `engramd` - the Engram daemon.
 //!
 //! This is where the parts become an agent. It opens the audit ledger, the hybrid
 //! memory, the skill registry, the LLM gateway, and the scheduler, and exposes them
@@ -49,7 +49,7 @@ struct App {
     mcp_tools: Vec<Arc<dyn engram_agent::Tool>>,
     browser: Arc<dyn engram_agent::BrowserSession>,
     tasks: Arc<tasks::TaskStore>,
-    /// Runtime-mutable shell consent — toggled by the desktop's approval card.
+    /// Runtime-mutable shell consent - toggled by the desktop's approval card.
     allow_shell: Arc<std::sync::atomic::AtomicBool>,
     /// Kill switch: set true to stop in-flight agent runs at their next step boundary.
     halt: Arc<std::sync::atomic::AtomicBool>,
@@ -69,7 +69,7 @@ fn err(e: impl std::fmt::Display) -> ApiError {
 
 #[tokio::main]
 async fn main() {
-    // `engramd verify [HOME]` — offline, third-party verification of the audit ledger
+    // `engramd verify [HOME]` - offline, third-party verification of the audit ledger
     // against its published public key, WITHOUT starting (or trusting) the daemon.
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("verify") {
@@ -84,7 +84,7 @@ async fn main() {
 
 /// Offline verification of `<HOME>/ledger.jsonl` against `<HOME>/ledger.pub`. Exit codes:
 /// 0 = signed chain intact, 1 = tampered/broken, 2 = setup error. This is the trust
-/// payoff — anyone can confirm conduct without trusting the machine that produced it.
+/// payoff - anyone can confirm conduct without trusting the machine that produced it.
 fn verify_cmd(home_arg: Option<&str>) -> i32 {
     let home = home_arg
         .map(String::from)
@@ -121,11 +121,11 @@ fn verify_cmd(home_arg: Option<&str>) -> i32 {
     };
     match engram_core::verify_file(&ledger_path, &vk) {
         Ok(n) => {
-            println!("OK — {n} entries, signed hash-chain intact: {}", ledger_path.display());
+            println!("OK - {n} entries, signed hash-chain intact: {}", ledger_path.display());
             0
         }
         Err(e) => {
-            eprintln!("TAMPER / BROKEN — {e}");
+            eprintln!("TAMPER / BROKEN - {e}");
             1
         }
     }
@@ -152,7 +152,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             tracing::info!(dim, "using gateway embedder");
             Arc::new(embedder::GatewayEmbedder::new(gateway.clone(), dim))
         }
-        // Pure-Rust static model2vec embedder — real synonym recall, no model runtime.
+        // Pure-Rust static model2vec embedder - real synonym recall, no model runtime.
         Ok("static") => {
             let model_dir =
                 std::env::var("ENGRAM_STATIC_MODEL").unwrap_or_else(|_| format!("{home}/embedder"));
@@ -162,7 +162,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     Arc::new(e)
                 }
                 Err(err) => {
-                    tracing::warn!(dir = %model_dir, error = %err, "static embedder load failed — falling back to trigram");
+                    tracing::warn!(dir = %model_dir, error = %err, "static embedder load failed - falling back to trigram");
                     Arc::new(TrigramHashEmbedder::default())
                 }
             }
@@ -255,13 +255,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     spawn_scheduler_tick(app.clone());
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    tracing::info!(version = VERSION, %addr, idle_s = idle.as_secs(), "engram awake — http ready");
+    tracing::info!(version = VERSION, %addr, idle_s = idle.as_secs(), "engram awake - http ready");
 
     axum::serve(listener, router)
         .with_graceful_shutdown(async move {
             match run_until_idle(activity, idle).await {
-                engram_core::WakeReason::Idle => tracing::info!("idle — sleeping to zero"),
-                engram_core::WakeReason::Signal => tracing::info!("signal — sleeping to zero"),
+                engram_core::WakeReason::Idle => tracing::info!("idle - sleeping to zero"),
+                engram_core::WakeReason::Signal => tracing::info!("signal - sleeping to zero"),
             }
         })
         .await?;
@@ -288,8 +288,8 @@ async fn keep_awake(
 }
 
 /// Optional bearer-token auth. When `ENGRAM_API_TOKEN` is unset (the local-desktop
-/// default, bound to 127.0.0.1) every request passes. When set — for an exposed
-/// deployment — every `/v1` call must present `Authorization: Bearer <token>` (or, for
+/// default, bound to 127.0.0.1) every request passes. When set - for an exposed
+/// deployment - every `/v1` call must present `Authorization: Bearer <token>` (or, for
 /// EventSource/WebSocket which cannot set headers, `?token=<token>`). The dashboard,
 /// health, and inbound webhooks (which carry their own platform auth) stay open.
 async fn require_auth(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
@@ -346,7 +346,7 @@ async fn dashboard() -> Html<String> {
 }
 
 async fn health() -> ApiResult {
-    // "offline" when no real model provider is configured — the UI surfaces this honestly
+    // "offline" when no real model provider is configured - the UI surfaces this honestly
     // rather than returning fake answers.
     let offline = std::env::var("ENGRAM_ANTHROPIC_API_KEY").is_err()
         && std::env::var("ENGRAM_LLM_BASE_URL").is_err();
@@ -537,7 +537,7 @@ async fn agent_handler(State(app): State<App>, Json(r): Json<AgentReq>) -> ApiRe
 /// A live voice session over a WebSocket. The client streams audio as binary frames
 /// and sends a text "end" to close a turn; the server transcribes the accumulated
 /// audio, runs the agent, and replies with a JSON text frame (transcript + reply) and
-/// a binary frame of synthesized speech. The connection stays open for many turns — a
+/// a binary frame of synthesized speech. The connection stays open for many turns - a
 /// real-time voice loop. (Per-turn STT here; word-by-word streaming STT is a provider
 /// extension.) Needs a provider with speech-to-text + text-to-speech.
 async fn voice_stream(State(app): State<App>, ws: axum::extract::ws::WebSocketUpgrade) -> Response {
@@ -714,7 +714,7 @@ async fn tasks_delete(State(app): State<App>, Path(id): Path<String>) -> ApiResu
 
 /// Run a task with the agent and attach a glass-box receipt: mark it doing (and fire a
 /// spike so the board shows Running), run, capture the cost delta and the signed ledger
-/// head, then mark done — or failed if the agent hit its step limit. Shared by the HTTP
+/// head, then mark done - or failed if the agent hit its step limit. Shared by the HTTP
 /// endpoint and the in-process scheduler.
 pub(crate) async fn run_task_core(app: &App, id: &str) -> Result<tasks::Task, String> {
     let task = app.tasks.get(id).ok_or("task not found")?;
@@ -787,7 +787,7 @@ fn spawn_scheduler_tick(app: App) {
     });
 }
 
-/// The signed ledger slice for a task's run — the glass-box audit trail behind a card.
+/// The signed ledger slice for a task's run - the glass-box audit trail behind a card.
 async fn task_audit(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
     let task = app.tasks.get(&id).ok_or_else(|| ApiError("task not found".into()))?;
     let Some(run) = &task.run else {
@@ -813,7 +813,7 @@ async fn ledger_pubkey(State(app): State<App>) -> ApiResult {
 
 /// A self-contained, independently-verifiable receipt for one task run: the answer, each
 /// step with the exact signed ledger seq+hash it produced, those ledger entries, and the
-/// public key + verify command — so anyone can confirm the run happened as claimed without
+/// public key + verify command - so anyone can confirm the run happened as claimed without
 /// trusting this machine.
 async fn task_receipt(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
     let task = app.tasks.get(&id).ok_or_else(|| ApiError("task not found".into()))?;
@@ -976,7 +976,7 @@ struct PreviewQuery {
     when: String,
 }
 
-/// Parse a natural-language "when" and show the next fire — without creating a job, so
+/// Parse a natural-language "when" and show the next fire - without creating a job, so
 /// the UI can preview live as the user types.
 async fn schedule_preview(State(_app): State<App>, Query(q): Query<PreviewQuery>) -> ApiResult {
     let now = chrono::Utc::now();
@@ -1031,7 +1031,7 @@ async fn load_mcp(home: &str) -> Vec<Arc<dyn engram_agent::Tool>> {
     let cfg: Vec<McpServerCfg> = match serde_json::from_str(&text) {
         Ok(c) => c,
         Err(e) => {
-            tracing::warn!(error = %e, "invalid mcp.json — ignoring");
+            tracing::warn!(error = %e, "invalid mcp.json - ignoring");
             return Vec::new();
         }
     };
@@ -1043,7 +1043,7 @@ async fn load_mcp(home: &str) -> Vec<Arc<dyn engram_agent::Tool>> {
 /// Choose the model backend. With `--features http` and ENGRAM_LLM_BASE_URL +
 /// ENGRAM_LLM_API_KEY set, use a real OpenAI-compatible provider; otherwise the
 /// offline mock. This is the single switch that turns the agent from offline-demo
-/// into a real, model-backed assistant — for both completions and embeddings.
+/// into a real, model-backed assistant - for both completions and embeddings.
 fn make_provider() -> Box<dyn Provider> {
     #[cfg(feature = "http")]
     {
@@ -1061,7 +1061,7 @@ fn make_provider() -> Box<dyn Provider> {
             tracing::info!(%base, "using http LLM provider");
             return Box::new(engram_gateway::HttpProvider::new(id, base, key));
         }
-        tracing::warn!("http feature on but no provider key set — using mock");
+        tracing::warn!("http feature on but no provider key set - using mock");
     }
     Box::new(MockProvider)
 }

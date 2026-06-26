@@ -1,4 +1,4 @@
-//! Multi-platform messaging gateway — many platforms, one endpoint.
+//! Multi-platform messaging gateway - many platforms, one endpoint.
 //!
 //! `POST /v1/channel/{platform}` accepts a platform's webhook payload, normalizes it to
 //! plain text, runs the agent, and replies in that platform's expected shape. This is
@@ -23,7 +23,7 @@ pub async fn channel_handler(
     Json(body): Json<Value>,
 ) -> Response {
     // Optional shared-secret gate. When ENGRAM_CHANNEL_SECRET is set, an inbound webhook
-    // must present it (X-Engram-Secret header or ?secret= query) before anything runs — so
+    // must present it (X-Engram-Secret header or ?secret= query) before anything runs - so
     // a publicly-reachable channel endpoint can't be driven by strangers. (Runs are also
     // started Untrusted, so even past this gate they can't shell or exfiltrate.)
     if let Ok(secret) = std::env::var("ENGRAM_CHANNEL_SECRET") {

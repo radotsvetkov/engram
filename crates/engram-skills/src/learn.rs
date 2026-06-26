@@ -1,16 +1,16 @@
-//! The learning loop — how a skill gets better at what it does.
+//! The learning loop - how a skill gets better at what it does.
 //!
 //! When a candidate version of a skill appears, it is not trusted on faith. It is
 //! **replayed against the recorded inputs the skill has actually seen**, scored on
 //! the skill's own metric (here: how often its output matches the output that was
 //! accepted), and compared head-to-head with the version currently in use. The
-//! candidate is promoted only if it *measurably wins* — and only with consent. The
+//! candidate is promoted only if it *measurably wins* - and only with consent. The
 //! decision and the scores are written to the audit ledger, and any promotion is one
 //! `set_active` away from being reverted.
 //!
 //! Crucially the candidate is a *program* (new WASM bytes), not just a config tweak:
-//! this is the mechanism by which a skill — however its next version is authored,
-//! by search now or by an LLM later — improves itself safely.
+//! this is the mechanism by which a skill - however its next version is authored,
+//! by search now or by an LLM later - improves itself safely.
 
 use serde::Serialize;
 use serde_json::json;
@@ -41,7 +41,7 @@ pub enum Decision {
         candidate_score: f32,
         replays: usize,
     },
-    /// No accepted history to judge against yet — candidate installed, not activated.
+    /// No accepted history to judge against yet - candidate installed, not activated.
     NoData { id: String, candidate: u32 },
 }
 
@@ -155,7 +155,7 @@ mod tests {
             (global.set $heap (i32.add (global.get $heap) (local.get $n)))
             (local.get $p))"#;
 
-    // v1: echo (returns input unchanged) — wrong for an uppercasing task.
+    // v1: echo (returns input unchanged) - wrong for an uppercasing task.
     fn echo() -> Vec<u8> {
         let wat = format!(
             r#"(module (memory (export "memory") 1) {ALLOC}
@@ -166,7 +166,7 @@ mod tests {
         wat::parse_str(&wat).unwrap()
     }
 
-    // v2: ASCII uppercase in place — the correct program.
+    // v2: ASCII uppercase in place - the correct program.
     fn upcase() -> Vec<u8> {
         let wat = format!(
             r#"(module (memory (export "memory") 1) {ALLOC}

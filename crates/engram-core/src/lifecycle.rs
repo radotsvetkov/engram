@@ -4,7 +4,7 @@
 //! last moment of neural activity; [`run_until_idle`] resolves when the core has
 //! been quiet for an idle window (so it can exit to zero RAM) or when the OS asks
 //! it to stop. On a socket-activated VPS this means there is *no resident process*
-//! between requests — the near-zero-idle property in one small module.
+//! between requests - the near-zero-idle property in one small module.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -31,7 +31,7 @@ impl Activity {
         }
     }
 
-    /// Record activity now — call this whenever a spike fires or a request lands.
+    /// Record activity now - call this whenever a spike fires or a request lands.
     pub fn touch(&self) {
         *self.last.lock().expect("activity mutex poisoned") = Instant::now();
     }
@@ -46,7 +46,7 @@ impl Activity {
 /// Why the core is winding down.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WakeReason {
-    /// The idle window elapsed with no activity — safe to sleep to zero.
+    /// The idle window elapsed with no activity - safe to sleep to zero.
     Idle,
     /// The OS asked us to stop (SIGINT/SIGTERM).
     Signal,

@@ -1,4 +1,4 @@
-//! Tasks — the unit of work behind the Kanban board.
+//! Tasks - the unit of work behind the Kanban board.
 //!
 //! A task is something the user wants done, captured from chat or typed directly. It
 //! moves through todo → doing → done, can be run by the agent (which attaches the
@@ -54,7 +54,7 @@ fn default_origin() -> String {
     "manual".into()
 }
 
-/// Guess which capabilities a task will use, from its words — drives the card's tags.
+/// Guess which capabilities a task will use, from its words - drives the card's tags.
 fn infer_tags(text: &str) -> Vec<String> {
     let t = text.to_lowercase();
     let mut tags = Vec::new();
@@ -165,7 +165,7 @@ impl TaskStore {
     }
 
     /// Update the live progress label of a running task (cheap; not persisted to disk
-    /// every tick — it is transient and overwritten at finish).
+    /// every tick - it is transient and overwritten at finish).
     pub fn set_progress(&self, id: &str, progress: String) {
         let mut t = self.tasks.lock().expect("tasks mutex");
         if let Some(task) = t.iter_mut().find(|x| x.id == id) {

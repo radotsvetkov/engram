@@ -3,8 +3,8 @@
 //! [`engram_memory::Embedder`] is synchronous (memory writes and recalls call it
 //! inline), while the gateway is async. `GatewayEmbedder` bridges them with
 //! `block_in_place` + `block_on`, so on the daemon's multi-thread runtime a transformer
-//! embedding model — reached through the same metered, audited gateway as everything
-//! else — slots in behind the existing trait. Selected with `ENGRAM_EMBED=gateway`;
+//! embedding model - reached through the same metered, audited gateway as everything
+//! else - slots in behind the existing trait. Selected with `ENGRAM_EMBED=gateway`;
 //! the offline trigram embedder remains the default.
 //!
 //! Note: the embedding dimension must match across a brain's lifetime, so switching

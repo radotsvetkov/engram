@@ -1,7 +1,7 @@
 //! Paraphrase recall benchmark.
 //!
 //! The headline recall claim is that hybrid (semantic + keyword) memory finds the
-//! right fact for a query that shares *no words* with it — exactly where a
+//! right fact for a query that shares *no words* with it - exactly where a
 //! keyword-only store returns nothing. This harness measures that honestly:
 //!
 //! - It reports hybrid recall@10 and MRR over a labelled query set.
@@ -9,7 +9,7 @@
 //!   recall *by construction*, and reports what hybrid recovers there.
 //!
 //! Run with the bundled offline embedder (`TrigramHashEmbedder`), this captures
-//! morphology and word-order — a real step up over keyword matching. Synonym-level
+//! morphology and word-order - a real step up over keyword matching. Synonym-level
 //! paraphrase ("car" → "automobile") needs the transformer embedder that plugs into
 //! the same `Embedder` trait via the gateway; this harness is what measures it when
 //! that model is wired.
@@ -26,7 +26,7 @@ struct Case {
 }
 
 /// Query → the one fact it should recall. Several queries deliberately share no whole
-/// word with their target (morphological paraphrases) — keyword search cannot find
+/// word with their target (morphological paraphrases) - keyword search cannot find
 /// these at all.
 fn cases() -> Vec<Case> {
     vec![
@@ -42,7 +42,7 @@ fn cases() -> Vec<Case> {
         Case { fact: "the capital of France is Paris", query: "what is the capital of France" },
         Case { fact: "WebAssembly modules run in a fuel-bounded sandbox", query: "fuel bounded wasm sandboxing" },
         Case { fact: "recall fuses keyword and semantic ranking", query: "fusing semantic and keyword ranks" },
-        // True synonyms: no shared word OR character-trigram — only a learned embedder
+        // True synonyms: no shared word OR character-trigram - only a learned embedder
         // (not the morphological trigram baseline) can bridge these.
         Case { fact: "she bought a new automobile last week", query: "purchasing a car recently" },
         Case { fact: "the physician prescribed rest and fluids", query: "advice from a doctor" },
@@ -52,7 +52,7 @@ fn cases() -> Vec<Case> {
     ]
 }
 
-/// Distractors raise the bar — recall@10 must pick the target out of a fuller brain.
+/// Distractors raise the bar - recall@10 must pick the target out of a fuller brain.
 fn distractors() -> Vec<&'static str> {
     vec![
         "the weather in Berlin is mild in spring",
@@ -133,7 +133,7 @@ fn evaluate(embedder: Arc<dyn engram_memory::Embedder>) -> Score {
 fn main() {
     let trig = evaluate(Arc::new(TrigramHashEmbedder::default()));
     // Compare against the static (model2vec) embedder when ENGRAM_STATIC_MODEL points at a
-    // model directory — this is what measures the synonym-level recall jump.
+    // model directory - this is what measures the synonym-level recall jump.
     let stat = std::env::var("ENGRAM_STATIC_MODEL").ok().and_then(|p| match StaticEmbedder::load(&p) {
         Ok(e) => Some(evaluate(Arc::new(e))),
         Err(err) => {
@@ -143,7 +143,7 @@ fn main() {
     });
 
     let total_facts = trig.n + distractors().len();
-    println!("# Engram benchmark — paraphrase recall & footprint\n");
+    println!("# Engram benchmark - paraphrase recall & footprint\n");
     println!("Corpus: {total_facts} facts. Queries: {}. Recall@10.\n", trig.n);
 
     let row = |label: &str, s: &Score| {
@@ -165,7 +165,7 @@ fn main() {
     if let Some(s) = &stat {
         row("static model2vec (pure-Rust)", s);
     }
-    println!("| keyword-only baseline | — | — | 0% (by construction) |");
+    println!("| keyword-only baseline | - | - | 0% (by construction) |");
 
     println!("\nBinary size (full agent): {}   ·   Idle RAM: 0 MB (socket-activated)", binary_size());
     if stat.is_none() {

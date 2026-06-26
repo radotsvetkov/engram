@@ -1,9 +1,9 @@
-//! MCP client — connect to any Model Context Protocol server and borrow its tools.
+//! MCP client - connect to any Model Context Protocol server and borrow its tools.
 //!
 //! This is the parity multiplier. Rather than hand-coding 60+ integrations, Engram
 //! speaks MCP (JSON-RPC 2.0 over a subprocess's stdio): it launches a server, lists
 //! its tools, and wraps each as a native [`Tool`] that joins the agent's registry. Any
-//! community MCP server — filesystem, GitHub, Slack, a browser driver, a database —
+//! community MCP server - filesystem, GitHub, Slack, a browser driver, a database -
 //! becomes available to the agent, audited through the same ledger as everything else.
 
 use std::process::Stdio;
@@ -119,7 +119,7 @@ impl McpClient {
                 }
                 return Ok(v.get("result").cloned().unwrap_or(Value::Null));
             }
-            // otherwise a notification or unrelated message — keep reading.
+            // otherwise a notification or unrelated message - keep reading.
         }
     }
 
@@ -182,12 +182,12 @@ impl Tool for McpTool {
         self.schema.clone()
     }
     fn is_egress(&self) -> bool {
-        // MCP tools are opaque external capabilities — treat them as egress so a tainted
+        // MCP tools are opaque external capabilities - treat them as egress so a tainted
         // run cannot reach them (default-deny under taint).
         true
     }
     fn side_effecting(&self) -> bool {
-        // Opaque external capability — assume it can change the world (preview-gated).
+        // Opaque external capability - assume it can change the world (preview-gated).
         true
     }
     async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {

@@ -1,4 +1,4 @@
-//! Recurrence — when a job fires.
+//! Recurrence - when a job fires.
 //!
 //! A small, *deterministic* grammar covers the phrases people actually use: one-off
 //! delays, fixed intervals, and daily / weekday / weekly clock times. Parsing never
@@ -24,7 +24,7 @@ pub enum Recurrence {
     Interval { secs: i64 },
     /// Fire every day at `hour:min` UTC.
     Daily { hour: u32, min: u32 },
-    /// Fire Mon–Fri at `hour:min` UTC.
+    /// Fire Mon-Fri at `hour:min` UTC.
     Weekdays { hour: u32, min: u32 },
     /// Fire weekly on `weekday` (0=Mon … 6=Sun) at `hour:min` UTC.
     Weekly { weekday: u8, hour: u32, min: u32 },

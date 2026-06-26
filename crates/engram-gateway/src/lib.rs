@@ -1,13 +1,13 @@
-//! # Engram gateway — one door to every model
+//! # Engram gateway - one door to every model
 //!
 //! All LLM and embedding access goes through [`gateway::Gateway`]. That single
 //! chokepoint is what makes three things possible at once:
 //!
-//! - **Metering** — every call's tokens and cost are counted ([`gateway::Meter`]).
-//! - **Taint enforcement** — an untrusted call has its secret-bearing context
+//! - **Metering** - every call's tokens and cost are counted ([`gateway::Meter`]).
+//! - **Taint enforcement** - an untrusted call has its secret-bearing context
 //!   stripped before it reaches the model, half of breaking the prompt-injection →
 //!   exfiltration chain.
-//! - **Audit** — every call and embedding is written to the signed [`engram_core::Ledger`].
+//! - **Audit** - every call and embedding is written to the signed [`engram_core::Ledger`].
 //!
 //! Backends sit behind the [`provider::Provider`] trait, so the choice of Anthropic,
 //! OpenAI, OpenRouter, or a local model is a constructor argument. The offline

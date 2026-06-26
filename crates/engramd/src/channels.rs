@@ -39,7 +39,7 @@ pub async fn channel_handler(
                         .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("secret=")))
                         .map(str::to_string)
                 });
-            if provided.as_deref() != Some(secret.as_str()) {
+            if !provided.as_deref().map(|p| crate::ct_eq(p, &secret)).unwrap_or(false) {
                 return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "bad or missing channel secret" })))
                     .into_response();
             }

@@ -386,17 +386,12 @@ fn ct_eq(a: &str, b: &str) -> bool {
     diff == 0
 }
 
-async fn dashboard(State(app): State<App>) -> Html<String> {
-    let html = include_str!("../assets/index.html");
-    // Hand the first-party dashboard the *live* API token (from settings, not just the env)
-    // so its own fetches authenticate - and so setting a token in the panel doesn't lock the
-    // operator out on the next page load.
-    let token = app.cfg().security.api_token.clone();
-    if token.is_empty() {
-        return Html(html.to_string());
-    }
-    let inject = format!("<script>window.__ENGRAM_TOKEN={};</script>", serde_json::Value::String(token));
-    Html(html.replacen("</head>", &format!("{inject}</head>"), 1))
+async fn dashboard() -> Html<String> {
+    // Served without auth so the page can bootstrap - so it must NEVER embed the API token,
+    // which would hand it to any unauthenticated caller of "/" and defeat the gate. The
+    // first-party dashboard stores the token in the browser (set from Settings, kept in
+    // localStorage) and sends it on its own API calls; a fresh client is prompted for it.
+    Html(include_str!("../assets/index.html").to_string())
 }
 
 async fn health() -> ApiResult {

@@ -82,15 +82,33 @@ pub struct TaskStore {
 impl TaskStore {
     pub fn open(dir: &Path) -> Self {
         let path = dir.join("tasks.json");
-        let tasks = std::fs::read(&path)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
+        // Back up an unparseable file rather than silently overwriting it with an empty default.
+        let tasks = match std::fs::read(&path) {
+            Ok(b) => match serde_json::from_slice(&b) {
+                Ok(t) => t,
+                Err(e) => {
+                    let _ = std::fs::rename(&path, dir.join("tasks.corrupt.json"));
+                    tracing::error!(error = %e, "tasks.json was unparseable - backed it up and started fresh");
+                    Vec::new()
+                }
+            },
+            Err(_) => Vec::new(),
+        };
         TaskStore { path, tasks: Mutex::new(tasks) }
     }
 
+    /// Write atomically (temp + rename) and owner-only.
     fn save(&self, tasks: &[Task]) {
-        let _ = std::fs::write(&self.path, serde_json::to_vec_pretty(tasks).unwrap_or_default());
+        let bytes = serde_json::to_vec_pretty(tasks).unwrap_or_default();
+        let tmp = self.path.with_extension("json.tmp");
+        if std::fs::write(&tmp, &bytes).is_ok() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+            }
+            let _ = std::fs::rename(&tmp, &self.path);
+        }
     }
 
     pub fn list(&self) -> Vec<Task> {

@@ -77,10 +77,20 @@ fn new_id(prefix: &str) -> String {
 impl WorkspaceStore {
     pub fn open(dir: &Path) -> Self {
         let path = dir.join("workspace.json");
-        let mut data: Data = std::fs::read(&path)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
+        // Never silently discard a workspace: if the file is present but unparseable, back it
+        // up rather than overwriting it with an empty default and losing every project/session.
+        let mut data: Data = match std::fs::read(&path) {
+            Ok(bytes) => match serde_json::from_slice(&bytes) {
+                Ok(d) => d,
+                Err(e) => {
+                    let backup = dir.join("workspace.corrupt.json");
+                    let _ = std::fs::rename(&path, &backup);
+                    tracing::error!(error = %e, backup = %backup.display(), "workspace.json was unparseable - backed it up and started fresh");
+                    Data::default()
+                }
+            },
+            Err(_) => Data::default(),
+        };
         if data.projects.is_empty() {
             data.projects.push(Project { id: "personal".into(), name: "Personal".into(), created_ms: now_ms(), persona: String::new() });
         }
@@ -89,9 +99,22 @@ impl WorkspaceStore {
         store
     }
 
+    /// Write atomically (temp file + rename) and owner-only, so a crash mid-write can't leave a
+    /// half-written file that boot would discard, and chat content isn't world-readable.
     fn persist(&self) {
-        let d = self.data.lock().expect("workspace mutex");
-        let _ = std::fs::write(&self.path, serde_json::to_vec_pretty(&*d).unwrap_or_default());
+        let bytes = {
+            let d = self.data.lock().expect("workspace mutex");
+            serde_json::to_vec_pretty(&*d).unwrap_or_default()
+        };
+        let tmp = self.path.with_extension("json.tmp");
+        if std::fs::write(&tmp, &bytes).is_ok() {
+            restrict(&tmp);
+            let _ = std::fs::rename(&tmp, &self.path);
+        }
+    }
+    /// Whether a project id exists - used to keep sessions from being orphaned.
+    fn has_project(&self, id: &str) -> bool {
+        self.data.lock().expect("ws").projects.iter().any(|p| p.id == id)
     }
 
     // --- projects ---
@@ -167,13 +190,19 @@ impl WorkspaceStore {
                 messages: s.messages.len(),
             })
             .collect();
-        v.sort_by_key(|s| std::cmp::Reverse(s.updated_ms)); // most-recent first
+        v.sort_by_key(|s| (std::cmp::Reverse(s.updated_ms), std::cmp::Reverse(s.created_ms))); // most-recent first, stable on ties
         v
     }
     pub fn session(&self, id: &str) -> Option<Session> {
         self.data.lock().expect("ws").sessions.iter().find(|s| s.id == id).cloned()
     }
     pub fn create_session(&self, project_id: String, title: Option<String>) -> Session {
+        // Keep sessions from being orphaned under a project that doesn't exist.
+        let project_id = if self.has_project(&project_id) {
+            project_id
+        } else {
+            self.data.lock().expect("ws").projects.first().map(|p| p.id.clone()).unwrap_or_else(|| "personal".into())
+        };
         let now = now_ms();
         let s = Session {
             id: new_id("s"),
@@ -195,6 +224,7 @@ impl WorkspaceStore {
         fav: Option<bool>,
         project_id: Option<String>,
     ) -> Option<Session> {
+        let project_id = project_id.filter(|p| self.has_project(p)); // ignore a re-parent to a missing project
         let out = {
             let mut d = self.data.lock().expect("ws");
             d.sessions.iter_mut().find(|s| s.id == id).map(|s| {
@@ -244,7 +274,8 @@ impl WorkspaceStore {
             match d.sessions.iter_mut().find(|s| s.id == id) {
                 Some(s) => {
                     if s.title.is_empty() || s.title == "New chat" {
-                        s.title = user_text.chars().take(42).collect::<String>();
+                        let t: String = user_text.trim().chars().take(42).collect();
+                        s.title = if t.is_empty() { "New chat".into() } else { t };
                     }
                     s.messages.push(Msg { role: "user".into(), text: user_text.into(), recalled: vec![], learned: vec![], ts_ms: now });
                     s.messages.push(Msg { role: "engram".into(), text: reply.into(), recalled, learned, ts_ms: now });
@@ -259,4 +290,15 @@ impl WorkspaceStore {
         }
         ok
     }
+}
+
+/// Tighten file permissions to owner-only (chat content lives here).
+fn restrict(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    #[cfg(not(unix))]
+    let _ = path;
 }

@@ -361,7 +361,32 @@
   .palette .pal-box { animation:menu-in var(--dur-2) var(--ease-spring); transform-origin:top center; }
   @keyframes menu-in { from{ opacity:0; transform:scale(.97) translateY(4px); } to{ opacity:1; transform:none; } }
   .newchat { box-shadow:var(--e1); }
-  @media (prefers-reduced-motion: reduce) { .recall, .model-menu, .proj-menu, .pal-box, .statusbar .seal { animation:none !important; } }
+  /* the glass-box receipt - a signed slip that tears up from the trust spine */
+  .receipt { position:fixed; left:50%; bottom:40px; transform:translateX(-50%); width:min(480px,93vw);
+    background:var(--surface-2); border:1px solid var(--border-strong); border-top:2px solid var(--accent);
+    border-radius:var(--r-card); box-shadow:var(--e4); transform-origin:bottom center; z-index:90; overflow:hidden;
+    animation:receipt-in var(--dur-3) var(--ease-out); }
+  .receipt[hidden] { display:none; }
+  @keyframes receipt-in { from{ opacity:0; transform:translateX(-50%) translateY(14px) scale(.98); } to{ opacity:1; transform:translateX(-50%) translateY(0) scale(1); } }
+  .receipt .r-head { display:flex; align-items:center; gap:9px; padding:13px 15px 11px; border-bottom:1px dashed var(--border-strong); }
+  .receipt .r-seal { width:9px; height:9px; border-radius:50%; background:var(--accent); flex:none; animation:breath var(--dur-4) var(--ease-inout); }
+  .receipt .r-title { font:600 13px/1.2 var(--sans); color:var(--text-primary); }
+  .receipt .r-sub { font:11px var(--mono); color:var(--accent); margin-left:auto; font-variant-numeric:tabular-nums; }
+  .receipt .r-x { background:none; border:none; color:var(--text-muted); cursor:pointer; font-size:15px; padding:0 2px; }
+  .receipt .r-x:hover { color:var(--text-primary); }
+  .receipt .r-body { max-height:44vh; overflow:auto; padding:7px 6px; }
+  .receipt .r-row { display:grid; grid-template-columns:30px 1fr auto; gap:10px; align-items:center; padding:6px 9px; border-radius:7px; font:11.5px var(--mono); color:var(--text-secondary); }
+  .receipt .r-row:hover { background:var(--hover); }
+  .receipt .r-row .r-seq { color:var(--text-muted); text-align:right; font-variant-numeric:tabular-nums; }
+  .receipt .r-row .r-kind { color:var(--text-primary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .receipt .r-row .r-kind small { color:var(--text-muted); }
+  .receipt .r-row .r-hash { color:var(--accent); cursor:pointer; }
+  .receipt .r-row .r-hash:hover { text-decoration:underline; text-underline-offset:2px; }
+  .receipt .r-meta { padding:9px 15px; border-top:1px solid var(--border); font:11px var(--mono); color:var(--text-muted); display:flex; flex-direction:column; gap:3px; }
+  .receipt .r-meta b { color:var(--text-secondary); font-weight:400; }
+  .receipt .r-foot { display:flex; align-items:center; gap:11px; padding:11px 15px; border-top:1px solid var(--border); background:var(--surface-1); }
+  .receipt .r-foot .hint { font:10.5px var(--mono); color:var(--text-muted); margin-left:auto; }
+  @media (prefers-reduced-motion: reduce) { .recall, .model-menu, .proj-menu, .pal-box, .statusbar .seal, .receipt, .receipt .r-seal { animation:none !important; } }
 </style>
 </head>
 <body>
@@ -388,7 +413,7 @@
 </div>
 <footer class="statusbar">
   <span class="sb-left"><span class="dot" id="sbDot"></span><span id="sbDaemon" class="mono">engramd</span></span>
-  <span class="sb-center" id="sbSpine"><span class="chip ok" id="ledgerChip" role="status" aria-live="polite" onclick="verifyLedgerNow()" title="every action is signed into a hash-chained ledger — click to re-verify the whole chain"><span class="seal"></span>ledger …</span></span>
+  <span class="sb-center" id="sbSpine"><span class="chip ok" id="ledgerChip" role="status" aria-live="polite" onclick="openReceipt()" title="every action is signed into a hash-chained ledger — click for the verifiable receipt"><span class="seal"></span>ledger …</span></span>
   <span class="sb-right"><span id="sbTaint" title="taint policy — the agent can't send your context to the web unless you allow it">no egress</span><span class="chip" id="costChip" role="status" aria-live="polite" title="model spend today">$0.00</span></span>
 </footer>
 <div class="overlay palette" id="palette" hidden onclick="if(event.target===this)closePalette()">
@@ -400,6 +425,7 @@
     <div class="cc-main" id="ccMain"><button class="cc-x" onclick="closeCC()" title="Close (Esc)">✕</button><div id="ccBody"></div></div>
   </div>
 </div>
+<div class="receipt" id="receipt" hidden></div>
 <div class="panel" id="panel" role="dialog" aria-modal="true" aria-labelledby="pTitle"><header><span class="pill" id="pStatus"></span><b id="pTitle"></b><button class="x" onclick="closePanel()" aria-label="Close">✕</button></header><div class="body" id="pBody"></div></div>
 
 <script>
@@ -1136,6 +1162,42 @@ async function verifyLedgerNow(){
   try{ const v=await J('/v1/ledger/verify'); notify(v.ok?('Ledger verified · '+v.entries+' entries · intact'):'⚠ Tamper detected', v.ok?'ok':'bad'); poll(); }
   catch(e){ notify('Couldn’t verify — '+e.message); }
 }
+
+// ---- the glass-box receipt: the signed proof behind the spine's claim ----
+async function openReceipt(){
+  const el=document.getElementById('receipt'); el.hidden=false;
+  el.innerHTML='<div class="r-head"><span class="r-seal"></span><span class="r-title">Ledger receipt</span><span class="r-sub">reading…</span><button class="r-x" onclick="closeReceipt()">✕</button></div><div class="r-body"><div class="r-row"><span></span><span class="r-kind">walking the signed chain…</span><span></span></div></div>';
+  try{ const [tail,pk,v]=await Promise.all([J('/v1/ledger/tail?n=8'),J('/v1/ledger/pubkey'),J('/v1/ledger/verify')]); renderReceipt(tail,pk,v); }
+  catch(e){ const s=el.querySelector('.r-sub'); if(s){ s.textContent='unreachable'; s.style.color='var(--danger)'; } }
+}
+function renderReceipt(tail,pk,v){
+  const el=document.getElementById('receipt');
+  const head=(tail&&tail.length)?tail[tail.length-1].hash:'';
+  const rows=(tail||[]).slice().reverse().map(e=>{
+    const act=e.actor?`<small>· ${esc(e.actor)}</small>`:'';
+    return `<div class="r-row"><span class="r-seq">${e.seq}</span><span class="r-kind">${esc(e.kind||'')} ${act}</span>`+
+      `<span class="r-hash" title="copy ${esc(e.hash||'')}" onclick="copyHash('${esc(e.hash||'')}')">${esc((e.hash||'').slice(0,10))}…</span></div>`;
+  }).join('');
+  el.innerHTML=`
+    <div class="r-head"><span class="r-seal"></span><span class="r-title">Ledger receipt</span>
+      <span class="r-sub" style="color:${v&&v.ok?'var(--accent)':'var(--danger)'}">${v&&v.ok?('✓ verified · '+v.entries):'⚠ tamper'}</span>
+      <button class="r-x" onclick="closeReceipt()" title="Close (Esc)">✕</button></div>
+    <div class="r-body">${rows||'<div class="r-row"><span></span><span class="r-kind">no entries yet</span><span></span></div>'}</div>
+    <div class="r-meta"><span>head&nbsp; <b>${esc(head.slice(0,18))}…</b></span><span>key&nbsp;&nbsp; <b>${esc((pk&&pk.pubkey||'').slice(0,18))}…</b> · ${esc((pk&&pk.alg)||'ed25519')}</span></div>
+    <div class="r-foot"><button class="sbtn" onclick="reverify()">Re-verify offline</button><span class="hint">engramd verify ~/.engram</span></div>`;
+}
+function closeReceipt(){ const el=document.getElementById('receipt'); if(el) el.hidden=true; }
+async function reverify(){
+  const el=document.getElementById('receipt'), sub=el.querySelector('.r-sub'), seal=el.querySelector('.r-seal');
+  if(sub){ sub.textContent='re-walking…'; sub.style.color='var(--text-muted)'; }
+  try{ const v=await J('/v1/ledger/verify');
+    if(sub){ sub.textContent=v.ok?('✓ verified · '+v.entries):'⚠ tamper detected'; sub.style.color=v.ok?'var(--accent)':'var(--danger)'; }
+    if(v.ok&&seal){ seal.style.animation='none'; void seal.offsetWidth; seal.style.animation='breath var(--dur-4) var(--ease-inout)'; }
+    notify(v.ok?('Re-verified offline · '+v.entries+' entries, the chain is intact'):'Tamper detected', v.ok?'ok':'bad'); poll();
+  }catch(e){ notify('Couldn’t verify — '+e.message); }
+}
+function copyHash(h){ try{ navigator.clipboard.writeText(h); notify('Hash copied','ok'); }catch(_){ } }
+document.addEventListener('click', e=>{ const r=document.getElementById('receipt'); if(r&&!r.hidden && !e.target.closest('#receipt') && !e.target.closest('#ledgerChip')) closeReceipt(); });
 function paletteCommands(){
   const g='Go to', a='Actions', s='Settings', cmds=[];
   VIEWS.forEach(v=>cmds.push({group:g, t:v, ic:ICONS[v], run:()=>go(v)}));
@@ -1180,7 +1242,8 @@ window.addEventListener('keydown', e=>{
     else if(k==='enter'){ e.preventDefault(); palRun(palSel); }
     return;
   }
-  if(k==='escape' && !document.getElementById('cc').hidden){ e.preventDefault(); closeCC(); }
+  if(k==='escape' && !document.getElementById('cc').hidden){ e.preventDefault(); closeCC(); return; }
+  if(k==='escape' && !document.getElementById('receipt').hidden){ e.preventDefault(); closeReceipt(); }
 });
 
 function renderView(){

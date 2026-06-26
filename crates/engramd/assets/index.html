@@ -1006,7 +1006,7 @@ function renderNav(){
   document.getElementById('nav').innerHTML = VIEWS.map(item).join('');
   const tn=document.getElementById('navTools'); if(tn) tn.innerHTML = TOOLS.map(item).join('');
 }
-function go(v){ state.route=v; if(location.hash.slice(1)!==v) location.hash=v; document.getElementById('viewname').textContent=v; renderNav(); renderView(); }
+function go(v){ if(typeof voiceCloseConversation==='function' && v!=='Chat') voiceCloseConversation(); state.route=v; if(location.hash.slice(1)!==v) location.hash=v; document.getElementById('viewname').textContent=v; renderNav(); renderView(); }
 window.addEventListener('hashchange',()=>{ const v=location.hash.slice(1); if(ALL_VIEWS.includes(v)&&v!==state.route) go(v); });
 
 // ---- the trust spine (bottom status bar) ----
@@ -1125,6 +1125,7 @@ function wireComposer(){
     if(e.key!=='Enter' || e.isComposing) return;   // let IME composition finish
     if(e.shiftKey) return;                          // Shift+Enter = newline
     e.preventDefault();
+    if(typeof slashTrySubmit==='function' && slashTrySubmit()) return;  // '/cmd <arg>' + Enter runs the command
     if(ctx==='chat'){ if(e.metaKey||e.ctrlKey) submitComposer(false); else converseInline(c.value); }
     else { if(e.metaKey||e.ctrlKey) submitComposer(true); else submitComposer(false); }
   });
@@ -1454,11 +1455,15 @@ function codeBlock(code, lang){
 }
 function copyCode(id,btn){ const t=_cbStore[id]||''; (navigator.clipboard?navigator.clipboard.writeText(t):Promise.reject()).then(()=>{ btn.textContent='Copied'; btn.classList.add('done'); setTimeout(()=>{ btn.textContent='Copy'; btn.classList.remove('done'); },1200); }).catch(()=>{}); }
 function mdInline(t){ // t is already escaped
-  return t
-    .replace(/`([^`]+)`/g,'<code class="ic">$1</code>')
+  // Pull inline-code out FIRST (behind a NUL-delimited placeholder that cannot occur in escaped
+  // text) so emphasis/link rules never run inside literal code spans, then restore it.
+  const codes=[], S=String.fromCharCode(0);
+  t = t.replace(/`([^`]+)`/g,(m,c)=>{ codes.push(c); return S+(codes.length-1)+S; });
+  t = t
     .replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')
     .replace(/(^|[^*])\*([^*\n]+)\*/g,'$1<em>$2</em>')
     .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g,'<a href="$2" target="_blank" rel="noopener">$1</a>');
+  return t.replace(new RegExp(S+'(\\d+)'+S,'g'),(m,i)=>`<code class="ic">${codes[+i]}</code>`);
 }
 function mdToHtml(raw){
   const blocks=[];
@@ -1480,6 +1485,7 @@ function mdToHtml(raw){
 const thinkingDots='<span class="thinking"><i></i><i></i><i></i></span>';
 function paintFeed(){
   const f=document.getElementById('feed'); if(!f) return;
+  _cbN=0; for(const k in _cbStore) delete _cbStore[k];   // rebuilt below; ids are per-paint, so clearing here bounds the store
   const s=WS.byId[WS.activeSession], log=s?(s.messages||[]):[];
   f.innerHTML = log.map(m=>{
     if(m.role==='user') return `<div class="msg user">${esc(m.text)}</div>`;
@@ -2166,7 +2172,7 @@ window.addEventListener('keydown', e=>{
     else if(k==='enter'){ e.preventDefault(); palRun(palSel); }
     return;
   }
-  if(k==='escape' && typeof ARTS!=='undefined' && ARTS.open){ e.preventDefault(); artClose(); return; }
+  if(k==='escape' && typeof ARTS!=='undefined' && ARTS.open && document.getElementById('artPane')){ e.preventDefault(); artClose(); return; }
   if(k==='escape' && !document.getElementById('cc').hidden){ e.preventDefault(); closeCC(); return; }
   if(k==='escape' && !document.getElementById('receipt').hidden){ e.preventDefault(); closeReceipt(); return; }
   if(k==='escape' && !document.getElementById('projModal').hidden){ e.preventDefault(); closeProjModal(); return; }
@@ -2482,6 +2488,9 @@ const CAD_GLYPH = {
 const CAD_DOW = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];   // recur.rs: 0=Mon … 6=Sun
 function cadHM(h, m){
   h = (h|0); m = (m|0);
+  // Recurrence times are stored in UTC (recur.rs); convert to the user's local wall-clock so the
+  // badge matches when the job actually fires (a UTC-5 user's 'UTC 09:00' job shows as 4:00 AM).
+  const d = new Date(); d.setUTCHours(h, m, 0, 0); h = d.getHours(); m = d.getMinutes();
   const ap = h < 12 ? 'AM' : 'PM';
   let hr = h % 12; if(hr === 0) hr = 12;
   return m ? `${hr}:${String(m).padStart(2,'0')} ${ap}` : `${hr}:00 ${ap}`;
@@ -2518,7 +2527,7 @@ function cadenceSchedule(rec){
 }
 // Compact relative duration: "4h 12m", "23h", "2d 3h", "now".
 function schedRel(ms){
-  ms = Math.abs(ms|0);
+  ms = Math.abs(ms);
   const s = Math.round(ms/1000);
   if(s < 60) return s <= 1 ? 'now' : s + 's';
   const m = Math.floor(s/60);
@@ -2744,9 +2753,10 @@ function voiceToggleDictation(btn){
   };
   r.onend = ()=>{ if(VOICE.mode==='dictate' && VOICE.recog===r){ VOICE.mode=null; VOICE.recog=null; voiceSyncDictateUI(); c.focus(); } };
   VOICE.recog = r; VOICE.mode='dictate';
-  try{ r.start(); }catch(_){ VOICE.mode=null; VOICE.recog=null; }
+  let started=true;
+  try{ r.start(); }catch(_){ VOICE.mode=null; VOICE.recog=null; started=false; }
   voiceSyncDictateUI();
-  notify('Listening… speak, then tap the mic to stop.', 'ok');
+  if(started) notify('Listening… speak, then tap the mic to stop.', 'ok');
 }
 
 function voiceStopRecog(){

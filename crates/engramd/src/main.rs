@@ -262,7 +262,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/channel/{platform}", post(channels::channel_handler))
         .route("/v1/converse", post(converse_handler))
         .route("/v1/converse/stream", post(converse_stream_handler))
-        .route("/v1/upload", post(upload_handler))
+        .route("/v1/upload", post(upload_handler).layer(axum::extract::DefaultBodyLimit::max(34 * 1024 * 1024)))
         .route("/v1/ledger/tail", get(ledger_tail))
         .route("/v1/ledger/verify", get(ledger_verify))
         .route("/v1/schedule", get(schedule_list).post(schedule_add))
@@ -1224,6 +1224,7 @@ async fn config_get(State(app): State<App>) -> ApiResult {
     v["provider_id"] = json!(app.gateway.provider_id());
     v["model_in_use"] = json!(app.model());
     v["http_enabled"] = json!(cfg!(feature = "http"));
+    v["version"] = json!(VERSION);
     Ok(Json(v))
 }
 

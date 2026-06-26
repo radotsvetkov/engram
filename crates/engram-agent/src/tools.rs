@@ -396,7 +396,15 @@ impl Tool for MemoryRecallTool {
     async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
         let query = arg_str(args, "query")?;
         let k = args["k"].as_u64().unwrap_or(5) as usize;
-        let hits = ctx.memory.recall(query, &[], k).map_err(|e| e.to_string())?;
+        // A trusted run gets trusted-provenance memories only (injected web/memory content
+        // can't poison it). An already-tainted run may see all — its egress is blocked
+        // anyway and it can legitimately use what it just researched.
+        let hits = if ctx.taint.is_untrusted() {
+            ctx.memory.recall(query, &[], k)
+        } else {
+            ctx.memory.recall_trusted(query, &[], k)
+        }
+        .map_err(|e| e.to_string())?;
         if hits.is_empty() {
             return Ok("(no relevant memories)".into());
         }

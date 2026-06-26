@@ -40,7 +40,9 @@ pub async fn converse_stream(
 
     // 2. Recall what we already know that bears on this message.
     let regions = [Region::Identity, Region::Episodic, Region::Semantic];
-    let hits = memory.recall(text, &regions, 5).map_err(|e| e.to_string())?;
+    // Trusted context only: content the agent read from untrusted sources is stored with
+    // its provenance but never re-surfaces here as trusted memory (memory-poisoning guard).
+    let hits = memory.recall_trusted(text, &regions, 5).map_err(|e| e.to_string())?;
     let recalled: Vec<String> = hits.iter().map(|h| h.record.text.clone()).collect();
 
     // 3. Deepen the model of the user from what they just said.

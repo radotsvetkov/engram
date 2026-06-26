@@ -215,7 +215,34 @@ impl Memory {
 
     /// Hybrid recall: BM25 keyword search and vector semantic search, fused by RRF.
     /// `regions` empty means search the whole brain.
+    /// Hybrid recall across `regions`, returning the top `k`. Includes ALL provenance
+    /// (even memories written during an untrusted run) — for transparency / audit views.
     pub fn recall(&self, query: &str, regions: &[Region], k: usize) -> Result<Vec<Hit>> {
+        self.recall_inner(query, regions, k, false)
+    }
+
+    /// Like [`Memory::recall`], but EXCLUDES untrusted-provenance memories — this is what a
+    /// model should get as trusted context. Content read during a tainted run is stored
+    /// with its provenance yet never silently re-surfaces here, closing the memory-poisoning
+    /// vector (injected text can't become trusted memory and steer a later clean run).
+    pub fn recall_trusted(&self, query: &str, regions: &[Region], k: usize) -> Result<Vec<Hit>> {
+        self.recall_inner(query, regions, k, true)
+    }
+
+    fn recall_inner(
+        &self,
+        query: &str,
+        regions: &[Region],
+        k: usize,
+        trusted_only: bool,
+    ) -> Result<Vec<Hit>> {
+        let taint_clause = |prefix: &str| {
+            if trusted_only {
+                format!(" AND {prefix}taint = 'trusted'")
+            } else {
+                String::new()
+            }
+        };
         let q_emb = self.embedder.embed(query);
         let conn = self.conn.lock().expect("memory mutex poisoned");
 
@@ -225,9 +252,10 @@ impl Memory {
             let sql = format!(
                 "SELECT facts_fts.rowid FROM facts_fts \
                  JOIN facts f ON f.id = facts_fts.rowid \
-                 WHERE facts_fts MATCH ?1 AND f.deleted = 0 AND {region} \
+                 WHERE facts_fts MATCH ?1 AND f.deleted = 0 AND {region}{taint} \
                  ORDER BY bm25(facts_fts) LIMIT ?2",
-                region = region_clause("f.", regions)
+                region = region_clause("f.", regions),
+                taint = taint_clause("f.")
             );
             let mut stmt = conn.prepare(&sql)?;
             let rows = stmt.query_map(params![match_q, ARM_LIMIT as i64], |r| r.get::<_, i64>(0))?;
@@ -238,8 +266,9 @@ impl Memory {
 
         // --- semantic arm (cosine over every candidate region row) ---
         let sem_sql = format!(
-            "SELECT id, embedding FROM facts WHERE deleted = 0 AND {region}",
-            region = region_clause("", regions)
+            "SELECT id, embedding FROM facts WHERE deleted = 0 AND {region}{taint}",
+            region = region_clause("", regions),
+            taint = taint_clause("")
         );
         let mut sims: Vec<(i64, f32)> = {
             let mut stmt = conn.prepare(&sem_sql)?;
@@ -558,6 +587,27 @@ mod tests {
         let hits = m.recall("favourite language", &[Region::Identity], 5).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].record.region, "identity");
+    }
+
+    #[test]
+    fn recall_trusted_excludes_untrusted_provenance() {
+        let (m, _d) = mem();
+        m.remember(WriteReq::new(Region::Semantic, "Engram deploys to a cheap VPS")).unwrap();
+        // Content read during a tainted run (e.g. scraped from an attacker page) inherits
+        // Untrusted provenance.
+        m.remember(
+            WriteReq::new(Region::Semantic, "Engram deploys to a cheap VPS, per a web page")
+                .taint(Taint::Untrusted),
+        )
+        .unwrap();
+
+        // The transparency recall sees both…
+        assert_eq!(m.recall("cheap VPS", &[Region::Semantic], 5).unwrap().len(), 2);
+        // …but model-facing recall returns only the trusted one — injected memory can't
+        // re-surface as trusted context and poison a clean run.
+        let trusted = m.recall_trusted("cheap VPS", &[Region::Semantic], 5).unwrap();
+        assert_eq!(trusted.len(), 1);
+        assert_eq!(trusted[0].record.taint, "trusted");
     }
 
     #[test]

@@ -322,7 +322,9 @@ fn add_recall(linker: &mut Linker<HostState>) -> Result<(), SkillError> {
                     (st.memory.clone(), st.regions.clone())
                 };
                 let Some(memory) = memory else { return -1 };
-                let hits = match memory.recall(&query, &regions, 5) {
+                // Skills get trusted-provenance memory only — untrusted content can't
+                // re-enter a skill as trusted context (memory-poisoning guard).
+                let hits = match memory.recall_trusted(&query, &regions, 5) {
                     Ok(h) => h,
                     Err(_) => return -1,
                 };

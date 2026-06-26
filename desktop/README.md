@@ -17,31 +17,44 @@ no duplicated frontend.
 
 ## Run (dev)
 
+One command from the repo root builds the daemon and opens the app:
+
 ```sh
-cd desktop/src-tauri
-cargo tauri dev
+scripts/desktop.sh          # builds engramd, then runs `cargo tauri dev`
 ```
 
-This opens the Engram window, starts `engramd` on `127.0.0.1:8088`, and loads the
-dashboard. Because the window loads the daemon's own origin, the dashboard's API calls
-work with no CORS configuration.
+Or by hand:
+
+```sh
+cargo build --release -p engramd --features http   # the runtime the shell launches
+cd desktop/src-tauri && cargo tauri dev
+```
+
+This opens the Engram window, waits for `engramd` to come up on `127.0.0.1:8088`, and
+loads the dashboard. Because the window loads the daemon's own origin, the dashboard's
+API calls work with no CORS configuration.
 
 ## Build a distributable app
 
 ```sh
-cd desktop/src-tauri
-cargo tauri build
+scripts/desktop.sh build    # or: cd desktop/src-tauri && cargo tauri build
 ```
 
-Produces a native bundle (`.app`/`.dmg` on macOS, `.deb`/`.AppImage` on Linux,
-`.msi` on Windows) under `target/release/bundle/`.
+Produces a native bundle under `target/release/bundle/` (`.app`/`.dmg` on macOS,
+`.deb`/`.AppImage` on Linux, `.msi` on Windows). The macOS `.app` build is verified: it
+embeds the Engram icon and comes out around 8 MB.
 
 ## Notes
 
-- **Icons** are minimal placeholders. Replace them with a real source image via
-  `cargo tauri icon path/to/logo.png`, which regenerates every required size.
+- **Icons** are the real Engram neuron mark, generated for every platform from
+  [`assets/brand/icon.svg`](../assets/brand/icon.svg). To regenerate after a design
+  change, render a 1024px PNG and run `cargo tauri icon ../../assets/brand/icon-1024.png`
+  from `desktop/src-tauri`.
+- The window opens only once the daemon answers, so you never see a connection-refused
+  page on launch. While the app is open the shell keeps `engramd` alive; closing the
+  window quits the app and leaves the daemon to sleep to zero on idle, consistent with
+  the zero-idle design.
 - For a fully self-contained bundle, ship `engramd` as a Tauri **sidecar**
   (`bundle.externalBin`) so users don't need it on `PATH`. The shell already
-  best-effort-spawns it; wiring it as a sidecar is the packaging follow-up.
-- Closing the window leaves `engramd` to sleep to zero on idle - consistent with the
-  zero-idle design rather than force-killing it.
+  best-effort-spawns it from the workspace `target/`; wiring it as a sidecar is the
+  packaging follow-up.

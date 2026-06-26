@@ -248,13 +248,17 @@ ENGRAM_LLM_BASE_URL=https://api.example.com/v1 ENGRAM_LLM_API_KEY=… \
 
 ### Desktop app
 
-A native Tauri shell that wraps the dashboard and starts the daemon for you:
+A native Tauri shell that wraps the dashboard and starts the daemon for you. It opens the
+window onto the daemon's own dashboard, supervises `engramd` while open, and quits cleanly so
+the daemon can sleep to zero. One command builds the daemon and launches it:
 
 ```sh
-cd desktop/src-tauri && cargo tauri dev    # needs: cargo install tauri-cli --version '^2'
+scripts/desktop.sh                         # needs: cargo install tauri-cli --version '^2'
+scripts/desktop.sh build                   # native bundle (.app/.dmg/.deb/.msi)
 ```
 
-See [`desktop/README.md`](./desktop/README.md).
+The macOS `.app` build is verified end to end (it carries the Engram icon and weighs about
+8 MB). See [`desktop/README.md`](./desktop/README.md).
 
 ### Running the benchmark
 

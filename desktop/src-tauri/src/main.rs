@@ -32,6 +32,7 @@ fn main() {
     tauri::Builder::default()
         .setup(|app| {
             supervise_daemon();
+            wait_for_daemon();
             WebviewWindowBuilder::new(
                 app,
                 "main",
@@ -55,6 +56,17 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("error while running Engram desktop");
+}
+
+/// Wait (up to ~5s) for the daemon to start accepting connections, so the window opens onto
+/// a live dashboard instead of a connection-refused page. Returns early the moment it answers.
+fn wait_for_daemon() {
+    for _ in 0..100 {
+        if std::net::TcpStream::connect(ADDR).is_ok() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 /// Start the daemon and keep it alive for as long as the app is open. If it exits after a

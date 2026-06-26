@@ -8,6 +8,12 @@ node_modules/
 dist/
 .vite/
 *.tsbuildinfo
+# ...but the desktop shell's dist is a committed placeholder (the window loads the daemon's
+# own dashboard, so this page is only a fallback) - keep it tracked.
+!/desktop/dist/
+!/desktop/dist/index.html
+# Tauri build-generated schemas and capability manifests.
+/desktop/src-tauri/gen/
 
 # Engram runtime state (local brain - never commit personal memory)
 /.engram/

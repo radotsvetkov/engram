@@ -106,11 +106,16 @@ pub(crate) fn html_to_text(html: &str) -> String {
 // Shell
 // ---------------------------------------------------------------------------
 
-/// Build the (program, args) to run `command` under the configured backend:
+/// Build the `(program, args)` to run `command` under the configured backend:
+///
 /// - `None` → local (`sh -c`)
 /// - `Some("ssh:user@host")` → remote over SSH
-/// - `Some(image)` → sandboxed, network-isolated `docker run` against that image
-pub(crate) fn shell_command(
+/// - `Some("singularity:image")` → a `singularity exec` sandbox
+/// - `Some(image)` → a sandboxed, network-isolated `docker run` against that image
+///
+/// Exposed (not crate-private) so the daemon's glass-box terminal runs human commands through
+/// this exact same path as the agent.
+pub fn shell_command(
     backend: Option<&str>,
     workdir: &std::path::Path,
     command: &str,

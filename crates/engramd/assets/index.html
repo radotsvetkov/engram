@@ -155,6 +155,38 @@
   .msg.user { align-self:flex-end; background:var(--surface-2); border:1px solid var(--border); border-radius:16px 16px 5px 16px; padding:10px 14px; max-width:78%; line-height:1.5; white-space:pre-wrap; }
   .msg.engram { font-family:var(--font-voice); font-size:16px; line-height:1.62; max-width:68ch; color:var(--text-primary); white-space:pre-wrap; }
   .msg .note { font-size:11px; color:var(--text-muted); margin-top:4px; }
+  /* terminal - the glass-box shell */
+  .term-wrap { height:100%; display:grid; grid-template-columns:232px minmax(0,1fr); }
+  .ftree { border-right:1px solid var(--border); overflow:auto; padding:10px 8px; background:var(--surface-0); }
+  .ft-head { font:11px var(--mono); color:var(--text-muted); text-transform:uppercase; letter-spacing:.06em; padding:2px 6px 9px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .ft-row { display:flex; align-items:center; gap:7px; padding:4px 7px; border-radius:6px; cursor:pointer; font-size:13px; color:var(--text-secondary); white-space:nowrap; overflow:hidden; }
+  .ft-row:hover { background:var(--hover); color:var(--text-primary); }
+  .ft-row .fi { width:13px; flex:none; color:var(--text-muted); text-align:center; }
+  .ft-row.dir .fname { color:var(--text-primary); }
+  .ft-row .fname { overflow:hidden; text-overflow:ellipsis; }
+  .term { display:flex; flex-direction:column; min-width:0; background:var(--surface-0); }
+  .term-out { flex:1; overflow:auto; padding:16px 18px; font:13px/1.6 var(--mono); }
+  .t-sys { color:var(--text-muted); margin-bottom:10px; }
+  .t-cmd { display:flex; align-items:baseline; gap:9px; margin-top:11px; }
+  .t-cmd .t-prompt { color:var(--accent); flex:none; }
+  .t-cmd .t-text { color:var(--text-primary); white-space:pre-wrap; word-break:break-word; flex:1; }
+  .t-sig { flex:none; font-size:11px; color:var(--text-muted); cursor:pointer; display:inline-flex; gap:3px; align-items:center; border:1px solid var(--border); border-radius:5px; padding:0 6px; }
+  .t-sig:hover { color:var(--accent); border-color:var(--border-strong); }
+  .t-out { white-space:pre-wrap; word-break:break-word; color:var(--text-secondary); margin:2px 0 0; font:13px/1.6 var(--mono); }
+  .t-out.t-err { color:var(--danger); }
+  .term-in { display:flex; align-items:center; gap:9px; border-top:1px solid var(--border); padding:11px 18px; background:var(--surface-1); }
+  .term-in .term-prompt { color:var(--accent); font:13px var(--mono); flex:none; white-space:nowrap; }
+  .term-cmd { flex:1; min-width:0; background:none; border:none; outline:none; color:var(--text-primary); font:13px var(--mono); }
+  .term-cmd.term-busy { opacity:.5; }
+  .term-gate { height:100%; display:flex; align-items:center; justify-content:center; padding:24px; }
+  .tg-card { max-width:448px; text-align:center; background:var(--surface-1); border:1px solid var(--border); border-radius:16px; padding:34px 30px; box-shadow:var(--e2); }
+  .tg-ic { color:var(--accent); margin-bottom:15px; }
+  .tg-ic svg { width:44px; height:44px; }
+  .tg-card h2 { margin:0 0 10px; font-size:18px; font-weight:600; }
+  .tg-card p { color:var(--text-secondary); line-height:1.62; margin:0 0 20px; font-size:14px; }
+  .tg-card .primary { background:var(--accent); color:var(--accent-ink); border:none; border-radius:9px; padding:10px 20px; font-weight:600; font-size:14px; cursor:pointer; }
+  .tg-card .primary:hover { filter:brightness(1.06); }
+  .tg-fine { margin-top:14px; font-size:12px; color:var(--text-muted); }
   .panes { padding:16px; display:flex; flex-direction:column; gap:14px; max-width:920px; }
   .pane { background:var(--surface-1); border:1px solid var(--border); border-radius:12px; padding:14px; }
   .pane h2 { margin:0 0 10px; font-size:13px; color:var(--text-secondary); font-weight:500; }
@@ -494,9 +526,10 @@ const ICONS = {
   Schedule: SVG('<rect x="3" y="5" width="18" height="16" rx="2.5"/><path d="M3 9.5h18M8 3v3.5M16 3v3.5"/><path d="M12 13.5v3l2 1.2"/>'),
   Memory: SVG('<path d="M14.5 4.2A2.6 2.6 0 0 0 12 6.1a2.6 2.6 0 0 0-2.5-1.9 2.6 2.6 0 0 0-2.6 2.6c0 .3 0 .5.1.8a2.8 2.8 0 0 0-1.5 2.5 2.8 2.8 0 0 0 .8 2 2.6 2.6 0 0 0 1.7 4.4 2.6 2.6 0 0 0 4 .6 2.6 2.6 0 0 0 4-.6 2.6 2.6 0 0 0 1.7-4.4 2.8 2.8 0 0 0 .8-2 2.8 2.8 0 0 0-1.5-2.5c.1-.3.1-.5.1-.8a2.6 2.6 0 0 0-2.6-2.6Z"/><path d="M12 6.1v12.5"/>'),
   Skills: SVG('<path d="M12 3.2l1.7 4.5 4.5 1.7-4.5 1.7L12 15.6l-1.7-4.5L5.8 9.4l4.5-1.7L12 3.2Z"/><path d="M18.4 14.2l.8 2.1 2.1.8-2.1.8-.8 2.1-.8-2.1-2.1-.8 2.1-.8.8-2.1Z"/>'),
+  Terminal: SVG('<rect x="3" y="4.5" width="18" height="15" rx="2.6"/><path d="m7.5 9.5 2.6 2.5-2.6 2.5M13 14.5h3.6"/>'),
   Settings: SVG('<circle cx="12" cy="12" r="3"/><path d="M19.4 13a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1.08 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/>'),
 };
-const VIEWS = ['Chat','Tasks','Schedule','Memory','Skills'];
+const VIEWS = ['Chat','Tasks','Schedule','Memory','Skills','Terminal'];
 let state = { route:'Tasks', tasks:[], offline:false };
 
 function renderNav(){
@@ -1370,12 +1403,106 @@ window.addEventListener('keydown', e=>{
   if(k==='escape' && document.getElementById('panel').classList.contains('open')){ e.preventDefault(); closePanel(); }
 });
 
+// ---- Terminal - the glass-box shell (your commands signed into the ledger, like the agent's) ----
+let TERM = { cwd:null, parent:null, tree:[], log:[], hist:[], hi:-1, busy:false };
+function termShort(p){ if(!p) return ''; const s=p.split('/').filter(Boolean); return (s.length>2?'…/':'/')+s.slice(-2).join('/'); }
+const attrJson = x => escAttr(JSON.stringify(x));
+async function loadTree(path){
+  try{ return await J(tok('/v1/fs'+(path?('?path='+encodeURIComponent(path)):''))); }catch(_){ return null; }
+}
+async function renderTerminal(){
+  const v=document.getElementById('view'); if(!v) return;
+  document.getElementById('viewname').textContent='Terminal';
+  const fs=await loadTree(TERM.cwd);
+  if(!fs || fs.denied){
+    v.innerHTML=`<div class="term-gate"><div class="tg-card">
+      <div class="tg-ic">${ICONS.Terminal}</div>
+      <h2>A terminal that keeps no secrets</h2>
+      <p>Engram signs every command — the agent's and your own — into one tamper-evident ledger, so even the lines you type by hand stay auditable. No human-shaped hole in the glass box.</p>
+      <button class="primary" onclick="enableShell()">Enable shell access</button>
+      <div class="tg-fine">You can turn this off any time in Settings › Security.</div>
+    </div></div>`;
+    return;
+  }
+  TERM.cwd=fs.path; TERM.parent=fs.parent; TERM.tree=fs.entries||[];
+  if(!TERM.log.length) TERM.log=[{k:'sys',t:'Engram terminal — every command you run is signed into the ledger. Try ls, git status, pwd. Type clear to reset.'}];
+  v.innerHTML=`<div class="term-wrap">
+    <aside class="ftree" id="ftree"></aside>
+    <div class="term" id="term">
+      <div class="term-out" id="termOut"></div>
+      <div class="term-in"><span class="term-prompt" id="termPrompt">${esc(termShort(TERM.cwd))} $</span><input id="termCmd" class="term-cmd" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="run a command…"></div>
+    </div></div>`;
+  renderTree(); paintTerm();
+  const inp=document.getElementById('termCmd'); inp.onkeydown=termKey; inp.focus();
+  document.getElementById('term').addEventListener('mousedown', e=>{ if(e.target.tagName!=='INPUT' && (''+window.getSelection()).length===0) setTimeout(()=>inp.focus(),0); });
+}
+function renderTree(){
+  const el=document.getElementById('ftree'); if(!el) return;
+  const up = TERM.parent ? `<div class="ft-row dir" onclick="termCd(${attrJson(TERM.parent)})"><span class="fi">↰</span><span class="fname">..</span></div>` : '';
+  const rows = (TERM.tree||[]).map(e=>{
+    const full=(TERM.cwd.endsWith('/')?TERM.cwd:TERM.cwd+'/')+e.name;
+    return e.dir
+      ? `<div class="ft-row dir" onclick="termCd(${attrJson(full)})"><span class="fi">▸</span><span class="fname">${esc(e.name)}</span></div>`
+      : `<div class="ft-row file" onclick="termInsert(${attrJson(e.name)})"><span class="fi">·</span><span class="fname">${esc(e.name)}</span></div>`;
+  }).join('') || '<div class="ft-row" style="color:var(--text-muted);cursor:default">empty</div>';
+  el.innerHTML=`<div class="ft-head" title="${escAttr(TERM.cwd)}">Files</div>${up}${rows}`;
+}
+function paintTerm(){
+  const o=document.getElementById('termOut'); if(!o) return;
+  o.innerHTML=TERM.log.map(e=>{
+    if(e.k==='sys') return `<div class="t-sys">${esc(e.t)}</div>`;
+    if(e.k==='cmd'){ const sig=e.hash?`<span class="t-sig" onclick="openReceipt()" title="signed into the ledger · seq ${esc(String(e.seq))}">◇ ${esc(String(e.hash).slice(0,8))}</span>`:''; return `<div class="t-cmd"><span class="t-prompt">${esc(termShort(e.cwd))} $</span><span class="t-text">${esc(e.t)}</span>${sig}</div>`; }
+    if(e.k==='out' && e.t) return `<pre class="t-out">${esc(e.t)}</pre>`;
+    if(e.k==='err' && e.t) return `<pre class="t-out t-err">${esc(e.t)}</pre>`;
+    return '';
+  }).join('');
+  o.scrollTop=o.scrollHeight;
+}
+function termKey(e){
+  if(e.key==='Enter'){ e.preventDefault(); if(TERM.busy) return; const c=e.target.value; e.target.value=''; runTermCmd(c); }
+  else if(e.key==='ArrowUp'){ e.preventDefault(); if(TERM.hist.length){ TERM.hi=Math.min(TERM.hi+1,TERM.hist.length-1); e.target.value=TERM.hist[TERM.hist.length-1-TERM.hi]||''; } }
+  else if(e.key==='ArrowDown'){ e.preventDefault(); if(TERM.hi>0){ TERM.hi--; e.target.value=TERM.hist[TERM.hist.length-1-TERM.hi]||''; } else { TERM.hi=-1; e.target.value=''; } }
+}
+async function runTermCmd(cmd){
+  cmd=(cmd||'').trim(); if(!cmd) return;
+  TERM.hist.push(cmd); TERM.hi=-1;
+  if(cmd==='clear'){ TERM.log=[]; paintTerm(); return; }
+  TERM.log.push({k:'cmd', cwd:TERM.cwd, t:cmd}); const entry=TERM.log[TERM.log.length-1]; paintTerm();
+  TERM.busy=true; const inp=document.getElementById('termCmd'); if(inp) inp.classList.add('term-busy');
+  try{
+    const r=await J('/v1/shell',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({command:cmd, cwd:TERM.cwd})});
+    if(r.denied){ TERM.busy=false; renderTerminal(); return; }
+    entry.seq=r.seq; entry.hash=r.hash;
+    if(r.cwd) TERM.cwd=r.cwd;
+    if(r.stdout) TERM.log.push({k:'out',t:String(r.stdout).replace(/\n+$/,'')});
+    if(r.stderr) TERM.log.push({k:'err',t:String(r.stderr).replace(/\n+$/,'')});
+    const pr=document.getElementById('termPrompt'); if(pr) pr.textContent=termShort(TERM.cwd)+' $';
+    const fs=await loadTree(TERM.cwd); if(fs && !fs.denied){ TERM.parent=fs.parent; TERM.tree=fs.entries||[]; renderTree(); }
+    paintTerm();
+  }catch(e){ TERM.log.push({k:'err',t:'(could not run — '+(e.message||'error')+')'}); paintTerm(); }
+  finally{ TERM.busy=false; const i2=document.getElementById('termCmd'); if(i2){ i2.classList.remove('term-busy'); i2.focus(); } }
+}
+async function termCd(path){
+  // Browsing the tree changes the working directory (a read, not a recorded command); typing
+  // `cd` is what lands a signed line. Keeps the ledger about intent, not every folder click.
+  const fs=await loadTree(path); if(!fs || fs.denied) return;
+  TERM.cwd=fs.path; TERM.parent=fs.parent; TERM.tree=fs.entries||[]; renderTree();
+  const pr=document.getElementById('termPrompt'); if(pr) pr.textContent=termShort(TERM.cwd)+' $';
+  const inp=document.getElementById('termCmd'); if(inp) inp.focus();
+}
+function termInsert(name){ const inp=document.getElementById('termCmd'); if(!inp) return; inp.value=(inp.value?inp.value+' ':'')+name; inp.focus(); }
+async function enableShell(){
+  try{ await J('/v1/policy',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({allow_shell:true})});
+    if(typeof CFG!=='undefined' && CFG && CFG.security) CFG.security.allow_shell=true; renderTerminal(); }
+  catch(e){ notify('Couldn’t enable shell — '+e.message); }
+}
 function renderView(){
   if(state.route==='Tasks') renderBoard();
   else if(state.route==='Chat') renderChat();
   else if(state.route==='Schedule') renderSchedule();
   else if(state.route==='Memory') renderMemory();
   else if(state.route==='Skills') renderSkills();
+  else if(state.route==='Terminal') renderTerminal();
 }
 
 // Refresh the board only when tasks actually changed (so idle re-renders don't fight typing).

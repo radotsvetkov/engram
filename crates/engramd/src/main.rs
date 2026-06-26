@@ -28,6 +28,7 @@ mod embedder;
 mod seed;
 mod tasks;
 mod telegram;
+mod terminal;
 mod workspace;
 
 use engram_core::{run_until_idle, Activity, Bus, Ledger, Priority, Spike, VERSION};
@@ -276,6 +277,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/sessions/{id}", get(session_get).patch(session_update).delete(session_delete))
         .route("/v1/ledger/pubkey", get(ledger_pubkey))
         .route("/v1/policy", get(policy_get).post(policy_set))
+        .route("/v1/shell", post(terminal::shell_handler))
+        .route("/v1/fs", get(terminal::fs_handler))
         .route("/v1/config", get(config_get).post(config_set))
         .route("/v1/config/test", post(config_test))
         .route("/v1/persona", get(persona_get).post(persona_set))

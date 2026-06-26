@@ -362,13 +362,27 @@ the system today. `crates/engram-core/src/ledger.rs` provides:
 - **Reversible without erasure:** a `revert` is itself an appended entry pointing at a
   prior good hash; history is added to, never rewritten, so the incident timeline stays
   intact for forensics (covered by `revert_is_appended_not_erased`).
-- **Independently verifiable:** the public key can be handed to the desktop or any
-  auditor to replay the chain and prove nothing was rewritten.
+- **Independently verifiable, offline.** The public key is published to
+  `brain/ledger.pub` (and `GET /v1/ledger/pubkey`), and `engramd verify [HOME]` replays the
+  chain against it **without starting or trusting the daemon** — exit 0 = intact, 1 =
+  tampered (it pinpoints the first broken seq), 2 = setup error. A task's run can be
+  exported as a self-contained receipt (`GET /v1/tasks/{id}/receipt`: answer + each step's
+  signed seq/hash + those ledger entries + the pubkey + the verify command), so a third
+  party can confirm a run happened as claimed.
 
-**[DEFERRED]** Periodically anchoring the chain head to an external transparency
-log/notary — so that even a fully host-compromised attacker cannot silently rewrite the
-local chain — is the one piece of T8 left for later. The local chain is tamper-*evident*
-in v0.1; external anchoring would make it tamper-*proof* against host compromise.
+**The key-custody boundary — stated honestly.** `verify` proves the chain is internally
+consistent and Ed25519-signed by the keyholder, so it is **tamper-evident against any party
+that does *not* hold the signing key**: post-hoc edits to `ledger.jsonl`, a doctored backup,
+a different user/process, or corruption are all caught (provided the auditor obtained the
+public key out of band beforehand). What it does **not** defend against is the **keyholder
+itself**: on a single-user box the host runs the daemon *and* holds `keys/ledger.key`, so a
+fully-compromised root could sign a fabricated chain. The ledger therefore proves *"this is
+what the keyholder attested,"* not *"this is objectively what happened,"* against a
+compromised host. **[DEFERRED]** Closing that gap needs the key held or co-signed by a party
+the host can't impersonate: hardware-backed keys (TPM/Secure Enclave/YubiKey), and/or
+periodically anchoring the chain head to an external transparency log / remote co-signer.
+The local chain is tamper-*evident* today; external co-signing makes it tamper-*proof*
+against host compromise. We do not claim the latter until it ships.
 
 ---
 

@@ -20,7 +20,7 @@ pub mod ledger;
 pub mod lifecycle;
 
 pub use event::{now_ms, Bus, Priority, Spike, Synapse, Taint};
-pub use ledger::{Entry, Ledger, LedgerError};
+pub use ledger::{verify_file, verifying_key_from_hex, Entry, Ledger, LedgerError};
 pub use lifecycle::{run_until_idle, Activity, WakeReason};
 
 /// Semantic version of the kernel, taken from the crate manifest.

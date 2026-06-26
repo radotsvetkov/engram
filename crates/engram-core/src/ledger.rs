@@ -201,6 +201,12 @@ impl Ledger {
         verify_file(&self.path, &self.verifying)
     }
 
+    /// The ledger's public key, hex-encoded. Publish this once (out of band) so a third
+    /// party can verify any future ledger offline without trusting the running daemon.
+    pub fn pubkey_hex(&self) -> String {
+        hex::encode(self.verifying.to_bytes())
+    }
+
     /// Read every entry from disk (for the audit UI and tooling). Does not verify;
     /// pair with [`verify`](Self::verify) when integrity matters.
     pub fn read_all(&self) -> Result<Vec<Entry>, LedgerError> {
@@ -234,6 +240,13 @@ fn read_entries(path: &Path) -> Result<Vec<Entry>, LedgerError> {
         }
     }
     Ok(out)
+}
+
+/// Build a public key from its hex encoding — for offline, third-party verification.
+pub fn verifying_key_from_hex(s: &str) -> Result<VerifyingKey, LedgerError> {
+    let bytes = hex::decode(s.trim()).map_err(|_| LedgerError::Key)?;
+    let arr: [u8; 32] = bytes.as_slice().try_into().map_err(|_| LedgerError::Key)?;
+    VerifyingKey::from_bytes(&arr).map_err(|_| LedgerError::Key)
 }
 
 /// Verify a ledger file against a public key without holding a `Ledger`.
@@ -406,6 +419,19 @@ mod tests {
         let l = Ledger::open(dir.path()).unwrap();
         assert_eq!(l.head().0, 2);
         assert_eq!(verify_file(&path, &verifying).unwrap(), 2);
+    }
+
+    #[test]
+    fn exported_pubkey_verifies_the_chain_offline() {
+        let dir = temp();
+        let l = Ledger::open(dir.path()).unwrap();
+        l.append("a", "core", json!(1)).unwrap();
+        l.append("b", "core", json!(2)).unwrap();
+        // The published public key (hex) reconstructs and verifies the signed file.
+        let vk = verifying_key_from_hex(&l.pubkey_hex()).unwrap();
+        assert_eq!(verify_file(&dir.path().join("ledger.jsonl"), &vk).unwrap(), 2);
+        // Bad hex is an error, never a panic.
+        assert!(verifying_key_from_hex("not-hex").is_err());
     }
 
     #[test]

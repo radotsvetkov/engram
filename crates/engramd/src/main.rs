@@ -69,10 +69,53 @@ fn err(e: impl std::fmt::Display) -> ApiError {
 
 #[tokio::main]
 async fn main() {
+    // `engramd verify [HOME]` — offline, third-party verification of the audit ledger
+    // against its published public key, WITHOUT starting (or trusting) the daemon.
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("verify") {
+        std::process::exit(verify_cmd(args.get(2).map(String::as_str)));
+    }
     init_tracing();
     if let Err(e) = run().await {
         tracing::error!(error = %e, "fatal");
         std::process::exit(1);
+    }
+}
+
+/// Offline verification of `<HOME>/ledger.jsonl` against `<HOME>/ledger.pub`. Exit codes:
+/// 0 = signed chain intact, 1 = tampered/broken, 2 = setup error. This is the trust
+/// payoff — anyone can confirm conduct without trusting the machine that produced it.
+fn verify_cmd(home_arg: Option<&str>) -> i32 {
+    let home = home_arg
+        .map(String::from)
+        .or_else(|| std::env::var("ENGRAM_HOME").ok())
+        .unwrap_or_else(|| "./brain".into());
+    let dir = std::path::Path::new(&home);
+    let ledger_path = dir.join("ledger.jsonl");
+    let pub_path = dir.join("ledger.pub");
+    let pubhex = match std::fs::read_to_string(&pub_path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("cannot read public key {}: {e}", pub_path.display());
+            return 2;
+        }
+    };
+    let vk = match engram_core::verifying_key_from_hex(&pubhex) {
+        Ok(v) => v,
+        Err(_) => {
+            eprintln!("invalid public key in {}", pub_path.display());
+            return 2;
+        }
+    };
+    match engram_core::verify_file(&ledger_path, &vk) {
+        Ok(n) => {
+            println!("OK — {n} entries, signed hash-chain intact: {}", ledger_path.display());
+            0
+        }
+        Err(e) => {
+            eprintln!("TAMPER / BROKEN — {e}");
+            1
+        }
     }
 }
 
@@ -84,6 +127,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let idle = Duration::from_secs(env_u64("ENGRAM_IDLE_SECS", 900));
 
     let ledger = Arc::new(Ledger::open(&home)?);
+    // Publish the ledger's public key so anyone can run `engramd verify` offline.
+    let _ = std::fs::write(format!("{home}/ledger.pub"), ledger.pubkey_hex());
     let gateway = Arc::new(Gateway::new(make_provider(), ledger.clone()));
 
     // Pick the embedder: a real model through the gateway (ENGRAM_EMBED=gateway), or
@@ -165,6 +210,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/tasks/{id}", axum::routing::patch(tasks_update).delete(tasks_delete))
         .route("/v1/tasks/{id}/run", post(tasks_run))
         .route("/v1/tasks/{id}/audit", get(task_audit))
+        .route("/v1/tasks/{id}/receipt", get(task_receipt))
+        .route("/v1/ledger/pubkey", get(ledger_pubkey))
         .route("/v1/policy", get(policy_get).post(policy_set))
         .route("/v1/halt", post(halt_set))
         .route("/v1/events", get(events))
@@ -713,6 +760,36 @@ async fn task_audit(State(app): State<App>, Path(id): Path<String>) -> ApiResult
         })
         .collect();
     Ok(Json(json!({ "entries": entries, "head": run.ledger_head_hash })))
+}
+
+/// The ledger's public key, for offline verification (`engramd verify`) by a third party.
+async fn ledger_pubkey(State(app): State<App>) -> ApiResult {
+    Ok(Json(json!({ "pubkey": app.ledger.pubkey_hex(), "alg": "ed25519" })))
+}
+
+/// A self-contained, independently-verifiable receipt for one task run: the answer, each
+/// step with the exact signed ledger seq+hash it produced, those ledger entries, and the
+/// public key + verify command — so anyone can confirm the run happened as claimed without
+/// trusting this machine.
+async fn task_receipt(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
+    let task = app.tasks.get(&id).ok_or_else(|| ApiError("task not found".into()))?;
+    let run = task.run.clone().ok_or_else(|| ApiError("task has no run yet".into()))?;
+    let seqs: std::collections::HashSet<u64> =
+        run.steps.iter().map(|s| s.ledger_seq).filter(|&s| s > 0).collect();
+    let entries: Vec<_> =
+        app.ledger.read_all().map_err(err)?.into_iter().filter(|e| seqs.contains(&e.seq)).collect();
+    Ok(Json(json!({
+        "task": { "id": task.id, "title": task.title },
+        "answer": run.answer,
+        "steps": run.steps,
+        "ledger_head": run.ledger_head_hash,
+        "ledger_entries": entries,
+        "pubkey": app.ledger.pubkey_hex(),
+        "alg": "ed25519",
+        "verify": "engramd verify <ENGRAM_HOME>",
+        "note": "Each step's ledger_seq/ledger_hash matches a signed entry above; run the verify \
+                 command with the published pubkey to confirm the whole chain offline."
+    })))
 }
 
 #[derive(Deserialize)]

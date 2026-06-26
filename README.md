@@ -299,11 +299,16 @@ in place. Delivered since the initial v0.1:
 
 Remaining:
 
-- **Provider key** — with a real embedding model configured, synonym-level paraphrase
-  recall (>0.85) on top of today's morphological recall; the benchmark harness measures it.
-  The same key lights up live vision, image generation, and speech in the agent.
+- **Provider key (optional)** — synonym-level paraphrase recall already ships **locally** via
+  the pure-Rust static embedder (`ENGRAM_EMBED=static`; measured 100% recall@10 vs trigram's
+  94%). A provider key with `--features http` is only needed to drive completions through a
+  real model (Anthropic-native or OpenAI-compatible) and to light up live vision, image
+  generation, and speech.
 - **VPS deploy** — the generated systemd socket-activation and wake-timer units on a $5 VPS
   behind a reverse proxy, with the published $0.00/idle-hour table.
+- **Hardware-backed audit keys** — TPM/Secure-Enclave/YubiKey or external co-signing to make
+  the ledger tamper-*proof against host compromise* (today it is tamper-*evident*; the
+  boundary is stated honestly in the threat model).
 - **Voice mode** and **broader messaging/execution breadth** — the honest gaps against
   Hermes noted above; the MCP client narrows the integration gap in the meantime.
 

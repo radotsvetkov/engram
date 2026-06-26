@@ -309,6 +309,17 @@ async function runTask(id){
   J('/v1/tasks/'+id+'/run',{method:'POST'}).then(async()=>{ await loadTasks(); if(state.route==='Tasks') renderBoard(); if(panelId===id) openTask(id); });
   setTimeout(async()=>{ await loadTasks(); if(state.route==='Tasks') renderBoard(); }, 600);
 }
+// Dry-run preview: shows what the agent would do without executing any side-effecting tool.
+async function previewTask(id){
+  const t=state.tasks.find(x=>x.id===id); if(!t) return;
+  const out=document.getElementById('previewOut'); if(out) out.textContent='Previewing…';
+  const prompt=(t.detail&&t.detail.trim())?(t.title+'\n\n'+t.detail):t.title;
+  try{
+    const run=await J('/v1/agent',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({task:prompt,dry_run:true})});
+    const steps=(run.steps||[]).map(s=>`<div class="step ${s.ok?'':'bad'}"><div class="top"><span class="verb">${esc(s.tool)}</span></div><div class="obs">${esc(s.observation)}</div></div>`).join('');
+    if(out) out.innerHTML=`<div class="muted" style="font-size:11px;margin:8px 0 4px">preview — nothing was executed</div>${steps||'<div class="muted">no actions planned</div>'}<div class="answer">${esc(run.answer||'')}</div>`;
+  }catch(e){ if(out) out.textContent='(preview failed — '+(e.message||'try again')+')'; }
+}
 
 // ---- drag ----
 let dragId=null;
@@ -335,7 +346,7 @@ async function openTask(id){
   const ps=document.getElementById('pStatus'); ps.textContent=t.status; ps.className='pill '+t.status;
   const body=document.getElementById('pBody');
   let html='';
-  if(t.status==='todo') html+=`<div class="row"><button onclick="runTask('${id}')">Run now</button></div>`;
+  if(t.status==='todo') html+=`<div class="row"><button onclick="runTask('${id}')">Run now</button><button class="ghost" onclick="previewTask('${id}')" title="see what the agent would do — nothing is executed">Preview</button></div><div id="previewOut" class="sub"></div>`;
   if(t.run){
     const denied=(t.run.steps||[]).find(s=>!s.ok && /shell/i.test(s.tool) && /disabled|refused/i.test(s.observation));
     if(denied){

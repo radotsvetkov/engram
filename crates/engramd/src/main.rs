@@ -283,6 +283,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/fs", get(terminal::fs_handler))
         .route("/v1/config", get(config_get).post(config_set))
         .route("/v1/config/test", post(config_test))
+        .route("/v1/config/mcp-test", post(config_mcp_test))
         .route("/v1/persona", get(persona_get).post(persona_set))
         .route("/v1/restart", post(restart_handler))
         .route("/v1/halt", post(halt_set))
@@ -292,7 +293,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .with_state(app.clone());
 
     // Inbound messaging channel: run as a Telegram bot if a token is configured.
-    if let Ok(token) = std::env::var("ENGRAM_TELEGRAM_TOKEN") {
+    // Prefer a token saved from the Integrations gallery (config.json); fall back to the env.
+    let tg_token = {
+        let t = app.cfg().channels.telegram_token.clone();
+        if t.is_empty() { std::env::var("ENGRAM_TELEGRAM_TOKEN").ok() } else { Some(t) }
+    };
+    if let Some(token) = tg_token.filter(|t| !t.is_empty()) {
         tracing::info!("telegram channel active");
         telegram::spawn(app.clone(), token);
     }
@@ -1252,6 +1258,30 @@ async fn config_test(State(app): State<App>, Json(patch): Json<Value>) -> ApiRes
     }
 }
 
+/// Spawn a single MCP server from a posted `{name,command,args}`, connect, and report how
+/// many tools it exposed - powers the Integrations/Tools per-server "Test" button so a bad
+/// command is caught before it's saved. The probe subprocess is dropped immediately after.
+/// Reachable only behind `require_auth` (the router-wide layer), like the rest of /v1/*.
+async fn config_mcp_test(Json(body): Json<Value>) -> ApiResult {
+    let name = body.get("name").and_then(|v| v.as_str()).unwrap_or("probe").to_string();
+    let command = body.get("command").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    if command.is_empty() {
+        return Ok(Json(json!({ "ok": false, "error": "no command" })));
+    }
+    let args: Vec<String> = body
+        .get("args")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    let configs = vec![(name.clone(), command, args)];
+    let (tools, connected) = engram_agent::connect_servers_reported(&configs).await;
+    if connected.is_empty() {
+        Ok(Json(json!({ "ok": false, "error": "could not connect - check the command and args" })))
+    } else {
+        Ok(Json(json!({ "ok": true, "tools": tools.len() })))
+    }
+}
+
 /// Merge a settings patch (the shape the UI posts) into a config. Secret fields are only
 /// overwritten when a non-empty value is supplied; a `clear_*` flag wipes them.
 fn apply_config_patch(cfg: &mut config::Config, p: &Value) {
@@ -1309,6 +1339,16 @@ fn apply_config_patch(cfg: &mut config::Config, p: &Value) {
     if let Some(c) = p.get("cost") {
         if let Some(n) = c.get("task_token_budget").and_then(|v| v.as_u64()) {
             cfg.cost.task_token_budget = n.max(1_000);
+        }
+    }
+    if let Some(ch) = p.get("channels") {
+        if let Some(x) = s(ch, "telegram_token") {
+            if !x.is_empty() {
+                cfg.channels.telegram_token = x;
+            }
+        }
+        if flag(ch, "clear_telegram_token") {
+            cfg.channels.telegram_token.clear();
         }
     }
     if let Some(arr) = p.get("mcp").and_then(|v| v.as_array()) {

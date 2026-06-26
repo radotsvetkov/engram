@@ -18,7 +18,17 @@ pub struct Config {
     pub embed: EmbedCfg,
     pub security: SecurityCfg,
     pub cost: CostCfg,
+    pub channels: ChannelsCfg,
     pub mcp: Vec<McpServer>,
+}
+
+/// Outbound/inbound messaging channels the desktop's Integrations gallery configures.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChannelsCfg {
+    /// Telegram bot token (from BotFather). Empty means the Telegram bot is off.
+    /// Read at boot by `telegram::spawn`; takes effect on the next restart.
+    pub telegram_token: String,
 }
 
 /// Which model backend to call, and with what credentials.
@@ -215,6 +225,7 @@ impl Config {
                 "allow_shell": self.security.allow_shell,
             },
             "cost": { "task_token_budget": self.cost.task_token_budget },
+            "channels": { "telegram_set": !self.channels.telegram_token.is_empty() },
             "mcp": self.mcp,
         })
     }

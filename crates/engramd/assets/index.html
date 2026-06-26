@@ -652,6 +652,185 @@
 .sched-empty .se-title { color:var(--text-secondary); font-size:13px; }
 .sched-empty .se-hint { font-size:12px; max-width:340px; line-height:1.55; }
 .sched-empty .se-hint code { background:var(--surface-2); border:1px solid var(--border); border-radius:5px; padding:1px 5px; font-family:var(--mono); font-size:11px; color:var(--text-secondary); }
+/* ===================== VOICE: dictation mic + conversation overlay ===================== */
+
+/* (1) composer dictation mic — matches the .send-icon 34px circle, secondary weight */
+.composer .voice-mic {
+  display:inline-flex; align-items:center; justify-content:center;
+  width:34px; height:34px; padding:0; border-radius:50%;
+  background:var(--surface-2); border:1px solid var(--border);
+  color:var(--text-secondary); cursor:pointer; position:relative;
+  transition:background var(--dur-1) var(--ease-out), border-color var(--dur-1), color var(--dur-1);
+}
+.composer .voice-mic svg { width:17px; height:17px; }
+.composer .voice-mic:hover { border-color:var(--border-strong); color:var(--text-primary); background:var(--active); }
+.composer .voice-mic:active { transform:translateY(1px); }
+.composer .voice-mic.rec { color:var(--accent); border-color:var(--ring); background:var(--accent-soft); }
+.composer .voice-mic.rec::after {
+  content:''; position:absolute; inset:-1px; border-radius:50%;
+  border:1.5px solid var(--accent); animation:voice-pulse 1.4s var(--ease-out) infinite;
+}
+@keyframes voice-pulse {
+  0%   { transform:scale(1);    opacity:.7; }
+  70%  { transform:scale(1.35); opacity:0; }
+  100% { transform:scale(1.35); opacity:0; }
+}
+
+/* Chat-header entry button (built on .kbtn; SVG needs explicit sizing) */
+.voice-headbtn svg { width:15px; height:15px; }
+.voice-headbtn .vhb-l { font-weight:500; }
+
+/* (2) full-surface conversation overlay */
+.voice-ov {
+  position:fixed; inset:0; z-index:120;
+  display:flex; align-items:center; justify-content:center;
+  background:radial-gradient(120% 120% at 50% 38%, rgba(18,21,25,.86), rgba(8,9,11,.97));
+  backdrop-filter:blur(14px) saturate(1.05); -webkit-backdrop-filter:blur(14px) saturate(1.05);
+  opacity:0; transition:opacity var(--dur-3) var(--ease-out);
+}
+.voice-ov.in { opacity:1; }
+.voice-close {
+  position:absolute; top:16px; right:18px; width:34px; height:34px;
+  display:flex; align-items:center; justify-content:center;
+  background:var(--surface-2); border:1px solid var(--border); border-radius:50%;
+  color:var(--text-secondary); font-size:15px; cursor:pointer; line-height:1;
+  transition:.15s;
+}
+.voice-close:hover { color:var(--text-primary); border-color:var(--border-strong); background:var(--active); }
+
+.voice-stage {
+  display:flex; flex-direction:column; align-items:center; gap:18px;
+  width:min(560px,90vw); padding:24px; text-align:center;
+  transform:translateY(8px); transition:transform var(--dur-4) var(--ease-spring);
+}
+.voice-ov.in .voice-stage { transform:translateY(0); }
+
+#voiceOrb { width:300px; height:300px; max-width:74vw; max-height:74vw; }
+
+.voice-status {
+  font:13px var(--mono); letter-spacing:.06em; text-transform:uppercase;
+  color:var(--text-muted); min-height:18px; transition:color var(--dur-2);
+}
+.voice-ov[data-phase="listening"] .voice-status { color:var(--accent); }
+.voice-ov[data-phase="speaking"]  .voice-status { color:var(--web); }
+.voice-ov[data-phase="thinking"]  .voice-status { color:var(--warning); }
+
+.voice-transcript {
+  font:300 20px/1.5 var(--font-voice);
+  color:var(--text-primary); max-width:46ch; min-height:1.5em;
+  margin:0 auto; word-break:break-word;
+}
+.voice-transcript.is-engram { color:var(--text-primary); }
+.voice-transcript.is-you    { color:var(--text-secondary); font-style:italic; }
+
+.voice-fallnote {
+  font-size:12.5px; line-height:1.55; color:var(--text-muted);
+  max-width:42ch; background:var(--surface-1); border:1px solid var(--border);
+  border-radius:var(--r-card); padding:10px 14px;
+}
+.voice-fallnote b { color:var(--text-secondary); }
+
+.voice-controls { display:flex; align-items:center; gap:16px; margin-top:4px; }
+.voice-mute, .voice-end {
+  display:inline-flex; align-items:center; justify-content:center;
+  background:var(--surface-2); border:1px solid var(--border); color:var(--text-secondary);
+  cursor:pointer; transition:.15s;
+}
+.voice-mute { width:44px; height:44px; border-radius:50%; }
+.voice-mute svg { width:20px; height:20px; }
+.voice-end { height:44px; padding:0 20px; border-radius:22px; font-size:13px; }
+.voice-mute:hover, .voice-end:hover { color:var(--text-primary); border-color:var(--border-strong); background:var(--active); }
+
+.voice-orb-btn {
+  width:74px; height:74px; border-radius:50%;
+  display:inline-flex; align-items:center; justify-content:center;
+  background:var(--accent-soft); border:1.5px solid var(--ring); color:var(--accent);
+  cursor:pointer; box-shadow:var(--e3);
+  transition:transform var(--dur-2) var(--ease-spring), background var(--dur-2), border-color var(--dur-2), color var(--dur-2);
+}
+.voice-orb-btn svg { width:28px; height:28px; }
+.voice-orb-btn:hover  { transform:scale(1.05); }
+.voice-orb-btn:active { transform:scale(.96); }
+.voice-ov[data-phase="speaking"] .voice-orb-btn { background:var(--web-bg); border-color:var(--web); color:var(--web); }
+.voice-ov[data-phase="thinking"] .voice-orb-btn { background:var(--files-bg); border-color:var(--warning); color:var(--warning); }
+
+.voice-typed {
+  display:flex; gap:8px; align-items:center; width:min(420px,80vw); margin-top:2px;
+}
+.voice-typed input {
+  flex:1; background:var(--surface-1); border:1px solid var(--border-strong);
+  border-radius:11px; padding:10px 13px; outline:none; color:var(--text-primary);
+  transition:border-color var(--dur-1), box-shadow var(--dur-1);
+}
+.voice-typed input:focus { border-color:var(--ring); box-shadow:0 0 0 3px var(--accent-soft); }
+.voice-typed button {
+  width:40px; height:40px; flex:none; border-radius:11px;
+  background:var(--accent); color:var(--accent-ink); border:none; cursor:pointer; font-size:16px;
+}
+.voice-typed button:hover { filter:brightness(1.06); }
+.voice-typed button:active { transform:translateY(1px); }
+
+@media (prefers-reduced-motion: reduce) {
+  .composer .voice-mic.rec::after { animation:none; }
+  .voice-ov, .voice-stage { transition:none; }
+}
+  /* --- settings v2: segmented controls, gallery, slash reference, slider --- */
+  .seg { display:inline-flex; background:var(--surface-0); border:1px solid var(--border-strong); border-radius:9px; padding:2px; gap:2px; }
+  .seg button { background:none; border:none; color:var(--text-secondary); font:inherit; font-size:12px; padding:6px 13px; border-radius:7px; cursor:pointer; transition:.13s; white-space:nowrap; }
+  .seg button:hover { color:var(--text-primary); }
+  .seg button.on { background:var(--surface-2); color:var(--text-primary); box-shadow:var(--e1); }
+  .seg button.on[data-accent] { color:var(--accent); }
+  .seg-lbl { font-size:12px; color:var(--text-secondary); margin-bottom:6px; display:block; }
+  .stk-row { display:flex; align-items:center; justify-content:space-between; gap:14px; padding:11px 0; border-bottom:1px solid var(--border); }
+  .stk-row:last-child { border-bottom:none; }
+  .stk-row .lhs b { font-size:13px; font-weight:500; color:var(--text-primary); display:block; }
+  .stk-row .lhs span { font-size:11.5px; color:var(--text-muted); }
+  .acc-swatch { width:22px; height:22px; border-radius:50%; border:2px solid transparent; cursor:pointer; padding:0; outline:none; transition:.12s; }
+  .acc-swatch.on { border-color:var(--text-primary); transform:scale(1.12); }
+  .acc-swatch:focus-visible { box-shadow:0 0 0 2px var(--ring); }
+  .acc-rail { display:flex; gap:9px; align-items:center; }
+  .integ-grid { display:grid; grid-template-columns:1fr 1fr; gap:11px; }
+  @media (max-width:620px){ .integ-grid { grid-template-columns:1fr; } }
+  .integ-card { background:var(--surface-0); border:1px solid var(--border-strong); border-radius:11px; padding:14px; display:flex; flex-direction:column; gap:9px; }
+  .integ-card .ih { display:flex; align-items:center; gap:10px; }
+  .integ-card .ic { width:30px; height:30px; border-radius:8px; display:flex; align-items:center; justify-content:center; flex:none; background:var(--surface-2); }
+  .integ-card .ic svg { width:17px; height:17px; }
+  .integ-card .it { font-size:13px; font-weight:600; }
+  .integ-card .id { font-size:11.5px; color:var(--text-muted); line-height:1.5; flex:1; }
+  .integ-card .id code { font:11px var(--mono); color:var(--text-secondary); }
+  .integ-dot { width:7px; height:7px; border-radius:50%; flex:none; margin-left:auto; background:var(--text-muted); }
+  .integ-dot.on { background:var(--accent); box-shadow:0 0 7px rgba(69,200,168,.7); }
+  .integ-dot.warn { background:var(--warning); }
+  .integ-act { display:flex; gap:7px; align-items:center; }
+  .integ-act .sbtn { padding:6px 12px; font-size:12px; }
+  .mcptest { font-size:11px; margin-top:-3px; margin-bottom:8px; min-height:14px; padding-left:2px; }
+  .mcptest.ok { color:var(--accent); } .mcptest.bad { color:var(--danger); } .mcptest.run { color:var(--text-muted); }
+  .mcprow.v2 { grid-template-columns:1fr 1.1fr 1.3fr auto auto; }
+  .mcprow .tbtn { background:var(--surface-2); border:1px solid var(--border-strong); color:var(--text-secondary); border-radius:7px; padding:7px 10px; cursor:pointer; font-size:12px; }
+  .mcprow .tbtn:hover { border-color:var(--accent); color:var(--text-primary); }
+  .slash-tbl { width:100%; border-collapse:collapse; }
+  .slash-tbl td { padding:8px 4px; border-bottom:1px solid var(--border); font-size:12px; vertical-align:top; }
+  .slash-tbl tr:last-child td { border-bottom:none; }
+  .slash-tbl td.cmd { font:12px var(--mono); color:var(--accent); white-space:nowrap; width:1%; padding-right:18px; }
+  .slash-tbl td.cmd.k kbd { font:11px var(--mono); background:var(--surface-2); border:1px solid var(--border); border-radius:4px; padding:2px 7px; color:var(--text-primary); }
+  .slash-tbl td.dsc { color:var(--text-secondary); }
+  .slash-search { width:100%; background:var(--surface-0); border:1px solid var(--border-strong); border-radius:8px; padding:8px 11px; outline:none; margin-bottom:6px; color:var(--text-primary); }
+  .slash-search:focus { border-color:var(--accent); }
+  .cost-slider { -webkit-appearance:none; appearance:none; width:100%; height:4px; border-radius:3px; background:var(--surface-3); outline:none; margin:14px 0 6px; }
+  .cost-slider::-webkit-slider-thumb { -webkit-appearance:none; width:16px; height:16px; border-radius:50%; background:var(--accent); cursor:pointer; border:2px solid var(--accent-ink); }
+  .cost-est { font-size:12px; color:var(--text-muted); }
+  .cost-est b { color:var(--text-secondary); }
+  /* light theme — opt-in via data-engram-theme; reuses existing token names so every screen follows */
+  html[data-engram-theme="light"] {
+    --rail:#e9eaed; --surface-0:#fbfbfc; --surface-1:#f3f4f6; --surface-2:#e9eaed; --surface-3:#dfe1e5;
+    --border:rgba(0,0,0,.08); --border-strong:rgba(0,0,0,.14);
+    --text-primary:#1a1c1f; --text-secondary:#4a4e56; --text-muted:#80858e;
+    --hover:rgba(0,0,0,.04); --active:rgba(0,0,0,.07);
+    --web-bg:#eaf2fb; --files-bg:#fdf4e3;
+  }
+  html[data-engram-density="compact"] .scard { padding:11px 13px; margin-bottom:9px; }
+  html[data-engram-density="compact"] .field { margin-bottom:9px; }
+  html[data-engram-density="compact"] body { font-size:12.5px; }
 </style>
 </head>
 <body>
@@ -862,7 +1041,7 @@ function composerHtml(ctx){
   return `<div class="composer">
     <div class="composer-top">${modelpickHtml()}</div>
     <textarea id="composer" data-ctx="${ctx}" rows="1" placeholder="${ctx==='chat'?'Message Engram…':'Tell Engram what to do…'}"></textarea>
-    <div class="hint">${hint}<div class="comp-actions">${sendBtn}</div></div></div>`;
+    <div class="hint">${hint}<div class="comp-actions"><button id="voiceMic" class="voice-mic" type="button" aria-pressed="false" aria-label="Dictate" title="Dictate (push to talk)" onclick="voiceToggleDictation(this)">${voiceMicSvg()}</button>${sendBtn}</div></div></div>`;
 }
 function prefill(t){ const c=document.getElementById('composer'); if(c){ c.value=t; c.focus(); } }
 function wireComposer(){
@@ -1532,16 +1711,16 @@ const CC_CATS = [
   {key:'keys', name:'Keys & security', kw:'api token secret password auth', icon:SVG('<circle cx="8" cy="15" r="4"/><path d="M10.8 12.2 20 3M17 6l2 2M14 9l2 2"/>'), render:ccKeys},
   {key:'memory', name:'Memory & context', kw:'embeddings recall vector trigram tier', icon:ICONS.Memory, render:ccMemory},
   {key:'tools', name:'Tools', kw:'mcp shell terminal taint egress', icon:SVG('<path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L4 17v3h3l5.3-5.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2-2 2.5-2.5Z"/>'), render:ccTools},
-  {key:'cost', name:'Cost', kw:'budget tokens spend limit', icon:SVG('<circle cx="12" cy="12" r="8.5"/><path d="M9.5 9.5a2.5 2 0 0 1 5 0c0 2.5-5 1-5 4a2.5 2 0 0 0 5 0M12 6.5v11"/>'), render:ccCost},
+  {key:'cost', name:'Cost', kw:'budget tokens spend limit estimate', icon:SVG('<circle cx="12" cy="12" r="8.5"/><path d="M9.5 9.5a2.5 2 0 0 1 5 0c0 2.5-5 1-5 4a2.5 2 0 0 0 5 0M12 6.5v11"/>'), render:ccCost2},
   {key:'persona', name:'Persona', kw:'soul instructions voice rules', icon:SVG('<circle cx="12" cy="8" r="4"/><path d="M4 20a8 8 0 0 1 16 0"/>'), render:ccPersona},
   {key:'workspace', name:'Workspace', kw:'projects working directory sessions', icon:SVG('<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>'), render:ccWorkspace},
-  {key:'appearance', name:'Appearance', kw:'theme dark accent density font zoom', icon:SVG('<circle cx="12" cy="12" r="8.5"/><path d="M12 3.5v17M3.5 12h17"/>'), render:ccAppearance},
+  {key:'appearance', name:'Appearance', kw:'theme dark light accent density font zoom', icon:SVG('<circle cx="12" cy="12" r="8.5"/><path d="M12 3.5v17M3.5 12h17"/>'), render:ccAppearance2},
   {key:'voice', name:'Voice', kw:'speech tts stt microphone', icon:SVG('<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>'), render:ccVoice},
-  {key:'chat', name:'Chat', kw:'conversation streaming view mode', icon:ICONS.Chat, render:ccChat},
-  {key:'keyboard', name:'Keyboard', kw:'shortcuts keys bindings', icon:SVG('<rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/>'), render:ccKeyboard},
-  {key:'integrations', name:'Integrations', kw:'telegram webhook channel slack', icon:SVG('<path d="M10.5 13.5a4 4 0 0 0 5.6 0l2.1-2.1a4 4 0 0 0-5.6-5.6l-1.2 1.2"/><path d="M13.5 10.5a4 4 0 0 0-5.6 0l-2.1 2.1a4 4 0 0 0 5.6 5.6l1.2-1.2"/>'), render:ccIntegrations},
+  {key:'chat', name:'Chat', kw:'conversation streaming view mode trace brief', icon:ICONS.Chat, render:ccChat2},
+  {key:'keyboard', name:'Commands & shortcuts', kw:'shortcuts keys bindings slash commands reference', icon:SVG('<rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/>'), render:ccSlashRef},
+  {key:'integrations', name:'Integrations', kw:'telegram webhook channel slack mcp connect bot', icon:SVG('<path d="M10.5 13.5a4 4 0 0 0 5.6 0l2.1-2.1a4 4 0 0 0-5.6-5.6l-1.2 1.2"/><path d="M13.5 10.5a4 4 0 0 0-5.6 0l-2.1 2.1a4 4 0 0 0 5.6 5.6l1.2-1.2"/>'), render:ccIntegrations2},
   {key:'templates', name:'Templates', kw:'starters prompts snippets presets', icon:SVG('<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/>'), render:ccTemplates},
-  {key:'messaging', name:'Messaging', kw:'notifications channels delivery', icon:SVG('<path d="M4 5h16v11H8l-4 3Z"/>'), render:ccMessaging},
+  {key:'messaging', name:'Messaging', kw:'notifications channels delivery desktop routing', icon:SVG('<path d="M4 5h16v11H8l-4 3Z"/>'), render:ccMessaging2},
   {key:'advanced', name:'Advanced', kw:'daemon idle restart export verify danger', icon:SVG('<circle cx="12" cy="12" r="3.2"/><path d="M12 3v3M12 18v3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M3 12h3M18 12h3M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1"/>'), render:ccAdvanced},
   {key:'about', name:'About & FAQ', kw:'version ledger help moat faq', icon:SVG('<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5M12 8h.01"/>'), render:ccAbout},
 ];
@@ -1572,7 +1751,8 @@ function renderCCBody(){
   if(CFG&&CFG._err){ body.innerHTML='<div class="offline">Couldn’t load settings — '+esc(CFG._err)+'</div>'; return; }
   body.innerHTML = cat.render(CFG||{});
   if(ccActive==='gateways') wireProviderKind();
-  if(ccActive==='tools') renderMcpRows((CFG&&CFG.mcp)||[]);
+  if(ccActive==='tools') renderMcpRowsV2((CFG&&CFG.mcp)||[]);
+  if(ccActive==='cost') ccCostSync();
 }
 function renderCC(){ renderCatList(); renderCCBody(); }
 const ccHead=(t,s)=>`<h2>${t}</h2><div class="sub">${s}</div>`;
@@ -1630,7 +1810,7 @@ function ccTools(c){
       <h3>MCP servers <span class="badge set">live</span></h3>
       <div class="desc">Each server is launched as a subprocess; its tools become available to the agent. Saving reconnects them immediately.</div>
       <div id="mcplist"></div>
-      <div class="sactions"><button class="sbtn" onclick="addMcpRow()">+ Add server</button><span class="grow"></span><button class="sbtn primary" onclick="saveSettings()">Save</button></div>
+      <div class="sactions"><button class="sbtn" onclick="addMcpRowV2()">+ Add server</button><span class="grow"></span><button class="sbtn primary" onclick="saveSettings()">Save</button></div>
     </div>
     <div class="scard">
       <h3>Shell &amp; egress</h3>
@@ -1659,8 +1839,17 @@ function ccWorkspace(){ return ccHead('Workspace','Projects, working directory, 
   `<div class="scard"><div class="ph"><b>Projects &amp; sessions</b> arrive in the next build — each project will carry its own working directory, persona, default model, keys, and taint policy, and switching projects swaps the whole context at once.<br><br>Today everything runs in one default workspace. The brain (memory + signed ledger) lives in <code>~/.engram</code>.</div></div>`; }
 function ccAppearance(){ return ccHead('Appearance','Theme, accent, and density.')+
   `<div class="scard"><div class="ph"><b>Theme</b> · Graphite — active.<br><b>Density</b> · Comfortable — active.<br><b>Accent</b> · Teal #45c8a8 — the trust colour, used only where trust is real.<br><br>A light theme, accent picker, compact density, and zoom land with the appearance pass.</div></div>`; }
-function ccVoice(){ return ccHead('Voice','Speech in and out.')+
-  `<div class="scard"><div class="ph">Push-to-talk dictation into the composer and spoken replies are on the roadmap, with a configurable engine and voice.</div></div>`; }
+function ccVoice(){
+  const stt = (typeof VOICE!=='undefined' && VOICE.supported);
+  const tts = ('speechSynthesis' in window);
+  const row=(ok,label,detail)=>`<div class="kbd-row"><span>${label}<div class="sub" style="font-size:11px;color:var(--text-muted)">${detail}</div></span><span class="badge" style="${ok?'color:var(--accent);border-color:rgba(69,200,168,.32)':''}">${ok?'available':'unavailable'}</span></div>`;
+  return ccHead('Voice','Speech in and out — browser-native, fully offline.')+
+  `<div class="scard">
+    ${row(stt,'Speech-to-text (dictation &amp; conversation)','webkitSpeechRecognition. May be absent in this window; when so, voice replies still work and a typed fallback keeps conversation usable.')}
+    ${row(tts,'Spoken replies','speechSynthesis reads Engram’s replies aloud, sentence by sentence.')}
+    <div class="ph" style="margin-top:12px">Dictate from the <b>mic</b> beside the composer. Start a hands-free <b>Voice</b> conversation from the Chat header — an animated orb listens, speaks, and supports tap-to-interrupt.</div>
+    <div class="ph" style="margin-top:8px;color:var(--text-muted)">A premium server-side engine (POST <code class="ic">/v1/voice</code> and the <code class="ic">/v1/voice/stream</code> socket) provides STT/TTS where the browser can’t — configurable once a speech provider is connected.</div>
+  </div>`; }
 function ccChat(){ return ccHead('Chat','Conversation rendering and defaults.')+
   `<div class="scard"><div class="ph">A transparency view-mode (<b>Trace / Normal / Brief</b>), an in-composer model picker, streaming density, and code-block themes land with the chat rebuild.</div></div>`; }
 function ccKeyboard(){
@@ -1727,8 +1916,8 @@ function collectSettings(){
   if(has('ekind')) patch.embed={ kind:gv('ekind'), model_dir:gv('edir') };
   if(has('sshell')||has('stok')||has('ssec')){ patch.security={}; if(has('sshell')) patch.security.allow_shell=document.getElementById('sshell').checked;
     const t=gv('stok'); if(t) patch.security.api_token=t; const s=gv('ssec'); if(s) patch.security.channel_secret=s; }
-  if(has('cbudget')) patch.cost={ task_token_budget: parseInt(gv('cbudget'),10)||250000 };
-  if(has('mcplist')) patch.mcp=collectMcp();
+  if(has('cbudget')) patch.cost={ task_token_budget: Math.max(1000, parseInt(gv('cbudget'),10)||250000) };
+  if(has('mcplist')) patch.mcp=collectMcpV2();
   return patch;
 }
 
@@ -2006,6 +2195,7 @@ function renderView(){
   else if(state.route==='Memory') renderMemory();
   else if(state.route==='Skills') renderSkills();
   else if(state.route==='Terminal') renderTerminal();
+  voiceMaybeMountHeaderBtn();
 }
 
 // Refresh the board only when tasks actually changed (so idle re-renders don't fight typing).
@@ -2026,6 +2216,7 @@ function connectEvents(){
   } catch(_){}
 }
 async function boot(){
+  applyEngramAppearance();
   renderNav();
   try{ CFG=await J('/v1/config'); }catch(_){}   // for the composer's model picker
   await loadWorkspace(); renderSidebar();        // projects + sessions from the daemon
@@ -2400,6 +2591,696 @@ async function deleteJob(id, name, e){
     notify('Schedule deleted', 'ok');
     renderScheduleView();
   } catch(err){ notify('Couldn’t delete — ' + err.message); }
+}
+
+// ===================== VOICE: dictation + hands-free conversation =====================
+// Browser-only v1: webkitSpeechRecognition (STT, may be missing in WKWebView) + speechSynthesis
+// (TTS, available). Routes transcripts through the existing chat path. Graceful fallback when
+// recognition is unavailable: TTS still speaks replies and a typed input keeps the loop usable.
+// PREMIUM PATH (already wired in the backend): POST /v1/voice (audio_b64 -> transcript+reply+audio_b64)
+// and the /v1/voice/stream WebSocket give server-side STT/TTS for WKWebView where the Web Speech
+// API is absent; the frontend can later record mic audio and pump it through those endpoints.
+
+const VOICE = {
+  recog: null,            // active SpeechRecognition instance (dictation OR conversation)
+  mode: null,             // 'dictate' | 'converse' | null
+  supported: (typeof window !== 'undefined') && !!(window.SpeechRecognition || window.webkitSpeechRecognition),
+  speakOn: true,          // speak replies in conversation mode
+  voice: null,            // chosen SpeechSynthesisVoice
+  open: false,
+  phase: 'idle',          // idle | listening | thinking | speaking
+  raf: 0,
+  level: 0,               // smoothed input "loudness" proxy for the orb (0..1)
+  finalText: '',
+  interim: '',
+};
+
+function voiceSpeechCtor(){ return window.SpeechRecognition || window.webkitSpeechRecognition || null; }
+
+// Pick a pleasant English voice once the list is ready (it loads async in some engines).
+function voicePickVoice(){
+  if(!('speechSynthesis' in window)) return;
+  const vs = window.speechSynthesis.getVoices() || [];
+  if(!vs.length) return;
+  const pref = vs.find(v=>/en[-_]US/i.test(v.lang) && /(Samantha|Ava|Allison|Google US|Natural)/i.test(v.name))
+            || vs.find(v=>/en[-_]US/i.test(v.lang))
+            || vs.find(v=>/^en/i.test(v.lang)) || vs[0];
+  VOICE.voice = pref || null;
+}
+if(typeof window!=='undefined' && 'speechSynthesis' in window){
+  try{ window.speechSynthesis.onvoiceschanged = voicePickVoice; voicePickVoice(); }catch(_){}
+}
+
+// --------------------------- (1) PUSH-TO-TALK DICTATION ---------------------------
+function voiceToggleDictation(btn){
+  const c = document.getElementById('composer');
+  if(!c){ return; }
+  if(VOICE.mode==='dictate'){ voiceStopRecog(); return; }
+  if(!VOICE.supported){
+    notify('Voice input isn’t available in this window. You can still hear replies in voice chat.');
+    return;
+  }
+  voiceStopRecog(); // ensure clean slate (e.g. a conversation session)
+  const Ctor = voiceSpeechCtor(); const r = new Ctor();
+  r.lang = 'en-US'; r.continuous = true; r.interimResults = true;
+  // Preserve whatever (incl. newlines) is already typed; only the dictated tail is normalized.
+  const base = c.value ? (c.value.replace(/[ \t]+$/,'') + (c.value.endsWith('\n')?'':' ')) : '';
+  let settled = '';
+  r.onresult = (e)=>{
+    let interim = '';
+    for(let i=e.resultIndex; i<e.results.length; i++){
+      const txt = e.results[i][0].transcript;
+      if(e.results[i].isFinal) settled += txt; else interim += txt;
+    }
+    const tail = (settled + interim).replace(/\s+/g,' ').replace(/^\s/,'');
+    c.value = base + tail;
+    c.style.height='auto'; c.style.height=Math.min(c.scrollHeight,160)+'px';
+  };
+  r.onerror = (e)=>{
+    if(e.error==='not-allowed' || e.error==='service-not-allowed')
+      notify('Microphone permission was denied. Allow it in System Settings → Privacy → Microphone.');
+    else if(e.error!=='aborted' && e.error!=='no-speech')
+      notify('Dictation stopped: '+(e.error||'unknown'));
+  };
+  r.onend = ()=>{ if(VOICE.mode==='dictate' && VOICE.recog===r){ VOICE.mode=null; VOICE.recog=null; voiceSyncDictateUI(); c.focus(); } };
+  VOICE.recog = r; VOICE.mode='dictate';
+  try{ r.start(); }catch(_){ VOICE.mode=null; VOICE.recog=null; }
+  voiceSyncDictateUI();
+  notify('Listening… speak, then tap the mic to stop.', 'ok');
+}
+
+function voiceStopRecog(){
+  const r = VOICE.recog; if(!r) return;
+  VOICE.recog=null; const wasMode=VOICE.mode; VOICE.mode=null;
+  try{ r.onend=null; r.onresult=null; r.onerror=null; r.stop(); }catch(_){ try{ r.abort(); }catch(__){} }
+  if(wasMode==='dictate') voiceSyncDictateUI();
+}
+
+function voiceSyncDictateUI(){
+  const b = document.getElementById('voiceMic');
+  if(!b) return;
+  const on = VOICE.mode==='dictate';
+  b.classList.toggle('rec', on);
+  b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  b.title = on ? 'Stop dictation' : (VOICE.supported ? 'Dictate (push to talk)' : 'Voice input unavailable in this window');
+}
+
+function voiceMicSvg(){
+  return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>';
+}
+function voiceWaveSvg(){
+  return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 13v-1a8 8 0 0 1 16 0v1"/><rect x="3" y="13" width="4" height="6" rx="1.6"/><rect x="17" y="13" width="4" height="6" rx="1.6"/><path d="M19 19v.5a3 3 0 0 1-3 3h-3"/></svg>';
+}
+
+// ------------------------- (2) HANDS-FREE CONVERSATION MODE -------------------------
+function voiceOpenConversation(){
+  if(VOICE.open) return;
+  VOICE.open = true; VOICE.finalText=''; VOICE.interim='';
+  const ov = document.createElement('div');
+  ov.id = 'voiceOverlay'; ov.className = 'voice-ov';
+  ov.setAttribute('role','dialog'); ov.setAttribute('aria-modal','true'); ov.setAttribute('aria-label','Voice conversation');
+  const noStt = !VOICE.supported;
+  ov.innerHTML = `
+    <button class="voice-close" onclick="voiceCloseConversation()" aria-label="Close voice (Esc)">✕</button>
+    <div class="voice-stage">
+      <canvas id="voiceOrb" width="320" height="320" aria-hidden="true"></canvas>
+      <div class="voice-status" id="voiceStatus">Connecting…</div>
+      <div class="voice-transcript" id="voiceTranscript" aria-live="polite"></div>
+      ${noStt ? `<div class="voice-fallnote">Speech input isn’t available in this window — Engram will still <b>speak its replies</b>. Type below to talk.</div>` : ''}
+      <div class="voice-controls">
+        <button class="voice-mute" id="voiceMute" onclick="voiceToggleSpeak()" title="Mute replies" aria-label="Mute replies">${voiceSpeakerSvg(true)}</button>
+        <button class="voice-orb-btn" id="voiceBarge" onclick="voiceBargeIn()" aria-label="${noStt?'Restart':'Tap to interrupt and talk'}" title="${noStt?'Restart':'Tap to interrupt / talk'}">${voiceMicSvg()}</button>
+        <button class="voice-end" onclick="voiceCloseConversation()">End</button>
+      </div>
+      <form class="voice-typed" id="voiceTypedRow" onsubmit="voiceTypedSubmit(event)">
+        <input id="voiceTypedInput" placeholder="${noStt?'Type your message…':'…or type instead'}" autocomplete="off" spellcheck="false">
+        <button type="submit" aria-label="Send">↵</button>
+      </form>
+    </div>`;
+  document.body.appendChild(ov);
+  document.addEventListener('keydown', voiceOvKey);
+  requestAnimationFrame(()=>ov.classList.add('in'));
+  voiceOrbLoop();
+  voiceSetPhase('idle');
+  if(noStt){
+    voiceSetStatus('Voice replies ready — type to begin.');
+    const ti=document.getElementById('voiceTypedInput'); if(ti) ti.focus();
+  } else {
+    voiceStartListening();
+  }
+}
+
+function voiceCloseConversation(){
+  if(!VOICE.open) return;
+  VOICE.open=false;
+  voiceStopRecog();
+  clearInterval(_voiceEndTimer); _voiceEndTimer=0;
+  try{ if('speechSynthesis' in window) window.speechSynthesis.cancel(); }catch(_){}
+  cancelAnimationFrame(VOICE.raf); VOICE.raf=0;
+  document.removeEventListener('keydown', voiceOvKey);
+  const ov=document.getElementById('voiceOverlay');
+  if(ov){ ov.classList.remove('in'); setTimeout(()=>ov.remove(), 240); }
+}
+
+function voiceOvKey(e){
+  if(e.key==='Escape'){ e.preventDefault(); voiceCloseConversation(); }
+}
+
+function voiceToggleSpeak(){
+  VOICE.speakOn = !VOICE.speakOn;
+  const b=document.getElementById('voiceMute');
+  if(b) b.innerHTML = voiceSpeakerSvg(VOICE.speakOn);
+  if(!VOICE.speakOn){ try{ window.speechSynthesis.cancel(); }catch(_){} if(VOICE.phase==='speaking') voiceAfterSpeak(); }
+}
+
+// Barge-in: tapping the orb interrupts whatever Engram is saying and re-opens the mic.
+function voiceBargeIn(){
+  try{ if('speechSynthesis' in window) window.speechSynthesis.cancel(); }catch(_){}
+  clearInterval(_voiceEndTimer); _voiceEndTimer=0;
+  if(!VOICE.supported){
+    const ti=document.getElementById('voiceTypedInput'); if(ti) ti.focus();
+    voiceSetStatus('Type your message…');
+    return;
+  }
+  voiceStartListening();
+}
+
+function voiceStartListening(){
+  if(!VOICE.open || !VOICE.supported) return;
+  voiceStopRecog();
+  const Ctor=voiceSpeechCtor(); const r=new Ctor();
+  r.lang='en-US'; r.continuous=false; r.interimResults=true;
+  VOICE.finalText=''; VOICE.interim='';
+  r.onresult=(e)=>{
+    let interim='', fin='';
+    for(let i=e.resultIndex;i<e.results.length;i++){
+      const t=e.results[i][0].transcript;
+      if(e.results[i].isFinal) fin+=t; else interim+=t;
+    }
+    if(fin) VOICE.finalText+=fin;
+    VOICE.interim=interim;
+    voiceRenderTranscript((VOICE.finalText+' '+interim).trim(), 'you');
+  };
+  r.onerror=(e)=>{
+    if(e.error==='not-allowed'||e.error==='service-not-allowed'){
+      notify('Microphone permission denied — switch to typing.');
+      voiceSetPhase('idle'); voiceSetStatus('Mic blocked — type below.');
+      const ti=document.getElementById('voiceTypedInput'); if(ti) ti.focus();
+    } else if(e.error==='no-speech'){
+      if(VOICE.open && VOICE.phase==='listening') voiceStartListening();
+    }
+  };
+  r.onend=()=>{
+    if(VOICE.recog!==r) return;
+    VOICE.recog=null; VOICE.mode=null;
+    const said=(VOICE.finalText||VOICE.interim||'').trim();
+    if(VOICE.open && VOICE.phase==='listening'){
+      if(said) voiceSendTurn(said);
+      else voiceStartListening();
+    }
+  };
+  VOICE.recog=r; VOICE.mode='converse';
+  try{ r.start(); voiceSetPhase('listening'); voiceSetStatus('Listening…'); }
+  catch(_){ /* a start() race; ignore */ }
+}
+
+// Push a finished utterance through the existing streaming chat path, then speak the reply.
+async function voiceSendTurn(text){
+  voiceStopRecog();
+  voiceSetPhase('thinking'); voiceSetStatus('Thinking…');
+  voiceRenderTranscript(text, 'you');
+  // Settle on a real session AND hydrate WS.byId[sid] the way chatSay does, so the turn-mirror
+  // below can't silently no-op when the session object isn't loaded yet.
+  if(!WS.activeSession){
+    if(WS.sessions.length) WS.activeSession=WS.sessions[0].id;
+    else { const s=await newSession(false); if(s) WS.activeSession=s.id; }
+  }
+  const sid = WS.activeSession;
+  if(sid && !WS.byId[sid]){
+    try{ WS.byId[sid]=await J('/v1/sessions/'+encodeURIComponent(sid)); }catch(_){ WS.byId[sid]={id:sid,messages:[]}; }
+  }
+  let reply=''; _voiceSpoken='';
+  try{
+    const r = await fetch('/v1/converse/stream',{method:'POST',headers:{...AUTH,'content-type':'application/json'},body:JSON.stringify({text, session:sid})});
+    if(!r.ok||!r.body) throw new Error('HTTP '+r.status);
+    const reader=r.body.getReader(); const dec=new TextDecoder(); let buf='';
+    voiceSetPhase('speaking'); voiceSetStatus('Engram');
+    for(;;){
+      const {done,value}=await reader.read(); if(done) break;
+      buf+=dec.decode(value,{stream:true}); let i;
+      while((i=buf.indexOf('\n\n'))>=0){
+        const frame=buf.slice(0,i); buf=buf.slice(i+2);
+        let ev='message'; const dl=[];
+        for(const line of frame.split('\n')){
+          if(line.startsWith('event:')) ev=line.slice(6).trim();
+          else if(line.startsWith('data:')) dl.push(line.slice(5).replace(/^ /,''));
+        }
+        const data=dl.join('\n');
+        if(ev==='token'){ reply+=data; voiceRenderTranscript(reply,'engram'); voiceSpeakStreaming(reply,false); }
+        else if(ev==='done'){ try{const d=JSON.parse(data); if(d.reply) reply=d.reply;}catch(_){} voiceRenderTranscript(reply,'engram'); }
+        else if(ev==='error'){ reply='(couldn’t reach Engram - '+data+')'; voiceRenderTranscript(reply,'engram'); }
+      }
+    }
+  }catch(e){
+    reply = reply || '(couldn’t reach Engram — '+(e.message||'try again')+')';
+    voiceRenderTranscript(reply,'engram');
+  }
+  // Mirror the turn into the live in-memory session so the Chat feed stays in sync. (The server
+  // already persists the turn via append_turn on /v1/converse/stream, so this is display-only.)
+  try{
+    const sess=WS.byId[sid];
+    if(sess){ if(!sess.messages) sess.messages=[]; sess.messages.push({role:'user',text}); sess.messages.push({role:'engram',text:reply}); if(state.route==='Chat') paintFeed(); }
+  }catch(_){}
+  voiceSpeakStreaming(reply, true);
+}
+
+// Speak reply text as it streams: split on sentence boundaries and only queue the new tail.
+let _voiceSpoken = '';
+function voiceSpeakStreaming(full, flush){
+  if(!VOICE.speakOn || !('speechSynthesis' in window)) { if(flush) voiceAfterSpeak(); return; }
+  const pending = full.slice(_voiceSpoken.length);
+  let upto = pending.length;
+  if(!flush){
+    const m = pending.match(/[\s\S]*[.!?…]\s/);
+    upto = m ? m[0].length : 0;
+  }
+  const chunk = pending.slice(0, upto).replace(/\s+/g,' ').trim();
+  if(!chunk){ if(flush){ _voiceSpoken=full; voiceWatchSpeechEnd(); } return; }
+  _voiceSpoken += pending.slice(0, upto);
+  const clean = chunk.replace(/```[\s\S]*?```/g,' code block ').replace(/[`*_#>\[\]()]/g,'').trim();
+  if(clean){
+    const u=new SpeechSynthesisUtterance(clean);
+    if(VOICE.voice) u.voice=VOICE.voice;
+    u.rate=1.02; u.pitch=1.0;
+    try{ window.speechSynthesis.speak(u); }catch(_){}
+  }
+  if(flush){ _voiceSpoken=full; voiceWatchSpeechEnd(); }
+}
+
+let _voiceEndTimer=0;
+function voiceWatchSpeechEnd(){
+  clearInterval(_voiceEndTimer);
+  if(!('speechSynthesis' in window)){ voiceAfterSpeak(); return; }
+  _voiceEndTimer=setInterval(()=>{
+    if(!VOICE.open){ clearInterval(_voiceEndTimer); _voiceEndTimer=0; return; }
+    if(!window.speechSynthesis.speaking && !window.speechSynthesis.pending){
+      clearInterval(_voiceEndTimer); _voiceEndTimer=0; voiceAfterSpeak();
+    }
+  }, 220);
+}
+function voiceAfterSpeak(){
+  _voiceSpoken='';
+  if(!VOICE.open) return;
+  if(VOICE.supported){ voiceStartListening(); }
+  else { voiceSetPhase('idle'); voiceSetStatus('Type your reply…'); const ti=document.getElementById('voiceTypedInput'); if(ti) ti.focus(); }
+}
+
+function voiceTypedSubmit(e){
+  e.preventDefault();
+  const inp=document.getElementById('voiceTypedInput'); if(!inp) return;
+  const t=inp.value.trim(); if(!t) return;
+  inp.value='';
+  voiceStopRecog();
+  try{ if('speechSynthesis' in window) window.speechSynthesis.cancel(); }catch(_){}
+  clearInterval(_voiceEndTimer); _voiceEndTimer=0;
+  voiceSendTurn(t);
+}
+
+// ---- overlay view helpers (transcript uses textContent — model output is untrusted) ----
+function voiceSetPhase(p){ VOICE.phase=p; const ov=document.getElementById('voiceOverlay'); if(ov) ov.dataset.phase=p; }
+function voiceSetStatus(s){ const el=document.getElementById('voiceStatus'); if(el) el.textContent=s; }
+function voiceRenderTranscript(text, who){
+  const el=document.getElementById('voiceTranscript'); if(!el) return;
+  el.className='voice-transcript '+(who==='engram'?'is-engram':'is-you');
+  el.textContent = text || '';
+}
+
+// ---- the animated listening orb (hand-drawn Canvas, no libraries) ----
+function voiceOrbLoop(){
+  const cv=document.getElementById('voiceOrb'); if(!cv){ return; }
+  const ctx=cv.getContext('2d'); const W=cv.width, H=cv.height, cx=W/2, cy=H/2;
+  const accent='#45c8a8', web='#85b7eb', warn='#e0a23c';
+  const draw=(t)=>{
+    if(!VOICE.open) return;
+    let target = VOICE.phase==='listening' ? (0.45+0.4*Math.abs(Math.sin(t/220)))
+               : VOICE.phase==='speaking' ? (0.55+0.45*Math.abs(Math.sin(t/120)*Math.sin(t/77)))
+               : VOICE.phase==='thinking' ? 0.3 : 0.18;
+    VOICE.level += (target - VOICE.level)*0.12;
+    const lvl=VOICE.level;
+    const col = VOICE.phase==='speaking'?web : VOICE.phase==='thinking'?warn : accent;
+    ctx.clearRect(0,0,W,H);
+    const baseR=78;
+    const g=ctx.createRadialGradient(cx,cy,baseR*0.4,cx,cy,baseR*2.0);
+    g.addColorStop(0, col+'33'); g.addColorStop(1, col+'00');
+    ctx.fillStyle=g; ctx.beginPath(); ctx.arc(cx,cy,baseR*2.0,0,Math.PI*2); ctx.fill();
+    for(let k=0;k<3;k++){
+      const ph=(t/900 + k/3)%1;
+      ctx.beginPath();
+      ctx.arc(cx,cy, baseR + ph*(60+50*lvl), 0, Math.PI*2);
+      ctx.strokeStyle = col + Math.round((1-ph)*120).toString(16).padStart(2,'0');
+      ctx.lineWidth=1.4; ctx.stroke();
+    }
+    ctx.beginPath();
+    const N=72;
+    for(let i=0;i<=N;i++){
+      const a=(i/N)*Math.PI*2;
+      const wob = Math.sin(a*3 + t/260)*4 + Math.sin(a*5 - t/190)*3*lvl + Math.sin(a*2+t/140)*2;
+      const rr = baseR + wob + lvl*16;
+      const x=cx+Math.cos(a)*rr, y=cy+Math.sin(a)*rr;
+      i? ctx.lineTo(x,y) : ctx.moveTo(x,y);
+    }
+    ctx.closePath();
+    const cg=ctx.createRadialGradient(cx-18,cy-18,8,cx,cy,baseR+18);
+    cg.addColorStop(0, col); cg.addColorStop(1, col+'22');
+    ctx.fillStyle=cg; ctx.globalAlpha=0.92; ctx.fill(); ctx.globalAlpha=1;
+    ctx.strokeStyle=col; ctx.lineWidth=1.6; ctx.stroke();
+    if(VOICE.phase==='listening' || VOICE.phase==='speaking'){
+      const bars=14;
+      ctx.strokeStyle='#04342c'; ctx.lineWidth=2.4; ctx.lineCap='round';
+      for(let i=0;i<bars;i++){
+        const bx=cx-(bars-1)*4 + i*8;
+        const amp=(8+ Math.abs(Math.sin(t/120 + i*0.7))*22*(0.4+lvl));
+        ctx.beginPath(); ctx.moveTo(bx, cy-amp/2); ctx.lineTo(bx, cy+amp/2); ctx.stroke();
+      }
+    } else if(VOICE.phase==='thinking'){
+      ctx.fillStyle='#04342c';
+      for(let i=0;i<3;i++){ const a=t/300+i*2.1; ctx.beginPath(); ctx.arc(cx+(i-1)*14, cy+Math.sin(a)*5, 3.2,0,Math.PI*2); ctx.fill(); }
+    }
+    VOICE.raf=requestAnimationFrame(draw);
+  };
+  VOICE.raf=requestAnimationFrame(draw);
+}
+
+function voiceSpeakerSvg(on){
+  return on
+    ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4Z"/><path d="M16 9.5a3.5 3.5 0 0 1 0 5M18.5 7a7 7 0 0 1 0 10"/></svg>'
+    : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4Z"/><path d="m16 9 5 5M21 9l-5 5"/></svg>';
+}
+
+// Topbar entry button, injected only on the Chat route. Called from renderView() so it is present
+// on first load (boot calls renderView directly, not go()), on hashchange, and on go().
+function voiceMaybeMountHeaderBtn(){
+  const right=document.querySelector('.topbar .right'); if(!right) return;
+  const existing=document.getElementById('voiceHeaderBtn');
+  if(state.route==='Chat'){
+    if(!existing){
+      const b=document.createElement('button');
+      b.id='voiceHeaderBtn'; b.className='kbtn voice-headbtn';
+      b.title='Voice conversation (hands-free)'; b.setAttribute('aria-label','Start voice conversation');
+      b.onclick=voiceOpenConversation;
+      b.innerHTML=voiceWaveSvg()+'<span class="vhb-l">Voice</span>';
+      right.insertBefore(b, right.firstChild);
+    }
+  } else if(existing){ existing.remove(); }
+}
+
+/* ============================================================================
+   Settings & Integrations v2 — appended functions (unique names, no collisions)
+   ========================================================================== */
+
+// ---- client-side UI preferences (theme / accent / density / chat mode) ------
+const ENGRAM_ACCENTS = {
+  teal:   {hex:'#45c8a8', ink:'#04342c', soft:'rgba(69,200,168,.12)', ring:'rgba(69,200,168,.5)', glow:'drop-shadow(0 0 6px rgba(69,200,168,.45))'},
+  indigo: {hex:'#7c83ff', ink:'#0c0f3a', soft:'rgba(124,131,255,.14)', ring:'rgba(124,131,255,.5)', glow:'drop-shadow(0 0 6px rgba(124,131,255,.45))'},
+  amber:  {hex:'#e0a23c', ink:'#3a2606', soft:'rgba(224,162,60,.14)', ring:'rgba(224,162,60,.5)', glow:'drop-shadow(0 0 6px rgba(224,162,60,.45))'},
+  rose:   {hex:'#e2675f', ink:'#3a0c0a', soft:'rgba(226,103,95,.14)', ring:'rgba(226,103,95,.5)', glow:'drop-shadow(0 0 6px rgba(226,103,95,.45))'},
+  blue:   {hex:'#85b7eb', ink:'#08283f', soft:'rgba(133,183,235,.14)', ring:'rgba(133,183,235,.5)', glow:'drop-shadow(0 0 6px rgba(133,183,235,.45))'},
+};
+function engramPrefs(){
+  try{ return JSON.parse(localStorage.getItem('engram.ui')||'{}'); }catch(_){ return {}; }
+}
+function engramSavePrefs(p){
+  try{ localStorage.setItem('engram.ui', JSON.stringify(p)); }catch(_){}
+}
+function applyEngramAppearance(){
+  const p = engramPrefs(), root = document.documentElement;
+  root.setAttribute('data-engram-theme', p.theme==='light' ? 'light' : 'dark');
+  root.setAttribute('data-engram-density', p.density==='compact' ? 'compact' : 'comfortable');
+  const a = ENGRAM_ACCENTS[p.accent] || ENGRAM_ACCENTS.teal;
+  root.style.setProperty('--accent', a.hex);
+  root.style.setProperty('--accent-ink', a.ink);
+  root.style.setProperty('--accent-soft', a.soft);
+  root.style.setProperty('--ring', a.ring);
+  root.style.setProperty('--glow', a.glow);
+}
+function setEngramPref(key, val){
+  const p = engramPrefs(); p[key] = val; engramSavePrefs(p);
+  applyEngramAppearance();
+  // Re-render the open settings panel so swatch/segment "on" states follow, without
+  // disturbing anything when settings is closed.
+  const cc = document.getElementById('cc');
+  if(cc && !cc.hidden && typeof renderCC==='function') renderCC();
+  if(typeof notify==='function') notify('Appearance updated','ok');
+}
+// chat view-mode the renderer can consult: window.engramChatMode() -> 'trace'|'normal'|'brief'
+window.engramChatMode = ()=> engramPrefs().chatMode || 'normal';
+
+// ---- segmented control helper ----------------------------------------------
+function ccSeg(label, opts, current, onpick, accentHint){
+  const id='seg_'+Math.random().toString(36).slice(2,8);
+  const btns = opts.map(o=>`<button data-v="${escAttr(o.v)}"${o.v===current?' class="on"'+(accentHint?' data-accent':''):''} onclick="(${onpick})('${escAttr(o.v)}');[...this.parentNode.children].forEach(b=>b.classList.remove('on'));this.classList.add('on')">${esc(o.l)}</button>`).join('');
+  return `<div><span class="seg-lbl">${label}</span><div class="seg" id="${id}">${btns}</div></div>`;
+}
+
+// ---- Appearance (live) ------------------------------------------------------
+function ccAppearance2(){
+  const p = engramPrefs();
+  const accents = Object.keys(ENGRAM_ACCENTS).map(k=>{
+    const a = ENGRAM_ACCENTS[k], on = (p.accent||'teal')===k;
+    return `<button class="acc-swatch ${on?'on':''}" style="background:${a.hex}" title="${k}" aria-label="${k}" onclick="setEngramPref('accent','${k}')"></button>`;
+  }).join('');
+  return ccHead('Appearance','Theme, accent, and density — applied live and remembered on this device.')+`
+    <div class="scard">
+      ${ccSeg('Theme', [{v:'dark',l:'Graphite'},{v:'light',l:'Light'}], p.theme==='light'?'light':'dark', "v=>setEngramPref('theme',v)")}
+      <div style="height:16px"></div>
+      ${ccSeg('Density', [{v:'comfortable',l:'Comfortable'},{v:'compact',l:'Compact'}], p.density==='compact'?'compact':'comfortable', "v=>setEngramPref('density',v)")}
+      <div style="height:16px"></div>
+      <span class="seg-lbl">Accent · the trust colour, used only where trust is real</span>
+      <div class="acc-rail">${accents}</div>
+    </div>`;
+}
+
+// ---- Chat defaults (live, client-side) -------------------------------------
+function ccChat2(){
+  const p = engramPrefs();
+  const ts = p.chatTimestamps ? 'checked' : '';
+  return ccHead('Chat','How conversations render. A view-mode trades transparency for tidiness; the agent always signs every step regardless.')+`
+    <div class="scard">
+      ${ccSeg('View mode', [{v:'trace',l:'Trace'},{v:'normal',l:'Normal'},{v:'brief',l:'Brief'}], window.engramChatMode(), "v=>setEngramPref('chatMode',v)", true)}
+      <div class="desc" style="margin:9px 0 0">Trace shows every tool call and its signed hash · Normal shows replies with collapsible reasoning · Brief shows answers only.</div>
+      <div style="height:14px"></div>
+      ${ccSeg('Streaming density', [{v:'flowing',l:'Flowing'},{v:'paced',l:'Paced'}], p.streamDensity||'flowing', "v=>setEngramPref('streamDensity',v)")}
+      <div style="height:16px"></div>
+      <label class="toggle"><input type="checkbox" ${ts} onchange="setEngramPref('chatTimestamps',this.checked)"><span class="track"></span> Show message timestamps</label>
+    </div>`;
+}
+
+// ---- Cost (validated + slider + estimate) -----------------------------------
+function ccCost2(c){
+  const cost = c.cost || {task_token_budget:250000};
+  const v = cost.task_token_budget;
+  return ccHead('Cost','A hard ceiling on a single task run — it stops at the next step once it crosses this many tokens (input + output).')+`
+    <div class="scard">
+      <div class="field" style="max-width:260px"><label>Per-task token budget</label>
+        <input type="number" id="cbudget" min="1000" step="1000" value="${v}" oninput="ccCostSync()"></div>
+      <input type="range" class="cost-slider" id="cbudgetRange" min="10000" max="2000000" step="10000" value="${Math.min(2000000,Math.max(10000,v))}" oninput="ccCostFromRange(this.value)">
+      <div class="cost-est" id="cbudgetEst"></div>
+      <div class="sactions"><span class="grow"></span><button class="sbtn primary" onclick="saveSettings()">Save</button></div>
+    </div>`;
+}
+function ccCostFmtEst(tokens){
+  // rough order-of-magnitude $ estimate at a mid-tier blended rate (~$3 / 1M tokens)
+  const dollars = (tokens/1e6)*3;
+  return `<b>${tokens.toLocaleString()}</b> tokens ≈ <b>$${dollars.toFixed(dollars<1?3:2)}</b> at the most a single run may spend.`;
+}
+function ccCostSync(){
+  const n = parseInt(gv('cbudget'),10)||0, est=document.getElementById('cbudgetEst'), rng=document.getElementById('cbudgetRange');
+  if(rng) rng.value = Math.min(2000000, Math.max(10000, n||10000));
+  if(est) est.innerHTML = n<1000 ? '<span style="color:var(--danger)">minimum is 1,000 tokens</span>' : ccCostFmtEst(n);
+}
+function ccCostFromRange(val){
+  const inp=document.getElementById('cbudget'); if(inp) inp.value=val; ccCostSync();
+}
+
+// ---- Slash-commands & shortcuts reference -----------------------------------
+const ENGRAM_SLASH = [
+  ['/ask','Send the rest of the line to chat as a question'],
+  ['/task','Create a task from the rest of the line'],
+  ['/run','Create a task and start it immediately'],
+  ['/memory','Jump to the brain-graph memory view'],
+  ['/board','Open the kanban board'],
+  ['/verify','Re-walk and verify the signed ledger'],
+  ['/settings','Open the settings command-center'],
+  ['/stop','Emergency-halt running agents at the next step'],
+];
+const ENGRAM_KEYS = [
+  ['Command palette','⌘K'],['Settings','⌘,'],['Send / answer in chat','↵'],
+  ['New line in composer','⇧↵'],['Create a task','⌘↵'],['Create & run a task','⇧⌘↵'],
+  ['Close palette / settings / panel','Esc'],['Focus search in settings','/'],
+];
+function ccSlashRef(){
+  const rows = ENGRAM_SLASH.map(r=>`<tr data-q="${escAttr((r[0]+' '+r[1]).toLowerCase())}"><td class="cmd">${esc(r[0])}</td><td class="dsc">${esc(r[1])}</td></tr>`).join('');
+  const keys = ENGRAM_KEYS.map(r=>`<tr data-q="${escAttr((r[0]+' '+r[1]).toLowerCase())}"><td class="cmd k"><kbd>${esc(r[1])}</kbd></td><td class="dsc">${esc(r[0])}</td></tr>`).join('');
+  return ccHead('Commands & shortcuts','Type a slash command in the composer, or use a keyboard shortcut anywhere. Filter the reference below.')+`
+    <div class="scard">
+      <input class="slash-search" placeholder="Filter commands & shortcuts…" oninput="ccSlashFilter(this.value)" id="slashSearch" autocomplete="off">
+      <h3 style="margin-top:10px">Slash commands</h3>
+      <table class="slash-tbl" id="slashCmds">${rows}</table>
+    </div>
+    <div class="scard">
+      <h3>Keyboard shortcuts</h3>
+      <table class="slash-tbl" id="slashKeys">${keys}</table>
+    </div>`;
+}
+function ccSlashFilter(q){
+  q=(q||'').toLowerCase().trim();
+  ['slashCmds','slashKeys'].forEach(id=>{
+    document.querySelectorAll('#'+id+' tr').forEach(tr=>{
+      tr.style.display = !q || (tr.dataset.q||'').includes(q) ? '' : 'none';
+    });
+  });
+}
+
+// ---- MCP per-row live test (sibling-paired rows; no positional-index lookups) ----
+function mcpRowHtmlV2(s){
+  s = s || {name:'',command:'',args:[]};
+  return `<div class="mcprow v2">
+    <input placeholder="name" value="${escAttr(s.name)}">
+    <input placeholder="command (e.g. npx)" value="${escAttr(s.command)}">
+    <input placeholder="args (space-separated)" value="${escAttr((s.args||[]).join(' '))}">
+    <button class="tbtn" title="spawn & connect to check it works" onclick="testMcpRow(this)">Test</button>
+    <button class="xbtn" title="remove" onclick="removeMcpRow(this)">×</button>
+  </div><div class="mcptest"></div>`;
+}
+// Remove a row and its paired status line via sibling traversal — robust to insertion
+// order and to deletions of earlier rows (no fragile data-index selectors).
+function removeMcpRow(btn){
+  const row = btn.closest('.mcprow');
+  const line = row.nextElementSibling;
+  if(line && line.classList.contains('mcptest')) line.remove();
+  row.remove();
+}
+function renderMcpRowsV2(list){
+  const el = document.getElementById('mcplist'); if(!el) return;
+  const arr = (list&&list.length) ? list : [];
+  el.innerHTML = arr.map(s=>mcpRowHtmlV2(s)).join('');
+}
+function addMcpRowV2(){
+  const el = document.getElementById('mcplist'); if(!el) return;
+  el.insertAdjacentHTML('beforeend', mcpRowHtmlV2(null));
+}
+async function testMcpRow(btn){
+  const row = btn.closest('.mcprow'), i = row.querySelectorAll('input');
+  const line = row.nextElementSibling && row.nextElementSibling.classList.contains('mcptest') ? row.nextElementSibling : null;
+  const server = { name:i[0].value.trim(), command:i[1].value.trim(), args:i[2].value.trim().split(/\s+/).filter(Boolean) };
+  if(!server.command){ if(line){ line.className='mcptest bad'; line.textContent='enter a command first'; } return; }
+  if(line){ line.className='mcptest run'; line.textContent='spawning & connecting…'; }
+  try{
+    const r = await J('/v1/config/mcp-test',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(server)});
+    if(line){
+      // r.error is server-controlled text; written via textContent (never innerHTML) so it cannot inject markup.
+      if(r.ok){ line.className='mcptest ok'; line.textContent='✓ connected · '+r.tools+' tool'+(r.tools===1?'':'s')+' available'; }
+      else { line.className='mcptest bad'; line.textContent='✕ '+(r.error||'could not connect'); }
+    }
+  }catch(e){ if(line){ line.className='mcptest bad'; line.textContent='✕ '+e.message; } }
+}
+function collectMcpV2(){
+  return [...document.querySelectorAll('#mcplist .mcprow')].map(r=>{
+    const i = r.querySelectorAll('input');
+    return { name:i[0].value.trim(), command:i[1].value.trim(), args:i[2].value.trim().split(/\s+/).filter(Boolean) };
+  }).filter(s=>s.name&&s.command);
+}
+
+// ---- Integrations gallery (Telegram + webhook channels + MCP, live) ---------
+function ccIntegrations2(c){
+  const ch = c.channels || {}, sec = c.security || {}, mcp = c.mcp || [];
+  const tgOn = !!ch.telegram_set;
+  const webhookOn = !!sec.channel_secret_set;
+  const TG_IC = SVG('<path d="M21 4 3 11l5 2 2 6 3-4 5 4Z"/>');
+  const WH_IC = SVG('<path d="M4 12a8 8 0 0 1 8-8M12 20a8 8 0 0 0 8-8M9 9l6 6M15 9l-6 6"/>');
+  const MCP_IC = SVG('<rect x="3" y="4" width="18" height="14" rx="2"/><path d="M7 20h10M8 8l3 3-3 3M13 14h3"/>');
+  // `desc` is trusted HTML assembled here; any config-derived text inside it is esc()'d at the call site.
+  const card = (ic,title,desc,dot,actions)=>`<div class="integ-card">
+    <div class="ih"><span class="ic">${ic}</span><span class="it">${esc(title)}</span><span class="integ-dot ${dot}"></span></div>
+    <div class="id">${desc}</div><div class="integ-act">${actions}</div></div>`;
+
+  const tgActions = tgOn
+    ? `<span class="badge set">connected</span><span class="grow" style="flex:1"></span><button class="sbtn ghost" onclick="disconnectTelegram()">Disconnect</button>`
+    : `<button class="sbtn primary" onclick="connectTelegram()">Connect</button>`;
+  const tgCard = card(TG_IC,'Telegram',
+    tgOn ? 'A bot token is stored. Engram answers Telegram messages on the next restart.' : 'Run Engram as a bot that answers your messages. Paste a BotFather token.',
+    tgOn?'on':'', tgActions);
+
+  const whCard = card(WH_IC,'Inbound webhooks',
+    webhookOn ? 'Channels post to <code>/v1/channel/{platform}</code>, guarded by the channel secret.' : 'Set a channel secret in Keys to accept inbound webhook posts safely.',
+    webhookOn?'on':'warn',
+    webhookOn ? '<span class="badge set">guarded</span><span style="flex:1"></span><button class="sbtn ghost" onclick="ccGo(\'keys\')">Manage secret</button>'
+              : '<button class="sbtn" onclick="ccGo(\'keys\')">Set channel secret</button>');
+
+  const mcpCard = card(MCP_IC,'MCP tool servers',
+    mcp.length ? esc(mcp.length+' server'+(mcp.length===1?'':'s')+' configured: '+mcp.map(m=>m.name).join(', ')) : 'Borrow tools from external MCP servers — filesystem, search, your own.',
+    mcp.length?'on':'',
+    '<button class="sbtn" onclick="ccGo(\'tools\')">'+(mcp.length?'Manage servers':'Add a server')+'</button>');
+
+  return ccHead('Integrations','Connect outside channels and tool servers. Connecting writes to the local config and round-trips through the daemon.')+`
+    <div class="scard"><div class="integ-grid">${tgCard}${whCard}${mcpCard}</div></div>`;
+}
+async function connectTelegram(){
+  const tok = prompt('Paste your Telegram bot token (from @BotFather). It is stored locally, masked, and never sent back to the browser.');
+  if(tok===null) return;
+  const t = tok.trim(); if(!t){ notify('No token entered'); return; }
+  try{
+    await J('/v1/config',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({channels:{telegram_token:t}})});
+    notify('Telegram token saved — restart to activate the bot','ok'); await ccReload();
+  }catch(e){ notify('Couldn’t save token — '+e.message); }
+}
+async function disconnectTelegram(){
+  if(!confirm('Disconnect Telegram? The stored bot token is wiped.')) return;
+  try{
+    await J('/v1/config',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({channels:{clear_telegram_token:true}})});
+    notify('Telegram disconnected','ok'); await ccReload();
+  }catch(e){ notify('Failed — '+e.message); }
+}
+
+// ---- Messaging (notification routing, live) ---------------------------------
+function ccMessaging2(c){
+  const p = engramPrefs(), ch = c.channels || {};
+  const perm = (typeof Notification!=='undefined') ? Notification.permission : 'unsupported';
+  const on = !!p.desktopNotify && perm==='granted';
+  const tgReady = !!ch.telegram_set;
+  return ccHead('Messaging','Where Engram reaches you when a run finishes or a scheduled job fires.')+`
+    <div class="scard">
+      <h3>Desktop notifications</h3>
+      <div class="desc">Surface a native notification when a long task completes, even when the window is in the background.</div>
+      <label class="toggle"><input type="checkbox" id="msgNotify" ${on?'checked':''} onchange="toggleDesktopNotify(this)"><span class="track"></span> Send desktop notifications</label>
+      ${perm==='denied' ? '<div class="hint" style="color:var(--warning);margin-top:9px">Notifications are blocked in this browser — allow them in site settings to enable.</div>' : ''}
+    </div>
+    <div class="scard">
+      <h3>Delivery routing</h3>
+      <div class="desc">Where scheduled-job output (for example a morning brief) is delivered.</div>
+      ${ccSeg('Default channel', [{v:'inapp',l:'In-app'},{v:'telegram',l:'Telegram'}], p.deliverTo||'inapp', "v=>{const p=engramPrefs();p.deliverTo=v;engramSavePrefs(p);notify('Delivery routing saved','ok');}")}
+      ${tgReady ? '' : '<div class="hint" style="margin-top:9px">Telegram delivery needs a connected bot — see Integrations.</div>'}
+    </div>`;
+}
+async function toggleDesktopNotify(box){
+  const p = engramPrefs();
+  if(box.checked){
+    if(typeof Notification==='undefined'){ notify('This browser has no notification API'); box.checked=false; return; }
+    let perm = Notification.permission;
+    if(perm!=='granted'){ try{ perm = await Notification.requestPermission(); }catch(_){ } }
+    if(perm!=='granted'){ box.checked=false; notify('Notification permission not granted'); p.desktopNotify=false; engramSavePrefs(p); return; }
+    p.desktopNotify=true; engramSavePrefs(p);
+    try{ new Notification('Engram', {body:'Desktop notifications are on.'}); }catch(_){}
+    notify('Desktop notifications on','ok');
+  } else {
+    p.desktopNotify=false; engramSavePrefs(p); notify('Desktop notifications off','ok');
+  }
+}
+// Fire a desktop notification when enabled — an honest hook the task-completion path can call.
+function engramNotifyDesktop(title, body){
+  const p = engramPrefs();
+  if(!p.desktopNotify || typeof Notification==='undefined' || Notification.permission!=='granted') return false;
+  try{ new Notification(title||'Engram', {body:body||''}); return true; }catch(_){ return false; }
 }
 </script>
 </body>

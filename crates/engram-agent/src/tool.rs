@@ -120,6 +120,13 @@ pub trait Tool: Send + Sync {
     fn taints(&self) -> bool {
         false
     }
+    /// True if this tool can carry data *out* to an attacker-influenceable destination
+    /// (the web, a webhook, an MCP server, a browser navigation). Such tools are refused
+    /// once the run is tainted — the no-egress half of the taint rule, enforced centrally
+    /// at the agent's dispatch boundary so every tool (native and MCP) is covered.
+    fn is_egress(&self) -> bool {
+        false
+    }
 }
 
 /// The set of tools available to an agent.

@@ -8,7 +8,7 @@
 
 use std::time::Duration;
 
-use crate::{run_agent_task, App};
+use crate::App;
 
 /// Spawn the Telegram polling loop as a background task.
 pub fn spawn(app: App, token: String) {
@@ -41,7 +41,8 @@ pub fn spawn(app: App, token: String) {
                 else {
                     continue;
                 };
-                let answer = match run_agent_task(&app, text, 8).await {
+                // Inbound chat is untrusted: start the run tainted (no shell, no egress).
+                let answer = match crate::run_agent_task_cb(&app, text, 8, engram_core::Taint::Untrusted, None).await {
                     Ok(run) => run.answer,
                     Err(e) => format!("error: {e}"),
                 };

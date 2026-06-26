@@ -181,6 +181,11 @@ impl Tool for McpTool {
     fn schema(&self) -> Value {
         self.schema.clone()
     }
+    fn is_egress(&self) -> bool {
+        // MCP tools are opaque external capabilities — treat them as egress so a tainted
+        // run cannot reach them (default-deny under taint).
+        true
+    }
     async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
         let _ = ctx.ledger.append(
             "agent.mcp",

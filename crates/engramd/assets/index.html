@@ -158,7 +158,12 @@
 <div class="panel" id="panel"><header><span class="pill" id="pStatus"></span><b id="pTitle"></b><button class="x" onclick="closePanel()">✕</button></header><div class="body" id="pBody"></div></div>
 
 <script>
-const J = (u,o) => fetch(u,o).then(r=>r.json());
+// When the daemon is deployed with ENGRAM_API_TOKEN, it injects the token here so the
+// first-party dashboard authenticates; locally it's empty and everything is open.
+const TOKEN = window.__ENGRAM_TOKEN || '';
+const AUTH = TOKEN ? {Authorization:'Bearer '+TOKEN} : {};
+const tok = u => TOKEN ? (u + (u.includes('?')?'&':'?') + 'token=' + encodeURIComponent(TOKEN)) : u;
+const J = (u,o={}) => fetch(u,{...o, headers:{...AUTH, ...(o.headers||{})}}).then(r=>r.json());
 const esc = s => String(s??'').replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
 const ICONS = {
   Chat:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a8 8 0 0 1-11.5 7.2L3 21l1.8-6.5A8 8 0 1 1 21 12z"/></svg>',
@@ -341,7 +346,7 @@ function schedPreview(inputId,outId){
   },250);
 }
 function closePanel(){ panelId=null; document.getElementById('panel').classList.remove('open'); }
-async function delTask(id){ await fetch('/v1/tasks/'+id,{method:'DELETE'}); closePanel(); await loadTasks(); renderBoard(); }
+async function delTask(id){ await fetch('/v1/tasks/'+id,{method:'DELETE', headers:AUTH}); closePanel(); await loadTasks(); renderBoard(); }
 async function approveShell(id){
   await J('/v1/policy',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({allow_shell:true})});
   runTask(id);
@@ -460,7 +465,7 @@ async function refreshTasks(){
 // Live updates over Server-Sent Events — instant board changes, no constant polling.
 function connectEvents(){
   try {
-    const es=new EventSource('/v1/events');
+    const es=new EventSource(tok('/v1/events'));
     es.addEventListener('spike', e=>{
       let topic=''; try { topic=JSON.parse(e.data).topic||''; } catch(_){}
       if(topic.indexOf('task')===0){ clearTimeout(refreshTimer); refreshTimer=setTimeout(refreshTasks,150); }

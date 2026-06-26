@@ -11,7 +11,7 @@ use axum::extract::{Path, State};
 use axum::Json;
 use serde_json::{json, Value};
 
-use crate::{run_agent_task, ApiError, App};
+use crate::{ApiError, App};
 
 pub async fn channel_handler(
     State(app): State<App>,
@@ -26,7 +26,11 @@ pub async fn channel_handler(
         return Ok(Json(json!({ "ok": true, "ignored": true })));
     };
     let _ = app.ledger.append("channel.in", "user", json!({ "platform": platform }));
-    let run = run_agent_task(&app, &text, 8).await.map_err(ApiError)?;
+    // Inbound webhook content is untrusted: the run starts tainted, so it cannot run
+    // shell or exfiltrate even though anyone can POST here.
+    let run = crate::run_agent_task_cb(&app, &text, 8, engram_core::Taint::Untrusted, None)
+        .await
+        .map_err(ApiError)?;
     Ok(Json(reply(&platform, &run.answer)))
 }
 

@@ -164,6 +164,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/policy", get(policy_get).post(policy_set))
         .route("/v1/events", get(events))
         .layer(axum::middleware::from_fn_with_state(app.clone(), keep_awake))
+        .layer(axum::middleware::from_fn(require_auth))
         .with_state(app.clone());
 
     // Inbound messaging channel: run as a Telegram bot if a token is configured.
@@ -207,8 +208,62 @@ async fn keep_awake(
     next.run(req).await
 }
 
-async fn dashboard() -> Html<&'static str> {
-    Html(include_str!("../assets/index.html"))
+/// Optional bearer-token auth. When `ENGRAM_API_TOKEN` is unset (the local-desktop
+/// default, bound to 127.0.0.1) every request passes. When set — for an exposed
+/// deployment — every `/v1` call must present `Authorization: Bearer <token>` (or, for
+/// EventSource/WebSocket which cannot set headers, `?token=<token>`). The dashboard,
+/// health, and inbound webhooks (which carry their own platform auth) stay open.
+async fn require_auth(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let token = std::env::var("ENGRAM_API_TOKEN").unwrap_or_default();
+    if token.is_empty() {
+        return next.run(req).await;
+    }
+    let path = req.uri().path();
+    if path == "/" || path == "/health" || path.starts_with("/v1/channel/") {
+        return next.run(req).await;
+    }
+    let presented = req
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer "))
+        .map(str::to_string)
+        .or_else(|| {
+            req.uri()
+                .query()
+                .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("token=")))
+                .map(str::to_string)
+        });
+    if presented.map(|t| ct_eq(&t, &token)).unwrap_or(false) {
+        next.run(req).await
+    } else {
+        (axum::http::StatusCode::UNAUTHORIZED, "unauthorized").into_response()
+    }
+}
+
+/// Constant-time string compare (length may leak; contents do not).
+fn ct_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+async fn dashboard() -> Html<String> {
+    let html = include_str!("../assets/index.html");
+    // When a token is configured, hand it to the first-party dashboard so its own fetches
+    // authenticate; otherwise serve the page unchanged.
+    let token = std::env::var("ENGRAM_API_TOKEN").unwrap_or_default();
+    if token.is_empty() {
+        return Html(html.to_string());
+    }
+    let inject = format!("<script>window.__ENGRAM_TOKEN={};</script>", serde_json::Value::String(token));
+    Html(html.replacen("</head>", &format!("{inject}</head>"), 1))
 }
 
 async fn health() -> ApiResult {
@@ -320,13 +375,16 @@ pub(crate) async fn run_agent_task(
     task: &str,
     max_steps: usize,
 ) -> Result<engram_agent::AgentRun, String> {
-    run_agent_task_cb(app, task, max_steps, None).await
+    run_agent_task_cb(app, task, max_steps, engram_core::Taint::Trusted, None).await
 }
 
-async fn run_agent_task_cb(
+/// Run the agent with an explicit initial taint. Untrusted-origin prompts (inbound
+/// webhooks, Telegram) start `Untrusted`, so the no-egress guard applies from step one.
+pub(crate) async fn run_agent_task_cb(
     app: &App,
     task: &str,
     max_steps: usize,
+    taint: engram_core::Taint,
     on_step: Option<engram_agent::StepCallback>,
 ) -> Result<engram_agent::AgentRun, String> {
     let policy = engram_agent::Policy {
@@ -345,7 +403,7 @@ async fn run_agent_task_cb(
         skills: app.registry.clone(),
         gateway: app.gateway.clone(),
         ledger: app.ledger.clone(),
-        taint: engram_core::Taint::Trusted,
+        taint,
         policy,
         workdir: app.workdir.clone(),
         model: model.clone(),
@@ -556,7 +614,7 @@ pub(crate) async fn run_task_core(app: &App, id: &str) -> Result<tasks::Task, St
         tasks.set_progress(&tid, format!("step {i} · {tool}"));
         bus.emit(Spike::new("task.step", Priority::Low, json!({ "id": tid.as_str(), "step": i, "tool": tool })));
     });
-    let run = run_agent_task_cb(app, &prompt, 10, Some(on_step)).await?;
+    let run = run_agent_task_cb(app, &prompt, 10, engram_core::Taint::Trusted, Some(on_step)).await?;
     let finished_ms = engram_core::now_ms() as i64;
     let after = app.gateway.meter();
     let (_, head) = app.ledger.head();

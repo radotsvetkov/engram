@@ -18,6 +18,61 @@ fn arg_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
     args[key].as_str().ok_or_else(|| format!("missing string argument '{key}'"))
 }
 
+/// Reject non-public destinations (SSRF guard): only http(s), and never loopback,
+/// private, link-local (incl. the 169.254.169.254 cloud-metadata IP), or unspecified
+/// addresses — so the agent can't be tricked into reaching its own unauthenticated API
+/// or a cloud metadata service. Resolves hostnames and checks every resulting IP.
+pub(crate) async fn guard_url(url: &str) -> Result<(), String> {
+    let u = url.trim();
+    if !(u.starts_with("http://") || u.starts_with("https://")) {
+        return Err("url must be http(s)".into());
+    }
+    let after = u.split_once("://").map(|(_, b)| b).unwrap_or("");
+    let hostport = after.split(['/', '?', '#']).next().unwrap_or("");
+    let hostport = hostport.rsplit('@').next().unwrap_or(hostport); // strip userinfo
+    let host = if let Some(rest) = hostport.strip_prefix('[') {
+        rest.split(']').next().unwrap_or("") // [ipv6]
+    } else {
+        hostport.split(':').next().unwrap_or(hostport)
+    };
+    if host.is_empty() {
+        return Err("url has no host".into());
+    }
+    let ips: Vec<std::net::IpAddr> = if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        vec![ip]
+    } else {
+        tokio::net::lookup_host((host, 80u16))
+            .await
+            .map_err(|e| format!("could not resolve '{host}': {e}"))?
+            .map(|sa| sa.ip())
+            .collect()
+    };
+    if ips.is_empty() {
+        return Err(format!("could not resolve '{host}'"));
+    }
+    for ip in ips {
+        if is_blocked_ip(&ip) {
+            return Err(format!("refusing to reach non-public address {ip}"));
+        }
+    }
+    Ok(())
+}
+
+fn is_blocked_ip(ip: &std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => {
+            v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified()
+                || v4.is_broadcast() || v4.octets()[0] == 0
+        }
+        IpAddr::V6(v6) => {
+            v6.is_loopback() || v6.is_unspecified()
+                || (v6.segments()[0] & 0xffc0) == 0xfe80 // link-local fe80::/10
+                || (v6.segments()[0] & 0xfe00) == 0xfc00 // unique-local fc00::/7
+        }
+    }
+}
+
 /// Strip HTML to roughly readable text (drops script/style, collapses whitespace).
 pub(crate) fn html_to_text(html: &str) -> String {
     let mut s = String::with_capacity(html.len() / 2);
@@ -80,6 +135,27 @@ pub(crate) fn shell_command(
             )
         }
         None => ("sh".into(), vec!["-c".into(), command.to_string()]),
+    }
+}
+
+#[cfg(test)]
+mod ssrf_guard_tests {
+    use super::guard_url;
+
+    #[tokio::test]
+    async fn blocks_internal_and_non_http_targets() {
+        // Loopback (the unauthenticated local API), cloud metadata, private, IPv6 loopback.
+        assert!(guard_url("http://127.0.0.1:8088/v1/policy").await.is_err());
+        assert!(guard_url("http://localhost/").await.is_err());
+        assert!(guard_url("http://169.254.169.254/latest/meta-data/").await.is_err());
+        assert!(guard_url("http://10.0.0.5/").await.is_err());
+        assert!(guard_url("http://192.168.1.1/").await.is_err());
+        assert!(guard_url("http://[::1]/").await.is_err());
+        // Non-http(s) schemes (local file read, scheme confusion).
+        assert!(guard_url("file:///etc/passwd").await.is_err());
+        assert!(guard_url("ftp://example.com/").await.is_err());
+        // A public literal IP passes (no DNS needed, so this is offline-stable).
+        assert!(guard_url("https://1.1.1.1/").await.is_ok());
     }
 }
 
@@ -537,11 +613,12 @@ impl Tool for BrowserReadTool {
     fn taints(&self) -> bool {
         true
     }
+    fn is_egress(&self) -> bool {
+        true
+    }
     async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
         let url = arg_str(args, "url")?;
-        if !(url.starts_with("http://") || url.starts_with("https://")) {
-            return Err("url must be http(s)".into());
-        }
+        guard_url(url).await?;
         let _ = ctx.ledger.append("agent.browser_read", "agent", json!({ "url": url }));
         let html = chrome_dump_dom(url, ctx.policy.timeout_secs.max(30)).await?;
         Ok(html_to_text(&html))
@@ -566,8 +643,12 @@ impl Tool for BrowserScreenshotTool {
     fn taints(&self) -> bool {
         true
     }
+    fn is_egress(&self) -> bool {
+        true
+    }
     async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
         let url = arg_str(args, "url")?;
+        guard_url(url).await?;
         let path = confine(&ctx.workdir, arg_str(args, "path")?)?;
         let _ = ctx.ledger.append("agent.browser_screenshot", "agent", json!({ "url": url }));
         chrome_screenshot(url, &path, ctx.policy.timeout_secs.max(30)).await?;
@@ -594,8 +675,12 @@ impl Tool for BrowserOpenTool {
     fn taints(&self) -> bool {
         true
     }
+    fn is_egress(&self) -> bool {
+        true
+    }
     async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
         let url = arg_str(args, "url")?;
+        guard_url(url).await?;
         let _ = ctx.ledger.append("agent.browser_open", "agent", json!({ "url": url }));
         ctx.browser.open(url).await
     }
@@ -615,6 +700,9 @@ impl Tool for BrowserClickTool {
         json!({ "type": "object", "properties": { "selector": { "type": "string" } }, "required": ["selector"] })
     }
     fn taints(&self) -> bool {
+        true
+    }
+    fn is_egress(&self) -> bool {
         true
     }
     async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
@@ -641,6 +729,9 @@ impl Tool for BrowserTypeTool {
     fn taints(&self) -> bool {
         true
     }
+    fn is_egress(&self) -> bool {
+        true
+    }
     async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
         let _ = ctx.ledger.append("agent.browser_type", "agent", json!({}));
         ctx.browser.type_text(arg_str(args, "selector")?, arg_str(args, "text")?).await
@@ -661,6 +752,9 @@ impl Tool for BrowserExtractTool {
         json!({ "type": "object", "properties": { "selector": { "type": "string" } } })
     }
     fn taints(&self) -> bool {
+        true
+    }
+    fn is_egress(&self) -> bool {
         true
     }
     async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
@@ -728,9 +822,7 @@ mod web {
         }
         async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
             let url = arg_str(args, "url")?;
-            if !(url.starts_with("http://") || url.starts_with("https://")) {
-                return Err("url must be http(s)".into());
-            }
+            super::guard_url(url).await?;
             let _ = ctx.ledger.append("agent.web_fetch", "agent", json!({ "url": url }));
             let html = get_text(url, ctx.policy.timeout_secs).await?;
             Ok(super::html_to_text(&html))
@@ -781,6 +873,9 @@ mod web {
             "Send a message to a chat channel via an incoming webhook (Slack / Discord / \
              Mattermost style). Pass 'url' or set ENGRAM_WEBHOOK_URL."
         }
+        fn is_egress(&self) -> bool {
+            true
+        }
         fn schema(&self) -> Value {
             json!({ "type": "object",
                 "properties": { "text": { "type": "string" }, "url": { "type": "string" } },
@@ -793,6 +888,7 @@ mod web {
                 .map(String::from)
                 .or_else(|| std::env::var("ENGRAM_WEBHOOK_URL").ok())
                 .ok_or("no webhook url (pass 'url' or set ENGRAM_WEBHOOK_URL)")?;
+            super::guard_url(&url).await?;
             let _ = ctx.ledger.append("agent.send_message", "agent", json!({ "chars": text.len() }));
             let client = reqwest::Client::builder()
                 .timeout(Duration::from_secs(ctx.policy.timeout_secs))

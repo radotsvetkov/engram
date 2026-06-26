@@ -170,7 +170,15 @@ read tainted (web/memory-of-unknown-origin) data is automatically dropped to NO-
 and NO-SECRET-ACCESS for the remainder of that run.** Injected instructions can still
 run code inside the sandbox, but that code cannot phone home and cannot touch a
 credential. The block is recorded in the ledger, so it is visible in the desktop audit
-view. Supporting controls in v0.1: untrusted content is passed to the planner as
+view. Enforcement is at **two layers**: WASM skills lose their egress capabilities at the
+sandbox boundary, and the **agent tool loop** refuses any egress tool — `send_message`,
+`web_fetch`/`web_search`, the browser tools, and *any MCP tool* — once the run is tainted,
+via a single `Tool::is_egress()` gate at the dispatch boundary (not per-tool opt-in).
+Runs whose prompt arrives from an untrusted ingress (inbound webhook, Telegram) start
+tainted, so they have no egress from step one. A complementary **SSRF guard** resolves
+every outbound URL and refuses loopback (the daemon's own API), link-local cloud-metadata
+(169.254.169.254), private, and non-http(s) targets, closing the data-in-the-URL channel.
+Supporting controls in v0.1: untrusted content is passed to the planner as
 clearly-delimited *data*, never as instructions. **[DEFERRED]** A dedicated
 prompt-injection classifier on web/memory ingress, and the egress-filtering proxy that
 would catch any residual channel, are post-v0.1 defense-in-depth — the taint rule is

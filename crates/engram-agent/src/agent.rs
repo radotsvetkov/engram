@@ -140,6 +140,8 @@ impl Agent {
         let mut steps = Vec::new();
         let mut reflected = false;
         let mut spent_tokens: u32 = 0;
+        let mut last_sig = String::new();
+        let mut repeat = 0usize;
         let _ = ctx.ledger.append("agent.start", "agent", json!({ "task": task }));
 
         for _ in 0..self.max_steps {
@@ -236,6 +238,29 @@ impl Agent {
                 if let Some(cb) = &self.on_step {
                     cb(steps.len(), call.name.clone(), ok);
                 }
+                let sig = format!("{}|{}", call.name, call.arguments);
+                if sig == last_sig {
+                    repeat += 1;
+                } else {
+                    repeat = 1;
+                    last_sig = sig;
+                }
+            }
+
+            // Stuck-loop guard: the same tool with identical args several times running is a
+            // runaway making no progress — stop before it burns the token budget.
+            const REPEAT_LIMIT: usize = 3;
+            if repeat >= REPEAT_LIMIT {
+                let _ = ctx.ledger.append(
+                    "agent.loop",
+                    "agent",
+                    json!({ "signature": last_sig, "repeats": repeat }),
+                );
+                return Ok(AgentRun {
+                    answer: format!("(stopped: repeated the same action {repeat}× without making progress)"),
+                    steps,
+                    stopped: "loop",
+                });
             }
         }
         let _ = ctx
@@ -959,5 +984,20 @@ mod tests {
         assert_eq!(run.stopped, "halted");
         assert!(run.steps.is_empty());
         assert!(ledger.read_all().unwrap().iter().any(|e| e.kind == "agent.halt"));
+    }
+
+    #[tokio::test]
+    async fn stops_on_a_repeating_tool_call_loop() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Arc::new(Ledger::open(dir.path()).unwrap());
+        let same = || call("1", "memory_recall", json!({ "query": "stuck" }));
+        let gateway = Arc::new(Gateway::new(
+            Box::new(ScriptedProvider::new(vec![same(), same(), same(), same(), final_answer("done")])),
+            ledger.clone(),
+        ));
+        let ctx = ctx_for(dir.path(), &ledger, &gateway);
+        let run = Agent::new(gateway, crate::default_tools(), "test").max_steps(10).run("go", ctx).await.unwrap();
+        assert_eq!(run.stopped, "loop"); // caught the stuck loop before the step budget
+        assert!(ledger.read_all().unwrap().iter().any(|e| e.kind == "agent.loop"));
     }
 }

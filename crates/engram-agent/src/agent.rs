@@ -65,14 +65,31 @@ pub struct Agent {
     /// Personality / standing instructions (from SOUL.md), prepended to the prompt.
     persona: Option<String>,
     on_step: Option<StepCallback>,
+    /// Run one verify-before-finish reflection pass before accepting the final answer.
+    reflect: bool,
 }
 
 impl Agent {
     pub fn new(gateway: Arc<Gateway>, tools: ToolRegistry, model: impl Into<String>) -> Self {
-        Self { gateway, tools, model: model.into(), max_steps: 8, persona: None, on_step: None }
+        Self {
+            gateway,
+            tools,
+            model: model.into(),
+            max_steps: 8,
+            persona: None,
+            on_step: None,
+            reflect: false,
+        }
     }
     pub fn max_steps(mut self, n: usize) -> Self {
         self.max_steps = n;
+        self
+    }
+    /// Enable a single verify-before-finish reflection pass: when the model first proposes
+    /// a final answer, it is asked to critically check it against the task and either fix
+    /// gaps (with more tool calls) or confirm. Bounded to one pass so it always terminates.
+    pub fn reflect(mut self, on: bool) -> Self {
+        self.reflect = on;
         self
     }
     /// Set the agent's persona / standing instructions.
@@ -96,12 +113,15 @@ impl Agent {
         system.push_str(&format!(
             "You are Engram, an autonomous agent that completes the user's task by calling tools. \
              Work step by step: call tools to gather information and take actions, observe the \
-             results, and continue. When the task is done, reply in plain text with NO tool call. \
-             Tools available: {}.",
+             results, and continue. For a multi-step task, call update_plan early to outline your \
+             plan, and update it as you make progress. You may call several independent tools in \
+             one turn — they run in parallel. When the task is done, reply in plain text with NO \
+             tool call. Tools available: {}.",
             self.tools.names().join(", ")
         ));
         let mut messages = vec![Message::system(system), Message::user(task)];
         let mut steps = Vec::new();
+        let mut reflected = false;
         let _ = ctx.ledger.append("agent.start", "agent", json!({ "task": task }));
 
         for _ in 0..self.max_steps {
@@ -117,6 +137,20 @@ impl Agent {
             let completion = self.complete_with_retry(req, ctx.taint).await?;
 
             if completion.tool_calls.is_empty() {
+                // Verify-before-finish: once, when there's a substantive answer to check,
+                // ask the model to critique it against the task and either fix gaps with
+                // more tools or confirm. Bounded to a single pass so the loop terminates.
+                if self.reflect && !reflected && !steps.is_empty() && !completion.text.trim().is_empty() {
+                    reflected = true;
+                    messages.push(Message::assistant(completion.text.clone()));
+                    messages.push(Message::user(
+                        "Before finishing, critically verify your answer fully satisfies the task. \
+                         If anything is missing, wrong, or unverified, call the tools needed to fix \
+                         it. If it is complete and correct, restate the final answer with no tool call.",
+                    ));
+                    let _ = ctx.ledger.append("agent.reflect", "agent", json!({}));
+                    continue;
+                }
                 let _ = ctx.ledger.append("agent.finish", "agent", json!({ "steps": steps.len() }));
                 return Ok(AgentRun { answer: completion.text, steps, stopped: "final" });
             }
@@ -750,5 +784,84 @@ mod tests {
             entries.iter().any(|e| e.kind == "agent.compact"),
             "expected an agent.compact ledger entry after the transcript grew"
         );
+    }
+
+    #[tokio::test]
+    async fn reflects_before_finishing_when_enabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Arc::new(Ledger::open(dir.path()).unwrap());
+        let memory = Arc::new(
+            Memory::open(dir.path().join("b.db"), Arc::new(TrigramHashEmbedder::default()), ledger.clone()).unwrap(),
+        );
+        let signer = Arc::new(SkillSigner::load_or_create(dir.path().join("k")).unwrap());
+        let skills = Arc::new(Registry::open(dir.path(), signer, ledger.clone()).unwrap());
+        // Do a step, propose a draft, then (after the verify prompt) restate a better answer.
+        let provider = ScriptedProvider::new(vec![
+            call("1", "memory_remember", json!({ "text": "x", "region": "semantic" })),
+            final_answer("draft answer"),
+            final_answer("verified answer"),
+        ]);
+        let gateway = Arc::new(Gateway::new(Box::new(provider), ledger.clone()));
+        let ctx = ToolCtx {
+            memory,
+            skills,
+            gateway: gateway.clone(),
+            ledger: ledger.clone(),
+            taint: Taint::Trusted,
+            policy: Policy::default(),
+            workdir: dir.path().to_path_buf(),
+            model: "test".into(),
+            depth: 0,
+            browser: Arc::new(crate::tool::NoBrowser),
+        };
+        let run = Agent::new(gateway, crate::default_tools(), "test")
+            .reflect(true)
+            .run("do the task", ctx)
+            .await
+            .unwrap();
+
+        assert_eq!(run.answer, "verified answer"); // the post-reflection answer, not the draft
+        assert!(ledger.read_all().unwrap().iter().any(|e| e.kind == "agent.reflect"));
+    }
+
+    #[tokio::test]
+    async fn records_a_plan_via_the_plan_tool() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Arc::new(Ledger::open(dir.path()).unwrap());
+        let memory = Arc::new(
+            Memory::open(dir.path().join("b.db"), Arc::new(TrigramHashEmbedder::default()), ledger.clone()).unwrap(),
+        );
+        let signer = Arc::new(SkillSigner::load_or_create(dir.path().join("k")).unwrap());
+        let skills = Arc::new(Registry::open(dir.path(), signer, ledger.clone()).unwrap());
+        let provider = ScriptedProvider::new(vec![
+            call(
+                "1",
+                "update_plan",
+                json!({ "steps": [
+                    { "title": "research the topic", "status": "doing" },
+                    { "title": "write it up", "status": "todo" }
+                ] }),
+            ),
+            final_answer("done"),
+        ]);
+        let gateway = Arc::new(Gateway::new(Box::new(provider), ledger.clone()));
+        let ctx = ToolCtx {
+            memory,
+            skills,
+            gateway: gateway.clone(),
+            ledger: ledger.clone(),
+            taint: Taint::Trusted,
+            policy: Policy::default(),
+            workdir: dir.path().to_path_buf(),
+            model: "test".into(),
+            depth: 0,
+            browser: Arc::new(crate::tool::NoBrowser),
+        };
+        let run = Agent::new(gateway, crate::default_tools(), "test").run("plan and do it", ctx).await.unwrap();
+
+        assert_eq!(run.steps.len(), 1);
+        assert_eq!(run.steps[0].tool, "update_plan");
+        assert!(run.steps[0].observation.contains("plan updated"), "got: {}", run.steps[0].observation);
+        assert!(ledger.read_all().unwrap().iter().any(|e| e.kind == "agent.plan"));
     }
 }

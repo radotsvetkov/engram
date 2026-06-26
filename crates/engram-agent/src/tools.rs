@@ -327,6 +327,54 @@ impl Tool for ListDirTool {
 }
 
 // ---------------------------------------------------------------------------
+// Planning
+// ---------------------------------------------------------------------------
+
+/// An explicit, ledgered to-do list the agent maintains across a multi-step task —
+/// frontier-harness planning, surfaced in the glass-box receipt so the user sees intent.
+pub struct UpdatePlanTool;
+
+#[async_trait]
+impl Tool for UpdatePlanTool {
+    fn name(&self) -> &str {
+        "update_plan"
+    }
+    fn description(&self) -> &str {
+        "Record or update your step-by-step plan for a multi-step task. Call it early to \
+         outline the steps, then again to mark progress as you go — it keeps you on track and \
+         shows the user your plan. Each step has a 'title' and a 'status' (todo, doing, done)."
+    }
+    fn schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "steps": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "title": { "type": "string" },
+                            "status": { "type": "string", "enum": ["todo", "doing", "done"] }
+                        },
+                        "required": ["title"]
+                    }
+                }
+            },
+            "required": ["steps"]
+        })
+    }
+    async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
+        let steps = args["steps"].as_array().ok_or("steps must be an array")?;
+        let total = steps.len();
+        let done = steps.iter().filter(|s| s["status"] == "done").count();
+        let _ = ctx
+            .ledger
+            .append("agent.plan", "agent", json!({ "steps": steps, "total": total, "done": done }));
+        Ok(format!("plan updated: {done}/{total} steps done"))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Memory
 // ---------------------------------------------------------------------------
 

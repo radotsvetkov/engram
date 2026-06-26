@@ -335,6 +335,16 @@ async function openTask(id){
           <button class="ghost" onclick="closePanel()">Skip</button></div></div>`;
     }
     html+=`<div class="answer">${esc(t.run.answer)}</div>`;
+    // The agent's own plan (latest update_plan call), as a live checklist — glass-box intent.
+    const planStep=[...(t.run.steps||[])].reverse().find(s=>s.tool==='update_plan'&&s.args&&Array.isArray(s.args.steps));
+    if(planStep){
+      const items=planStep.args.steps.map(st=>{
+        const m=st.status==='done'?'✓':(st.status==='doing'?'◐':'○');
+        const c=st.status==='done'?'var(--text-secondary)':'var(--text)';
+        return `<div style="padding:2px 0;color:${c}">${m} ${esc(st.title||'')}</div>`;
+      }).join('');
+      html+=`<div class="muted" style="font-size:11px;margin:10px 0 4px">plan</div>${items}`;
+    }
     // Each step carries its own signed ledger seq+hash (captured inline at run time), so
     // the receipt pairs to the exact ledger entry even if other tasks ran concurrently.
     const stepRows = (t.run.steps||[]).map(s=>{

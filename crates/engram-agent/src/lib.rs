@@ -26,6 +26,7 @@ use std::sync::Arc;
 /// The common toolset (memory, files, shell, web) shared by agents and subagents.
 fn base_tools() -> ToolRegistry {
     let reg = ToolRegistry::new()
+        .with(Arc::new(tools::UpdatePlanTool))
         .with(Arc::new(tools::MemoryRecallTool))
         .with(Arc::new(tools::MemoryRememberTool))
         .with(Arc::new(tools::ReadFileTool))

@@ -414,7 +414,9 @@ pub(crate) async fn run_agent_task_cb(
     for t in &app.mcp_tools {
         tools = tools.with(t.clone());
     }
-    let mut agent = engram_agent::Agent::new(app.gateway.clone(), tools, model).max_steps(max_steps);
+    // Production runs verify before finishing (one bounded reflection pass).
+    let mut agent =
+        engram_agent::Agent::new(app.gateway.clone(), tools, model).max_steps(max_steps).reflect(true);
     if let Some(p) = &app.persona {
         agent = agent.persona(p.clone());
     }

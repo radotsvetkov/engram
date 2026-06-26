@@ -240,6 +240,17 @@ mod anthropic {
                 }
             }
         }
+        // A cache breakpoint at the end of the conversation: Anthropic caches the whole
+        // prefix up to here (tools + system + every prior turn) and, on the next turn, reads
+        // the longest matching cached prefix — so the big, growing agent-loop context is
+        // re-read at ~0.1x instead of reprocessed each step.
+        if let Some(last) = msgs.last_mut() {
+            if let Some(blocks) = last["content"].as_array_mut() {
+                if let Some(block) = blocks.last_mut() {
+                    block["cache_control"] = serde_json::json!({ "type": "ephemeral" });
+                }
+            }
+        }
         let mut body = serde_json::json!({
             "model": req.model,
             "max_tokens": req.max_tokens,
@@ -322,9 +333,12 @@ mod anthropic {
             let u = &json["usage"];
             let cache_read = u["cache_read_input_tokens"].as_u64().unwrap_or(0);
             let cache_create = u["cache_creation_input_tokens"].as_u64().unwrap_or(0);
-            if cache_read > 0 {
-                tracing::debug!(cache_read, "anthropic prompt cache hit");
-            }
+            tracing::debug!(
+                input = u["input_tokens"].as_u64().unwrap_or(0),
+                cache_create,
+                cache_read,
+                "anthropic usage"
+            );
             // Count all processed input (fresh + cache create + cache read) for metering;
             // cost stays a conservative upper bound (no cache discount applied).
             let tokens_in =
@@ -442,6 +456,10 @@ mod anthropic {
             assert_eq!(msgs[2]["role"], "user");
             assert_eq!(msgs[2]["content"][0]["type"], "tool_result");
             assert_eq!(msgs[2]["content"][0]["tool_use_id"], "t1");
+            // A second cache breakpoint sits at the end of the conversation so the whole
+            // growing prefix is cached and re-read on the next turn (incremental caching).
+            let last = msgs.last().unwrap()["content"].as_array().unwrap().last().unwrap();
+            assert_eq!(last["cache_control"]["type"], "ephemeral");
         }
 
         #[test]

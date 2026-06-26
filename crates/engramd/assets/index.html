@@ -2229,7 +2229,9 @@ async function boot(){
   // Chips poll + a slow board fallback if SSE is unavailable.
   setInterval(async()=>{ await poll(); await refreshTasks(); }, 3000);
 }
-boot();
+// boot() is invoked at the very END of the script (after every appended feature module below),
+// so it can safely reference consts those modules declare. Calling it here would hit a
+// temporal-dead-zone ReferenceError (e.g. ENGRAM_ACCENTS) and blank the whole UI.
 
 // ===== ARTIFACTS (Open in canvas) =====
 // Client-side detection of substantial code/doc blocks in Engram replies, surfaced as an
@@ -3282,6 +3284,9 @@ function engramNotifyDesktop(title, body){
   if(!p.desktopNotify || typeof Notification==='undefined' || Notification.permission!=='granted') return false;
   try{ new Notification(title||'Engram', {body:body||''}); return true; }catch(_){ return false; }
 }
+
+// Start the app — runs last so every feature module above is fully initialized first.
+boot();
 </script>
 </body>
 </html>

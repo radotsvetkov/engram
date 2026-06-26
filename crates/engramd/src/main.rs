@@ -596,7 +596,11 @@ async fn tasks_delete(State(app): State<App>, Path(id): Path<String>) -> ApiResu
 /// endpoint and the in-process scheduler.
 pub(crate) async fn run_task_core(app: &App, id: &str) -> Result<tasks::Task, String> {
     let task = app.tasks.get(id).ok_or("task not found")?;
-    app.tasks.update(id, Some("doing".into()), None, None);
+    // Atomically claim the task so two concurrent runs (double-click, HTTP + scheduler)
+    // can't both execute and corrupt the receipt/cost delta.
+    if !app.tasks.try_begin(id) {
+        return Err("task is already running".into());
+    }
     app.bus.emit(Spike::new("task.run", Priority::Normal, json!({ "id": id })));
 
     let prompt = if task.detail.trim().is_empty() {

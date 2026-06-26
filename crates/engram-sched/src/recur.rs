@@ -60,7 +60,10 @@ impl Recurrence {
 }
 
 fn next_daily(after: DateTime<Utc>, hour: u32, min: u32) -> DateTime<Utc> {
-    let t = NaiveTime::from_hms_opt(hour, min, 0).unwrap_or_default();
+    // Defend against a corrupt persisted job: clamp into range so an out-of-bounds value
+    // fires at the nearest valid time rather than silently collapsing to midnight.
+    let t = NaiveTime::from_hms_opt(hour.min(23), min.min(59), 0)
+        .unwrap_or_else(|| NaiveTime::from_hms_opt(0, 0, 0).unwrap());
     let today = Utc.from_utc_datetime(&after.date_naive().and_time(t));
     if today > after {
         today

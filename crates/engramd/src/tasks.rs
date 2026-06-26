@@ -147,6 +147,23 @@ impl TaskStore {
         Some(out)
     }
 
+    /// Atomically claim a task for running: transition it to "doing" only if it isn't
+    /// already running. Returns false if it was already "doing", so a second concurrent
+    /// run (double-click, HTTP racing the scheduler) is rejected rather than duplicated.
+    pub fn try_begin(&self, id: &str) -> bool {
+        let mut t = self.tasks.lock().expect("tasks mutex");
+        let Some(task) = t.iter_mut().find(|x| x.id == id) else {
+            return false;
+        };
+        if task.status == "doing" {
+            return false;
+        }
+        task.status = "doing".into();
+        task.updated_ms = now_ms() as i64;
+        self.save(&t);
+        true
+    }
+
     /// Update the live progress label of a running task (cheap; not persisted to disk
     /// every tick — it is transient and overwritten at finish).
     pub fn set_progress(&self, id: &str, progress: String) {

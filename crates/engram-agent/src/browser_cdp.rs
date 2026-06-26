@@ -84,8 +84,19 @@ impl CdpBrowser {
         conn.next_id += 1;
         let payload = json!({ "id": id, "method": method, "params": params }).to_string();
         conn.ws.send(Message::Text(payload)).await.map_err(|e| e.to_string())?;
+        // Bound the wait: a missing/never-arriving response must not hang the tool forever
+        // while holding the browser session lock.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
         loop {
-            let msg = conn.ws.next().await.ok_or("cdp connection closed")?.map_err(|e| e.to_string())?;
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return Err("cdp command timed out".into());
+            }
+            let next = match tokio::time::timeout(remaining, conn.ws.next()).await {
+                Ok(n) => n,
+                Err(_) => return Err("cdp command timed out".into()),
+            };
+            let msg = next.ok_or("cdp connection closed")?.map_err(|e| e.to_string())?;
             let txt = match msg.to_text() {
                 Ok(t) => t,
                 Err(_) => continue,

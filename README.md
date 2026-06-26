@@ -1,4 +1,6 @@
-# Engram
+<p align="center"><img src="assets/brand/icon.svg" width="84" alt="Engram" /></p>
+
+<h1 align="center">Engram</h1>
 
 **A personal AI agent with a brain you can watch grow, that costs almost nothing to run while it sits idle.**
 

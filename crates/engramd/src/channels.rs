@@ -7,7 +7,9 @@
 //! outgoing webhooks, Teams, generic) reply synchronously in the HTTP response;
 //! poll-based ones (Telegram) use the dedicated channel module.
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, RawQuery, State};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::{json, Value};
 
@@ -16,22 +18,46 @@ use crate::{ApiError, App};
 pub async fn channel_handler(
     State(app): State<App>,
     Path(platform): Path<String>,
+    headers: HeaderMap,
+    RawQuery(query): RawQuery,
     Json(body): Json<Value>,
-) -> Result<Json<Value>, ApiError> {
+) -> Response {
+    // Optional shared-secret gate. When ENGRAM_CHANNEL_SECRET is set, an inbound webhook
+    // must present it (X-Engram-Secret header or ?secret= query) before anything runs — so
+    // a publicly-reachable channel endpoint can't be driven by strangers. (Runs are also
+    // started Untrusted, so even past this gate they can't shell or exfiltrate.)
+    if let Ok(secret) = std::env::var("ENGRAM_CHANNEL_SECRET") {
+        if !secret.is_empty() {
+            let provided = headers
+                .get("x-engram-secret")
+                .and_then(|h| h.to_str().ok())
+                .map(str::to_string)
+                .or_else(|| {
+                    query
+                        .as_deref()
+                        .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("secret=")))
+                        .map(str::to_string)
+                });
+            if provided.as_deref() != Some(secret.as_str()) {
+                return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "bad or missing channel secret" })))
+                    .into_response();
+            }
+        }
+    }
     // Verification / keepalive handshakes that must be answered without running the agent.
     if let Some(resp) = handshake(&platform, &body) {
-        return Ok(Json(resp));
+        return Json(resp).into_response();
     }
     let Some(text) = extract_text(&platform, &body) else {
-        return Ok(Json(json!({ "ok": true, "ignored": true })));
+        return Json(json!({ "ok": true, "ignored": true })).into_response();
     };
     let _ = app.ledger.append("channel.in", "user", json!({ "platform": platform }));
     // Inbound webhook content is untrusted: the run starts tainted, so it cannot run
     // shell or exfiltrate even though anyone can POST here.
-    let run = crate::run_agent_task_cb(&app, &text, 8, engram_core::Taint::Untrusted, None)
-        .await
-        .map_err(ApiError)?;
-    Ok(Json(reply(&platform, &run.answer)))
+    match crate::run_agent_task_cb(&app, &text, 8, engram_core::Taint::Untrusted, None).await {
+        Ok(run) => Json(reply(&platform, &run.answer)).into_response(),
+        Err(e) => ApiError(e).into_response(),
+    }
 }
 
 /// Platform handshakes: Slack URL verification, Discord PING.

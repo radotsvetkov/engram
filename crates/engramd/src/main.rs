@@ -51,6 +51,8 @@ struct App {
     tasks: Arc<tasks::TaskStore>,
     /// Runtime-mutable shell consent — toggled by the desktop's approval card.
     allow_shell: Arc<std::sync::atomic::AtomicBool>,
+    /// Kill switch: set true to stop in-flight agent runs at their next step boundary.
+    halt: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Uniform error → JSON 500.
@@ -133,6 +135,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         allow_shell: Arc::new(std::sync::atomic::AtomicBool::new(
             std::env::var("ENGRAM_TOOLS_SHELL").as_deref() == Ok("1"),
         )),
+        halt: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
 
     let router = Router::new()
@@ -163,6 +166,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/tasks/{id}/run", post(tasks_run))
         .route("/v1/tasks/{id}/audit", get(task_audit))
         .route("/v1/policy", get(policy_get).post(policy_set))
+        .route("/v1/halt", post(halt_set))
         .route("/v1/events", get(events))
         .layer(axum::middleware::from_fn_with_state(app.clone(), keep_awake))
         .layer(axum::middleware::from_fn(require_auth))
@@ -416,9 +420,17 @@ pub(crate) async fn run_agent_task_cb(
     for t in &app.mcp_tools {
         tools = tools.with(t.clone());
     }
-    // Production runs verify before finishing (one bounded reflection pass).
-    let mut agent =
-        engram_agent::Agent::new(app.gateway.clone(), tools, model).max_steps(max_steps).reflect(true);
+    // Production runs verify before finishing (one bounded reflection pass), are bounded by
+    // a token budget (runaway-cost guard), and honor the kill switch.
+    let budget: u32 = std::env::var("ENGRAM_TASK_TOKEN_BUDGET")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(250_000);
+    let mut agent = engram_agent::Agent::new(app.gateway.clone(), tools, model)
+        .max_steps(max_steps)
+        .reflect(true)
+        .token_budget(budget)
+        .halt(app.halt.clone());
     if let Some(p) = &app.persona {
         agent = agent.persona(p.clone());
     }
@@ -531,7 +543,24 @@ async fn events(
 }
 
 async fn policy_get(State(app): State<App>) -> ApiResult {
-    Ok(Json(json!({ "allow_shell": app.allow_shell.load(std::sync::atomic::Ordering::Relaxed) })))
+    Ok(Json(json!({
+        "allow_shell": app.allow_shell.load(std::sync::atomic::Ordering::Relaxed),
+        "halted": app.halt.load(std::sync::atomic::Ordering::Relaxed),
+    })))
+}
+
+#[derive(Deserialize)]
+struct HaltReq {
+    #[serde(default)]
+    on: bool,
+}
+
+/// Emergency stop. `{"on":true}` halts every in-flight agent run at its next step boundary
+/// (and keeps new runs halted until released); `{"on":false}` releases. Ledgered.
+async fn halt_set(State(app): State<App>, Json(r): Json<HaltReq>) -> ApiResult {
+    app.halt.store(r.on, std::sync::atomic::Ordering::Relaxed);
+    let _ = app.ledger.append("halt.set", "user", json!({ "on": r.on }));
+    Ok(Json(json!({ "halted": r.on })))
 }
 
 #[derive(Deserialize)]

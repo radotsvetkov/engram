@@ -67,6 +67,11 @@ pub struct Agent {
     on_step: Option<StepCallback>,
     /// Run one verify-before-finish reflection pass before accepting the final answer.
     reflect: bool,
+    /// Hard ceiling on total tokens (in+out) a run may spend before it stops — a runaway
+    /// cost guard. `None` = unbounded (still bounded by `max_steps`).
+    token_budget: Option<u32>,
+    /// A shared kill switch: when set true, the run stops at the next step boundary.
+    halt: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl Agent {
@@ -79,7 +84,19 @@ impl Agent {
             persona: None,
             on_step: None,
             reflect: false,
+            token_budget: None,
+            halt: None,
         }
+    }
+    /// Stop the run once total tokens (in+out) reach this ceiling — a runaway-cost guard.
+    pub fn token_budget(mut self, tokens: u32) -> Self {
+        self.token_budget = Some(tokens);
+        self
+    }
+    /// Wire a kill switch: when the flag flips true, the run stops at the next step boundary.
+    pub fn halt(mut self, flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
+        self.halt = Some(flag);
+        self
     }
     pub fn max_steps(mut self, n: usize) -> Self {
         self.max_steps = n;
@@ -122,9 +139,31 @@ impl Agent {
         let mut messages = vec![Message::system(system), Message::user(task)];
         let mut steps = Vec::new();
         let mut reflected = false;
+        let mut spent_tokens: u32 = 0;
         let _ = ctx.ledger.append("agent.start", "agent", json!({ "task": task }));
 
         for _ in 0..self.max_steps {
+            // Kill switch: stop cleanly at the step boundary (keeps the partial receipt).
+            if self.halt.as_ref().is_some_and(|h| h.load(std::sync::atomic::Ordering::Relaxed)) {
+                let _ = ctx.ledger.append("agent.halt", "agent", json!({ "steps": steps.len() }));
+                return Ok(AgentRun { answer: "(stopped by kill switch)".into(), steps, stopped: "halted" });
+            }
+            // Runaway-cost guard: stop once the run has spent its token budget.
+            if let Some(budget) = self.token_budget {
+                if spent_tokens >= budget {
+                    let _ = ctx.ledger.append(
+                        "agent.budget",
+                        "agent",
+                        json!({ "spent_tokens": spent_tokens, "budget": budget }),
+                    );
+                    return Ok(AgentRun {
+                        answer: format!("(stopped: token budget of {budget} reached)"),
+                        steps,
+                        stopped: "budget",
+                    });
+                }
+            }
+
             // Keep the working context within budget so a long run never overflows the
             // model's window — summarize older turns, keep the freshest verbatim.
             self.maybe_compact(&mut messages, &ctx).await;
@@ -135,6 +174,7 @@ impl Agent {
             // Resilient model call: a transient provider failure retries with backoff
             // instead of aborting the whole run.
             let completion = self.complete_with_retry(req, ctx.taint).await?;
+            spent_tokens += completion.tokens_in + completion.tokens_out;
 
             if completion.tool_calls.is_empty() {
                 // Verify-before-finish: once, when there's a substantive answer to check,
@@ -863,5 +903,61 @@ mod tests {
         assert_eq!(run.steps[0].tool, "update_plan");
         assert!(run.steps[0].observation.contains("plan updated"), "got: {}", run.steps[0].observation);
         assert!(ledger.read_all().unwrap().iter().any(|e| e.kind == "agent.plan"));
+    }
+
+    fn ctx_for(dir: &std::path::Path, ledger: &Arc<Ledger>, gateway: &Arc<Gateway>) -> ToolCtx {
+        let memory = Arc::new(
+            Memory::open(dir.join("b.db"), Arc::new(TrigramHashEmbedder::default()), ledger.clone()).unwrap(),
+        );
+        let signer = Arc::new(SkillSigner::load_or_create(dir.join("k")).unwrap());
+        let skills = Arc::new(Registry::open(dir, signer, ledger.clone()).unwrap());
+        ToolCtx {
+            memory,
+            skills,
+            gateway: gateway.clone(),
+            ledger: ledger.clone(),
+            taint: Taint::Trusted,
+            policy: Policy::default(),
+            workdir: dir.to_path_buf(),
+            model: "test".into(),
+            depth: 0,
+            browser: Arc::new(crate::tool::NoBrowser),
+        }
+    }
+
+    #[tokio::test]
+    async fn stops_when_the_token_budget_is_reached() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Arc::new(Ledger::open(dir.path()).unwrap());
+        let big = || Completion {
+            text: String::new(),
+            model: "test".into(),
+            tokens_in: 600,
+            tokens_out: 0,
+            tool_calls: vec![ToolCall { id: "1".into(), name: "memory_recall".into(), arguments: json!({ "query": "x" }) }],
+        };
+        let gateway = Arc::new(Gateway::new(
+            Box::new(ScriptedProvider::new(vec![big(), big(), final_answer("done")])),
+            ledger.clone(),
+        ));
+        let ctx = ctx_for(dir.path(), &ledger, &gateway);
+        // Budget 1000: two 600-token calls (1200) trip the guard before the third step.
+        let run = Agent::new(gateway, crate::default_tools(), "test").token_budget(1000).run("go", ctx).await.unwrap();
+        assert_eq!(run.stopped, "budget");
+        assert!(ledger.read_all().unwrap().iter().any(|e| e.kind == "agent.budget"));
+    }
+
+    #[tokio::test]
+    async fn stops_when_the_kill_switch_is_set() {
+        use std::sync::atomic::AtomicBool;
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Arc::new(Ledger::open(dir.path()).unwrap());
+        let gateway = Arc::new(Gateway::new(Box::new(ScriptedProvider::new(vec![final_answer("never")])), ledger.clone()));
+        let ctx = ctx_for(dir.path(), &ledger, &gateway);
+        let flag = Arc::new(AtomicBool::new(true)); // already halted
+        let run = Agent::new(gateway, crate::default_tools(), "test").halt(flag).run("go", ctx).await.unwrap();
+        assert_eq!(run.stopped, "halted");
+        assert!(run.steps.is_empty());
+        assert!(ledger.read_all().unwrap().iter().any(|e| e.kind == "agent.halt"));
     }
 }

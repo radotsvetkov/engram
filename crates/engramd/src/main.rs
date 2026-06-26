@@ -140,6 +140,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .route("/health", get(health))
         .route("/v1/meter", get(meter))
         .route("/v1/memory/stats", get(memory_stats))
+        .route("/v1/memory/recent", get(memory_recent))
         .route("/v1/remember", post(remember))
         .route("/v1/recall", get(recall))
         .route("/v1/forget", post(forget))
@@ -223,6 +224,20 @@ async fn meter(State(app): State<App>) -> ApiResult {
 
 async fn memory_stats(State(app): State<App>) -> ApiResult {
     Ok(Json(serde_json::to_value(app.memory.stats().map_err(err)?).map_err(err)?))
+}
+
+#[derive(Deserialize)]
+struct RecentQuery {
+    #[serde(default)]
+    region: Option<String>,
+    #[serde(default)]
+    n: Option<usize>,
+}
+
+async fn memory_recent(State(app): State<App>, Query(q): Query<RecentQuery>) -> ApiResult {
+    let region = parse_region(q.region.as_deref());
+    let recs = app.memory.recent(region, q.n.unwrap_or(20).min(100)).map_err(err)?;
+    Ok(Json(serde_json::to_value(recs).map_err(err)?))
 }
 
 #[derive(Deserialize)]

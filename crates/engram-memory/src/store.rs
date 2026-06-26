@@ -347,6 +347,23 @@ impl Memory {
         get_record(&conn, id)
     }
 
+    /// The most recent `n` memories in a region, oldest-first — used to reload a
+    /// conversation from episodic memory so the chat survives a refresh.
+    pub fn recent(&self, region: Region, n: usize) -> Result<Vec<Record>> {
+        let conn = self.conn.lock().expect("memory mutex poisoned");
+        let sql = format!(
+            "SELECT {COLS} FROM facts WHERE region = ?1 AND deleted = 0 ORDER BY created_ms DESC LIMIT ?2"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![region.as_str(), n as i64], map_record)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        out.reverse();
+        Ok(out)
+    }
+
     /// Consolidate: demote warm memories that are stale *and* low-importance to the
     /// cold tier — the machine analogue of sleep moving the day's noise out of the
     /// way while keeping what mattered close.

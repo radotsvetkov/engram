@@ -348,11 +348,23 @@ async function approveShell(id){
 
 // ---- Chat ----
 let chatLog=[];
-function renderChat(){
+async function renderChat(){
   document.getElementById('view').innerHTML = `<div class="chat">${offlineNotice()}
     <div class="feed" id="feed"></div>${composerHtml()}</div>`;
   document.getElementById('composer').placeholder='Ask Engram anything…';
-  wireComposer(); paintFeed();
+  wireComposer();
+  if(chatLog.length===0) await loadChatHistory();
+  paintFeed();
+}
+let historyLoaded=false;
+async function loadChatHistory(){
+  if(historyLoaded) return; historyLoaded=true;
+  try {
+    const recs = await J('/v1/memory/recent?region=episodic&n=24');
+    chatLog = (recs||[]).map(r => r.source==='assistant'
+      ? { role:'engram', text:(r.text||'').replace(/^assistant said:\s*/,'') }
+      : { role:'user', text:r.text });
+  } catch(_){}
 }
 function paintFeed(){
   const f=document.getElementById('feed'); if(!f) return;

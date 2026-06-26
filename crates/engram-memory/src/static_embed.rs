@@ -24,6 +24,7 @@ pub struct StaticEmbedder {
     dim: usize,
     unk: u32,
     lowercase: bool,
+    strip_accents: bool,
 }
 
 impl StaticEmbedder {
@@ -48,6 +49,8 @@ impl StaticEmbedder {
         let unk_tok = model["unk_token"].as_str().unwrap_or("[UNK]");
         let unk = *vocab.get(unk_tok).unwrap_or(&0);
         let lowercase = tj["normalizer"]["lowercase"].as_bool().unwrap_or(true);
+        // HF BertNormalizer: a null strip_accents defaults to the lowercase setting.
+        let strip_accents = tj["normalizer"]["strip_accents"].as_bool().unwrap_or(lowercase);
 
         // --- model.safetensors: the `embeddings` F32 [rows, dim] matrix ---
         let raw = std::fs::read(dir.join("model.safetensors")).map_err(|e| format!("model.safetensors: {e}"))?;
@@ -68,21 +71,23 @@ impl StaticEmbedder {
         let off = emb["data_offsets"].as_array().ok_or("no data_offsets")?;
         let s = off.first().and_then(|v| v.as_u64()).ok_or("bad data_offsets")? as usize;
         let e = off.get(1).and_then(|v| v.as_u64()).ok_or("bad data_offsets")? as usize;
-        let data = raw
-            .get(header_end + s..header_end + e)
-            .ok_or("embeddings data out of bounds")?;
-        if data.len() != rows * dim * 4 {
+        // Checked arithmetic — a malformed model must error, never panic on overflow.
+        let start = header_end.checked_add(s).ok_or("data_offsets overflow")?;
+        let end = header_end.checked_add(e).ok_or("data_offsets overflow")?;
+        let data = raw.get(start..end).ok_or("embeddings data out of bounds")?;
+        let expected = rows.checked_mul(dim).and_then(|v| v.checked_mul(4)).ok_or("embeddings shape too large")?;
+        if data.len() != expected {
             return Err(format!("embeddings size mismatch: {} bytes for {rows}x{dim}", data.len()));
         }
         let matrix: Vec<f32> =
             data.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
 
-        Ok(Self { vocab, matrix, rows, dim, unk, lowercase })
+        Ok(Self { vocab, matrix, rows, dim, unk, lowercase, strip_accents })
     }
 
     fn tokenize(&self, text: &str) -> Vec<u32> {
         let mut ids = Vec::new();
-        for word in pretokenize(text, self.lowercase) {
+        for word in pretokenize(text, self.lowercase, self.strip_accents) {
             wordpiece(&word, &self.vocab, self.unk, &mut ids);
         }
         ids
@@ -145,18 +150,41 @@ fn push_char(ch: char, cur: &mut String, words: &mut Vec<String>) {
     }
 }
 
-/// BERT pre-tokenization: optional lowercase, then split on whitespace and isolate each
-/// punctuation character as its own token.
-fn pretokenize(text: &str, lowercase: bool) -> Vec<String> {
+/// Fold a common (lower-case) accented Latin letter to its base — an approximation of
+/// BertNormalizer's accent stripping for the European-script common case (full NFD would
+/// need a Unicode crate; English, the bench workload, is unaffected either way).
+fn fold_accent(c: char) -> char {
+    match c {
+        'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'ą' => 'a',
+        'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ĕ' | 'ė' | 'ę' | 'ě' => 'e',
+        'ì' | 'í' | 'î' | 'ï' | 'ī' | 'ĭ' | 'į' => 'i',
+        'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' | 'ō' | 'ŏ' | 'ő' => 'o',
+        'ù' | 'ú' | 'û' | 'ü' | 'ū' | 'ŭ' | 'ů' | 'ű' | 'ų' => 'u',
+        'ñ' | 'ń' | 'ņ' | 'ň' => 'n',
+        'ç' | 'ć' | 'ĉ' | 'č' => 'c',
+        'š' | 'ś' => 's',
+        'ž' | 'ź' | 'ż' => 'z',
+        'ý' | 'ÿ' => 'y',
+        other => other,
+    }
+}
+
+/// BERT pre-tokenization: optional lowercase + accent strip, then split on whitespace and
+/// isolate each punctuation character as its own token.
+fn pretokenize(text: &str, lowercase: bool, strip_accents: bool) -> Vec<String> {
     let mut words = Vec::new();
     let mut cur = String::new();
+    let emit = |ch: char, cur: &mut String, words: &mut Vec<String>| {
+        let ch = if strip_accents { fold_accent(ch) } else { ch };
+        push_char(ch, cur, words);
+    };
     for ch0 in text.chars() {
         if lowercase {
             for ch in ch0.to_lowercase() {
-                push_char(ch, &mut cur, &mut words);
+                emit(ch, &mut cur, &mut words);
             }
         } else {
-            push_char(ch0, &mut cur, &mut words);
+            emit(ch0, &mut cur, &mut words);
         }
     }
     if !cur.is_empty() {
@@ -253,7 +281,9 @@ mod tests {
     }
 
     #[test]
-    fn pretokenize_splits_punctuation() {
-        assert_eq!(pretokenize("Hello, world!", true), vec!["hello", ",", "world", "!"]);
+    fn pretokenize_splits_punctuation_and_strips_accents() {
+        assert_eq!(pretokenize("Hello, world!", true, false), vec!["hello", ",", "world", "!"]);
+        // lowercase + strip accents: "Café" -> "cafe".
+        assert_eq!(pretokenize("Café", true, true), vec!["cafe"]);
     }
 }

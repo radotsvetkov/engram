@@ -116,14 +116,20 @@ struct Learned {
 /// prior value; preferences (like/love/prefer/use) accumulate. (A model-based extractor can
 /// replace this behind the same write path.)
 fn extract_identity(text: &str) -> Vec<Learned> {
-    // (pattern, output prefix, supersede-prior?)
+    // (pattern, output prefix, supersede-prior?). Supersede is reserved for genuinely
+    // singular attributes whose output prefix is *unique and unambiguous* — name, where
+    // you live, where you work. "i'm/i am" → "User is " is deliberately NOT superseding:
+    // its prefix is a generic catch-all ("User is happy", "User is a developer", "User is
+    // tired" all share it), so superseding on it would let a passing mood bury a durable
+    // fact. State-of-being and preferences accumulate; a richer attribute-keyed model can
+    // make them singular later.
     const RULES: &[(&str, &str, bool)] = &[
         ("i like ", "User likes ", false),
         ("i love ", "User loves ", false),
         ("i prefer ", "User prefers ", false),
         ("i use ", "User uses ", false),
-        ("i'm ", "User is ", true),
-        ("i am ", "User is ", true),
+        ("i'm ", "User is ", false),
+        ("i am ", "User is ", false),
         ("my name is ", "User's name is ", true),
         ("i work ", "User works ", true),
         ("i live ", "User lives ", true),
@@ -168,6 +174,16 @@ mod tests {
         assert_eq!(f[0].fact, "User's name is Radoslav");
         assert!(f[0].supersede, "name is a singular attribute that supersedes the prior value");
         assert_eq!(f[0].prefix, "User's name is ");
+    }
+
+    #[test]
+    fn state_of_being_is_additive_not_superseding() {
+        // "I am ..." → "User is ..." must NOT supersede: its prefix is a generic catch-all,
+        // so a passing mood ("User is tired") must never bury a durable fact.
+        let f = extract_identity("I am a developer");
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].fact, "User is a developer");
+        assert!(!f[0].supersede);
     }
 
     #[test]

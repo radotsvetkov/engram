@@ -389,7 +389,8 @@ mod anthropic {
                         ccreate += u["cache_creation_input_tokens"].as_u64().unwrap_or(0);
                     }
                     Some("message_delta") => {
-                        tout += v["usage"]["output_tokens"].as_u64().unwrap_or(0);
+                        // usage.output_tokens in message_delta is cumulative — take it, not add.
+                        tout = v["usage"]["output_tokens"].as_u64().unwrap_or(tout);
                     }
                     _ => {}
                 });

@@ -93,6 +93,18 @@ fn verify_cmd(home_arg: Option<&str>) -> i32 {
     let dir = std::path::Path::new(&home);
     let ledger_path = dir.join("ledger.jsonl");
     let pub_path = dir.join("ledger.pub");
+    // An absent or empty ledger is a setup error, not a verified chain.
+    match std::fs::metadata(&ledger_path) {
+        Ok(m) if m.len() > 0 => {}
+        Ok(_) => {
+            eprintln!("ledger is empty: {}", ledger_path.display());
+            return 2;
+        }
+        Err(e) => {
+            eprintln!("cannot read ledger {}: {e}", ledger_path.display());
+            return 2;
+        }
+    }
     let pubhex = match std::fs::read_to_string(&pub_path) {
         Ok(s) => s,
         Err(e) => {
@@ -733,7 +745,9 @@ pub(crate) async fn run_task_core(app: &App, id: &str) -> Result<tasks::Task, St
     let after = app.gateway.meter();
     let (_, head) = app.ledger.head();
 
-    let status = if run.stopped == "limit" { "failed" } else { "done" };
+    // Only a clean final answer is a success; halted / budget / loop / limit are all
+    // failures (their answer text says so, and the receipt keeps the exact stop reason).
+    let status = if run.stopped == "final" { "done" } else { "failed" };
     let receipt = tasks::TaskRun {
         answer: run.answer,
         steps: run.steps,
@@ -806,19 +820,35 @@ async fn task_receipt(State(app): State<App>, Path(id): Path<String>) -> ApiResu
     let run = task.run.clone().ok_or_else(|| ApiError("task has no run yet".into()))?;
     let seqs: std::collections::HashSet<u64> =
         run.steps.iter().map(|s| s.ledger_seq).filter(|&s| s > 0).collect();
-    let entries: Vec<_> =
-        app.ledger.read_all().map_err(err)?.into_iter().filter(|e| seqs.contains(&e.seq)).collect();
+    let by_seq: std::collections::HashMap<u64, String> = app
+        .ledger
+        .read_all()
+        .map_err(err)?
+        .into_iter()
+        .filter(|e| seqs.contains(&e.seq))
+        .map(|e| (e.seq, e.hash))
+        .collect();
+    // Actually bind the receipt to the ledger: every step's recorded hash must equal the
+    // hash of the entry at its seq, or the receipt is flagged inconsistent.
+    let consistent = run
+        .steps
+        .iter()
+        .filter(|s| s.ledger_seq > 0)
+        .all(|s| by_seq.get(&s.ledger_seq) == Some(&s.ledger_hash));
+    let entries: Vec<_> = by_seq.into_iter().map(|(seq, hash)| json!({ "seq": seq, "hash": hash })).collect();
     Ok(Json(json!({
         "task": { "id": task.id, "title": task.title },
         "answer": run.answer,
+        "stopped": run.stopped,
         "steps": run.steps,
         "ledger_head": run.ledger_head_hash,
         "ledger_entries": entries,
+        "steps_match_ledger": consistent,
         "pubkey": app.ledger.pubkey_hex(),
         "alg": "ed25519",
         "verify": "engramd verify <ENGRAM_HOME>",
-        "note": "Each step's ledger_seq/ledger_hash matches a signed entry above; run the verify \
-                 command with the published pubkey to confirm the whole chain offline."
+        "note": "steps_match_ledger confirms each step's hash equals its signed ledger entry; run \
+                 the verify command with the published pubkey to confirm the whole chain offline."
     })))
 }
 

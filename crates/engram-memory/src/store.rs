@@ -179,6 +179,13 @@ impl Memory {
             conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('embed_space', ?1)", params![current])?;
             return Ok(());
         }
+        // Audit BEFORE mutating (ledger-first, like remember) and propagate any ledger
+        // failure, so a re-embed can never happen silently or go unrecorded.
+        self.ledger.append(
+            "memory.reembed",
+            "core",
+            json!({ "space": current, "previous": stored, "rows": rows.len() }),
+        )?;
         let tx = conn.transaction()?;
         for (id, text) in &rows {
             let emb = to_bytes(&self.embedder.embed(text));
@@ -186,12 +193,6 @@ impl Memory {
         }
         tx.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('embed_space', ?1)", params![current])?;
         tx.commit()?;
-        drop(conn);
-        let _ = self.ledger.append(
-            "memory.reembed",
-            "core",
-            json!({ "space": current, "previous": stored, "rows": rows.len() }),
-        );
         Ok(())
     }
 

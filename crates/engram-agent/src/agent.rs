@@ -139,9 +139,15 @@ impl Agent {
         let mut messages = vec![Message::system(system), Message::user(task)];
         let mut steps = Vec::new();
         let mut reflected = false;
-        let mut spent_tokens: u32 = 0;
         let mut last_sig = String::new();
         let mut repeat = 0usize;
+        // Drive the runaway-cost guard off the shared gateway meter so it counts the model
+        // calls AND the compaction summarizer AND any delegated subagents — not just this
+        // loop's own completions.
+        let start_spend = {
+            let s = self.gateway.meter();
+            s.tokens_in + s.tokens_out
+        };
         let _ = ctx.ledger.append("agent.start", "agent", json!({ "task": task }));
 
         for _ in 0..self.max_steps {
@@ -152,11 +158,15 @@ impl Agent {
             }
             // Runaway-cost guard: stop once the run has spent its token budget.
             if let Some(budget) = self.token_budget {
-                if spent_tokens >= budget {
+                let spent = {
+                    let s = self.gateway.meter();
+                    (s.tokens_in + s.tokens_out).saturating_sub(start_spend)
+                };
+                if spent >= budget as u64 {
                     let _ = ctx.ledger.append(
                         "agent.budget",
                         "agent",
-                        json!({ "spent_tokens": spent_tokens, "budget": budget }),
+                        json!({ "spent_tokens": spent, "budget": budget }),
                     );
                     return Ok(AgentRun {
                         answer: format!("(stopped: token budget of {budget} reached)"),
@@ -176,7 +186,6 @@ impl Agent {
             // Resilient model call: a transient provider failure retries with backoff
             // instead of aborting the whole run.
             let completion = self.complete_with_retry(req, ctx.taint).await?;
-            spent_tokens += completion.tokens_in + completion.tokens_out;
 
             if completion.tool_calls.is_empty() {
                 // Verify-before-finish: once, when there's a substantive answer to check,
@@ -208,18 +217,20 @@ impl Agent {
             let egress_blocked = ctx.taint.is_untrusted();
             let outcomes = self.run_tools(&completion.tool_calls, &ctx, egress_blocked).await;
 
-            // If any taint-raising tool ran, the run is tainted for every later turn.
+            // If any taint-raising tool actually executed, the run is tainted for every later
+            // turn. A previewed (dry-run) or refused (egress-blocked) call did not execute,
+            // so it must not raise taint.
             let raised = completion
                 .tool_calls
                 .iter()
                 .zip(&outcomes)
-                .any(|(c, (_o, ok))| *ok && self.tools.get(&c.name).is_some_and(|t| t.taints()));
+                .any(|(c, (_o, ok, executed))| *ok && *executed && self.tools.get(&c.name).is_some_and(|t| t.taints()));
             if raised {
                 ctx.taint = Taint::Untrusted;
             }
 
             // Record results in call order: deterministic ledger chain and message order.
-            for (call, (observation, ok)) in completion.tool_calls.iter().zip(outcomes) {
+            for (call, (observation, ok, _executed)) in completion.tool_calls.iter().zip(outcomes) {
                 let truncated = truncate(&observation, ctx.policy.max_obs_len);
                 let (ledger_seq, ledger_hash) = ctx
                     .ledger
@@ -238,17 +249,24 @@ impl Agent {
                 if let Some(cb) = &self.on_step {
                     cb(steps.len(), call.name.clone(), ok);
                 }
-                let sig = format!("{}|{}", call.name, call.arguments);
-                if sig == last_sig {
-                    repeat += 1;
-                } else {
-                    repeat = 1;
-                    last_sig = sig;
-                }
             }
 
-            // Stuck-loop guard: the same tool with identical args several times running is a
-            // runaway making no progress — stop before it burns the token budget.
+            // Stuck-loop guard: the same WHOLE turn (its tool calls + args) repeated several
+            // times running is a runaway making no progress — stop before it burns the
+            // budget. Tracked per *turn*, not per call, so a single-turn parallel fan-out of
+            // identical calls is fine while a genuine cross-turn loop is still caught.
+            let batch_sig = completion
+                .tool_calls
+                .iter()
+                .map(|c| format!("{}|{}", c.name, c.arguments))
+                .collect::<Vec<_>>()
+                .join("\n");
+            if batch_sig == last_sig {
+                repeat += 1;
+            } else {
+                repeat = 1;
+                last_sig = batch_sig;
+            }
             const REPEAT_LIMIT: usize = 3;
             if repeat >= REPEAT_LIMIT {
                 let _ = ctx.ledger.append(
@@ -299,15 +317,16 @@ impl Agent {
         }
     }
 
-    /// Execute a turn's tool calls concurrently, returning `(observation, ok)` per call in
-    /// the original order. Each task gets its own cheap `ctx` clone (all `Arc`s), and the
-    /// no-egress gate is applied with the pre-batch taint decision.
+    /// Execute a turn's tool calls concurrently, returning `(observation, ok, executed)` per
+    /// call in the original order — `executed` is false for previewed (dry-run) or refused
+    /// (egress-blocked) calls, so they don't raise taint. Each task gets its own cheap `ctx`
+    /// clone (all `Arc`s), and the no-egress gate uses the pre-batch taint decision.
     async fn run_tools(
         &self,
         calls: &[ToolCall],
         ctx: &ToolCtx,
         egress_blocked: bool,
-    ) -> Vec<(String, bool)> {
+    ) -> Vec<(String, bool, bool)> {
         let mut set = JoinSet::new();
         for (i, call) in calls.iter().enumerate() {
             let tool = self.tools.get(&call.name).cloned();
@@ -318,29 +337,32 @@ impl Agent {
             set.spawn(async move {
                 let out = match tool {
                     // Dry-run / planning-only: don't execute side-effecting tools; report
-                    // what would have happened so the plan can be previewed safely.
+                    // what would have happened so the plan can be previewed safely. Not
+                    // executed → must not raise taint.
                     Some(t) if dry_run && t.side_effecting() => (
                         format!("DRY RUN — would call {name}({args}); not executed"),
                         true,
+                        false,
                     ),
                     // The no-egress half of the taint rule — refuse an egress tool once the
                     // run has read untrusted content. Covers native and MCP tools alike.
                     Some(t) if egress_blocked && t.is_egress() => (
                         "error: egress refused — this run read untrusted content (injection guard)".to_string(),
                         false,
+                        false,
                     ),
                     Some(t) => match t.run(&args, &ctx).await {
-                        Ok(o) => (o, true),
-                        Err(e) => (format!("error: {e}"), false),
+                        Ok(o) => (o, true, true),
+                        Err(e) => (format!("error: {e}"), false, true),
                     },
-                    None => (format!("error: unknown tool '{name}'"), false),
+                    None => (format!("error: unknown tool '{name}'"), false, false),
                 };
                 (i, out)
             });
         }
         // Default to an error so a panicked task surfaces as a failed step, never a gap.
-        let mut outcomes: Vec<(String, bool)> =
-            calls.iter().map(|_| ("error: tool task did not complete".to_string(), false)).collect();
+        let mut outcomes: Vec<(String, bool, bool)> =
+            calls.iter().map(|_| ("error: tool task did not complete".to_string(), false, false)).collect();
         while let Some(res) = set.join_next().await {
             if let Ok((i, out)) = res {
                 outcomes[i] = out;
@@ -1057,5 +1079,47 @@ mod tests {
         let run = Agent::new(gateway, crate::default_tools(), "test").max_steps(10).run("go", ctx).await.unwrap();
         assert_eq!(run.stopped, "loop"); // caught the stuck loop before the step budget
         assert!(ledger.read_all().unwrap().iter().any(|e| e.kind == "agent.loop"));
+    }
+
+    #[tokio::test]
+    async fn single_turn_fanout_of_identical_calls_is_not_a_loop() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Arc::new(Ledger::open(dir.path()).unwrap());
+        let gateway = Arc::new(Gateway::new(
+            Box::new(ScriptedProvider::new(vec![
+                multi_call(vec![
+                    ("a", "memory_recall", json!({ "query": "x" })),
+                    ("b", "memory_recall", json!({ "query": "x" })),
+                    ("c", "memory_recall", json!({ "query": "x" })),
+                ]),
+                final_answer("done"),
+            ])),
+            ledger.clone(),
+        ));
+        let ctx = ctx_for(dir.path(), &ledger, &gateway);
+        let run = Agent::new(gateway, crate::default_tools(), "test").max_steps(10).run("go", ctx).await.unwrap();
+        // Three identical calls in ONE turn (parallel fan-out) is legitimate, not a loop.
+        assert_eq!(run.stopped, "final");
+        assert_eq!(run.steps.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_repeating_multi_call_batch_across_turns_is_caught() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Arc::new(Ledger::open(dir.path()).unwrap());
+        let batch = || {
+            multi_call(vec![
+                ("a", "memory_recall", json!({ "query": "p" })),
+                ("b", "memory_recall", json!({ "query": "q" })),
+            ])
+        };
+        let gateway = Arc::new(Gateway::new(
+            Box::new(ScriptedProvider::new(vec![batch(), batch(), batch(), final_answer("done")])),
+            ledger.clone(),
+        ));
+        let ctx = ctx_for(dir.path(), &ledger, &gateway);
+        let run = Agent::new(gateway, crate::default_tools(), "test").max_steps(10).run("go", ctx).await.unwrap();
+        // The same [A,B] batch repeated across turns IS a stuck loop — caught at the turn level.
+        assert_eq!(run.stopped, "loop");
     }
 }

@@ -449,10 +449,20 @@ async fn events(
 {
     use axum::response::sse::{Event, KeepAlive, Sse};
     let mut syn = app.bus.synapse();
+    // Cap the connection lifetime so a held-open stream can never block the daemon's
+    // graceful idle-exit (zero-idle). The browser's EventSource reconnects seamlessly.
     let stream = async_stream::stream! {
-        while let Some(spike) = syn.recv().await {
-            let data = json!({ "topic": spike.topic, "payload": spike.payload }).to_string();
-            yield Ok(Event::default().event("spike").data(data));
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() { break; }
+            match tokio::time::timeout(remaining, syn.recv()).await {
+                Ok(Some(spike)) => {
+                    let data = json!({ "topic": spike.topic, "payload": spike.payload }).to_string();
+                    yield Ok(Event::default().event("spike").data(data));
+                }
+                Ok(None) | Err(_) => break,
+            }
         }
     };
     Sse::new(stream).keep_alive(KeepAlive::default())

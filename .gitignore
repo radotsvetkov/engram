@@ -43,3 +43,6 @@ secrets/
 *.log
 tmp/
 .cache/
+
+# Tauri sidecar binaries (copied build artifacts)
+/desktop/src-tauri/binaries/

@@ -12,6 +12,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -19,14 +20,36 @@ use tauri::{Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 const ADDR: &str = "127.0.0.1:8088";
 
-/// Where the daemon binary might live, relative to the shell.
-const DAEMON_PATHS: [&str; 5] = [
-    "engramd",
-    "../target/release/engramd",
-    "../target/debug/engramd",
-    "../../target/release/engramd",
-    "../../target/debug/engramd",
-];
+/// Where the `engramd` binary might live, most-specific first:
+///  1. next to the app executable - the bundled sidecar (an installed `.app`);
+///  2. the workspace `target/` dirs, relative to the shell's CWD (a dev run);
+///  3. bare `engramd`, found on `PATH`.
+fn daemon_candidates() -> Vec<PathBuf> {
+    let mut v = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            v.push(dir.join("engramd"));
+        }
+    }
+    for p in [
+        "engramd",
+        "../target/release/engramd",
+        "../target/debug/engramd",
+        "../../target/release/engramd",
+        "../../target/debug/engramd",
+    ] {
+        v.push(PathBuf::from(p));
+    }
+    v
+}
+
+/// The daemon's state directory: an explicit `ENGRAM_HOME`, else a stable per-user folder.
+fn daemon_home() -> Option<String> {
+    if let Ok(h) = std::env::var("ENGRAM_HOME") {
+        return Some(h);
+    }
+    std::env::var("HOME").ok().map(|h| format!("{h}/.engram"))
+}
 
 fn main() {
     tauri::Builder::default()
@@ -75,12 +98,21 @@ fn wait_for_daemon() {
 /// the port - connect to that one instead of spinning.
 fn supervise_daemon() {
     std::thread::spawn(|| {
+        let home = daemon_home();
+        if let Some(h) = &home {
+            let _ = std::fs::create_dir_all(h);
+        }
         let mut quick_exits = 0u8;
         loop {
             let started = Instant::now();
             let mut launched = false;
-            for path in DAEMON_PATHS {
-                if let Ok(mut child) = Command::new(path).env("ENGRAM_ADDR", ADDR).spawn() {
+            for path in daemon_candidates() {
+                let mut cmd = Command::new(&path);
+                cmd.env("ENGRAM_ADDR", ADDR);
+                if let Some(h) = &home {
+                    cmd.env("ENGRAM_HOME", h);
+                }
+                if let Ok(mut child) = cmd.spawn() {
                     launched = true;
                     let _ = child.wait(); // blocks for the whole session, then returns on exit
                     break;

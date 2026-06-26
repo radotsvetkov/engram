@@ -56,6 +56,7 @@
   .nav a:hover svg { opacity:.9; }
   .nav a.active svg { opacity:1; color:var(--accent); filter:var(--glow); }
   .rail .spacer { flex:1; }
+  .nav.tools::before { content:''; display:block; height:1px; background:var(--border); margin:0 7px 8px; }
   .status { font-size:11px; color:var(--text-muted); padding:8px; line-height:1.4; }
   .status .live { color:var(--accent); }
 
@@ -96,10 +97,16 @@
   .board { flex:1; display:grid; grid-template-columns:repeat(3,1fr); gap:10px; padding:16px; overflow:auto; }
   .col { background:var(--surface-1); border:1px solid var(--border); border-radius:12px; padding:10px;
     display:flex; flex-direction:column; gap:8px; min-height:0; }
-  .col.dragover { border-color:var(--accent); background:rgba(69,200,168,.05); box-shadow:inset 0 0 0 1px rgba(69,200,168,.28); }
-  .card[draggable=true] { cursor:grab; }
-  .card[draggable=true]:active { cursor:grabbing; }
-  .card.dragging { opacity:.35; }
+  .col { transition:background var(--dur-1) var(--ease-out), box-shadow var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out); }
+  .col.drop-target { border-color:transparent; background:var(--accent-soft); box-shadow:inset 0 0 0 1.5px rgba(69,200,168,.45); }
+  .col.drop-target h3, .col.drop-target h3 span { color:var(--accent); }
+  .card { cursor:grab; }
+  .card:active { cursor:grabbing; }
+  .card.card-dragging { opacity:.32; box-shadow:none; }   /* the placeholder left behind */
+  .card-ghost { position:fixed; left:0; top:0; z-index:300; margin:0; pointer-events:none;
+    background:var(--surface-3); box-shadow:var(--e4); transform:rotate(2deg) scale(1.03);
+    cursor:grabbing; will-change:left,top; }
+  body.dragging-active { cursor:grabbing; user-select:none; }
   .rcpt-chip { margin-left:auto; display:inline-flex; align-items:center; gap:3px; font:11px var(--mono); color:var(--text-secondary);
     background:var(--surface-1); border:1px solid var(--border-strong); border-radius:6px; padding:1px 7px; cursor:pointer; transition:.12s; }
   .rcpt-chip:hover { border-color:var(--ring); color:var(--accent); }
@@ -438,6 +445,7 @@
     <div class="brand"><span class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round"><circle cx="19" cy="16" r="2.9" fill="#45c8a8" stroke="none" opacity=".16"/><path d="M12 9V5.5"/><path d="M14.6 13.5 17.6 15.2"/><path d="M9.4 13.5 6.4 15.2"/><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r=".95" fill="currentColor" stroke="none"/><circle cx="12" cy="3.9" r="1.6"/><circle cx="5" cy="16" r="1.6"/><circle cx="19" cy="16" r="1.6" fill="#45c8a8" stroke="#45c8a8"/></svg></span><b>engram</b></div>
     <div class="nav" id="nav"></div>
     <div class="spacer"></div>
+    <div class="nav tools" id="navTools"></div>
     <button class="railgear" onclick="openCC()" title="Settings (⌘,)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 13a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1.08 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg><span class="lbl">Settings</span></button>
     <div class="status" id="status">waking…</div>
   </nav>
@@ -529,17 +537,21 @@ const ICONS = {
   Terminal: SVG('<rect x="3" y="4.5" width="18" height="15" rx="2.6"/><path d="m7.5 9.5 2.6 2.5-2.6 2.5M13 14.5h3.6"/>'),
   Settings: SVG('<circle cx="12" cy="12" r="3"/><path d="M19.4 13a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1.08 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/>'),
 };
-const VIEWS = ['Chat','Tasks','Schedule','Memory','Skills','Terminal'];
+const VIEWS = ['Chat','Tasks','Schedule','Memory','Skills'];
+const TOOLS = ['Terminal'];                  // power tools - pinned to the bottom of the rail
+const ALL_VIEWS = [...VIEWS, ...TOOLS];
 let state = { route:'Tasks', tasks:[], offline:false };
 
 function renderNav(){
   // Real anchors with a hash href: keyboard-focusable and Enter-activatable for free; the
-  // hashchange listener routes. aria-current marks the active view for screen readers.
-  document.getElementById('nav').innerHTML = VIEWS.map(v=>
-    `<a class="${state.route===v?'active':''}" href="#${v}" title="${v}"${state.route===v?' aria-current="page"':''}>${ICONS[v]}<span class="lbl">${v}</span></a>`).join('');
+  // hashchange listener routes. aria-current marks the active view for screen readers. Primary
+  // views sit up top; tools (Terminal) are pinned to the bottom of the rail.
+  const item=v=>`<a class="${state.route===v?'active':''}" href="#${v}" title="${v}"${state.route===v?' aria-current="page"':''}>${ICONS[v]}<span class="lbl">${v}</span></a>`;
+  document.getElementById('nav').innerHTML = VIEWS.map(item).join('');
+  const tn=document.getElementById('navTools'); if(tn) tn.innerHTML = TOOLS.map(item).join('');
 }
 function go(v){ state.route=v; if(location.hash.slice(1)!==v) location.hash=v; document.getElementById('viewname').textContent=v; renderNav(); renderView(); }
-window.addEventListener('hashchange',()=>{ const v=location.hash.slice(1); if(VIEWS.includes(v)&&v!==state.route) go(v); });
+window.addEventListener('hashchange',()=>{ const v=location.hash.slice(1); if(ALL_VIEWS.includes(v)&&v!==state.route) go(v); });
 
 // ---- the trust spine (bottom status bar) ----
 let _lastLedgerN=null;
@@ -584,9 +596,10 @@ function card(t){
   else if(t.status==='done' && t.run) foot=`<div class="meta"><span class="check">✓</span> ${(t.run.tokens_in+t.run.tokens_out)} tok · $${(t.run.cost_usd||0).toFixed(4)}${t.schedule_id?' · ⟳':''}${rcpt}</div>`;
   else if(t.status==='failed') foot=`<div class="meta"><span class="xmark">✕</span> stopped${rcpt}</div>`;
   else foot=`<div class="meta">${tags||'<span class="muted">queued</span>'}</div>`;
-  return `<div class="card ${running?'running':''}" draggable="true" data-id="${t.id}"
+  // No HTML5 draggable - we use a pointer-based drag (see boardPointerDown) that actually works
+  // in WKWebView and feels like Linear. Click vs drag is discriminated by a movement threshold.
+  return `<div class="card ${running?'running':''}" data-id="${t.id}"
      role="button" tabindex="0" aria-label="${escAttr(t.title)}"
-     ondragstart="drag(event,'${t.id}')" ondragend="dragend(event)" onclick="openTask('${t.id}')"
      onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openTask('${t.id}')}">
      <div class="t">${esc(t.title)}</div>${foot}</div>`;
 }
@@ -607,7 +620,7 @@ function renderBoard(){
         </div></div>
       <div style="padding:16px">${composerHtml()}</div></div>`;
   } else {
-    const colHtml=(key,label)=>`<div class="col" data-col="${key}" ondragover="dover(event)" ondragleave="dleave(event)" ondrop="drop(event,'${key}')">
+    const colHtml=(key,label)=>`<div class="col" data-col="${key}">
        <h3>${label} <span>${cols[key].length}</span></h3><div class="cards">${cols[key].map(card).join('')}</div></div>`;
     v.innerHTML = `<div class="board-wrap">${offlineNotice()}
       <div class="board">${colHtml('todo','To do')}${colHtml('doing','Running')}${colHtml('done','Done')}</div>
@@ -671,21 +684,65 @@ async function previewTask(id){
   }catch(e){ if(out) out.textContent='(preview failed - '+(e.message||'try again')+')'; }
 }
 
-// ---- drag ----
-let dragId=null;
-function drag(e,id){ dragId=id; e.currentTarget.classList.add('dragging');
-  try{ e.dataTransfer.effectAllowed='move'; e.dataTransfer.setData('text/plain',id); }catch(_){} }
-function dragend(e){ e.currentTarget.classList.remove('dragging'); document.querySelectorAll('.col.dragover').forEach(c=>c.classList.remove('dragover')); }
-function dover(e){ e.preventDefault(); try{ e.dataTransfer.dropEffect='move'; }catch(_){} e.currentTarget.classList.add('dragover'); }
-function dleave(e){ if(!e.currentTarget.contains(e.relatedTarget)) e.currentTarget.classList.remove('dragover'); }
-async function drop(e,col){
-  e.preventDefault(); e.currentTarget.classList.remove('dragover');
-  if(!dragId) return; const id=dragId; dragId=null;
-  if(col==='doing'){ runTask(id); return; }
-  const status = col==='done' ? 'done' : 'todo';
-  await J('/v1/tasks/'+id,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({status})});
-  await loadTasks(); renderBoard();
+// ---- pointer-based kanban drag ----
+// HTML5 drag-and-drop is unreliable in WKWebView (and can't be driven by assistive tooling), so
+// we implement dragging directly on pointer events: a floating ghost that follows the cursor,
+// live column hit-testing with a highlighted drop target, a click/drag discriminator (so a tap
+// still opens the card), and an optimistic move that PATCHes the new status.
+let kdrag=null;
+function boardPointerDown(e){
+  if(e.button!==0) return;
+  const cardEl=e.target.closest('.card'); if(!cardEl) return;
+  if(e.target.closest('.rcpt-chip')) return;            // let the receipt chip take its own click
+  const board=cardEl.closest('.board'); if(!board) return;
+  const r=cardEl.getBoundingClientRect();
+  kdrag={ id:cardEl.dataset.id, cardEl, startX:e.clientX, startY:e.clientY,
+          offX:e.clientX-r.left, offY:e.clientY-r.top, w:r.width, moved:false, ghost:null };
+  window.addEventListener('pointermove', boardPointerMove);
+  window.addEventListener('pointerup', boardPointerUp, { once:true });
+  window.addEventListener('pointercancel', boardPointerUp, { once:true });
 }
+function columnUnder(x,y){
+  for(const el of document.elementsFromPoint(x,y)){ const c=el.closest&&el.closest('.col'); if(c) return c; }
+  return null;
+}
+function boardPointerMove(e){
+  if(!kdrag) return;
+  if(!kdrag.moved){
+    if(Math.hypot(e.clientX-kdrag.startX, e.clientY-kdrag.startY) < 5) return;   // still a click
+    kdrag.moved=true;
+    const g=kdrag.cardEl.cloneNode(true);
+    g.className='card card-ghost'; g.style.width=kdrag.w+'px';
+    document.body.appendChild(g); kdrag.ghost=g;
+    kdrag.cardEl.classList.add('card-dragging');
+    document.body.classList.add('dragging-active');
+  }
+  kdrag.ghost.style.left=(e.clientX-kdrag.offX)+'px';
+  kdrag.ghost.style.top=(e.clientY-kdrag.offY)+'px';
+  const col=columnUnder(e.clientX, e.clientY);
+  document.querySelectorAll('.col').forEach(c=>c.classList.toggle('drop-target', c===col));
+}
+async function boardPointerUp(e){
+  window.removeEventListener('pointermove', boardPointerMove);
+  const d=kdrag; kdrag=null; if(!d) return;
+  if(!d.moved){ openTask(d.id); return; }                // no movement => it was a click
+  const col=columnUnder(e.clientX, e.clientY);
+  document.querySelectorAll('.col').forEach(c=>c.classList.remove('drop-target'));
+  if(d.ghost) d.ghost.remove();
+  d.cardEl.classList.remove('card-dragging');
+  document.body.classList.remove('dragging-active');
+  if(col) await moveTask(d.id, col.dataset.col);
+}
+async function moveTask(id, key){
+  const t=state.tasks.find(x=>x.id===id);
+  if(t && STATUS_COLS[t.status]===key) return;            // dropped back in the same column - no-op
+  if(key==='doing'){ runTask(id); return; }
+  const status = key==='done' ? 'done' : 'todo';
+  if(t){ t.status=status; if(state.route==='Tasks') renderBoard(); }   // optimistic
+  try{ await J('/v1/tasks/'+id,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({status})}); }catch(_){}
+  await loadTasks(); if(state.route==='Tasks') renderBoard();
+}
+document.addEventListener('pointerdown', boardPointerDown);   // inert unless the press lands on a card
 
 // ---- detail panel + audit ----
 let panelId=null;
@@ -1355,7 +1412,7 @@ function renderTaskReceipt(r){
 function recheckReceipt(){ if(_rcptTask) openTaskReceipt(_rcptTask); }
 function paletteCommands(){
   const g='Go to', a='Actions', s='Settings', cmds=[];
-  VIEWS.forEach(v=>cmds.push({group:g, t:v, ic:ICONS[v], run:()=>go(v)}));
+  ALL_VIEWS.forEach(v=>cmds.push({group:g, t:v, ic:ICONS[v], run:()=>go(v)}));
   cmds.push({group:a, t:'New task', sub:'create a task', run:()=>{ go('Tasks'); setTimeout(()=>document.getElementById('composer')?.focus(),60); }});
   cmds.push({group:a, t:'Ask Engram', sub:'open chat', ic:ICONS.Chat, run:()=>go('Chat')});
   cmds.push({group:a, t:'Verify ledger', sub:'re-check the signed chain', run:verifyLedgerNow});
@@ -1529,7 +1586,7 @@ async function boot(){
   await loadTasks(); lastTasksSig=JSON.stringify(state.tasks);
   // Deep link via #hash, else the front door is the Console (chat).
   const hv=location.hash.slice(1);
-  state.route = VIEWS.includes(hv) ? hv : 'Chat';
+  state.route = ALL_VIEWS.includes(hv) ? hv : 'Chat';
   document.getElementById('viewname').textContent=state.route; renderNav(); renderView();
   poll(); connectEvents();
   // Chips poll + a slow board fallback if SSE is unavailable.

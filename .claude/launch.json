@@ -1,0 +1,1 @@
+{ "version":"0.0.1", "configurations":[ { "name":"engram-term", "runtimeExecutable":"/private/tmp/claude-501/-Users-radotsvetkov-Desktop-HYT-aut-agent/a5121152-07f5-4f8c-80a1-c738576592d0/scratchpad/term_daemon.sh", "runtimeArgs":[], "port":8123 } ] }

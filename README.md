@@ -43,7 +43,7 @@ Engram is a Rust workspace of small, single-purpose crates. Capability comes fro
 
 **`crates/engram-sched` — the scheduler.** Deterministic natural-language → recurrence parsing ("every weekday at 9am") with no model call, persisted jobs that reschedule forward across sleep with skip-on-missed so a suspended VPS does not stampede on wake, and generators for the systemd socket-activation and wake-timer units that make zero-idle and scheduled wake real on a $5 VPS. Every change is recorded in the audit ledger.
 
-**`crates/engram-agent` — the tool-use loop.** This is where the model stops talking and starts *doing*. The agent advertises its tools to the model, runs the calls the model makes, feeds each observation back, and repeats until the model answers with no further tool call (or a step budget is hit). It is exposed at **`POST /v1/agent`** and driven from the dashboard's **Agent** panel; the same loop runs behind every messaging channel. Every step is ledgered, so a run is a replayable trace, not a black box.
+**`crates/engram-agent` — the tool-use loop.** This is where the model stops talking and starts *doing*. The agent advertises its tools to the model, runs the calls the model makes, feeds each observation back, and repeats until the model answers with no further tool call (or a step budget is hit). It is exposed at **`POST /v1/agent`** and driven from the dashboard's **Agent** panel; the same loop runs behind every messaging channel. Every step is ledgered, so a run is a replayable trace, not a black box. The loop is frontier-grade: a turn's independent tool calls run **in parallel**, model calls **retry with backoff**, the transcript is **compacted** (older turns summarized) so long runs don't overflow the context window, the agent maintains an explicit **plan** (`update_plan`, shown as a live checklist) and runs a **verify-before-finish reflection** pass — all while the no-egress taint gate holds. With a native Anthropic key it adds **prompt caching** of the tools+system prefix and **token streaming**.
 
 The built-in tools are deliberately small and auditable:
 
@@ -80,7 +80,7 @@ The dashboard is now a redesigned single-page **control center** — one self-co
 
 The desktop sits on a small task model (`crates/engramd/src/tasks.rs`): a `Task` moves `todo → doing → done | failed | scheduled`, and a completed run carries a `TaskRun` receipt — the answer, every step verbatim, token and cost deltas, and the signed ledger head pinned at finish. The native [Tauri shell](#desktop-app) wraps exactly this page in a window.
 
-The control center is driven by these endpoints, alongside the existing `/v1/agent`, `/v1/converse`, `/v1/swarm`, `/v1/skills`, `/v1/remember` · `/v1/recall` · `/v1/forget`, `/v1/memory/stats`, `/v1/meter`, `/v1/ledger/tail` · `/v1/ledger/verify`, and `/v1/schedule`:
+The control center is driven by these endpoints, alongside the existing `/v1/agent`, `/v1/converse` (and `/v1/converse/stream` for token-by-token replies), `/v1/swarm`, `/v1/skills`, `/v1/remember` · `/v1/recall` · `/v1/forget`, `/v1/memory/stats`, `/v1/meter`, `/v1/ledger/tail` · `/v1/ledger/verify`, and `/v1/schedule`:
 
 | Endpoint | Method | Purpose |
 |---|---|---|
@@ -186,6 +186,7 @@ It is configured by environment variables:
 | `ENGRAM_ADDR` | `127.0.0.1:8088` | Address the HTTP API and dashboard bind to. |
 | `ENGRAM_IDLE_SECS` | `900` | Idle window, in seconds, before the core sleeps to zero. |
 | `ENGRAM_EMBED` | _(unset)_ | Set to `gateway` to embed memory through the gateway model instead of the offline trigram embedder (switching needs a fresh `ENGRAM_HOME`). |
+| `ENGRAM_ANTHROPIC_API_KEY` | _(unset)_ | When set (with `--features http`), uses the native Anthropic provider — the Messages API with **prompt caching** of the tools+system prefix and token streaming. Takes priority over the OpenAI-compatible path; `ENGRAM_LLM_BASE_URL` optionally overrides the host. |
 | `ENGRAM_LLM_BASE_URL` | _(unset)_ | OpenAI-compatible base URL for a real provider (requires building with `--features http`). |
 | `ENGRAM_LLM_API_KEY` | _(unset)_ | API key for that provider. With both set, the gateway uses the real model for completions and embeddings; otherwise an offline mock. |
 | `ENGRAM_MODEL` | `claude-haiku` | Model id the agent uses for the tool-use loop and delegated subagents. |

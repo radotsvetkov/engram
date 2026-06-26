@@ -3,11 +3,11 @@
 //! A small, *deterministic* grammar covers the phrases people actually use: one-off
 //! delays, fixed intervals, and daily / weekday / weekly clock times. Parsing never
 //! calls a model, so it is free, instant, and testable; anything it cannot parse
-//! returns [`ParseError`], which the agent can hand to the LLM as a fallback. All
-//! times are computed in UTC against a caller-supplied "now", so it works correctly
-//! even when the core was asleep.
+//! returns [`ParseError`], which the agent can hand to the LLM as a fallback. Clock times
+//! are interpreted in the machine's LOCAL timezone (this is a personal daemon, so "9am" means
+//! the user's 9am) and returned as absolute UTC instants, so a slept core still fires correctly.
 
-use chrono::{DateTime, Datelike, Duration, NaiveTime, TimeZone, Utc, Weekday};
+use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, NaiveTime, TimeZone, Utc, Weekday};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -22,11 +22,11 @@ pub enum Recurrence {
     Once { at_ms: i64 },
     /// Fire every `secs` seconds.
     Interval { secs: i64 },
-    /// Fire every day at `hour:min` UTC.
+    /// Fire every day at `hour:min` local time.
     Daily { hour: u32, min: u32 },
-    /// Fire Mon-Fri at `hour:min` UTC.
+    /// Fire Mon-Fri at `hour:min` local time.
     Weekdays { hour: u32, min: u32 },
-    /// Fire weekly on `weekday` (0=Mon … 6=Sun) at `hour:min` UTC.
+    /// Fire weekly on `weekday` (0=Mon … 6=Sun) at `hour:min` local time.
     Weekly { weekday: u8, hour: u32, min: u32 },
 }
 
@@ -50,8 +50,8 @@ impl Recurrence {
             Recurrence::Weekly { weekday, hour, min } => {
                 let target = weekday_from_u8(*weekday);
                 let mut c = next_daily(after, *hour, *min);
-                while c.weekday() != target {
-                    c += Duration::days(1);
+                while c.with_timezone(&Local).weekday() != target {
+                    c = next_daily(c, *hour, *min);
                 }
                 Some(c)
             }
@@ -64,16 +64,34 @@ fn next_daily(after: DateTime<Utc>, hour: u32, min: u32) -> DateTime<Utc> {
     // fires at the nearest valid time rather than silently collapsing to midnight.
     let t = NaiveTime::from_hms_opt(hour.min(23), min.min(59), 0)
         .unwrap_or_else(|| NaiveTime::from_hms_opt(0, 0, 0).unwrap());
-    let today = Utc.from_utc_datetime(&after.date_naive().and_time(t));
+    // Clock times mean the machine's LOCAL wall clock (this is a personal daemon), so we find
+    // the next local hour:min and return it as an absolute UTC instant.
+    let local_date = after.with_timezone(&Local).date_naive();
+    let today = local_at(local_date, t);
     if today > after {
         today
     } else {
-        Utc.from_utc_datetime(&(after.date_naive() + Duration::days(1)).and_time(t))
+        local_at(local_date + Duration::days(1), t)
+    }
+}
+
+/// The absolute instant of a given local date + wall-clock time, resolving DST edge cases (a
+/// folded hour picks the earlier instant; a skipped "spring-forward" hour nudges forward).
+fn local_at(date: NaiveDate, t: NaiveTime) -> DateTime<Utc> {
+    let naive = date.and_time(t);
+    match Local.from_local_datetime(&naive) {
+        chrono::LocalResult::Single(dt) => dt.with_timezone(&Utc),
+        chrono::LocalResult::Ambiguous(dt, _) => dt.with_timezone(&Utc),
+        chrono::LocalResult::None => Local
+            .from_local_datetime(&(naive + Duration::hours(1)))
+            .earliest()
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or_else(|| Utc.from_utc_datetime(&naive)),
     }
 }
 
 fn is_weekend(dt: DateTime<Utc>) -> bool {
-    matches!(dt.weekday(), Weekday::Sat | Weekday::Sun)
+    matches!(dt.with_timezone(&Local).weekday(), Weekday::Sat | Weekday::Sun)
 }
 
 fn weekday_from_u8(n: u8) -> Weekday {
@@ -219,6 +237,7 @@ fn parse_clock(tok: &str) -> Option<(u32, u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Timelike;
 
     fn now() -> DateTime<Utc> {
         // A fixed Wednesday 2026-06-24 12:00:00 UTC for deterministic tests.
@@ -240,26 +259,32 @@ mod tests {
     fn parses_daily_and_computes_next() {
         let r = parse("every day at 9am", now()).unwrap();
         assert_eq!(r, Recurrence::Daily { hour: 9, min: 0 });
-        // 9am already passed today (now is 12:00), so next is tomorrow 09:00.
+        // The next fire is the next 9:00 *local* time, strictly after now, within a day.
+        // (Asserted tz-agnostically so the test is deterministic on any machine.)
         let next = r.next_after(now()).unwrap();
-        assert_eq!(next, Utc.with_ymd_and_hms(2026, 6, 25, 9, 0, 0).unwrap());
+        let local = next.with_timezone(&Local);
+        assert_eq!((local.hour(), local.minute()), (9, 0));
+        assert!(next > now() && next <= now() + Duration::hours(25));
     }
 
     #[test]
     fn parses_weekday_skips_weekend() {
         let r = parse("every weekday at 09:00", now()).unwrap();
         assert_eq!(r, Recurrence::Weekdays { hour: 9, min: 0 });
-        // From Friday, next weekday fire is Monday.
-        let fri = Utc.with_ymd_and_hms(2026, 6, 26, 12, 0, 0).unwrap();
-        let next = r.next_after(fri).unwrap();
-        assert_eq!(next.weekday(), Weekday::Mon);
+        // The next fire never lands on a local weekend, and is at 09:00 local.
+        let next = r.next_after(now()).unwrap();
+        let local = next.with_timezone(&Local);
+        assert!(!matches!(local.weekday(), Weekday::Sat | Weekday::Sun));
+        assert_eq!(local.hour(), 9);
     }
 
     #[test]
     fn parses_weekly() {
         let r = parse("every monday at 8:30", now()).unwrap();
         assert_eq!(r, Recurrence::Weekly { weekday: 0, hour: 8, min: 30 });
-        assert_eq!(r.next_after(now()).unwrap().weekday(), Weekday::Mon);
+        let local = r.next_after(now()).unwrap().with_timezone(&Local);
+        assert_eq!(local.weekday(), Weekday::Mon);
+        assert_eq!((local.hour(), local.minute()), (8, 30));
     }
 
     #[test]

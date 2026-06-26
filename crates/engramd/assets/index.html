@@ -2477,9 +2477,8 @@ const CAD_GLYPH = {
 const CAD_DOW = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];   // recur.rs: 0=Mon … 6=Sun
 function cadHM(h, m){
   h = (h|0); m = (m|0);
-  // Recurrence times are stored in UTC (recur.rs); convert to the user's local wall-clock so the
-  // badge matches when the job actually fires (a UTC-5 user's 'UTC 09:00' job shows as 4:00 AM).
-  const d = new Date(); d.setUTCHours(h, m, 0, 0); h = d.getHours(); m = d.getMinutes();
+  // hour/min are the user's local wall-clock now (recur.rs schedules in local time), so the
+  // badge shows exactly what was typed: '5pm' → '5:00 PM' and it fires at 5pm local.
   const ap = h < 12 ? 'AM' : 'PM';
   let hr = h % 12; if(hr === 0) hr = 12;
   return m ? `${hr}:${String(m).padStart(2,'0')} ${ap}` : `${hr}:00 ${ap}`;

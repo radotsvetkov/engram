@@ -9,7 +9,9 @@ description = "Engram scheduler: deterministic natural-language recurrence and u
 
 [dependencies]
 engram-core = { path = "../engram-core" }
-chrono = { version = "0.4", default-features = false, features = ["std", "serde", "alloc"] }
+# `clock` gives chrono::Local so recurrences resolve in the user's timezone. engramd already
+# enables it, so feature-unification means this adds nothing to the final binary.
+chrono = { version = "0.4", default-features = false, features = ["std", "serde", "alloc", "clock"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

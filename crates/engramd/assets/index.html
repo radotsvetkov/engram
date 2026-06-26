@@ -302,7 +302,8 @@ async function openTask(id){
     html+=`<div class="muted" style="font-size:11px;margin-top:12px;font-family:var(--mono)">head ${t.run.ledger_head_hash.slice(0,12)}</div>`;
   } else if(t.status==='doing'){ html+=`<div class="muted">${esc(t.progress||'running…')}</div>`; }
   html+=`<div id="schedbox" style="margin-top:14px"><div class="muted" style="font-size:11px;margin-bottom:4px">repeat this task</div>
-    <div class="row"><input id="pwhen" placeholder="every weekday at 9am"><button onclick="scheduleTask('${id}',${JSON.stringify(t.title)})">Schedule</button></div></div>`;
+    <div class="row"><input id="pwhen" placeholder="every weekday at 9am" oninput="schedPreview('pwhen','pwhenprev')"><button onclick="scheduleTask('${id}',${JSON.stringify(t.title)})">Schedule</button></div>
+    <div id="pwhenprev" class="sub"></div></div>`;
   html+=`<div class="row" style="margin-top:14px"><button onclick="delTask('${id}')" style="background:var(--surface-2);color:var(--danger)">Delete</button></div>`;
   body.innerHTML=html;
 }
@@ -313,6 +314,17 @@ async function scheduleTask(id, title){
   box.innerHTML = r.error
     ? `<div class="sub" style="color:var(--danger)">${esc(r.error)}</div>`
     : `<div class="sub" style="color:var(--accent)">⟳ scheduled · next ${new Date(r.next_fire_ms).toLocaleString()}</div>`;
+}
+let previewTimer=null;
+function schedPreview(inputId,outId){
+  clearTimeout(previewTimer);
+  previewTimer=setTimeout(async()=>{
+    const el=document.getElementById(inputId), out=document.getElementById(outId); if(!el||!out) return;
+    const when=el.value.trim(); if(!when){ out.textContent=''; return; }
+    const r=await J('/v1/schedule/preview?when='+encodeURIComponent(when));
+    out.textContent = r.ok&&r.next_fire_ms ? ('next: '+new Date(r.next_fire_ms).toLocaleString()) : (when?'not a time I understand':'');
+    out.style.color = r.ok ? 'var(--accent)' : 'var(--text-muted)';
+  },250);
 }
 function closePanel(){ panelId=null; document.getElementById('panel').classList.remove('open'); }
 async function delTask(id){ await fetch('/v1/tasks/'+id,{method:'DELETE'}); closePanel(); await loadTasks(); renderBoard(); }
@@ -345,7 +357,8 @@ async function renderSchedule(){
   const jobs = await J('/v1/schedule');
   document.getElementById('view').innerHTML = `<div class="panes"><div class="pane">
     <h2>Schedule a recurring run</h2>
-    <div class="row"><input id="sname" placeholder="name" style="flex:.5"><input id="swhen" placeholder="every Monday at 9am"><button onclick="addJob()">Add</button></div>
+    <div class="row"><input id="sname" placeholder="name" style="flex:.5"><input id="swhen" placeholder="every Monday at 9am" oninput="schedPreview('swhen','swhenprev')"><button onclick="addJob()">Add</button></div>
+    <div id="swhenprev" class="sub" style="margin:-4px 0 8px"></div>
     <div id="jobs">${(jobs||[]).length? jobs.map(j=>`<div class="item">${esc(j.name)}<div class="sub">next ${new Date(j.next_fire_ms).toLocaleString()}</div></div>`).join('') : '<div class="muted">Nothing scheduled. Try “every Monday at 9, summarize my week”.</div>'}</div>
   </div></div>`;
 }

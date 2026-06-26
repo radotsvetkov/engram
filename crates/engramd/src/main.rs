@@ -149,6 +149,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/ledger/tail", get(ledger_tail))
         .route("/v1/ledger/verify", get(ledger_verify))
         .route("/v1/schedule", get(schedule_list).post(schedule_add))
+        .route("/v1/schedule/preview", get(schedule_preview))
         .route("/v1/schedule/{id}", axum::routing::delete(schedule_remove))
         .route("/v1/tasks", get(tasks_list).post(tasks_create))
         .route("/v1/tasks/{id}", axum::routing::patch(tasks_update).delete(tasks_delete))
@@ -627,6 +628,24 @@ struct ScheduleReq {
     when: String,
     #[serde(default)]
     payload: Value,
+}
+
+#[derive(Deserialize)]
+struct PreviewQuery {
+    when: String,
+}
+
+/// Parse a natural-language "when" and show the next fire — without creating a job, so
+/// the UI can preview live as the user types.
+async fn schedule_preview(State(_app): State<App>, Query(q): Query<PreviewQuery>) -> ApiResult {
+    let now = chrono::Utc::now();
+    match engram_sched::parse(&q.when, now) {
+        Ok(rec) => Ok(Json(json!({
+            "ok": true,
+            "next_fire_ms": rec.next_after(now).map(|t| t.timestamp_millis()),
+        }))),
+        Err(e) => Ok(Json(json!({ "ok": false, "error": e.to_string() }))),
+    }
 }
 
 async fn schedule_add(State(app): State<App>, Json(r): Json<ScheduleReq>) -> ApiResult {

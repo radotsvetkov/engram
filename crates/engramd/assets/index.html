@@ -3285,8 +3285,18 @@ function engramNotifyDesktop(title, body){
   try{ new Notification(title||'Engram', {body:body||''}); return true; }catch(_){ return false; }
 }
 
-// Start the app — runs last so every feature module above is fully initialized first.
-boot();
+// Start the app — runs last so every feature module above is fully initialized first. Wrapped so
+// a startup error surfaces a readable message instead of a silent blank window.
+try { boot(); }
+catch(e){
+  console.error('boot failed', e);
+  document.body.innerHTML = '<div style="padding:48px;max-width:560px;margin:8vh auto;font:14px/1.6 -apple-system,system-ui,sans-serif;color:#c8ccd2">'
+    + '<div style="font-size:17px;font-weight:600;margin-bottom:10px;color:#fff">Engram couldn’t start</div>'
+    + '<div style="color:#8a9099">A startup error occurred. Details:</div>'
+    + '<pre style="white-space:pre-wrap;background:#181b1f;border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:12px;margin-top:10px;font:12px ui-monospace,monospace;color:#e2675f">'
+    + String((e&&e.stack)||e).replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]))
+    + '</pre></div>';
+}
 </script>
 </body>
 </html>

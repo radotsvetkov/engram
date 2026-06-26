@@ -184,9 +184,9 @@ cargo test --workspace
 
 ## Settings
 
-The desktop app has a **Settings** panel (the gear in the sidebar) for the things you change most: the model and provider (Anthropic, any OpenAI-compatible endpoint, OpenRouter, or a local Ollama), the embeddings mode, the security gates (API token, channel secret, shell access), the per-task token budget, and the MCP servers. There is a **Test connection** button so you can check a key and model before saving.
+The desktop app has a **Settings** panel (the gear in the sidebar) for the things you change most: the model and provider (Anthropic, any OpenAI-compatible endpoint, OpenRouter, or a local Ollama), the embeddings mode, the security gates (API token, channel secret, shell access), the per-task token budget, the MCP servers, and the persona (your `SOUL.md`). There is a **Test connection** button so you can check a key and model before saving.
 
-Settings are stored in `<ENGRAM_HOME>/config.json` (written `0600`, since it holds keys). Changing the model or a security gate takes effect immediately, with no restart, the provider is hot-swapped under the running daemon; the embeddings mode and MCP list are wired at startup, so those apply on the next wake. When there is no `config.json` yet, the daemon reads its settings from the environment below, so an existing env-configured deployment keeps working and shows its current state in the panel until you first save.
+Settings are stored in `<ENGRAM_HOME>/config.json` (written `0600`, since it holds keys). Almost everything applies immediately, with no restart: the model and provider are hot-swapped under the running daemon, the security gates and cost cap are read live, the persona shapes the very next run, and editing the MCP list reconnects the servers on the spot. The one exception is the embeddings mode, which is wired once at boot, so the panel offers a **Restart daemon** button for it (the desktop shell brings the daemon straight back). When there is no `config.json` yet, the daemon reads its settings from the environment below, so an existing env-configured deployment keeps working and shows its current state in the panel until you first save.
 
 Everything is also configurable by environment variable, which is convenient for headless or scripted deployments:
 

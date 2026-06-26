@@ -159,6 +159,9 @@
     background-repeat:no-repeat; background-position:right 10px center; }
   .field select option { background:var(--surface-1); color:var(--text-primary); }
   .field input:focus,.field select:focus { border-color:var(--accent); }
+  .field textarea { width:100%; background-color:var(--surface-0); color:var(--text-primary); border:1px solid var(--border-strong);
+    border-radius:8px; padding:9px 11px; outline:none; resize:vertical; font:13px/1.55 var(--sans); transition:border-color .15s; }
+  .field textarea:focus { border-color:var(--accent); }
   .field .hint { font-size:11px; color:var(--text-muted); margin-top:5px; }
   .field .hint a { color:var(--text-secondary); }
   .row2 { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
@@ -215,9 +218,12 @@
 <script>
 // When the daemon is deployed with ENGRAM_API_TOKEN, it injects the token here so the
 // first-party dashboard authenticates; locally it's empty and everything is open.
-const TOKEN = window.__ENGRAM_TOKEN || '';
-const AUTH = TOKEN ? {Authorization:'Bearer '+TOKEN} : {};
+let TOKEN = window.__ENGRAM_TOKEN || '';
+let AUTH = TOKEN ? {Authorization:'Bearer '+TOKEN} : {};
 const tok = u => TOKEN ? (u + (u.includes('?')?'&':'?') + 'token=' + encodeURIComponent(TOKEN)) : u;
+// Keep this session authenticated after the API token is changed live from Settings, so the
+// operator who just set it isn't locked out of their own dashboard until a reload.
+function setClientToken(t){ TOKEN=t||''; AUTH = TOKEN ? {Authorization:'Bearer '+TOKEN} : {}; }
 const J = async (u,o={}) => {
   let r;
   try { r = await fetch(u,{...o, headers:{...AUTH, ...(o.headers||{})}}); }
@@ -226,6 +232,9 @@ const J = async (u,o={}) => {
   return r.json();
 };
 const esc = s => String(s??'').replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+// For values placed inside a double-quoted HTML attribute, quotes must be escaped too, or a
+// stored config value (an MCP name, a model id) could break out of the attribute.
+const escAttr = s => String(s??'').replace(/[<>&"']/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]));
 // Non-clobbering toast for action failures (keeps the persistent tamper/offline banner).
 function notify(msg, kind){
   let t=document.getElementById('toast');
@@ -604,16 +613,17 @@ const gv = id => (document.getElementById(id)?.value ?? '').toString().trim();
 async function renderSettings(){
   const v=document.getElementById('view');
   v.innerHTML='<div class="settings"><div class="empty">Loading settings…</div></div>';
-  try { CFG = await J('/v1/config'); }
+  let persona='';
+  try { const [c,p] = await Promise.all([J('/v1/config'), J('/v1/persona')]); CFG=c; persona=p.persona||''; }
   catch(e){ v.innerHTML='<div class="settings"><div class="offline">Couldn’t load settings — '+esc(e.message)+'</div></div>'; return; }
-  v.innerHTML=settingsHtml(CFG);
+  v.innerHTML=settingsHtml(CFG, persona);
   renderMcpRows(CFG.mcp||[]);
   wireProviderKind();
 }
 
-function settingsHtml(c){
+function settingsHtml(c, persona){
   const p=c.provider, kinds=Object.keys(PROVIDERS);
-  const opt=(val,sel,label)=>`<option value="${esc(val)}"${val===sel?' selected':''}>${esc(label)}</option>`;
+  const opt=(val,sel,label)=>`<option value="${escAttr(val)}"${val===sel?' selected':''}>${esc(label)}</option>`;
   const noteHttp = c.http_enabled ? '' : '<div class="offline">This build has no network providers compiled in — only the offline mock works. Rebuild with <code>--features http</code> for real models.</div>';
   return `<div class="settings">
     <h2>Settings</h2>
@@ -626,10 +636,10 @@ function settingsHtml(c){
         <select id="pkind">${kinds.map(k=>opt(k,p.kind,PROVIDERS[k].label)).join('')}</select></div>
       <div class="row2">
         <div class="field"><label>Model</label>
-          <input type="text" id="pmodel" list="modellist" value="${esc(p.model)}" placeholder="model id" autocomplete="off">
+          <input type="text" id="pmodel" list="modellist" value="${escAttr(p.model)}" placeholder="model id" autocomplete="off">
           <datalist id="modellist"></datalist></div>
         <div class="field"><label>Base URL</label>
-          <input type="text" id="pbase" value="${esc(p.base_url)}" placeholder="default" autocomplete="off"></div>
+          <input type="text" id="pbase" value="${escAttr(p.base_url)}" placeholder="default" autocomplete="off"></div>
       </div>
       <div class="field" id="keyField"><label>API key ${p.api_key_set?'<span class="badge set">saved</span>':''}</label>
         <input type="password" id="pkey" placeholder="${p.api_key_set?'•••••••• — blank keeps the saved key':''}" autocomplete="off">
@@ -650,9 +660,9 @@ function settingsHtml(c){
         <div class="field"><label>Mode</label>
           <select id="ekind">${['trigram','static','gateway'].map(k=>opt(k,c.embed.kind,k)).join('')}</select></div>
         <div class="field"><label>Static model directory</label>
-          <input type="text" id="edir" value="${esc(c.embed.model_dir)}" placeholder="(home)/embedder" autocomplete="off"></div>
+          <input type="text" id="edir" value="${escAttr(c.embed.model_dir)}" placeholder="(home)/embedder" autocomplete="off"></div>
       </div>
-      <div class="sactions"><span class="grow"></span><button class="sbtn primary" onclick="saveSettings()">Save</button></div>
+      <div class="sactions"><button class="sbtn" onclick="restartDaemon()">Restart daemon</button><span class="grow"></span><button class="sbtn primary" onclick="saveSettings()">Save</button></div>
     </div>
 
     <div class="scard">
@@ -679,8 +689,15 @@ function settingsHtml(c){
     </div>
 
     <div class="scard">
-      <h3>MCP servers <span class="badge restart">restart to apply</span></h3>
-      <div class="desc">External tool servers (Model Context Protocol). Each is launched as a subprocess and its tools become available to the agent.</div>
+      <h3>Persona <span class="badge set">live</span></h3>
+      <div class="desc">Standing instructions prepended to every agent run — your <code>SOUL.md</code>. Set the voice, priorities, and rules Engram should always follow. Saved changes shape the very next run.</div>
+      <div class="field"><textarea id="persona" rows="6" placeholder="e.g. You are concise and precise. Prefer primary sources. Never guess — say so when you’re unsure.">${esc(persona||'')}</textarea></div>
+      <div class="sactions"><span class="grow"></span><button class="sbtn primary" onclick="savePersona()">Save persona</button></div>
+    </div>
+
+    <div class="scard">
+      <h3>MCP servers <span class="badge set">live</span></h3>
+      <div class="desc">External tool servers (Model Context Protocol). Each is launched as a subprocess and its tools become available to the agent. Saving reconnects them immediately.</div>
       <div id="mcplist"></div>
       <div class="sactions"><button class="sbtn" onclick="addMcpRow()">+ Add server</button><span class="grow"></span><button class="sbtn primary" onclick="saveSettings()">Save</button></div>
     </div>
@@ -690,9 +707,9 @@ function settingsHtml(c){
 function mcpRowHtml(s){
   s=s||{name:'',command:'',args:[]};
   return `<div class="mcprow">
-    <input placeholder="name" value="${esc(s.name)}">
-    <input placeholder="command (e.g. npx)" value="${esc(s.command)}">
-    <input placeholder="args (space-separated)" value="${esc((s.args||[]).join(' '))}">
+    <input placeholder="name" value="${escAttr(s.name)}">
+    <input placeholder="command (e.g. npx)" value="${escAttr(s.command)}">
+    <input placeholder="args (space-separated)" value="${escAttr((s.args||[]).join(' '))}">
     <button class="xbtn" title="remove" onclick="this.closest('.mcprow').remove()">×</button>
   </div>`;
 }
@@ -712,7 +729,7 @@ function wireProviderKind(){
     document.getElementById('pbase').placeholder = P.base || 'default';
     document.getElementById('keyHint').textContent = P.needsKey ? ('key format: '+P.keyHint) : 'no API key needed for this backend';
     document.getElementById('keyField').style.opacity = P.needsKey ? '1' : '.55';
-    const dl=document.getElementById('modellist'); if(dl) dl.innerHTML=P.models.map(m=>`<option value="${esc(m)}"></option>`).join('');
+    const dl=document.getElementById('modellist'); if(dl) dl.innerHTML=P.models.map(m=>`<option value="${escAttr(m)}"></option>`).join('');
   };
   sel.addEventListener('change', apply); apply();
 }
@@ -732,9 +749,16 @@ function collectSettings(){
 }
 
 async function saveSettings(){
+  const patch=collectSettings();
   try{
-    const res=await J('/v1/config',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(collectSettings())});
-    notify(res.restart_needed?'Saved — embeddings/MCP changes apply on the next restart':'Saved','ok');
+    const res=await J('/v1/config',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(patch)});
+    // Stay authenticated if the API token was just set/changed, so we don't 401 ourselves.
+    if(patch.security && patch.security.api_token) setClientToken(patch.security.api_token);
+    const mcpShort = typeof res.mcp_requested==='number' && res.mcp_connected<res.mcp_requested;
+    let msg='Saved';
+    if(mcpShort) msg='Saved — only '+res.mcp_connected+' of '+res.mcp_requested+' MCP servers connected';
+    else if(res.restart_needed) msg='Saved — the embeddings change needs a restart';
+    notify(msg, mcpShort?'bad':'ok');
     await renderSettings();
     poll();
   }catch(e){ notify('Save failed — '+e.message); }
@@ -753,8 +777,30 @@ async function testProvider(){
 
 async function clearSecret(section,flag){
   const body={}; body[section]={}; body[section][flag]=true;
-  try{ await J('/v1/config',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}); notify('Removed','ok'); await renderSettings(); poll(); }
+  try{ await J('/v1/config',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+    if(flag==='clear_api_token') setClientToken('');   // the gate is now open again
+    notify('Removed','ok'); await renderSettings(); poll(); }
   catch(e){ notify('Failed — '+e.message); }
+}
+
+async function savePersona(){
+  const el=document.getElementById('persona'); if(!el) return;
+  try{ await J('/v1/persona',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({persona:el.value})});
+    notify('Persona saved — it shapes the next run','ok'); }
+  catch(e){ notify('Save failed — '+e.message); }
+}
+
+let _restarting=false;
+async function restartDaemon(){
+  if(_restarting) return;
+  if(!confirm('Restart Engram now? This applies embeddings changes and leaves it unavailable for a few seconds. Any running task is interrupted.')) return;
+  _restarting=true; notify('Restarting…','ok');
+  try{ await J('/v1/restart',{method:'POST',headers:{'content-type':'application/json'},body:'{}'}); }catch(_){/* the connection drops as it exits — expected */}
+  let n=0; const iv=setInterval(async()=>{
+    n++;
+    try{ const h=await fetch('/health'); if(h.ok){ clearInterval(iv); _restarting=false; notify('Engram is back','ok'); if(state.route==='Settings') renderSettings(); poll(); return; } }catch(_){}
+    if(n>40){ clearInterval(iv); _restarting=false; notify('Engram didn’t come back on its own — relaunch the app or start the daemon.'); }
+  }, 500);
 }
 
 function renderView(){

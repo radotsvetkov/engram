@@ -46,8 +46,12 @@ struct App {
     bus: Bus,
     activity: Activity,
     workdir: std::path::PathBuf,
-    persona: Option<String>,
-    mcp_tools: Vec<Arc<dyn engram_agent::Tool>>,
+    /// Standing instructions (SOUL.md) prepended to every agent run. Behind a lock so the
+    /// Settings panel's persona editor can change them live, no restart.
+    persona: Arc<std::sync::RwLock<Option<String>>>,
+    /// Tools borrowed from connected MCP servers. Behind a lock so editing the MCP list in
+    /// Settings reconnects and swaps them in live.
+    mcp_tools: Arc<std::sync::RwLock<Vec<Arc<dyn engram_agent::Tool>>>>,
     browser: Arc<dyn engram_agent::BrowserSession>,
     tasks: Arc<tasks::TaskStore>,
     /// Runtime-mutable shell consent - toggled by the desktop's approval card.
@@ -224,8 +228,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         bus,
         activity: activity.clone(),
         workdir,
-        persona,
-        mcp_tools,
+        persona: Arc::new(std::sync::RwLock::new(persona)),
+        mcp_tools: Arc::new(std::sync::RwLock::new(mcp_tools)),
         browser: engram_agent::browser_session(),
         tasks: Arc::new(tasks::TaskStore::open(std::path::Path::new(&home))),
         allow_shell: Arc::new(std::sync::atomic::AtomicBool::new(cfg.security.allow_shell)),
@@ -266,6 +270,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/policy", get(policy_get).post(policy_set))
         .route("/v1/config", get(config_get).post(config_set))
         .route("/v1/config/test", post(config_test))
+        .route("/v1/persona", get(persona_get).post(persona_set))
+        .route("/v1/restart", post(restart_handler))
         .route("/v1/halt", post(halt_set))
         .route("/v1/events", get(events))
         .layer(axum::middleware::from_fn_with_state(app.clone(), keep_awake))
@@ -280,7 +286,16 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Fire scheduled jobs while the daemon is awake.
     spawn_scheduler_tick(app.clone());
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    // SO_REUSEADDR so a fresh process can rebind immediately after a restart, even while the
+    // previous one's socket lingers in TIME_WAIT. This keeps the Settings panel's "Restart
+    // daemon" reliable instead of racing the kernel to release the port.
+    let socket = match addr {
+        SocketAddr::V4(_) => tokio::net::TcpSocket::new_v4()?,
+        SocketAddr::V6(_) => tokio::net::TcpSocket::new_v6()?,
+    };
+    socket.set_reuseaddr(true)?;
+    socket.bind(addr)?;
+    let listener = socket.listen(1024)?;
     tracing::info!(version = VERSION, %addr, idle_s = idle.as_secs(), "engram awake - http ready");
 
     axum::serve(listener, router)
@@ -363,11 +378,12 @@ fn ct_eq(a: &str, b: &str) -> bool {
     diff == 0
 }
 
-async fn dashboard() -> Html<String> {
+async fn dashboard(State(app): State<App>) -> Html<String> {
     let html = include_str!("../assets/index.html");
-    // When a token is configured, hand it to the first-party dashboard so its own fetches
-    // authenticate; otherwise serve the page unchanged.
-    let token = std::env::var("ENGRAM_API_TOKEN").unwrap_or_default();
+    // Hand the first-party dashboard the *live* API token (from settings, not just the env)
+    // so its own fetches authenticate - and so setting a token in the panel doesn't lock the
+    // operator out on the next page load.
+    let token = app.cfg().security.api_token.clone();
     if token.is_empty() {
         return Html(html.to_string());
     }
@@ -527,7 +543,7 @@ pub(crate) async fn run_agent_task_cb(
         browser: app.browser.clone(),
     };
     let mut tools = engram_agent::default_tools();
-    for t in &app.mcp_tools {
+    for t in app.mcp_tools.read().expect("mcp lock").iter() {
         tools = tools.with(t.clone());
     }
     // Production runs verify before finishing (one bounded reflection pass), are bounded by
@@ -538,8 +554,9 @@ pub(crate) async fn run_agent_task_cb(
         .reflect(true)
         .token_budget(budget)
         .halt(app.halt.clone());
-    if let Some(p) = &app.persona {
-        agent = agent.persona(p.clone());
+    let persona = app.persona.read().expect("persona lock").clone();
+    if let Some(p) = persona {
+        agent = agent.persona(p);
     }
     if let Some(cb) = on_step {
         agent = agent.on_step(cb);
@@ -1094,17 +1111,31 @@ async fn config_set(State(app): State<App>, Json(patch): Json<Value>) -> ApiResu
     app.allow_shell
         .store(cfg.security.allow_shell, std::sync::atomic::Ordering::Relaxed);
 
-    // These are read once at boot; flag them so the UI can say "restart to apply".
-    let restart_needed = cfg.embed.kind != before.embed.kind
-        || cfg.embed.model_dir != before.embed.model_dir
-        || cfg.mcp != before.mcp;
+    // Reconnect MCP servers live when the list changed (old subprocesses die on drop).
+    // Report how many actually connected so the UI can flag a bad command instead of
+    // silently dropping it.
+    let mut mcp_report: Option<(usize, usize)> = None;
+    if cfg.mcp != before.mcp {
+        let configs: Vec<(String, String, Vec<String>)> =
+            cfg.mcp.iter().map(|m| (m.name.clone(), m.command.clone(), m.args.clone())).collect();
+        let (tools, connected) = engram_agent::connect_servers_reported(&configs).await;
+        tracing::info!(connected = connected.len(), requested = cfg.mcp.len(), tools = tools.len(), "mcp servers reconnected after settings change");
+        mcp_report = Some((connected.len(), cfg.mcp.len()));
+        *app.mcp_tools.write().expect("mcp lock") = tools;
+    }
 
+    // Only the embedder is wired once at boot; flag a change so the UI can offer a restart.
+    let restart_needed =
+        cfg.embed.kind != before.embed.kind || cfg.embed.model_dir != before.embed.model_dir;
+
+    // Capture before the move so the ledger entry doesn't re-lock the config we just took.
+    let (provider_kind, model) = (cfg.provider.kind.clone(), cfg.model());
     *app.config.write().expect("config lock") = cfg;
     app.ledger
         .append(
             "config.update",
             "user",
-            json!({ "provider": app.cfg().provider.kind, "model": app.model(), "restart_needed": restart_needed }),
+            json!({ "provider": provider_kind, "model": model, "restart_needed": restart_needed }),
         )
         .ok();
 
@@ -1112,6 +1143,10 @@ async fn config_set(State(app): State<App>, Json(patch): Json<Value>) -> ApiResu
     v["provider_id"] = json!(app.gateway.provider_id());
     v["model_in_use"] = json!(app.model());
     v["restart_needed"] = json!(restart_needed);
+    if let Some((connected, requested)) = mcp_report {
+        v["mcp_connected"] = json!(connected);
+        v["mcp_requested"] = json!(requested);
+    }
     Ok(Json(v))
 }
 
@@ -1205,6 +1240,51 @@ fn apply_config_patch(cfg: &mut config::Config, p: &Value) {
             .filter(|m| !m.name.is_empty() && !m.command.is_empty())
             .collect();
     }
+}
+
+/// The persona (SOUL.md) - the standing instructions prepended to every agent run.
+async fn persona_get(State(app): State<App>) -> ApiResult {
+    let text = app.persona.read().expect("persona lock").clone().unwrap_or_default();
+    Ok(Json(json!({ "persona": text })))
+}
+
+/// Save the persona. Writes `<home>/SOUL.md` (or removes it when cleared) and updates the
+/// live value, so it shapes the very next run without a restart.
+async fn persona_set(State(app): State<App>, Json(body): Json<Value>) -> ApiResult {
+    let text = body.get("persona").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    let path = std::path::Path::new(&app.home).join("SOUL.md");
+    if text.is_empty() {
+        let _ = std::fs::remove_file(&path);
+        *app.persona.write().expect("persona lock") = None;
+    } else {
+        std::fs::write(&path, &text).map_err(|e| err(format!("could not save persona: {e}")))?;
+        *app.persona.write().expect("persona lock") = Some(text.clone());
+    }
+    app.ledger.append("persona.set", "user", json!({ "length": text.len() })).ok();
+    Ok(Json(json!({ "ok": true, "length": text.len() })))
+}
+
+/// Restart the daemon to apply settings that are only wired at boot (the embedder). The
+/// process exits cleanly; a supervisor (the desktop shell, or systemd socket activation)
+/// brings it back, and it re-reads `config.json` on the way up. In-flight memory and ledger
+/// writes are durable, so this is safe; any running task is interrupted by design.
+async fn restart_handler(State(app): State<App>) -> ApiResult {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    // One exit is enough. Latch on the first request so a flood of /v1/restart can't spawn a
+    // storm of exit tasks - a cheap brake on restart-as-DoS (the endpoint is also behind the
+    // API-token gate when one is set).
+    static RESTARTING: AtomicBool = AtomicBool::new(false);
+    if RESTARTING.swap(true, Ordering::SeqCst) {
+        return Ok(Json(json!({ "ok": true, "restarting": true, "already": true })));
+    }
+    app.ledger.append("core.restart", "user", json!({})).ok();
+    tokio::spawn(async {
+        // Let the HTTP response flush before we exit.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        tracing::info!("restart requested - exiting to reload boot-time settings");
+        std::process::exit(0);
+    });
+    Ok(Json(json!({ "ok": true, "restarting": true })))
 }
 
 fn init_tracing() {

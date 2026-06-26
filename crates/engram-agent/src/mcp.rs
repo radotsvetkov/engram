@@ -203,11 +203,22 @@ impl Tool for McpTool {
 /// Connect a set of `(name, command, args)` servers and return all their tools. A
 /// server that fails to connect is logged and skipped, never fatal.
 pub async fn connect_servers(configs: &[(String, String, Vec<String>)]) -> Vec<Arc<dyn Tool>> {
+    connect_servers_reported(configs).await.0
+}
+
+/// Like [`connect_servers`], but also returns the names of the servers that connected, so a
+/// caller (the Settings panel) can tell the user which ones failed instead of silently
+/// dropping them.
+pub async fn connect_servers_reported(
+    configs: &[(String, String, Vec<String>)],
+) -> (Vec<Arc<dyn Tool>>, Vec<String>) {
     let mut out: Vec<Arc<dyn Tool>> = Vec::new();
+    let mut connected: Vec<String> = Vec::new();
     for (name, command, args) in configs {
         match McpClient::connect(name, command, args).await {
             Ok((client, specs)) => {
                 tracing::info!(server = %name, tools = specs.len(), "mcp server connected");
+                connected.push(name.clone());
                 for spec in specs {
                     out.push(Arc::new(McpTool::new(client.clone(), spec)));
                 }
@@ -215,7 +226,7 @@ pub async fn connect_servers(configs: &[(String, String, Vec<String>)]) -> Vec<A
             Err(e) => tracing::warn!(server = %name, error = %e, "mcp connect failed"),
         }
     }
-    out
+    (out, connected)
 }
 
 #[cfg(test)]

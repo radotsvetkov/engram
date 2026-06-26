@@ -396,14 +396,30 @@ async function addJob(){ const name=document.getElementById('sname').value.trim(
   if(r.error) alert(r.error); else renderSchedule(); }
 
 // ---- Memory ----
+const REGION_LABEL = { identity:'Identity — who you are', semantic:'Semantic — knowledge',
+  episodic:'Episodic — conversations', procedural:'Skills — how-to' };
 async function renderMemory(){
   const stats = await J('/v1/memory/stats');
+  const regions=['identity','semantic','episodic','procedural'];
+  const maxR=Math.max(1,...regions.map(r=>stats.by_region?.[r]||0));
+  const bars = regions.map(r=>{
+    const n=stats.by_region?.[r]||0;
+    return `<div style="display:flex;align-items:center;gap:10px;margin:5px 0">
+      <span style="width:180px;color:var(--text-secondary)">${REGION_LABEL[r]}</span>
+      <div style="flex:1;height:6px;background:var(--surface-2);border-radius:3px"><div style="height:6px;border-radius:3px;background:var(--accent);width:${100*n/maxR}%"></div></div>
+      <span class="sub" style="width:30px;text-align:right">${n}</span></div>`;
+  }).join('');
+  const tiers=stats.by_tier||{};
   document.getElementById('view').innerHTML = `<div class="panes">
-    <div class="pane"><h2>Memory Atlas — ${stats.total} facts</h2>
+    <div class="pane"><h2>The brain — ${stats.total} memories across its regions</h2>
+      ${bars}
+      <div class="sub" style="margin-top:8px">${(tiers.warm||0)} warm · ${(tiers.cold||0)} cold (consolidated)</div>
+    </div>
+    <div class="pane"><h2>Recall &amp; teach</h2>
       <div class="row"><input id="q" placeholder="recall… try a paraphrase"><button onclick="recall()">Recall</button></div>
       <div class="row"><select id="region"><option>semantic</option><option>identity</option><option>episodic</option><option>procedural</option></select>
         <input id="fact" placeholder="remember a fact…"><button onclick="remember()">Remember</button></div>
-      <div id="hits" class="muted">Engram hasn’t learned anything yet — it will as you talk.</div>
+      <div id="hits" class="muted">${stats.total? 'Search what Engram knows.' : 'Engram hasn’t learned anything yet — it will as you talk.'}</div>
     </div></div>`;
 }
 async function recall(){ const q=document.getElementById('q').value.trim(); if(!q)return;

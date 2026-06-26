@@ -18,10 +18,16 @@ pub struct Turn {
     pub learned: Vec<String>,
 }
 
-pub async fn converse(memory: &Memory, gateway: &Gateway, text: &str, model: &str) -> Result<Turn, String> {
+pub async fn converse(
+    memory: &Memory,
+    gateway: &Gateway,
+    text: &str,
+    model: &str,
+    persona: Option<&str>,
+) -> Result<Turn, String> {
     // The non-streaming path is the streaming one with a sink that discards fragments.
     let mut sink = |_: String| {};
-    converse_stream(memory, gateway, text, model, &mut sink).await
+    converse_stream(memory, gateway, text, model, persona, &mut sink).await
 }
 
 /// Streaming conversation: identical recall / identity-learning / persistence, but the
@@ -32,6 +38,7 @@ pub async fn converse_stream(
     gateway: &Gateway,
     text: &str,
     model: &str,
+    persona: Option<&str>,
     on_delta: &mut (dyn FnMut(String) + Send),
 ) -> Result<Turn, String> {
     // 1. Record the user's message as a lived experience.
@@ -76,6 +83,13 @@ pub async fn converse_stream(
     let mut messages = vec![Message::system(
         "You are Engram, a personal agent that remembers the user and grows with them.",
     )];
+    // The active project's standing instructions, if any - this is what gives each project its
+    // own voice and priorities.
+    if let Some(p) = persona {
+        if !p.trim().is_empty() {
+            messages.push(Message::system(p.to_string()));
+        }
+    }
     if !recalled.is_empty() {
         messages.push(Message::system(format!(
             "What you remember that may be relevant:\n- {}",

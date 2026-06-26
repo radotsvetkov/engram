@@ -913,7 +913,8 @@ struct ConverseReq {
 }
 
 async fn converse_handler(State(app): State<App>, Json(r): Json<ConverseReq>) -> ApiResult {
-    let turn = converse::converse(&app.memory, &app.gateway, &r.text, &app.model())
+    let persona = r.session.as_ref().and_then(|sid| app.workspace.persona_for_session(sid));
+    let turn = converse::converse(&app.memory, &app.gateway, &r.text, &app.model(), persona.as_deref())
         .await
         .map_err(ApiError)?;
     if let Some(sid) = &r.session {
@@ -939,11 +940,12 @@ async fn converse_stream_handler(
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
     tokio::spawn(async move {
         let model = app.model();
+        let persona = r.session.as_ref().and_then(|sid| app.workspace.persona_for_session(sid));
         let txd = tx.clone();
         let mut on_delta = move |frag: String| {
             let _ = txd.send(Event::default().event("token").data(frag));
         };
-        match converse::converse_stream(&app.memory, &app.gateway, &r.text, &model, &mut on_delta).await {
+        match converse::converse_stream(&app.memory, &app.gateway, &r.text, &model, persona.as_deref(), &mut on_delta).await {
             Ok(turn) => {
                 if let Some(sid) = &r.session {
                     app.workspace.append_turn(sid, &r.text, &turn.reply, turn.recalled.clone(), turn.learned.clone());
@@ -1318,8 +1320,12 @@ async fn projects_create(State(app): State<App>, Json(b): Json<Value>) -> ApiRes
     Ok(Json(serde_json::to_value(app.workspace.create_project(name)).map_err(err)?))
 }
 async fn projects_update(State(app): State<App>, Path(id): Path<String>, Json(b): Json<Value>) -> ApiResult {
-    let name = b.get("name").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
-    let p = app.workspace.rename_project(&id, name).ok_or_else(|| ApiError("project not found".into()))?;
+    let name = b.get("name").and_then(|v| v.as_str()).map(|s| s.trim().to_string());
+    let persona = b.get("persona").and_then(|v| v.as_str()).map(str::to_string);
+    let p = app
+        .workspace
+        .update_project(&id, name, persona)
+        .ok_or_else(|| ApiError("project not found".into()))?;
     Ok(Json(serde_json::to_value(p).map_err(err)?))
 }
 async fn projects_delete(State(app): State<App>, Path(id): Path<String>) -> ApiResult {

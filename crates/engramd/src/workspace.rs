@@ -17,6 +17,9 @@ pub struct Project {
     pub id: String,
     pub name: String,
     pub created_ms: u64,
+    /// Standing instructions for this project's chats - what gives a project its own voice.
+    #[serde(default)]
+    pub persona: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,7 +82,7 @@ impl WorkspaceStore {
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
         if data.projects.is_empty() {
-            data.projects.push(Project { id: "personal".into(), name: "Personal".into(), created_ms: now_ms() });
+            data.projects.push(Project { id: "personal".into(), name: "Personal".into(), created_ms: now_ms(), persona: String::new() });
         }
         let store = WorkspaceStore { path, data: Mutex::new(data) };
         store.persist();
@@ -96,16 +99,21 @@ impl WorkspaceStore {
         self.data.lock().expect("ws").projects.clone()
     }
     pub fn create_project(&self, name: String) -> Project {
-        let p = Project { id: new_id("p"), name, created_ms: now_ms() };
+        let p = Project { id: new_id("p"), name, created_ms: now_ms(), persona: String::new() };
         self.data.lock().expect("ws").projects.push(p.clone());
         self.persist();
         p
     }
-    pub fn rename_project(&self, id: &str, name: String) -> Option<Project> {
+    pub fn update_project(&self, id: &str, name: Option<String>, persona: Option<String>) -> Option<Project> {
         let out = {
             let mut d = self.data.lock().expect("ws");
             d.projects.iter_mut().find(|p| p.id == id).map(|p| {
-                p.name = name;
+                if let Some(n) = name {
+                    p.name = n;
+                }
+                if let Some(per) = persona {
+                    p.persona = per;
+                }
                 p.clone()
             })
         };
@@ -113,6 +121,16 @@ impl WorkspaceStore {
             self.persist();
         }
         out
+    }
+    /// The standing-instructions persona for the project that owns a session (if any).
+    pub fn persona_for_session(&self, session_id: &str) -> Option<String> {
+        let d = self.data.lock().expect("ws");
+        let pid = d.sessions.iter().find(|s| s.id == session_id).map(|s| s.project_id.clone())?;
+        d.projects
+            .iter()
+            .find(|p| p.id == pid)
+            .map(|p| p.persona.clone())
+            .filter(|p| !p.trim().is_empty())
     }
     /// Delete a project and its sessions. Refuses to remove the last project.
     pub fn delete_project(&self, id: &str) -> bool {

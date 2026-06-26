@@ -393,6 +393,11 @@
   .receipt .r-foot { display:flex; align-items:center; gap:11px; padding:11px 15px; border-top:1px solid var(--border); background:var(--surface-1); }
   .receipt .r-foot .hint { font:10.5px var(--mono); color:var(--text-muted); margin-left:auto; }
   @media (prefers-reduced-motion: reduce) { .recall, .model-menu, .proj-menu, .pal-box, .statusbar .seal, .receipt, .receipt .r-seal { animation:none !important; } }
+  /* per-project persona editor */
+  .proj-modal { width:min(540px,93vw); margin-top:13vh; background:var(--surface-1); border:1px solid var(--border-strong);
+    border-radius:var(--r-modal); box-shadow:var(--e4); padding:22px 24px 20px; animation:menu-in var(--dur-2) var(--ease-spring); transform-origin:top center; }
+  .proj-modal h2 { font-size:17px; font-weight:600; margin:0 0 4px; }
+  .proj-modal .sub { color:var(--text-muted); font-size:12px; line-height:1.55; margin-bottom:16px; }
 </style>
 </head>
 <body>
@@ -432,6 +437,9 @@
   </div>
 </div>
 <div class="receipt" id="receipt" hidden></div>
+<div class="overlay" id="projModal" hidden onclick="if(event.target===this)closeProjModal()">
+  <div class="proj-modal" id="projModalBody"></div>
+</div>
 <div class="panel" id="panel" role="dialog" aria-modal="true" aria-labelledby="pTitle"><header><span class="pill" id="pStatus"></span><b id="pTitle"></b><button class="x" onclick="closePanel()" aria-label="Close">✕</button></header><div class="body" id="pBody"></div></div>
 
 <script>
@@ -727,7 +735,7 @@ function activeSess(){ return WS.byId[WS.activeSession]||null; }
 async function newSession(open){
   try{ const s=await J('/v1/sessions',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({project_id:WS.activeProject})});
     WS.byId[s.id]=s; WS.sessions.unshift({id:s.id,project_id:s.project_id,title:s.title,fav:s.fav,updated_ms:s.updated_ms,messages:0}); WS.activeSession=s.id; renderSidebar();
-    if(open!==false) go('Chat'); else if(state.route==='Chat') renderChat();
+    if(open!==false) go('Chat');   // when open===false the caller (renderChat) renders, so don't re-enter
     return s;
   }catch(e){ notify('Couldn’t start a chat — '+e.message); return null; }
 }
@@ -757,6 +765,25 @@ async function addProject(){ projMenuOpen=false; const n=prompt('New project nam
   try{ const p=await J('/v1/projects',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name:n.trim()})}); WS.projects.push(p); pickProject(p.id); }
   catch(e){ notify('Couldn’t create project — '+e.message); }
 }
+function openProjPersona(){
+  projMenuOpen=false; renderSidebar();
+  const p=curProject();
+  document.getElementById('projModal').hidden=false;
+  document.getElementById('projModalBody').innerHTML=`
+    <h2>${esc(p.name)} · persona</h2>
+    <div class="sub">Standing instructions for this project's chats — they give the project its own voice. Formal and compliance-aware for a client; casual for personal. Applies to the very next message; other projects are unaffected.</div>
+    <div class="field"><textarea id="projPersona" rows="8" placeholder="e.g. You are formal and precise. Cite sources. Never speculate about regulated data — say when you're unsure.">${esc(p.persona||'')}</textarea></div>
+    <div class="sactions"><button class="sbtn" onclick="closeProjModal()">Cancel</button><span class="grow"></span><button class="sbtn primary" onclick="saveProjPersona()">Save</button></div>`;
+  setTimeout(()=>document.getElementById('projPersona')?.focus(),30);
+}
+function closeProjModal(){ document.getElementById('projModal').hidden=true; }
+async function saveProjPersona(){
+  const p=curProject(), persona=document.getElementById('projPersona').value;
+  try{ const up=await J('/v1/projects/'+encodeURIComponent(p.id),{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({persona})});
+    const i=WS.projects.findIndex(x=>x.id===p.id); if(i>=0) WS.projects[i]=up;
+    closeProjModal(); renderSidebar(); notify('Project persona saved — it shapes the next message','ok'); }
+  catch(e){ notify('Save failed — '+e.message); }
+}
 function renderSidebar(){
   const el=document.getElementById('sidebar'); if(!el) return;
   const proj=curProject(), sess=curSessions(), favs=sess.filter(s=>s.fav), rest=sess.filter(s=>!s.fav);
@@ -765,7 +792,7 @@ function renderSidebar(){
       <button class="${s.fav?'star':''}" title="${s.fav?'Unfavorite':'Favorite'}" onclick="favSession('${s.id}',event)">${s.fav?'★':'☆'}</button>
       <button title="Rename" onclick="renameSession('${s.id}',event)">✎</button>
       <button title="Delete" onclick="deleteSession('${s.id}',event)">✕</button></span></div>`;
-  const menu = projMenuOpen ? `<div class="proj-menu">${WS.projects.map(p=>`<div onclick="pickProject('${p.id}')"><span class="proj-dot"></span>${esc(p.name)}</div>`).join('')}<div class="add" onclick="addProject()">+ New project</div></div>` : '';
+  const menu = projMenuOpen ? `<div class="proj-menu">${WS.projects.map(p=>`<div onclick="pickProject('${p.id}')"><span class="proj-dot"></span>${esc(p.name)}${(p.persona&&p.persona.trim())?'<span style="margin-left:auto;color:var(--text-muted);font:10px var(--mono)">persona</span>':''}</div>`).join('')}<div class="add" onclick="openProjPersona()">✎ Edit “${esc(curProject().name)}” persona</div><div class="add" onclick="addProject()">+ New project</div></div>` : '';
   el.innerHTML = `
     <button class="newchat" onclick="newSession()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg> New chat</button>
     <div class="proj"><button class="proj-btn" onclick="toggleProjMenu()"><span class="proj-dot"></span><span class="proj-name">${esc(proj.name)}</span><span class="proj-caret">⌄</span></button>${menu}</div>
@@ -1304,7 +1331,8 @@ window.addEventListener('keydown', e=>{
     return;
   }
   if(k==='escape' && !document.getElementById('cc').hidden){ e.preventDefault(); closeCC(); return; }
-  if(k==='escape' && !document.getElementById('receipt').hidden){ e.preventDefault(); closeReceipt(); }
+  if(k==='escape' && !document.getElementById('receipt').hidden){ e.preventDefault(); closeReceipt(); return; }
+  if(k==='escape' && !document.getElementById('projModal').hidden){ e.preventDefault(); closeProjModal(); }
 });
 
 function renderView(){

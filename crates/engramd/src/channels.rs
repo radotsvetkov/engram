@@ -22,11 +22,12 @@ pub async fn channel_handler(
     RawQuery(query): RawQuery,
     Json(body): Json<Value>,
 ) -> Response {
-    // Optional shared-secret gate. When ENGRAM_CHANNEL_SECRET is set, an inbound webhook
+    // Optional shared-secret gate. When a channel secret is configured, an inbound webhook
     // must present it (X-Engram-Secret header or ?secret= query) before anything runs - so
     // a publicly-reachable channel endpoint can't be driven by strangers. (Runs are also
     // started Untrusted, so even past this gate they can't shell or exfiltrate.)
-    if let Ok(secret) = std::env::var("ENGRAM_CHANNEL_SECRET") {
+    {
+        let secret = app.cfg().security.channel_secret.clone();
         if !secret.is_empty() {
             let provided = headers
                 .get("x-engram-secret")

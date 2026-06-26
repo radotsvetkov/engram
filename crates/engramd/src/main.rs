@@ -22,6 +22,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 mod channels;
+mod config;
 mod converse;
 mod embedder;
 mod seed;
@@ -29,7 +30,7 @@ mod tasks;
 mod telegram;
 
 use engram_core::{run_until_idle, Activity, Bus, Ledger, Priority, Spike, VERSION};
-use engram_gateway::{Gateway, MockProvider, Provider};
+use engram_gateway::Gateway;
 use engram_memory::{Memory, Region, TrigramHashEmbedder, WriteReq};
 use engram_sched::{parse as parse_schedule, Scheduler};
 use engram_skills::{Registry, RunCtx, SkillHost, SkillSigner};
@@ -53,6 +54,22 @@ struct App {
     allow_shell: Arc<std::sync::atomic::AtomicBool>,
     /// Kill switch: set true to stop in-flight agent runs at their next step boundary.
     halt: Arc<std::sync::atomic::AtomicBool>,
+    /// Live settings (provider, model, security, cost, MCP), editable from the desktop's
+    /// Settings panel and persisted to `config.json`.
+    config: Arc<std::sync::RwLock<config::Config>>,
+    /// Where the daemon's state lives - needed to persist settings changes.
+    home: String,
+}
+
+impl App {
+    /// A read guard over the live settings.
+    fn cfg(&self) -> std::sync::RwLockReadGuard<'_, config::Config> {
+        self.config.read().expect("config lock")
+    }
+    /// The model id to send with requests, from the live settings.
+    fn model(&self) -> String {
+        self.cfg().model()
+    }
 }
 
 /// Uniform error → JSON 500.
@@ -141,21 +158,28 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let ledger = Arc::new(Ledger::open(&home)?);
     // Publish the ledger's public key so anyone can run `engramd verify` offline.
     let _ = std::fs::write(format!("{home}/ledger.pub"), ledger.pubkey_hex());
-    let gateway = Arc::new(Gateway::new(make_provider(), ledger.clone()));
 
-    // Pick the embedder: a real model through the gateway (ENGRAM_EMBED=gateway), or
-    // the dependency-free offline default. The gateway path probes its dimension once.
-    let embedder: Arc<dyn engram_memory::Embedder> = match std::env::var("ENGRAM_EMBED").as_deref() {
-        Ok("gateway") => {
+    // Settings: config.json wins, else seed from the environment (back-compat).
+    let cfg = config::Config::load(&home);
+    tracing::info!(provider = %cfg.provider.kind, model = %cfg.model(), embed = %cfg.embed.kind, "settings loaded");
+    let gateway = Arc::new(Gateway::new(cfg.build_provider(), ledger.clone()));
+
+    // Pick the embedder: a real model through the gateway, the pure-Rust static model, or
+    // the dependency-free trigram default. The gateway path probes its dimension once.
+    let embedder: Arc<dyn engram_memory::Embedder> = match cfg.embed.kind.as_str() {
+        "gateway" => {
             let probe = gateway.embed(&["dimension probe".into()], "init").await?;
             let dim = probe.first().map(|v| v.len()).unwrap_or(256);
             tracing::info!(dim, "using gateway embedder");
             Arc::new(embedder::GatewayEmbedder::new(gateway.clone(), dim))
         }
         // Pure-Rust static model2vec embedder - real synonym recall, no model runtime.
-        Ok("static") => {
-            let model_dir =
-                std::env::var("ENGRAM_STATIC_MODEL").unwrap_or_else(|_| format!("{home}/embedder"));
+        "static" => {
+            let model_dir = if cfg.embed.model_dir.is_empty() {
+                format!("{home}/embedder")
+            } else {
+                cfg.embed.model_dir.clone()
+            };
             match engram_memory::StaticEmbedder::load(&model_dir) {
                 Ok(e) => {
                     tracing::info!(dir = %model_dir, dim = engram_memory::Embedder::dim(&e), "using static model2vec embedder");
@@ -204,10 +228,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         mcp_tools,
         browser: engram_agent::browser_session(),
         tasks: Arc::new(tasks::TaskStore::open(std::path::Path::new(&home))),
-        allow_shell: Arc::new(std::sync::atomic::AtomicBool::new(
-            std::env::var("ENGRAM_TOOLS_SHELL").as_deref() == Ok("1"),
-        )),
+        allow_shell: Arc::new(std::sync::atomic::AtomicBool::new(cfg.security.allow_shell)),
         halt: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        config: Arc::new(std::sync::RwLock::new(cfg)),
+        home: home.clone(),
     };
 
     let router = Router::new()
@@ -240,10 +264,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/tasks/{id}/receipt", get(task_receipt))
         .route("/v1/ledger/pubkey", get(ledger_pubkey))
         .route("/v1/policy", get(policy_get).post(policy_set))
+        .route("/v1/config", get(config_get).post(config_set))
+        .route("/v1/config/test", post(config_test))
         .route("/v1/halt", post(halt_set))
         .route("/v1/events", get(events))
         .layer(axum::middleware::from_fn_with_state(app.clone(), keep_awake))
-        .layer(axum::middleware::from_fn(require_auth))
+        .layer(axum::middleware::from_fn_with_state(app.clone(), require_auth))
         .with_state(app.clone());
 
     // Inbound messaging channel: run as a Telegram bot if a token is configured.
@@ -292,8 +318,12 @@ async fn keep_awake(
 /// deployment - every `/v1` call must present `Authorization: Bearer <token>` (or, for
 /// EventSource/WebSocket which cannot set headers, `?token=<token>`). The dashboard,
 /// health, and inbound webhooks (which carry their own platform auth) stay open.
-async fn require_auth(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
-    let token = std::env::var("ENGRAM_API_TOKEN").unwrap_or_default();
+async fn require_auth(
+    State(app): State<App>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let token = app.cfg().security.api_token.clone();
     if token.is_empty() {
         return next.run(req).await;
     }
@@ -483,7 +513,7 @@ pub(crate) async fn run_agent_task_cb(
         },
         ..Default::default()
     };
-    let model = std::env::var("ENGRAM_MODEL").unwrap_or_else(|_| "claude-haiku".into());
+    let model = app.model();
     let ctx = engram_agent::ToolCtx {
         memory: app.memory.clone(),
         skills: app.registry.clone(),
@@ -502,10 +532,7 @@ pub(crate) async fn run_agent_task_cb(
     }
     // Production runs verify before finishing (one bounded reflection pass), are bounded by
     // a token budget (runaway-cost guard), and honor the kill switch.
-    let budget: u32 = std::env::var("ENGRAM_TASK_TOKEN_BUDGET")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(250_000);
+    let budget: u32 = app.cfg().cost.task_token_budget.try_into().unwrap_or(u32::MAX);
     let mut agent = engram_agent::Agent::new(app.gateway.clone(), tools, model)
         .max_steps(max_steps)
         .reflect(true)
@@ -858,7 +885,7 @@ struct ConverseReq {
 }
 
 async fn converse_handler(State(app): State<App>, Json(r): Json<ConverseReq>) -> ApiResult {
-    let turn = converse::converse(&app.memory, &app.gateway, &r.text)
+    let turn = converse::converse(&app.memory, &app.gateway, &r.text, &app.model())
         .await
         .map_err(ApiError)?;
     Ok(Json(json!({
@@ -880,11 +907,12 @@ async fn converse_stream_handler(
     use axum::response::sse::{Event, KeepAlive, Sse};
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
     tokio::spawn(async move {
+        let model = app.model();
         let txd = tx.clone();
         let mut on_delta = move |frag: String| {
             let _ = txd.send(Event::default().event("token").data(frag));
         };
-        match converse::converse_stream(&app.memory, &app.gateway, &r.text, &mut on_delta).await {
+        match converse::converse_stream(&app.memory, &app.gateway, &r.text, &model, &mut on_delta).await {
             Ok(turn) => {
                 let _ = tx.send(Event::default().event("done").data(
                     json!({ "reply": turn.reply, "recalled": turn.recalled, "learned": turn.learned })
@@ -1040,30 +1068,143 @@ async fn load_mcp(home: &str) -> Vec<Arc<dyn engram_agent::Tool>> {
     engram_agent::connect_servers(&configs).await
 }
 
-/// Choose the model backend. With `--features http` and ENGRAM_LLM_BASE_URL +
-/// ENGRAM_LLM_API_KEY set, use a real OpenAI-compatible provider; otherwise the
-/// offline mock. This is the single switch that turns the agent from offline-demo
-/// into a real, model-backed assistant - for both completions and embeddings.
-fn make_provider() -> Box<dyn Provider> {
-    #[cfg(feature = "http")]
-    {
-        // Native Anthropic provider (prompt-caches the tools+system prefix) takes priority
-        // when an Anthropic key is set; ENGRAM_LLM_BASE_URL optionally overrides the host.
-        if let Ok(key) = std::env::var("ENGRAM_ANTHROPIC_API_KEY") {
-            let base = std::env::var("ENGRAM_LLM_BASE_URL").unwrap_or_default();
-            tracing::info!("using native anthropic provider (prompt caching on)");
-            return Box::new(engram_gateway::AnthropicProvider::new(base, key));
-        }
-        if let (Ok(base), Ok(key)) =
-            (std::env::var("ENGRAM_LLM_BASE_URL"), std::env::var("ENGRAM_LLM_API_KEY"))
-        {
-            let id = std::env::var("ENGRAM_LLM_ID").unwrap_or_else(|_| "openai".into());
-            tracing::info!(%base, "using http LLM provider");
-            return Box::new(engram_gateway::HttpProvider::new(id, base, key));
-        }
-        tracing::warn!("http feature on but no provider key set - using mock");
+// --- Settings (read and edited by the desktop's Settings panel) ---------------------
+
+/// Current settings, with secrets masked and the live provider/model reported.
+async fn config_get(State(app): State<App>) -> ApiResult {
+    let mut v = app.cfg().redacted();
+    v["provider_id"] = json!(app.gateway.provider_id());
+    v["model_in_use"] = json!(app.model());
+    v["http_enabled"] = json!(cfg!(feature = "http"));
+    Ok(Json(v))
+}
+
+/// Save a settings change. Persists `config.json`, then applies what can change live -
+/// the model provider is hot-swapped and shell consent is updated immediately; the
+/// embedder and MCP servers are wired at boot, so those take effect on the next wake.
+async fn config_set(State(app): State<App>, Json(patch): Json<Value>) -> ApiResult {
+    let before = app.cfg().clone();
+    let mut cfg = before.clone();
+    apply_config_patch(&mut cfg, &patch);
+
+    cfg.save(&app.home).map_err(|e| err(format!("could not save settings: {e}")))?;
+
+    // Hot-swap the provider and shell consent.
+    app.gateway.set_provider(Arc::from(cfg.build_provider()));
+    app.allow_shell
+        .store(cfg.security.allow_shell, std::sync::atomic::Ordering::Relaxed);
+
+    // These are read once at boot; flag them so the UI can say "restart to apply".
+    let restart_needed = cfg.embed.kind != before.embed.kind
+        || cfg.embed.model_dir != before.embed.model_dir
+        || cfg.mcp != before.mcp;
+
+    *app.config.write().expect("config lock") = cfg;
+    app.ledger
+        .append(
+            "config.update",
+            "user",
+            json!({ "provider": app.cfg().provider.kind, "model": app.model(), "restart_needed": restart_needed }),
+        )
+        .ok();
+
+    let mut v = app.cfg().redacted();
+    v["provider_id"] = json!(app.gateway.provider_id());
+    v["model_in_use"] = json!(app.model());
+    v["restart_needed"] = json!(restart_needed);
+    Ok(Json(v))
+}
+
+/// Try a one-line completion against the provider described by the posted settings
+/// (merged over the current ones), without saving. Powers the "Test connection" button.
+async fn config_test(State(app): State<App>, Json(patch): Json<Value>) -> ApiResult {
+    let mut cfg = app.cfg().clone();
+    apply_config_patch(&mut cfg, &patch);
+    let provider = cfg.build_provider();
+    let id = provider.id().to_string();
+    let req = engram_gateway::CompletionRequest::new(
+        cfg.model(),
+        vec![engram_gateway::Message::user("Reply with the single word: ok")],
+    )
+    .max_tokens(16);
+    match provider.complete(&req).await {
+        Ok(c) => Ok(Json(json!({
+            "ok": true,
+            "provider": id,
+            "model": c.model,
+            "reply": c.text.chars().take(120).collect::<String>(),
+            "tokens_out": c.tokens_out,
+        }))),
+        Err(e) => Ok(Json(json!({ "ok": false, "provider": id, "error": e.to_string() }))),
     }
-    Box::new(MockProvider)
+}
+
+/// Merge a settings patch (the shape the UI posts) into a config. Secret fields are only
+/// overwritten when a non-empty value is supplied; a `clear_*` flag wipes them.
+fn apply_config_patch(cfg: &mut config::Config, p: &Value) {
+    let s = |v: &Value, k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_string);
+    let flag = |v: &Value, k: &str| v.get(k).and_then(|x| x.as_bool()) == Some(true);
+
+    if let Some(pr) = p.get("provider") {
+        if let Some(x) = s(pr, "kind") {
+            cfg.provider.kind = x;
+        }
+        if let Some(x) = s(pr, "base_url") {
+            cfg.provider.base_url = x;
+        }
+        if let Some(x) = s(pr, "model") {
+            cfg.provider.model = x;
+        }
+        if let Some(x) = s(pr, "api_key") {
+            if !x.is_empty() {
+                cfg.provider.api_key = x;
+            }
+        }
+        if flag(pr, "clear_api_key") {
+            cfg.provider.api_key.clear();
+        }
+    }
+    if let Some(e) = p.get("embed") {
+        if let Some(x) = s(e, "kind") {
+            cfg.embed.kind = x;
+        }
+        if let Some(x) = s(e, "model_dir") {
+            cfg.embed.model_dir = x;
+        }
+    }
+    if let Some(sec) = p.get("security") {
+        if let Some(x) = s(sec, "api_token") {
+            if !x.is_empty() {
+                cfg.security.api_token = x;
+            }
+        }
+        if let Some(x) = s(sec, "channel_secret") {
+            if !x.is_empty() {
+                cfg.security.channel_secret = x;
+            }
+        }
+        if let Some(b) = sec.get("allow_shell").and_then(|v| v.as_bool()) {
+            cfg.security.allow_shell = b;
+        }
+        if flag(sec, "clear_api_token") {
+            cfg.security.api_token.clear();
+        }
+        if flag(sec, "clear_channel_secret") {
+            cfg.security.channel_secret.clear();
+        }
+    }
+    if let Some(c) = p.get("cost") {
+        if let Some(n) = c.get("task_token_budget").and_then(|v| v.as_u64()) {
+            cfg.cost.task_token_budget = n.max(1_000);
+        }
+    }
+    if let Some(arr) = p.get("mcp").and_then(|v| v.as_array()) {
+        cfg.mcp = arr
+            .iter()
+            .filter_map(|m| serde_json::from_value::<config::McpServer>(m.clone()).ok())
+            .filter(|m| !m.name.is_empty() && !m.command.is_empty())
+            .collect();
+    }
 }
 
 fn init_tracing() {

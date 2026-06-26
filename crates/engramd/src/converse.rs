@@ -18,10 +18,10 @@ pub struct Turn {
     pub learned: Vec<String>,
 }
 
-pub async fn converse(memory: &Memory, gateway: &Gateway, text: &str) -> Result<Turn, String> {
+pub async fn converse(memory: &Memory, gateway: &Gateway, text: &str, model: &str) -> Result<Turn, String> {
     // The non-streaming path is the streaming one with a sink that discards fragments.
     let mut sink = |_: String| {};
-    converse_stream(memory, gateway, text, &mut sink).await
+    converse_stream(memory, gateway, text, model, &mut sink).await
 }
 
 /// Streaming conversation: identical recall / identity-learning / persistence, but the
@@ -31,6 +31,7 @@ pub async fn converse_stream(
     memory: &Memory,
     gateway: &Gateway,
     text: &str,
+    model: &str,
     on_delta: &mut (dyn FnMut(String) + Send),
 ) -> Result<Turn, String> {
     // 1. Record the user's message as a lived experience.
@@ -82,8 +83,7 @@ pub async fn converse_stream(
         )));
     }
     messages.push(Message::user(text));
-    let model = std::env::var("ENGRAM_MODEL").unwrap_or_else(|_| "claude-haiku".into());
-    let req = CompletionRequest::new(model, messages);
+    let req = CompletionRequest::new(model.to_string(), messages);
     let completion = gateway
         .complete_stream(Call::new(req).actor("converse").tainted(Taint::Trusted), on_delta)
         .await

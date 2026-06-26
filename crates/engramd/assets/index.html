@@ -141,6 +141,51 @@
   .item { padding:8px 0; border-bottom:1px solid var(--border); }
   .item .sub { font-size:11px; color:var(--text-muted); }
   .muted { color:var(--text-muted); }
+  /* settings */
+  .settings { max-width:780px; margin:0 auto; padding:22px 24px 64px; overflow-y:auto; height:100%; }
+  .settings h2 { font-size:17px; font-weight:600; margin:0 0 4px; }
+  .settings .sub { color:var(--text-muted); font-size:12px; margin-bottom:18px; }
+  .settings code { background:var(--surface-2); padding:1px 5px; border-radius:4px; font:11.5px var(--mono); }
+  .scard { background:var(--surface-1); border:1px solid var(--border); border-radius:12px; padding:16px 18px; margin-bottom:14px; }
+  .scard h3 { font-size:13.5px; font-weight:600; margin:0 0 3px; display:flex; align-items:center; gap:9px; flex-wrap:wrap; }
+  .scard .desc { color:var(--text-muted); font-size:11.5px; line-height:1.5; margin:0 0 14px; }
+  .field { margin-bottom:13px; }
+  .field > label { display:block; font-size:12px; color:var(--text-secondary); margin-bottom:5px; }
+  .field input[type=text],.field input[type=password],.field input[type=number],.field select {
+    width:100%; background-color:var(--surface-0); color:var(--text-primary); border:1px solid var(--border-strong);
+    border-radius:8px; padding:8px 10px; outline:none; transition:border-color .15s; }
+  .field select { appearance:none; -webkit-appearance:none; padding-right:30px; cursor:pointer;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a3a7af' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat:no-repeat; background-position:right 10px center; }
+  .field select option { background:var(--surface-1); color:var(--text-primary); }
+  .field input:focus,.field select:focus { border-color:var(--accent); }
+  .field .hint { font-size:11px; color:var(--text-muted); margin-top:5px; }
+  .field .hint a { color:var(--text-secondary); }
+  .row2 { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  .sactions { display:flex; gap:9px; align-items:center; margin-top:14px; }
+  .sactions .grow { flex:1; }
+  .sbtn { background:var(--surface-2); border:1px solid var(--border-strong); color:var(--text-primary);
+    border-radius:8px; padding:8px 15px; font-size:12.5px; cursor:pointer; transition:.15s; }
+  .sbtn:hover { border-color:var(--accent); }
+  .sbtn.primary { background:var(--accent); color:var(--accent-ink); border-color:var(--accent); font-weight:600; }
+  .sbtn.primary:hover { filter:brightness(1.07); }
+  .sbtn.ghost { background:none; color:var(--text-secondary); }
+  .badge { font-size:10.5px; padding:2px 8px; border-radius:20px; background:var(--surface-2); color:var(--text-muted); border:1px solid var(--border); font-weight:400; }
+  .badge.set { color:var(--accent); border-color:rgba(69,200,168,.32); }
+  .badge.restart { color:var(--warning); border-color:rgba(224,162,60,.32); }
+  .toggle { display:inline-flex; align-items:center; gap:11px; cursor:pointer; font-size:12.5px; color:var(--text-secondary); }
+  .toggle input { display:none; }
+  .toggle .track { width:38px; height:22px; border-radius:20px; background:var(--surface-2); border:1px solid var(--border-strong); position:relative; transition:.15s; flex:none; }
+  .toggle .track::after { content:''; position:absolute; top:2px; left:2px; width:16px; height:16px; border-radius:50%; background:var(--text-secondary); transition:.15s; }
+  .toggle input:checked + .track { background:var(--accent); border-color:var(--accent); }
+  .toggle input:checked + .track::after { transform:translateX(16px); background:var(--accent-ink); }
+  .mcprow { display:grid; grid-template-columns:1fr 1.2fr 1.4fr auto; gap:8px; margin-bottom:8px; align-items:center; }
+  .mcprow input { background:var(--surface-0); border:1px solid var(--border-strong); border-radius:7px; padding:7px 9px; outline:none; }
+  .mcprow input:focus { border-color:var(--accent); }
+  .xbtn { background:none; border:none; color:var(--text-muted); cursor:pointer; font-size:18px; line-height:1; padding:2px 8px; }
+  .xbtn:hover { color:var(--danger); }
+  .testline { font-size:12px; margin-top:10px; min-height:16px; }
+  .testline.ok { color:var(--accent); } .testline.bad { color:var(--danger); }
   @media (prefers-reduced-motion: reduce) { .pulse,.bar { animation:none; } }
 </style>
 </head>
@@ -182,11 +227,12 @@ const J = async (u,o={}) => {
 };
 const esc = s => String(s??'').replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
 // Non-clobbering toast for action failures (keeps the persistent tamper/offline banner).
-function notify(msg){
+function notify(msg, kind){
   let t=document.getElementById('toast');
   if(!t){ t=document.createElement('div'); t.id='toast';
-    t.style.cssText='position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:var(--surface-2);color:var(--text);padding:9px 14px;border-radius:8px;border:1px solid var(--danger);z-index:60;font-size:13px;transition:opacity .3s';
+    t.style.cssText='position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:var(--surface-2);color:var(--text-primary);padding:9px 14px;border-radius:8px;border:1px solid var(--danger);z-index:60;font-size:13px;transition:opacity .3s';
     document.body.appendChild(t); }
+  t.style.borderColor = kind==='ok' ? 'var(--accent)' : 'var(--danger)';
   t.textContent=msg; t.style.opacity='1';
   clearTimeout(t._h); t._h=setTimeout(()=>{ t.style.opacity='0'; }, 4000);
 }
@@ -208,8 +254,9 @@ const ICONS = {
   Schedule: SVG('<rect x="3" y="5" width="18" height="16" rx="2.5"/><path d="M3 9.5h18M8 3v3.5M16 3v3.5"/><path d="M12 13.5v3l2 1.2"/>'),
   Memory: SVG('<path d="M14.5 4.2A2.6 2.6 0 0 0 12 6.1a2.6 2.6 0 0 0-2.5-1.9 2.6 2.6 0 0 0-2.6 2.6c0 .3 0 .5.1.8a2.8 2.8 0 0 0-1.5 2.5 2.8 2.8 0 0 0 .8 2 2.6 2.6 0 0 0 1.7 4.4 2.6 2.6 0 0 0 4 .6 2.6 2.6 0 0 0 4-.6 2.6 2.6 0 0 0 1.7-4.4 2.8 2.8 0 0 0 .8-2 2.8 2.8 0 0 0-1.5-2.5c.1-.3.1-.5.1-.8a2.6 2.6 0 0 0-2.6-2.6Z"/><path d="M12 6.1v12.5"/>'),
   Skills: SVG('<path d="M12 3.2l1.7 4.5 4.5 1.7-4.5 1.7L12 15.6l-1.7-4.5L5.8 9.4l4.5-1.7L12 3.2Z"/><path d="M18.4 14.2l.8 2.1 2.1.8-2.1.8-.8 2.1-.8-2.1-2.1-.8 2.1-.8.8-2.1Z"/>'),
+  Settings: SVG('<circle cx="12" cy="12" r="3"/><path d="M19.4 13a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1.08 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/>'),
 };
-const VIEWS = ['Chat','Tasks','Schedule','Memory','Skills'];
+const VIEWS = ['Chat','Tasks','Schedule','Memory','Skills','Settings'];
 let state = { route:'Tasks', tasks:[], offline:false };
 
 function renderNav(){
@@ -543,12 +590,180 @@ async function runSkill(id){ const input=document.getElementById('in_'+id).value
   const r=await J('/v1/skills/'+encodeURIComponent(id)+'/run',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({input})});
   document.getElementById('out_'+id).textContent = r.error?('error: '+r.error):('→ '+r.output); }
 
+// ---- Settings ----
+const PROVIDERS = {
+  anthropic:  { label:'Anthropic — Claude', base:'', needsKey:true,  keyHint:'sk-ant-…', models:['claude-haiku','claude-sonnet-4-6','claude-opus-4-8','claude-fable-5'] },
+  openai:     { label:'OpenAI-compatible',  base:'https://api.openai.com/v1', needsKey:true, keyHint:'sk-…', models:['gpt-4o-mini','gpt-4o','o4-mini'] },
+  openrouter: { label:'OpenRouter',         base:'https://openrouter.ai/api/v1', needsKey:true, keyHint:'sk-or-…', models:['anthropic/claude-3.5-sonnet','openai/gpt-4o-mini','meta-llama/llama-3.1-70b-instruct','google/gemini-flash-1.5'] },
+  ollama:     { label:'Ollama — local',     base:'http://localhost:11434/v1', needsKey:false, keyHint:'no key needed', models:['llama3.1','qwen2.5','mistral','phi3'] },
+  mock:       { label:'Mock — offline demo',base:'', needsKey:false, keyHint:'no key', models:['claude-haiku'] },
+};
+let CFG = null;
+const gv = id => (document.getElementById(id)?.value ?? '').toString().trim();
+
+async function renderSettings(){
+  const v=document.getElementById('view');
+  v.innerHTML='<div class="settings"><div class="empty">Loading settings…</div></div>';
+  try { CFG = await J('/v1/config'); }
+  catch(e){ v.innerHTML='<div class="settings"><div class="offline">Couldn’t load settings — '+esc(e.message)+'</div></div>'; return; }
+  v.innerHTML=settingsHtml(CFG);
+  renderMcpRows(CFG.mcp||[]);
+  wireProviderKind();
+}
+
+function settingsHtml(c){
+  const p=c.provider, kinds=Object.keys(PROVIDERS);
+  const opt=(val,sel,label)=>`<option value="${esc(val)}"${val===sel?' selected':''}>${esc(label)}</option>`;
+  const noteHttp = c.http_enabled ? '' : '<div class="offline">This build has no network providers compiled in — only the offline mock works. Rebuild with <code>--features http</code> for real models.</div>';
+  return `<div class="settings">
+    <h2>Settings</h2>
+    <div class="sub">Configure the model, embeddings, security, cost, and tools. Saved locally in <code>config.json</code>; the model and security gates change without a restart.</div>
+    ${noteHttp}
+    <div class="scard">
+      <h3>Model &amp; provider <span class="badge set" id="liveBadge">active: ${esc(c.provider_id)} · ${esc(c.model_in_use)}</span></h3>
+      <div class="desc">Which backend Engram thinks with. Anthropic and OpenRouter give frontier models; Ollama runs models on your machine with no key.</div>
+      <div class="field"><label>Backend</label>
+        <select id="pkind">${kinds.map(k=>opt(k,p.kind,PROVIDERS[k].label)).join('')}</select></div>
+      <div class="row2">
+        <div class="field"><label>Model</label>
+          <input type="text" id="pmodel" list="modellist" value="${esc(p.model)}" placeholder="model id" autocomplete="off">
+          <datalist id="modellist"></datalist></div>
+        <div class="field"><label>Base URL</label>
+          <input type="text" id="pbase" value="${esc(p.base_url)}" placeholder="default" autocomplete="off"></div>
+      </div>
+      <div class="field" id="keyField"><label>API key ${p.api_key_set?'<span class="badge set">saved</span>':''}</label>
+        <input type="password" id="pkey" placeholder="${p.api_key_set?'•••••••• — blank keeps the saved key':''}" autocomplete="off">
+        <div class="hint" id="keyHint"></div></div>
+      <div class="sactions">
+        <button class="sbtn" onclick="testProvider()">Test connection</button>
+        ${p.api_key_set?'<button class="sbtn ghost" onclick="clearSecret(\'provider\',\'clear_api_key\')">Clear key</button>':''}
+        <span class="grow"></span>
+        <button class="sbtn primary" onclick="saveSettings()">Save</button>
+      </div>
+      <div class="testline" id="testline"></div>
+    </div>
+
+    <div class="scard">
+      <h3>Embeddings <span class="badge restart">restart to apply</span></h3>
+      <div class="desc">How memories are indexed for semantic recall. Trigram is offline and dependency-free; static loads a small model2vec model; gateway uses the provider’s embeddings.</div>
+      <div class="row2">
+        <div class="field"><label>Mode</label>
+          <select id="ekind">${['trigram','static','gateway'].map(k=>opt(k,c.embed.kind,k)).join('')}</select></div>
+        <div class="field"><label>Static model directory</label>
+          <input type="text" id="edir" value="${esc(c.embed.model_dir)}" placeholder="(home)/embedder" autocomplete="off"></div>
+      </div>
+      <div class="sactions"><span class="grow"></span><button class="sbtn primary" onclick="saveSettings()">Save</button></div>
+    </div>
+
+    <div class="scard">
+      <h3>Security</h3>
+      <div class="desc">Local gates. The API token guards this dashboard and the HTTP API; the channel secret guards inbound webhooks; shell access lets the agent run commands.</div>
+      <div class="row2">
+        <div class="field"><label>API token ${c.security.api_token_set?'<span class="badge set">saved</span>':''}</label>
+          <input type="password" id="stok" placeholder="${c.security.api_token_set?'•••••••• — blank keeps it':'none'}" autocomplete="off">
+          ${c.security.api_token_set?'<div class="hint"><a href="#" onclick="clearSecret(\'security\',\'clear_api_token\');return false">remove token</a></div>':''}</div>
+        <div class="field"><label>Channel secret ${c.security.channel_secret_set?'<span class="badge set">saved</span>':''}</label>
+          <input type="password" id="ssec" placeholder="${c.security.channel_secret_set?'•••••••• — blank keeps it':'none'}" autocomplete="off">
+          ${c.security.channel_secret_set?'<div class="hint"><a href="#" onclick="clearSecret(\'security\',\'clear_channel_secret\');return false">remove secret</a></div>':''}</div>
+      </div>
+      <label class="toggle"><input type="checkbox" id="sshell" ${c.security.allow_shell?'checked':''}><span class="track"></span> Allow the agent to run shell commands</label>
+      <div class="sactions"><span class="grow"></span><button class="sbtn primary" onclick="saveSettings()">Save</button></div>
+    </div>
+
+    <div class="scard">
+      <h3>Cost</h3>
+      <div class="desc">A hard ceiling on a single task run — it stops at the next step once it crosses this many tokens (input + output combined).</div>
+      <div class="field" style="max-width:240px"><label>Per-task token budget</label>
+        <input type="number" id="cbudget" min="1000" step="1000" value="${c.cost.task_token_budget}"></div>
+      <div class="sactions"><span class="grow"></span><button class="sbtn primary" onclick="saveSettings()">Save</button></div>
+    </div>
+
+    <div class="scard">
+      <h3>MCP servers <span class="badge restart">restart to apply</span></h3>
+      <div class="desc">External tool servers (Model Context Protocol). Each is launched as a subprocess and its tools become available to the agent.</div>
+      <div id="mcplist"></div>
+      <div class="sactions"><button class="sbtn" onclick="addMcpRow()">+ Add server</button><span class="grow"></span><button class="sbtn primary" onclick="saveSettings()">Save</button></div>
+    </div>
+  </div>`;
+}
+
+function mcpRowHtml(s){
+  s=s||{name:'',command:'',args:[]};
+  return `<div class="mcprow">
+    <input placeholder="name" value="${esc(s.name)}">
+    <input placeholder="command (e.g. npx)" value="${esc(s.command)}">
+    <input placeholder="args (space-separated)" value="${esc((s.args||[]).join(' '))}">
+    <button class="xbtn" title="remove" onclick="this.closest('.mcprow').remove()">×</button>
+  </div>`;
+}
+function renderMcpRows(list){ const el=document.getElementById('mcplist'); if(el) el.innerHTML=(list&&list.length?list:[]).map(mcpRowHtml).join(''); }
+function addMcpRow(){ const el=document.getElementById('mcplist'); if(el) el.insertAdjacentHTML('beforeend', mcpRowHtml()); }
+function collectMcp(){
+  return [...document.querySelectorAll('#mcplist .mcprow')].map(r=>{
+    const i=r.querySelectorAll('input');
+    return { name:i[0].value.trim(), command:i[1].value.trim(), args:i[2].value.trim().split(/\s+/).filter(Boolean) };
+  }).filter(s=>s.name&&s.command);
+}
+
+function wireProviderKind(){
+  const sel=document.getElementById('pkind'); if(!sel) return;
+  const apply=()=>{
+    const P=PROVIDERS[sel.value]||PROVIDERS.mock;
+    document.getElementById('pbase').placeholder = P.base || 'default';
+    document.getElementById('keyHint').textContent = P.needsKey ? ('key format: '+P.keyHint) : 'no API key needed for this backend';
+    document.getElementById('keyField').style.opacity = P.needsKey ? '1' : '.55';
+    const dl=document.getElementById('modellist'); if(dl) dl.innerHTML=P.models.map(m=>`<option value="${esc(m)}"></option>`).join('');
+  };
+  sel.addEventListener('change', apply); apply();
+}
+
+function collectSettings(){
+  const patch={
+    provider:{ kind:gv('pkind'), model:gv('pmodel'), base_url:gv('pbase') },
+    embed:{ kind:gv('ekind'), model_dir:gv('edir') },
+    security:{ allow_shell: document.getElementById('sshell').checked },
+    cost:{ task_token_budget: parseInt(gv('cbudget'),10)||250000 },
+    mcp: collectMcp(),
+  };
+  const k=gv('pkey'); if(k) patch.provider.api_key=k;
+  const t=gv('stok'); if(t) patch.security.api_token=t;
+  const s=gv('ssec'); if(s) patch.security.channel_secret=s;
+  return patch;
+}
+
+async function saveSettings(){
+  try{
+    const res=await J('/v1/config',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(collectSettings())});
+    notify(res.restart_needed?'Saved — embeddings/MCP changes apply on the next restart':'Saved','ok');
+    await renderSettings();
+    poll();
+  }catch(e){ notify('Save failed — '+e.message); }
+}
+
+async function testProvider(){
+  const line=document.getElementById('testline'); line.className='testline'; line.textContent='Testing…';
+  const patch={ provider:{ kind:gv('pkind'), model:gv('pmodel'), base_url:gv('pbase') } };
+  const k=gv('pkey'); if(k) patch.provider.api_key=k;
+  try{
+    const r=await J('/v1/config/test',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(patch)});
+    if(r.ok){ line.className='testline ok'; line.textContent='✓ '+r.provider+' replied: '+esc((r.reply||'ok').slice(0,80)); }
+    else { line.className='testline bad'; line.textContent='✕ '+esc(r.error||'request failed'); }
+  }catch(e){ line.className='testline bad'; line.textContent='✕ '+esc(e.message); }
+}
+
+async function clearSecret(section,flag){
+  const body={}; body[section]={}; body[section][flag]=true;
+  try{ await J('/v1/config',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}); notify('Removed','ok'); await renderSettings(); poll(); }
+  catch(e){ notify('Failed — '+e.message); }
+}
+
 function renderView(){
   if(state.route==='Tasks') renderBoard();
   else if(state.route==='Chat') renderChat();
   else if(state.route==='Schedule') renderSchedule();
   else if(state.route==='Memory') renderMemory();
   else if(state.route==='Skills') renderSkills();
+  else if(state.route==='Settings') renderSettings();
 }
 
 // Refresh the board only when tasks actually changed (so idle re-renders don't fight typing).

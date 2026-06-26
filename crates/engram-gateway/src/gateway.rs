@@ -79,7 +79,9 @@ impl Call {
 
 /// The metered, taint-aware, audited gateway.
 pub struct Gateway {
-    provider: Box<dyn Provider>,
+    /// The active model provider, behind a lock so the desktop's settings panel can
+    /// swap it (a new API key, model, or backend) without restarting the daemon.
+    provider: std::sync::Mutex<Arc<dyn Provider>>,
     ledger: Arc<Ledger>,
     meter: Meter,
     prices: HashMap<String, Price>,
@@ -87,7 +89,29 @@ pub struct Gateway {
 
 impl Gateway {
     pub fn new(provider: Box<dyn Provider>, ledger: Arc<Ledger>) -> Self {
-        Self { provider, ledger, meter: Meter::default(), prices: default_prices() }
+        Self {
+            provider: std::sync::Mutex::new(Arc::from(provider)),
+            ledger,
+            meter: Meter::default(),
+            prices: default_prices(),
+        }
+    }
+
+    /// A cheap clone of the current provider handle. Callers hold the `Arc`, not the
+    /// lock, so a long model call never blocks a settings swap (and vice versa).
+    fn provider(&self) -> Arc<dyn Provider> {
+        self.provider.lock().expect("provider lock").clone()
+    }
+
+    /// Hot-swap the active provider. The next call picks it up; calls already in flight
+    /// finish on the old one. Used by the settings panel after the user edits the model.
+    pub fn set_provider(&self, provider: Arc<dyn Provider>) {
+        *self.provider.lock().expect("provider lock") = provider;
+    }
+
+    /// Identifier of the active provider (for display and audit).
+    pub fn provider_id(&self) -> String {
+        self.provider().id().to_string()
     }
 
     /// Override or add a model price (USD per million tokens).
@@ -115,7 +139,7 @@ impl Gateway {
             }
         }
 
-        let completion = self.provider.complete(&call.request).await?;
+        let completion = self.provider().complete(&call.request).await?;
         self.record_call(&call, &completion, redacted)?;
         Ok(completion)
     }
@@ -134,7 +158,7 @@ impl Gateway {
             call.request.messages.retain(|m| !m.secret);
             redacted = before - call.request.messages.len();
         }
-        let completion = self.provider.complete_stream(&call.request, on_delta).await?;
+        let completion = self.provider().complete_stream(&call.request, on_delta).await?;
         self.record_call(&call, &completion, redacted)?;
         Ok(completion)
     }
@@ -152,7 +176,7 @@ impl Gateway {
             "llm.call",
             &call.actor,
             json!({
-                "provider": self.provider.id(),
+                "provider": self.provider().id(),
                 "model": completion.model,
                 "tokens_in": completion.tokens_in,
                 "tokens_out": completion.tokens_out,
@@ -166,49 +190,49 @@ impl Gateway {
 
     /// Embed texts through the provider, metered and audited.
     pub async fn embed(&self, texts: &[String], actor: &str) -> Result<Vec<Vec<f32>>, GatewayError> {
-        let out = self.provider.embed(texts).await?;
+        let out = self.provider().embed(texts).await?;
         let tokens_in: u32 = texts.iter().map(|t| approx_tokens(t)).sum();
         self.meter.record(tokens_in, 0, 0.0);
         self.ledger.append(
             "llm.embed",
             actor,
-            json!({ "provider": self.provider.id(), "count": texts.len(), "tokens_in": tokens_in }),
+            json!({ "provider": self.provider().id(), "count": texts.len(), "tokens_in": tokens_in }),
         )?;
         Ok(out)
     }
 
     /// Generate an image (PNG bytes) from a prompt, metered and audited.
     pub async fn generate_image(&self, prompt: &str, actor: &str) -> Result<Vec<u8>, GatewayError> {
-        let bytes = self.provider.generate_image(prompt).await?;
+        let bytes = self.provider().generate_image(prompt).await?;
         self.meter.record(approx_tokens(prompt), 0, 0.0);
         self.ledger.append(
             "llm.image",
             actor,
-            json!({ "provider": self.provider.id(), "prompt_len": prompt.len(), "bytes": bytes.len() }),
+            json!({ "provider": self.provider().id(), "prompt_len": prompt.len(), "bytes": bytes.len() }),
         )?;
         Ok(bytes)
     }
 
     /// Transcribe audio bytes to text, metered and audited.
     pub async fn transcribe(&self, audio: &[u8], format: &str, actor: &str) -> Result<String, GatewayError> {
-        let text = self.provider.transcribe(audio, format).await?;
+        let text = self.provider().transcribe(audio, format).await?;
         self.meter.record(0, approx_tokens(&text), 0.0);
         self.ledger.append(
             "llm.transcribe",
             actor,
-            json!({ "provider": self.provider.id(), "bytes": audio.len(), "chars": text.len() }),
+            json!({ "provider": self.provider().id(), "bytes": audio.len(), "chars": text.len() }),
         )?;
         Ok(text)
     }
 
     /// Synthesize speech (audio bytes) from text, metered and audited.
     pub async fn tts(&self, text: &str, voice: &str, actor: &str) -> Result<Vec<u8>, GatewayError> {
-        let bytes = self.provider.tts(text, voice).await?;
+        let bytes = self.provider().tts(text, voice).await?;
         self.meter.record(approx_tokens(text), 0, 0.0);
         self.ledger.append(
             "llm.tts",
             actor,
-            json!({ "provider": self.provider.id(), "chars": text.len(), "bytes": bytes.len() }),
+            json!({ "provider": self.provider().id(), "chars": text.len(), "bytes": bytes.len() }),
         )?;
         Ok(bytes)
     }

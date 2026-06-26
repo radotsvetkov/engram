@@ -389,12 +389,19 @@ fn ct_eq(a: &str, b: &str) -> bool {
     diff == 0
 }
 
-async fn dashboard() -> Html<String> {
+async fn dashboard() -> impl IntoResponse {
     // Served without auth so the page can bootstrap - so it must NEVER embed the API token,
     // which would hand it to any unauthenticated caller of "/" and defeat the gate. The
     // first-party dashboard stores the token in the browser (set from Settings, kept in
     // localStorage) and sends it on its own API calls; a fresh client is prompted for it.
-    Html(include_str!("../assets/index.html").to_string())
+    //
+    // `no-store` so the embedded webview never renders a stale build after an update: the HTML
+    // always comes from the local daemon (no network cost to caching it), but WKWebView's disk
+    // cache would otherwise heuristically serve an old page across relaunches.
+    (
+        [(axum::http::header::CACHE_CONTROL, "no-store, no-cache, must-revalidate")],
+        Html(include_str!("../assets/index.html").to_string()),
+    )
 }
 
 async fn health() -> ApiResult {

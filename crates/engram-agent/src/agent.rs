@@ -27,6 +27,13 @@ pub struct StepRecord {
     pub args: serde_json::Value,
     pub observation: String,
     pub ok: bool,
+    /// The seq + hash of *this step's* `agent.tool` ledger entry, captured inline. Pairing
+    /// the receipt to the ledger by these exact values is correct even when runs overlap —
+    /// unlike matching by a timestamp window and step index.
+    #[serde(default)]
+    pub ledger_seq: u64,
+    #[serde(default)]
+    pub ledger_hash: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -124,15 +131,19 @@ impl Agent {
                     None => (format!("error: unknown tool '{}'", call.name), false),
                 };
                 let truncated = truncate(&observation, ctx.policy.max_obs_len);
-                let _ = ctx
+                let (ledger_seq, ledger_hash) = ctx
                     .ledger
-                    .append("agent.tool", "agent", json!({ "tool": call.name, "ok": ok }));
+                    .append("agent.tool", "agent", json!({ "tool": call.name, "ok": ok }))
+                    .map(|e| (e.seq, e.hash))
+                    .unwrap_or((0, String::new()));
                 messages.push(Message::tool_result(call.id.clone(), truncated.clone()));
                 steps.push(StepRecord {
                     tool: call.name.clone(),
                     args: call.arguments.clone(),
                     observation: truncated,
                     ok,
+                    ledger_seq,
+                    ledger_hash,
                 });
                 if let Some(cb) = &self.on_step {
                     cb(steps.len(), call.name.clone(), ok);
@@ -419,5 +430,8 @@ mod tests {
         assert_eq!(run.steps.len(), 2);
         assert!(run.steps[1].observation.contains("egress refused"), "got: {}", run.steps[1].observation);
         assert!(!ran.load(Ordering::SeqCst), "the egress tool must never have executed");
+        // Each step captured its own signed ledger position inline (audit pairing fix).
+        assert!(run.steps[0].ledger_seq > 0 && !run.steps[0].ledger_hash.is_empty());
+        assert!(run.steps[1].ledger_seq > run.steps[0].ledger_seq, "ledger seq advances per step");
     }
 }

@@ -335,13 +335,13 @@ async function openTask(id){
           <button class="ghost" onclick="closePanel()">Skip</button></div></div>`;
     }
     html+=`<div class="answer">${esc(t.run.answer)}</div>`;
-    const audit = await J('/v1/tasks/'+id+'/audit').catch(()=>({entries:[]}));
-    const stepRows = (t.run.steps||[]).map((s,i)=>{
-      const e=(audit.entries||[]).filter(x=>x.kind&&x.kind.startsWith('agent.tool'))[i];
-      const stamp = e ? `${e.seq} · ${e.hash.slice(0,8)}` : '';
+    // Each step carries its own signed ledger seq+hash (captured inline at run time), so
+    // the receipt pairs to the exact ledger entry even if other tasks ran concurrently.
+    const stepRows = (t.run.steps||[]).map(s=>{
+      const stamp = s.ledger_seq ? `${s.ledger_seq} · ${(s.ledger_hash||'').slice(0,8)}` : '';
       return `<div class="step ${s.ok?'':'bad'}"><div class="top"><span class="verb">${esc(s.tool)}</span>
         <span class="${s.ok?'check':'xmark'}">${s.ok?'✓':'✕'}</span>
-        <span class="stamp" onclick="navigator.clipboard.writeText('${e?e.hash:''}')">${stamp}</span></div>
+        <span class="stamp" onclick="navigator.clipboard.writeText('${s.ledger_hash||''}')">${stamp}</span></div>
         ${s.ok?'':`<div class="obs">${esc(s.observation)}</div>`}</div>`;
     }).join('');
     html+=`<div class="muted" style="font-size:11px;margin-bottom:6px">audit trail — signed</div>${stepRows||'<div class="muted">no tools used</div>'}`;

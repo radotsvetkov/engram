@@ -194,7 +194,9 @@ It is configured by environment variables:
 | `ENGRAM_SHELL_BACKEND` | _(local)_ | `docker` runs shell commands in a network-isolated container; `ssh` runs them on a remote host. Unset runs locally. |
 | `ENGRAM_DOCKER_IMAGE` | `alpine` | Image used by the `docker` shell backend (`docker run --network none`). |
 | `ENGRAM_SSH_HOST` | _(unset)_ | `user@host` for the `ssh` shell backend. |
-| `ENGRAM_WORKDIR` | `<ENGRAM_HOME>/work` | Directory the agent's filesystem tools are confined to. |
+| `ENGRAM_WORKDIR` | `<ENGRAM_HOME>/work` | Directory the agent's filesystem tools are confined to (symlink-resolving). |
+| `ENGRAM_API_TOKEN` | _(unset)_ | When set, every `/v1` call must present `Authorization: Bearer <token>` (or `?token=` for SSE). The dashboard, `/health`, and webhooks stay open and the token is injected into the first-party UI. Unset = open (intended for the local `127.0.0.1` bind); set it whenever the daemon is exposed. |
+| `ENGRAM_CHANNEL_SECRET` | _(unset)_ | When set, inbound webhooks (`/v1/channel/{platform}`) must present it via the `X-Engram-Secret` header or `?secret=` query, else `401`. (Channel runs are also started untrusted, so they can't shell or exfiltrate regardless.) |
 | `ENGRAM_WEBHOOK_URL` | _(unset)_ | Default destination for the `send_message` tool (Slack / Discord / Mattermost-style incoming webhook). |
 | `ENGRAM_TELEGRAM_TOKEN` | _(unset)_ | Bot token; when set, Engram runs a Telegram inbound channel that runs the agent on each message and replies. |
 | `ENGRAM_CHROME` | _(autodetected)_ | Path to a Chrome/Chromium binary for the browser tools, if not on a standard path. |

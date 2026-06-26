@@ -42,7 +42,7 @@ pub fn spawn(app: App, token: String) {
                     continue;
                 };
                 // Inbound chat is untrusted: start the run tainted (no shell, no egress).
-                let answer = match crate::run_agent_task_cb(&app, text, 8, engram_core::Taint::Untrusted, None).await {
+                let answer = match crate::run_agent_task_cb(&app, text, 8, engram_core::Taint::Untrusted, false, None).await {
                     Ok(run) => run.answer,
                     Err(e) => format!("error: {e}"),
                 };

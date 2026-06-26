@@ -434,6 +434,9 @@ struct AgentReq {
     task: String,
     #[serde(default)]
     max_steps: Option<usize>,
+    /// Preview mode: plan and report intended actions, but execute no side-effecting tool.
+    #[serde(default)]
+    dry_run: bool,
 }
 
 /// Run the agent on a task with the full configured toolset (built-ins + MCP),
@@ -443,20 +446,23 @@ pub(crate) async fn run_agent_task(
     task: &str,
     max_steps: usize,
 ) -> Result<engram_agent::AgentRun, String> {
-    run_agent_task_cb(app, task, max_steps, engram_core::Taint::Trusted, None).await
+    run_agent_task_cb(app, task, max_steps, engram_core::Taint::Trusted, false, None).await
 }
 
 /// Run the agent with an explicit initial taint. Untrusted-origin prompts (inbound
 /// webhooks, Telegram) start `Untrusted`, so the no-egress guard applies from step one.
+/// `dry_run` previews intended actions without executing side-effecting tools.
 pub(crate) async fn run_agent_task_cb(
     app: &App,
     task: &str,
     max_steps: usize,
     taint: engram_core::Taint,
+    dry_run: bool,
     on_step: Option<engram_agent::StepCallback>,
 ) -> Result<engram_agent::AgentRun, String> {
     let policy = engram_agent::Policy {
         allow_shell: app.allow_shell.load(std::sync::atomic::Ordering::Relaxed),
+        dry_run,
         shell_backend: match std::env::var("ENGRAM_SHELL_BACKEND").as_deref() {
             Ok("docker") => Some(std::env::var("ENGRAM_DOCKER_IMAGE").unwrap_or_else(|_| "alpine".into())),
             Ok("ssh") => std::env::var("ENGRAM_SSH_HOST").ok().map(|h| format!("ssh:{h}")),
@@ -503,7 +509,16 @@ pub(crate) async fn run_agent_task_cb(
 }
 
 async fn agent_handler(State(app): State<App>, Json(r): Json<AgentReq>) -> ApiResult {
-    let run = run_agent_task(&app, &r.task, r.max_steps.unwrap_or(8)).await.map_err(ApiError)?;
+    let run = run_agent_task_cb(
+        &app,
+        &r.task,
+        r.max_steps.unwrap_or(8),
+        engram_core::Taint::Trusted,
+        r.dry_run,
+        None,
+    )
+    .await
+    .map_err(ApiError)?;
     Ok(Json(serde_json::to_value(run).map_err(err)?))
 }
 
@@ -713,7 +728,7 @@ pub(crate) async fn run_task_core(app: &App, id: &str) -> Result<tasks::Task, St
         tasks.set_progress(&tid, format!("step {i} · {tool}"));
         bus.emit(Spike::new("task.step", Priority::Low, json!({ "id": tid.as_str(), "step": i, "tool": tool })));
     });
-    let run = run_agent_task_cb(app, &prompt, 10, engram_core::Taint::Trusted, Some(on_step)).await?;
+    let run = run_agent_task_cb(app, &prompt, 10, engram_core::Taint::Trusted, false, Some(on_step)).await?;
     let finished_ms = engram_core::now_ms() as i64;
     let after = app.gateway.meter();
     let (_, head) = app.ledger.head();

@@ -186,6 +186,10 @@ impl Tool for McpTool {
         // run cannot reach them (default-deny under taint).
         true
     }
+    fn side_effecting(&self) -> bool {
+        // Opaque external capability — assume it can change the world (preview-gated).
+        true
+    }
     async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
         let _ = ctx.ledger.append(
             "agent.mcp",

@@ -203,6 +203,9 @@ impl Tool for ShellTool {
     fn name(&self) -> &str {
         "shell"
     }
+    fn side_effecting(&self) -> bool {
+        true
+    }
     fn description(&self) -> &str {
         "Run a shell command in the working directory and return its output. Disabled \
          unless explicitly enabled, and refused on a run that has read untrusted content."
@@ -271,6 +274,9 @@ pub struct WriteFileTool;
 impl Tool for WriteFileTool {
     fn name(&self) -> &str {
         "write_file"
+    }
+    fn side_effecting(&self) -> bool {
+        true
     }
     fn description(&self) -> &str {
         "Create or overwrite a text file inside the working directory."
@@ -486,6 +492,9 @@ impl Tool for ImageGenerateTool {
     fn name(&self) -> &str {
         "image_generate"
     }
+    fn side_effecting(&self) -> bool {
+        true
+    }
     fn description(&self) -> &str {
         "Generate an image from a text prompt and save it as a PNG in the workdir."
     }
@@ -509,6 +518,9 @@ pub struct TextToSpeechTool;
 impl Tool for TextToSpeechTool {
     fn name(&self) -> &str {
         "text_to_speech"
+    }
+    fn side_effecting(&self) -> bool {
+        true
     }
     fn description(&self) -> &str {
         "Synthesize speech from text and save the audio file in the workdir."
@@ -749,6 +761,9 @@ impl Tool for BrowserClickTool {
     fn name(&self) -> &str {
         "browser_click"
     }
+    fn side_effecting(&self) -> bool {
+        true
+    }
     fn description(&self) -> &str {
         "Click the first element matching a CSS selector in the current browser page."
     }
@@ -773,6 +788,9 @@ pub struct BrowserTypeTool;
 impl Tool for BrowserTypeTool {
     fn name(&self) -> &str {
         "browser_type"
+    }
+    fn side_effecting(&self) -> bool {
+        true
     }
     fn description(&self) -> &str {
         "Type text into the first element matching a CSS selector in the current page."
@@ -930,6 +948,9 @@ mod web {
              Mattermost style). Pass 'url' or set ENGRAM_WEBHOOK_URL."
         }
         fn is_egress(&self) -> bool {
+            true
+        }
+        fn side_effecting(&self) -> bool {
             true
         }
         fn schema(&self) -> Value {

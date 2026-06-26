@@ -314,8 +314,15 @@ impl Agent {
             let ctx = ctx.clone();
             let args = call.arguments.clone();
             let name = call.name.clone();
+            let dry_run = ctx.policy.dry_run;
             set.spawn(async move {
                 let out = match tool {
+                    // Dry-run / planning-only: don't execute side-effecting tools; report
+                    // what would have happened so the plan can be previewed safely.
+                    Some(t) if dry_run && t.side_effecting() => (
+                        format!("DRY RUN — would call {name}({args}); not executed"),
+                        true,
+                    ),
                     // The no-egress half of the taint rule — refuse an egress tool once the
                     // run has read untrusted content. Covers native and MCP tools alike.
                     Some(t) if egress_blocked && t.is_egress() => (
@@ -984,6 +991,57 @@ mod tests {
         assert_eq!(run.stopped, "halted");
         assert!(run.steps.is_empty());
         assert!(ledger.read_all().unwrap().iter().any(|e| e.kind == "agent.halt"));
+    }
+
+    #[tokio::test]
+    async fn dry_run_previews_side_effecting_tools_without_executing() {
+        use crate::tool::Tool;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct Writer(Arc<AtomicBool>); // records whether it actually executed
+        #[async_trait::async_trait]
+        impl Tool for Writer {
+            fn name(&self) -> &str { "do_write" }
+            fn description(&self) -> &str { "writes a file" }
+            fn schema(&self) -> serde_json::Value { json!({ "type": "object" }) }
+            fn side_effecting(&self) -> bool { true }
+            async fn run(&self, _: &serde_json::Value, _: &ToolCtx) -> Result<String, String> {
+                self.0.store(true, Ordering::SeqCst);
+                Ok("wrote".into())
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Arc::new(Ledger::open(dir.path()).unwrap());
+        let memory = Arc::new(
+            Memory::open(dir.path().join("b.db"), Arc::new(TrigramHashEmbedder::default()), ledger.clone()).unwrap(),
+        );
+        let signer = Arc::new(SkillSigner::load_or_create(dir.path().join("k")).unwrap());
+        let skills = Arc::new(Registry::open(dir.path(), signer, ledger.clone()).unwrap());
+        let ran = Arc::new(AtomicBool::new(false));
+        let gateway = Arc::new(Gateway::new(
+            Box::new(ScriptedProvider::new(vec![call("1", "do_write", json!({ "path": "x" })), final_answer("done")])),
+            ledger.clone(),
+        ));
+        let ctx = ToolCtx {
+            memory,
+            skills,
+            gateway: gateway.clone(),
+            ledger,
+            taint: Taint::Trusted,
+            policy: Policy { dry_run: true, ..Policy::default() },
+            workdir: dir.path().to_path_buf(),
+            model: "test".into(),
+            depth: 0,
+            browser: Arc::new(crate::tool::NoBrowser),
+        };
+        let tools = ToolRegistry::new().with(Arc::new(Writer(ran.clone())));
+        let run = Agent::new(gateway, tools, "test").run("write a file", ctx).await.unwrap();
+
+        assert!(!ran.load(Ordering::SeqCst), "side-effecting tool must NOT execute in dry-run");
+        assert!(run.steps[0].observation.contains("DRY RUN"), "got: {}", run.steps[0].observation);
+        assert!(run.steps[0].ok, "preview is reported ok so the plan keeps going");
+        assert_eq!(run.answer, "done");
     }
 
     #[tokio::test]

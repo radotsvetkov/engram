@@ -91,6 +91,9 @@ pub struct Policy {
     /// Execution backend for the shell tool: `None` runs locally; `Some(image)` runs in
     /// a network-isolated `docker run` against that image (sandboxed code execution).
     pub shell_backend: Option<String>,
+    /// Dry-run / planning-only: side-effecting tools are not executed; the agent is told
+    /// what it *would* do, so a plan can be previewed before anything changes.
+    pub dry_run: bool,
 }
 
 impl Default for Policy {
@@ -101,6 +104,7 @@ impl Default for Policy {
             max_obs_len: 6000,
             timeout_secs: 30,
             shell_backend: None,
+            dry_run: false,
         }
     }
 }
@@ -125,6 +129,14 @@ pub trait Tool: Send + Sync {
     /// once the run is tainted — the no-egress half of the taint rule, enforced centrally
     /// at the agent's dispatch boundary so every tool (native and MCP) is covered.
     fn is_egress(&self) -> bool {
+        false
+    }
+    /// True if this tool changes the world outside the brain (writes files, runs shell,
+    /// sends messages, drives the browser, calls an MCP server). In dry-run/preview mode
+    /// these are not executed — the agent is told what it *would* do, so a plan can be
+    /// inspected before anything happens. Internal, reversible writes (memory) are not
+    /// side-effecting.
+    fn side_effecting(&self) -> bool {
         false
     }
 }

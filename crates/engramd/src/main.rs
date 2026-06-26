@@ -28,6 +28,7 @@ mod embedder;
 mod seed;
 mod tasks;
 mod telegram;
+mod workspace;
 
 use engram_core::{run_until_idle, Activity, Bus, Ledger, Priority, Spike, VERSION};
 use engram_gateway::Gateway;
@@ -54,6 +55,8 @@ struct App {
     mcp_tools: Arc<std::sync::RwLock<Vec<Arc<dyn engram_agent::Tool>>>>,
     browser: Arc<dyn engram_agent::BrowserSession>,
     tasks: Arc<tasks::TaskStore>,
+    /// Projects and chat sessions backing the desktop sidebar, persisted to disk.
+    workspace: Arc<workspace::WorkspaceStore>,
     /// Runtime-mutable shell consent - toggled by the desktop's approval card.
     allow_shell: Arc<std::sync::atomic::AtomicBool>,
     /// Kill switch: set true to stop in-flight agent runs at their next step boundary.
@@ -232,6 +235,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         mcp_tools: Arc::new(std::sync::RwLock::new(mcp_tools)),
         browser: engram_agent::browser_session(),
         tasks: Arc::new(tasks::TaskStore::open(std::path::Path::new(&home))),
+        workspace: Arc::new(workspace::WorkspaceStore::open(std::path::Path::new(&home))),
         allow_shell: Arc::new(std::sync::atomic::AtomicBool::new(cfg.security.allow_shell)),
         halt: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         config: Arc::new(std::sync::RwLock::new(cfg)),
@@ -266,6 +270,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/tasks/{id}/run", post(tasks_run))
         .route("/v1/tasks/{id}/audit", get(task_audit))
         .route("/v1/tasks/{id}/receipt", get(task_receipt))
+        .route("/v1/projects", get(projects_list).post(projects_create))
+        .route("/v1/projects/{id}", axum::routing::patch(projects_update).delete(projects_delete))
+        .route("/v1/sessions", get(sessions_list).post(sessions_create))
+        .route("/v1/sessions/{id}", get(session_get).patch(session_update).delete(session_delete))
         .route("/v1/ledger/pubkey", get(ledger_pubkey))
         .route("/v1/policy", get(policy_get).post(policy_set))
         .route("/v1/config", get(config_get).post(config_set))
@@ -899,12 +907,18 @@ async fn task_receipt(State(app): State<App>, Path(id): Path<String>) -> ApiResu
 #[derive(Deserialize)]
 struct ConverseReq {
     text: String,
+    /// When set, the turn is appended to this chat session so it survives a reload.
+    #[serde(default)]
+    session: Option<String>,
 }
 
 async fn converse_handler(State(app): State<App>, Json(r): Json<ConverseReq>) -> ApiResult {
     let turn = converse::converse(&app.memory, &app.gateway, &r.text, &app.model())
         .await
         .map_err(ApiError)?;
+    if let Some(sid) = &r.session {
+        app.workspace.append_turn(sid, &r.text, &turn.reply, turn.recalled.clone(), turn.learned.clone());
+    }
     Ok(Json(json!({
         "reply": turn.reply,
         "recalled": turn.recalled,
@@ -931,6 +945,9 @@ async fn converse_stream_handler(
         };
         match converse::converse_stream(&app.memory, &app.gateway, &r.text, &model, &mut on_delta).await {
             Ok(turn) => {
+                if let Some(sid) = &r.session {
+                    app.workspace.append_turn(sid, &r.text, &turn.reply, turn.recalled.clone(), turn.learned.clone());
+                }
                 let _ = tx.send(Event::default().event("done").data(
                     json!({ "reply": turn.reply, "recalled": turn.recalled, "learned": turn.learned })
                         .to_string(),
@@ -1285,6 +1302,54 @@ async fn restart_handler(State(app): State<App>) -> ApiResult {
         std::process::exit(0);
     });
     Ok(Json(json!({ "ok": true, "restarting": true })))
+}
+
+// --- workspace: projects + sessions (the desktop sidebar) ---
+#[derive(Deserialize)]
+struct SessionsQuery {
+    project: Option<String>,
+}
+async fn projects_list(State(app): State<App>) -> ApiResult {
+    Ok(Json(serde_json::to_value(app.workspace.projects()).map_err(err)?))
+}
+async fn projects_create(State(app): State<App>, Json(b): Json<Value>) -> ApiResult {
+    let name = b.get("name").and_then(|v| v.as_str()).unwrap_or("Project").trim().to_string();
+    let name = if name.is_empty() { "Project".into() } else { name };
+    Ok(Json(serde_json::to_value(app.workspace.create_project(name)).map_err(err)?))
+}
+async fn projects_update(State(app): State<App>, Path(id): Path<String>, Json(b): Json<Value>) -> ApiResult {
+    let name = b.get("name").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    let p = app.workspace.rename_project(&id, name).ok_or_else(|| ApiError("project not found".into()))?;
+    Ok(Json(serde_json::to_value(p).map_err(err)?))
+}
+async fn projects_delete(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
+    Ok(Json(json!({ "ok": app.workspace.delete_project(&id) })))
+}
+async fn sessions_list(State(app): State<App>, Query(q): Query<SessionsQuery>) -> ApiResult {
+    let proj = q.project.unwrap_or_else(|| "personal".into());
+    Ok(Json(serde_json::to_value(app.workspace.sessions_meta(&proj)).map_err(err)?))
+}
+async fn sessions_create(State(app): State<App>, Json(b): Json<Value>) -> ApiResult {
+    let project_id = b.get("project_id").and_then(|v| v.as_str()).unwrap_or("personal").to_string();
+    let title = b.get("title").and_then(|v| v.as_str()).map(str::to_string);
+    Ok(Json(serde_json::to_value(app.workspace.create_session(project_id, title)).map_err(err)?))
+}
+async fn session_get(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
+    let s = app.workspace.session(&id).ok_or_else(|| ApiError("session not found".into()))?;
+    Ok(Json(serde_json::to_value(s).map_err(err)?))
+}
+async fn session_update(State(app): State<App>, Path(id): Path<String>, Json(b): Json<Value>) -> ApiResult {
+    let title = b.get("title").and_then(|v| v.as_str()).map(str::to_string);
+    let fav = b.get("fav").and_then(|v| v.as_bool());
+    let project_id = b.get("project_id").and_then(|v| v.as_str()).map(str::to_string);
+    let s = app
+        .workspace
+        .update_session(&id, title, fav, project_id)
+        .ok_or_else(|| ApiError("session not found".into()))?;
+    Ok(Json(serde_json::to_value(s).map_err(err)?))
+}
+async fn session_delete(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
+    Ok(Json(json!({ "ok": app.workspace.delete_session(&id) })))
 }
 
 fn init_tracing() {

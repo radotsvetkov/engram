@@ -712,31 +712,51 @@ async function approveShell(id){
   runTask(id);
 }
 
-// ---- workspace: projects -> sessions -> favorites (client-side, persisted) ----
-const WS_KEY='engram.ws.v2';
-let WS=loadWS(), projMenuOpen=false;
-function loadWS(){
-  try{ const w=JSON.parse(localStorage.getItem(WS_KEY)); if(w&&w.projects&&w.sessions) return w; }catch(_){}
-  return { projects:[{id:'personal',name:'Personal'}], activeProject:'personal', sessions:[], activeSession:null };
+// ---- workspace: projects -> sessions -> favorites (daemon-backed, survives reload) ----
+let WS={ projects:[{id:'personal',name:'Personal'}], activeProject:'personal', sessions:[], activeSession:null, byId:{} }, projMenuOpen=false;
+async function loadWorkspace(){
+  try{ const ps=await J('/v1/projects'); if(ps&&ps.length) WS.projects=ps; }catch(_){}
+  if(!WS.projects.find(p=>p.id===WS.activeProject)) WS.activeProject=(WS.projects[0]||{id:'personal'}).id;
+  await loadSessions();
+  if(!WS.sessions.find(s=>s.id===WS.activeSession)) WS.activeSession=(WS.sessions[0]||{}).id||null;
 }
-function saveWS(){ try{ localStorage.setItem(WS_KEY, JSON.stringify(WS)); }catch(_){} }
-function curProject(){ return WS.projects.find(p=>p.id===WS.activeProject)||WS.projects[0]; }
-function curSessions(){ return WS.sessions.filter(s=>s.projectId===WS.activeProject); }
-function activeSess(){ return WS.sessions.find(s=>s.id===WS.activeSession)||null; }
-function newId(p){ return p+Date.now().toString(36)+Math.floor(Math.random()*1e4).toString(36); }
-function newSession(open){
-  const s={ id:newId('s'), projectId:WS.activeProject, title:'New chat', fav:false, ts:Date.now(), log:[] };
-  WS.sessions.unshift(s); WS.activeSession=s.id; saveWS(); renderSidebar();
-  if(open!==false) go('Chat'); else if(state.route==='Chat') renderChat();
-  return s;
+async function loadSessions(){ try{ WS.sessions=await J('/v1/sessions?project='+encodeURIComponent(WS.activeProject)); }catch(_){ WS.sessions=[]; } }
+function curProject(){ return WS.projects.find(p=>p.id===WS.activeProject)||WS.projects[0]||{name:'Personal'}; }
+function curSessions(){ return WS.sessions; }
+function activeSess(){ return WS.byId[WS.activeSession]||null; }
+async function newSession(open){
+  try{ const s=await J('/v1/sessions',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({project_id:WS.activeProject})});
+    WS.byId[s.id]=s; WS.sessions.unshift({id:s.id,project_id:s.project_id,title:s.title,fav:s.fav,updated_ms:s.updated_ms,messages:0}); WS.activeSession=s.id; renderSidebar();
+    if(open!==false) go('Chat'); else if(state.route==='Chat') renderChat();
+    return s;
+  }catch(e){ notify('Couldn’t start a chat — '+e.message); return null; }
 }
-function openSession(id){ WS.activeSession=id; saveWS(); renderSidebar(); if(state.route!=='Chat') go('Chat'); else renderChat(); }
-function favSession(id,e){ if(e) e.stopPropagation(); const s=WS.sessions.find(x=>x.id===id); if(s){ s.fav=!s.fav; saveWS(); renderSidebar(); } }
-function renameSession(id,e){ if(e) e.stopPropagation(); const s=WS.sessions.find(x=>x.id===id); if(!s) return; const n=prompt('Rename chat', s.title); if(n!=null){ s.title=n.trim()||s.title; saveWS(); renderSidebar(); } }
-function deleteSession(id,e){ if(e) e.stopPropagation(); WS.sessions=WS.sessions.filter(x=>x.id!==id); if(WS.activeSession===id) WS.activeSession=(curSessions()[0]||{}).id||null; saveWS(); renderSidebar(); if(state.route==='Chat') renderChat(); }
+async function openSession(id){
+  WS.activeSession=id;
+  if(!WS.byId[id]){ try{ WS.byId[id]=await J('/v1/sessions/'+encodeURIComponent(id)); }catch(_){ WS.byId[id]={id,messages:[]}; } }
+  renderSidebar(); if(state.route!=='Chat') go('Chat'); else renderChat();
+}
+async function favSession(id,e){ if(e) e.stopPropagation(); const s=WS.sessions.find(x=>x.id===id); if(!s) return; const fav=!s.fav;
+  s.fav=fav; if(WS.byId[id]) WS.byId[id].fav=fav; renderSidebar();
+  try{ await J('/v1/sessions/'+id,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({fav})}); }catch(_){ s.fav=!fav; renderSidebar(); }
+}
+async function renameSession(id,e){ if(e) e.stopPropagation(); const s=WS.sessions.find(x=>x.id===id); if(!s) return; const n=prompt('Rename chat', s.title); if(n==null) return;
+  const title=n.trim()||s.title; s.title=title; if(WS.byId[id]) WS.byId[id].title=title; renderSidebar();
+  try{ await J('/v1/sessions/'+id,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({title})}); }catch(_){}
+}
+async function deleteSession(id,e){ if(e) e.stopPropagation();
+  WS.sessions=WS.sessions.filter(x=>x.id!==id); delete WS.byId[id];
+  if(WS.activeSession===id) WS.activeSession=(WS.sessions[0]||{}).id||null;
+  renderSidebar(); if(state.route==='Chat') renderChat();
+  try{ await J('/v1/sessions/'+id,{method:'DELETE'}); }catch(_){}
+}
 function toggleProjMenu(){ projMenuOpen=!projMenuOpen; renderSidebar(); }
-function pickProject(id){ projMenuOpen=false; WS.activeProject=id; WS.activeSession=(curSessions()[0]||{}).id||null; saveWS(); renderSidebar(); if(state.route==='Chat') renderChat(); }
-function addProject(){ projMenuOpen=false; const n=prompt('New project name'); if(n&&n.trim()){ const id=newId('p'); WS.projects.push({id,name:n.trim()}); pickProject(id); } else renderSidebar(); }
+async function pickProject(id){ projMenuOpen=false; WS.activeProject=id; WS.activeSession=null; renderSidebar();
+  await loadSessions(); WS.activeSession=(WS.sessions[0]||{}).id||null; renderSidebar(); if(state.route==='Chat') renderChat(); }
+async function addProject(){ projMenuOpen=false; const n=prompt('New project name'); if(!(n&&n.trim())){ renderSidebar(); return; }
+  try{ const p=await J('/v1/projects',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name:n.trim()})}); WS.projects.push(p); pickProject(p.id); }
+  catch(e){ notify('Couldn’t create project — '+e.message); }
+}
 function renderSidebar(){
   const el=document.getElementById('sidebar'); if(!el) return;
   const proj=curProject(), sess=curSessions(), favs=sess.filter(s=>s.fav), rest=sess.filter(s=>!s.fav);
@@ -756,11 +776,12 @@ function renderSidebar(){
     </div>`;
 }
 
-// ---- Chat / Console - the active session's thread ----
+// ---- Chat / Console - the active session's thread, loaded from the daemon ----
 async function renderChat(){
-  if(!activeSess()){ if(curSessions().length){ WS.activeSession=curSessions()[0].id; saveWS(); } else newSession(false); renderSidebar(); }
-  const s=activeSess();
-  document.getElementById('viewname').textContent = curProject().name+' / '+((s&&s.title)||'New chat');
+  if(!WS.activeSession){ if(WS.sessions.length){ await openSession(WS.sessions[0].id); return; } else { const s=await newSession(false); if(!s) return; } }
+  if(WS.activeSession && !WS.byId[WS.activeSession]){ try{ WS.byId[WS.activeSession]=await J('/v1/sessions/'+encodeURIComponent(WS.activeSession)); }catch(_){} }
+  const meta=WS.sessions.find(x=>x.id===WS.activeSession);
+  document.getElementById('viewname').textContent = curProject().name+' / '+((meta&&meta.title)||'New chat');
   document.getElementById('view').innerHTML = `<div class="chat">${offlineNotice()}
     <div class="feed" id="feed"></div>${composerHtml()}</div>`;
   document.getElementById('composer').placeholder='Ask Engram anything…';
@@ -768,7 +789,7 @@ async function renderChat(){
 }
 function paintFeed(){
   const f=document.getElementById('feed'); if(!f) return;
-  const s=activeSess(), log=s?s.log:[];
+  const s=WS.byId[WS.activeSession], log=s?(s.messages||[]):[];
   f.innerHTML = log.map(m=>{
     if(m.role==='user') return `<div class="msg user">${esc(m.text)}</div>`;
     const ribbon=(m.recalled&&m.recalled.length)?`<div class="ribbon">${m.recalled.slice(0,5).map(r=>`<span class="recall" title="${escAttr(r)}"><span class="rg">◇</span> ${esc((r||'').replace(/\s+/g,' ').slice(0,54))}</span>`).join('')}</div>`:'';
@@ -778,14 +799,17 @@ function paintFeed(){
   f.scrollTop=f.scrollHeight;
 }
 async function chatSay(text){
-  const s=activeSess()||newSession(false);
-  s.log.push({role:'user',text});
-  if(!s.title||s.title==='New chat'){ s.title=text.replace(/\s+/g,' ').slice(0,42); }
-  const msg={role:'engram',text:''}; s.log.push(msg); saveWS(); renderSidebar();
-  document.getElementById('viewname').textContent = curProject().name+' / '+s.title;
-  paintFeed();
+  let sid=WS.activeSession, sess=WS.byId[sid];
+  if(!sess){ const s=await newSession(false); if(!s) return; sid=s.id; sess=WS.byId[sid]; }
+  if(!sess.messages) sess.messages=[];
+  sess.messages.push({role:'user',text});
+  const meta=WS.sessions.find(x=>x.id===sid);
+  if(meta && (!meta.title || meta.title==='New chat')){ meta.title=text.replace(/\s+/g,' ').slice(0,42); document.getElementById('viewname').textContent=curProject().name+' / '+meta.title; }
+  if(meta){ WS.sessions=[meta, ...WS.sessions.filter(x=>x.id!==sid)]; }   // bump to top
+  renderSidebar();
+  const msg={role:'engram',text:''}; sess.messages.push(msg); paintFeed();
   try {
-    const r = await fetch('/v1/converse/stream',{method:'POST',headers:{...AUTH,'content-type':'application/json'},body:JSON.stringify({text})});
+    const r = await fetch('/v1/converse/stream',{method:'POST',headers:{...AUTH,'content-type':'application/json'},body:JSON.stringify({text, session:sid})});
     if(!r.ok||!r.body) throw new Error('HTTP '+r.status);
     const reader=r.body.getReader(); const dec=new TextDecoder(); let buf='';
     for(;;){
@@ -800,14 +824,14 @@ async function chatSay(text){
         }
         const data=dl.join('\n');
         if(ev==='token'){ msg.text+=data; paintFeed(); }
-        else if(ev==='done'){ try{const d=JSON.parse(data); if(d.reply) msg.text=d.reply; msg.recalled=d.recalled; msg.learned=d.learned;}catch(_){} saveWS(); paintFeed(); }
+        else if(ev==='done'){ try{const d=JSON.parse(data); if(d.reply) msg.text=d.reply; msg.recalled=d.recalled; msg.learned=d.learned;}catch(_){} paintFeed(); }
         else if(ev==='error'){ msg.text='(couldn’t reach Engram - '+data+')'; paintFeed(); }
       }
     }
     if(!msg.text) msg.text='(no reply)';
-    saveWS(); paintFeed();
+    paintFeed();
   } catch(e){
-    msg.text=msg.text||'(couldn’t reach Engram - '+(e.message||'try again')+')'; saveWS(); paintFeed();
+    msg.text=msg.text||'(couldn’t reach Engram - '+(e.message||'try again')+')'; paintFeed();
   }
 }
 
@@ -1309,8 +1333,9 @@ function connectEvents(){
   } catch(_){}
 }
 async function boot(){
-  renderNav(); renderSidebar();
+  renderNav();
   try{ CFG=await J('/v1/config'); }catch(_){}   // for the composer's model picker
+  await loadWorkspace(); renderSidebar();        // projects + sessions from the daemon
   await loadTasks(); lastTasksSig=JSON.stringify(state.tasks);
   // Deep link via #hash, else the front door is the Console (chat).
   const hv=location.hash.slice(1);

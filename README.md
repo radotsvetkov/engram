@@ -63,9 +63,38 @@ The security edges here are what a bolted-on tool loop cannot retrofit:
 - **The filesystem is workdir-confined** and the **shell is off by default**; the dangerous capabilities are closed unless you open them.
 - **The run is *tainted* the instant a web or browser tool reads untrusted content**, and taint only ever spreads. After that point the `shell` is refused and the model's secret-bearing context is stripped before the next call — the prompt-injection → exfiltration chain is broken at the boundary, not by a hoped-for prompt. The same taint flows into subagents and into any memory the run writes.
 
-**`crates/engramd` — the daemon.** This is where the parts become an agent. It opens the ledger, the hybrid memory, the skill registry, the gateway, the scheduler, and the agent's toolset (built-ins plus any MCP servers), and exposes them over a small local HTTP API plus a dashboard. The dashboard ships live views: **Agent** (run a task and watch each tool step), **Talk**, **Live Cortex** (the audit stream as neurons firing on the bus), **Memory Atlas** (regions and tiers, browsable, with one-click forget), **Skills**, **Schedule**, and the **gateway meter**. Every request keeps the brain awake and fires a spike; after an idle window with no requests the process exits to zero, so on a socket-activated VPS there is nothing resident between uses.
+**`crates/engramd` — the daemon.** This is where the parts become an agent. It opens the ledger, the hybrid memory, the skill registry, the gateway, the scheduler, and the agent's toolset (built-ins plus any MCP servers), and exposes them over a small local HTTP API plus the redesigned desktop control center (see [Desktop](#desktop)). That single page gives you a Kanban board fed by a chat composer, glass-box signed task cards, an ambient trust/cost spine, and views for **Chat / Tasks / Schedule / Memory / Skills** — all over Server-Sent Events. Every request keeps the brain awake and fires a spike; after an idle window with no requests the process exits to zero, so on a socket-activated VPS there is nothing resident between uses.
 
 **`crates/engram-bench` — the benchmark harness.** A reproducible paraphrase recall harness that writes a labelled fact/query set plus distractors into the real memory broker and reports recall@10, MRR, and the zero-lexical-overlap subset where a keyword index scores zero by construction.
+
+## Desktop
+
+The dashboard is now a redesigned single-page **control center** — one self-contained `index.html` (HTML + CSS + vanilla JS, no build step, no framework) served at `/` by `engramd` (`crates/engramd/assets/index.html`). It is a calm, dark, Claude-like window: a left rail (**Chat / Tasks / Schedule / Memory / Skills**) and one work surface, with an ambient **trust spine** in the top bar that answers the two questions other agent UIs leave open — *is this safe?* and *what's it costing?*. A live **"ledger verified · N"** chip (flipping to a red tamper banner the moment the audit chain fails to verify) sits next to a **"today's cost"** chip, so the agent's integrity and spend are always in view, not buried in a separate admin tool.
+
+- **A Kanban board at the heart.** Three columns — **To do / Running / Done** — with a **chat composer as the only input**, and intent routing on a single keystroke: **Enter** answers in Chat, **⌘+Enter** creates a task, **⇧+⌘+Enter** creates *and runs* it. Dragging a card between columns runs, cancels, or re-queues it. A running card shows live **"step N · tool"** progress as the agent works.
+- **Glass-box task cards.** Clicking a card opens a detail panel with the agent's answer *and* the signed ledger audit slice for that run — each tool step paired with its ledger sequence number and BLAKE3 hash (click to copy), plus the pinned ledger head. It is a tamper-evident receipt, not just a log: the card proves what the agent did.
+- **Graduated, calm autonomy.** Read-only steps run silently. When a side-effecting tool is blocked — the `shell`, off by default — the panel surfaces a plain-language **"Allow & re-run"** approval card instead of a stack trace. Granting it flips a runtime policy that is itself written to the ledger, so even a consent change is on the record.
+- **Visible scheduling.** A natural-language **"when"** field with a **live next-fire preview** as you type (no model call), plus an in-process scheduler tick that fires due jobs as ordinary board cards. (For true zero-idle wake while the daemon is asleep, the generated systemd timers do the waking.)
+- **Honest offline mode.** With no model key configured, the UI shows an explicit *"add a model key to think for real"* banner rather than returning fake answers.
+- **Live and persistent.** Updates stream over **Server-Sent Events** (the connection is deliberately time-bounded so a held-open stream can never block the daemon's zero-idle exit; the browser reconnects seamlessly). Chat **persists across reloads** from episodic memory, every view is **deep-linkable via `#hash`**, and a **Memory** view renders the brain's regions (Identity / Semantic / Episodic / Procedural) with their warm/cold tiers.
+
+The desktop sits on a small task model (`crates/engramd/src/tasks.rs`): a `Task` moves `todo → doing → done | failed | scheduled`, and a completed run carries a `TaskRun` receipt — the answer, every step verbatim, token and cost deltas, and the signed ledger head pinned at finish. The native [Tauri shell](#desktop-app) wraps exactly this page in a window.
+
+The control center is driven by these endpoints, alongside the existing `/v1/agent`, `/v1/converse`, `/v1/swarm`, `/v1/skills`, `/v1/remember` · `/v1/recall` · `/v1/forget`, `/v1/memory/stats`, `/v1/meter`, `/v1/ledger/tail` · `/v1/ledger/verify`, and `/v1/schedule`:
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/v1/tasks` | GET / POST | list the board / create a task |
+| `/v1/tasks/{id}` | PATCH / DELETE | move a card between columns / delete it |
+| `/v1/tasks/{id}/run` | POST | run the task with the agent and attach a `TaskRun` receipt |
+| `/v1/tasks/{id}/audit` | GET | the signed ledger slice for that run — the glass-box receipt |
+| `/v1/policy` | GET / POST | read or set the runtime shell consent (the "Allow & re-run" toggle), itself ledgered |
+| `/v1/schedule/preview` | GET | parse a natural-language "when" and return the next fire, without creating a job |
+| `/v1/memory/recent` | GET | recent records by region — backs persistent chat and the Memory view |
+| `/v1/events` | GET (SSE) | the live event stream the board updates from (bounded to protect zero-idle) |
+| `/v1/voice` | POST | one voice turn: audio in → transcribe → run → synthesize → audio out |
+| `/v1/voice/stream` | GET (WebSocket) | a multi-turn live voice session |
+| `/v1/channel/{platform}` | POST | an inbound messaging-channel webhook |
 
 ## Benchmark results
 
@@ -115,6 +144,7 @@ The thesis is that Engram now *matches* [Nous Hermes](https://github.com/nousres
 | **Signed audit ledger** | 100% of memory writes, skill mutations, and tool calls signed, hash-chained, and one-click reversible | mutable Markdown/SQLite with manual review |
 | **Self-modifying-skill safety** | 100% of skill executions sandboxed (WASM, deny-by-default, fuel-bounded), egress revoked on untrusted-data runs | 0% validation on the live in-agent skill-patch path |
 | **Learning loop** | candidate skill versions replayed, A/B-gated head-to-head, promoted only on a measured win, reversible | no measured self-improvement gate |
+| **Control surface** | one coherent desktop control center: a Kanban board fed by a single chat composer, glass-box task cards carrying the signed ledger slice for their run, and an ambient trust/cost spine ("ledger verified · N", today's cost) in the top bar | a split CLI + chat-app + admin-dashboard, with opaque cost |
 
 ### Where Engram does *not* yet match Hermes
 
@@ -179,11 +209,15 @@ ENGRAM_IDLE_SECS=30 ENGRAM_HOME=/tmp/engram RUST_LOG=debug \
   ./target/release/engramd
 ```
 
-The dashboard includes **Agent** (give it a task and watch each tool step it takes),
-**Talk** (a conversation that writes to episodic memory, recalls past turns, and learns
-identity facts about you), **Memory Atlas**, **Skills** (run the seeded `shout` and `ask`
-skills — `ask` calls the model through the gateway from inside the sandbox), **Schedule**,
-**Live Cortex** (the audit stream), and the gateway meter.
+The control center opens on the **Tasks** board: type into the chat composer and press
+**⌘+Enter** to create a task or **⇧+⌘+Enter** to create and run it, then watch each card's
+**"step N · tool"** progress and open it for the answer plus its signed audit slice.
+**Chat** is a conversation that writes to episodic memory, recalls past turns, learns
+identity facts about you, and persists across reloads; **Schedule** previews a
+natural-language "when" as you type; **Memory** renders the brain's regions and tiers; and
+**Skills** runs the seeded `shout` and `ask` skills (`ask` calls the model through the
+gateway from inside the sandbox). The top bar's **"ledger verified · N"** and **today's
+cost** chips stay live throughout.
 
 To exercise the agent with real tools, enable the optional features and (for live media)
 a provider:
@@ -232,7 +266,7 @@ Every step of the v0.1 architecture build order is built and tested.
 | 7 | Taint rule: egress revoked on untrusted-data runs at the sandbox boundary | **Done** |
 | 8 | Learning loop: replay eval, A/B promotion gate, signed versions, revert | **Done** |
 | 9 | `engram-sched`: NL→recurrence, persisted jobs, systemd socket + timer units | **Done** |
-| 10 | `engramd`: the daemon — HTTP API + dashboard (Agent, Talk, Live Cortex, Memory Atlas, Skills, Schedule, meter) | **Done** |
+| 10 | `engramd`: the daemon — HTTP API + desktop control center (Kanban board, glass-box signed task cards, trust/cost spine, Chat, Schedule, Memory, Skills, SSE) | **Done** |
 | 11 | `engram-bench`: paraphrase recall harness | **Done** |
 | 12 | `engram-agent`: tool-use loop, built-in tools (memory, files, shell, web, browser, media, delegate, messaging), MCP client, taint guard | **Done** |
 
@@ -253,7 +287,11 @@ in place. Delivered since the initial v0.1:
 - **Real model + embedder wiring** — `ENGRAM_EMBED=gateway` plus `--features http` and a
   provider URL/key route completions and embeddings through a real OpenAI-compatible model.
 - **Swarms** — `/v1/swarm` composes multiple skills into a pipeline over shared input.
-- **Tauri desktop shell** — `desktop/` wraps the dashboard in a native window.
+- **Desktop control center** — the dashboard, redesigned into one calm single-page window:
+  a Kanban board fed by a chat composer with intent routing, glass-box signed task cards,
+  an ambient trust/cost spine, graduated shell-approval autonomy, live scheduling, honest
+  offline mode, and SSE-driven updates (see [Desktop](#desktop)).
+- **Tauri desktop shell** — `desktop/` wraps that control center in a native window.
 
 Remaining:
 

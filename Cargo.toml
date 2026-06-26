@@ -12,6 +12,7 @@ members = [
     "crates/engram-agent",
     "crates/engramd",
     "crates/engram-bench",
+    "crates/engram-eval",
 ]
 
 [workspace.package]

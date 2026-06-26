@@ -424,6 +424,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "engram-eval"
+version = "0.1.0"
+dependencies = [
+ "engram-agent",
+ "engram-core",
+ "engram-gateway",
+ "engram-memory",
+ "engram-skills",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "engram-gateway"
 version = "0.1.0"
 dependencies = [

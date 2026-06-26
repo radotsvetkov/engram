@@ -1,0 +1,23 @@
+[package]
+name = "engram-eval"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Engram eval/replay: deterministic, offline regression tests for agent-harness behavior"
+
+[[bin]]
+name = "engram-eval"
+path = "src/main.rs"
+
+[dependencies]
+engram-core = { path = "../engram-core" }
+engram-memory = { path = "../engram-memory" }
+engram-gateway = { path = "../engram-gateway" }
+engram-skills = { path = "../engram-skills" }
+engram-agent = { path = "../engram-agent" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tempfile = "3"
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }

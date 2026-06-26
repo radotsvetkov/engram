@@ -1,0 +1,14 @@
+{
+  "name": "example-remember-recall",
+  "task": "Remember I prefer dark mode, then recall it and tell me.",
+  "completions": [
+    { "text": "", "model": "eval", "tokens_in": 10, "tokens_out": 0,
+      "tool_calls": [ { "id": "1", "name": "memory_remember",
+        "arguments": { "text": "User prefers dark mode", "region": "identity" } } ] },
+    { "text": "", "model": "eval", "tokens_in": 10, "tokens_out": 0,
+      "tool_calls": [ { "id": "2", "name": "memory_recall",
+        "arguments": { "query": "what UI preference does the user have" } } ] },
+    { "text": "You prefer dark mode.", "model": "eval", "tokens_in": 5, "tokens_out": 5, "tool_calls": [] }
+  ],
+  "expect": { "tools": ["memory_remember", "memory_recall"], "answer_contains": "dark mode", "stopped": "final" }
+}

@@ -1593,19 +1593,7 @@ async function pickModel(m){
 }
 document.addEventListener('click', e=>{ if(modelMenuOpen && !e.target.closest('.mp-wrap')) closeModelMenu(); });
 
-// ---- Schedule ----
-async function renderSchedule(){
-  const jobs = await J('/v1/schedule');
-  document.getElementById('view').innerHTML = `<div class="panes"><div class="pane">
-    <h2>Schedule a recurring run</h2>
-    <div class="row"><input id="sname" placeholder="name" style="flex:.5"><input id="swhen" placeholder="every Monday at 9am" oninput="schedPreview('swhen','swhenprev')"><button onclick="addJob()">Add</button></div>
-    <div id="swhenprev" class="sub" style="margin:-4px 0 8px"></div>
-    <div id="jobs">${(jobs||[]).length? jobs.map(j=>`<div class="item">${esc(j.name)}<div class="sub">next ${new Date(j.next_fire_ms).toLocaleString()}</div></div>`).join('') : '<div class="muted">Nothing scheduled. Try “every Monday at 9, summarize my week”.</div>'}</div>
-  </div></div>`;
-}
-async function addJob(){ const name=document.getElementById('sname').value.trim()||'job'; const when=document.getElementById('swhen').value.trim(); if(!when)return;
-  const r=await J('/v1/schedule',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name,when,payload:{}})});
-  if(r.error) alert(r.error); else renderSchedule(); }
+// (The old renderSchedule/addJob were superseded by renderScheduleView/addJobPro and removed.)
 
 // ---- Memory ----
 const REGION_LABEL = { identity:'Identity - who you are', semantic:'Semantic - knowledge',
@@ -1904,14 +1892,7 @@ function ccTools(c){
       <div class="sactions"><span class="grow"></span><button class="sbtn primary" onclick="saveSettings()">Save</button></div>
     </div>`;
 }
-function ccCost(c){
-  const cost=c.cost||{task_token_budget:250000};
-  return ccHead('Cost','A hard ceiling on a single task run — it stops at the next step once it crosses this many tokens (input + output).')+`
-    <div class="scard">
-      <div class="field" style="max-width:260px"><label>Per-task token budget</label><input type="number" id="cbudget" min="1000" step="1000" value="${cost.task_token_budget}"></div>
-      <div class="sactions"><span class="grow"></span><button class="sbtn primary" onclick="saveSettings()">Save</button></div>
-    </div>`;
-}
+// (The old ccCost was superseded by ccCost2 and removed.)
 function ccPersona(c){
   return ccHead('Persona','Standing instructions prepended to every agent run — your <code>SOUL.md</code>. Saved changes shape the very next run.')+`
     <div class="scard">
@@ -2283,9 +2264,17 @@ function renderView(){
 }
 
 // Refresh the board only when tasks actually changed (so idle re-renders don't fight typing).
-let lastTasksSig='', refreshTimer=null;
+let lastTasksSig='', refreshTimer=null, _taskStatus={};
 async function refreshTasks(){
   await loadTasks();
+  // Surface a desktop notification when a task finishes while the window is backgrounded.
+  for(const t of state.tasks){
+    const prev=_taskStatus[t.id];
+    if(prev && prev!=='done' && prev!=='failed' && (t.status==='done'||t.status==='failed') && !document.hasFocus()){
+      engramNotifyDesktop(t.status==='done'?'Task complete':'Task stopped', t.title);
+    }
+    _taskStatus[t.id]=t.status;
+  }
   const sig=JSON.stringify(state.tasks);
   if(sig!==lastTasksSig){ lastTasksSig=sig; if(state.route==='Tasks') renderBoard(); if(panelId) openTask(panelId, true); }
 }

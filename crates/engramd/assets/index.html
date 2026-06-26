@@ -210,6 +210,7 @@ function card(t){
      <div class="t">${esc(t.title)}</div>${foot}</div>`;
 }
 function renderBoard(){
+  const cv = document.getElementById('composer')?.value || '';  // preserve in-progress typing
   const cols={todo:[],doing:[],done:[]};
   state.tasks.forEach(t=>cols[STATUS_COLS[t.status]||'todo'].push(t));
   const v=document.getElementById('view');
@@ -221,14 +222,15 @@ function renderBoard(){
           <button onclick="prefill('Find me 3 quotes about curiosity')">Find 3 quotes</button>
         </div></div>
       <div style="padding:16px">${composerHtml()}</div></div>`;
-    wireComposer(); return;
+  } else {
+    const colHtml=(key,label)=>`<div class="col" data-col="${key}" ondragover="dover(event)" ondragleave="dleave(event)" ondrop="drop(event,'${key}')">
+       <h3>${label} <span>${cols[key].length}</span></h3><div class="cards">${cols[key].map(card).join('')}</div></div>`;
+    v.innerHTML = `<div class="board-wrap">${offlineNotice()}
+      <div class="board">${colHtml('todo','To do')}${colHtml('doing','Running')}${colHtml('done','Done')}</div>
+      <div style="padding:0 16px 16px">${composerHtml()}</div></div>`;
   }
-  const colHtml=(key,label)=>`<div class="col" data-col="${key}" ondragover="dover(event)" ondragleave="dleave(event)" ondrop="drop(event,'${key}')">
-     <h3>${label} <span>${cols[key].length}</span></h3><div class="cards">${cols[key].map(card).join('')}</div></div>`;
-  v.innerHTML = `<div class="board-wrap">${offlineNotice()}
-    <div class="board">${colHtml('todo','To do')}${colHtml('doing','Running')}${colHtml('done','Done')}</div>
-    <div style="padding:0 16px 16px">${composerHtml()}</div></div>`;
   wireComposer();
+  const c=document.getElementById('composer'); if(c && cv){ c.value=cv; c.style.height='auto'; c.style.height=Math.min(c.scrollHeight,160)+'px'; }
 }
 
 // ---- composer + intent routing ----
@@ -419,13 +421,32 @@ function renderView(){
   else if(state.route==='Skills') renderSkills();
 }
 
+// Refresh the board only when tasks actually changed (so idle re-renders don't fight typing).
+let lastTasksSig='', refreshTimer=null;
+async function refreshTasks(){
+  await loadTasks();
+  const sig=JSON.stringify(state.tasks);
+  if(sig!==lastTasksSig){ lastTasksSig=sig; if(state.route==='Tasks') renderBoard(); if(panelId) openTask(panelId); }
+}
+// Live updates over Server-Sent Events — instant board changes, no constant polling.
+function connectEvents(){
+  try {
+    const es=new EventSource('/v1/events');
+    es.addEventListener('spike', e=>{
+      let topic=''; try { topic=JSON.parse(e.data).topic||''; } catch(_){}
+      if(topic.indexOf('task')===0){ clearTimeout(refreshTimer); refreshTimer=setTimeout(refreshTasks,150); }
+    });
+  } catch(_){}
+}
 async function boot(){
   renderNav();
-  await loadTasks();
+  await loadTasks(); lastTasksSig=JSON.stringify(state.tasks);
   // Front door: Chat when the board is empty, Tasks once there's work.
   state.route = state.tasks.length ? 'Tasks' : 'Chat';
   document.getElementById('viewname').textContent=state.route; renderNav(); renderView();
-  poll(); setInterval(async()=>{ await poll(); if(state.route==='Tasks'){ await loadTasks(); renderBoard(); } }, 2000);
+  poll(); connectEvents();
+  // Chips poll + a slow board fallback if SSE is unavailable.
+  setInterval(async()=>{ await poll(); await refreshTasks(); }, 3000);
 }
 boot();
 </script>

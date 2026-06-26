@@ -31,6 +31,9 @@ wat = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 # Voice endpoint audio encode/decode.
 base64 = "0.22"
+# Server-Sent Events stream for live board updates.
+async-stream = "0.3"
+futures-core = "0.3"
 
 [features]
 default = []

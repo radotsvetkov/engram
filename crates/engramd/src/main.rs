@@ -161,6 +161,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/tasks/{id}/run", post(tasks_run))
         .route("/v1/tasks/{id}/audit", get(task_audit))
         .route("/v1/policy", get(policy_get).post(policy_set))
+        .route("/v1/events", get(events))
         .layer(axum::middleware::from_fn_with_state(app.clone(), keep_awake))
         .with_state(app.clone());
 
@@ -425,6 +426,23 @@ async fn voice_handler(State(app): State<App>, Json(r): Json<VoiceReq>) -> ApiRe
     Ok(Json(json!({ "transcript": transcript, "reply": run.answer, "audio_b64": audio_b64 })))
 }
 
+/// Server-Sent Events: stream the neural bus so the desktop updates the moment anything
+/// happens (a task starts, a step completes, a run finishes) instead of polling.
+async fn events(
+    State(app): State<App>,
+) -> axum::response::sse::Sse<impl futures_core::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>>
+{
+    use axum::response::sse::{Event, KeepAlive, Sse};
+    let mut syn = app.bus.synapse();
+    let stream = async_stream::stream! {
+        while let Some(spike) = syn.recv().await {
+            let data = json!({ "topic": spike.topic, "payload": spike.payload }).to_string();
+            yield Ok(Event::default().event("spike").data(data));
+        }
+    };
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
 async fn policy_get(State(app): State<App>) -> ApiResult {
     Ok(Json(json!({ "allow_shell": app.allow_shell.load(std::sync::atomic::Ordering::Relaxed) })))
 }
@@ -459,6 +477,7 @@ struct TaskCreateReq {
 
 async fn tasks_create(State(app): State<App>, Json(r): Json<TaskCreateReq>) -> ApiResult {
     let t = app.tasks.create(r.title, r.detail, r.origin.unwrap_or_else(|| "manual".into()));
+    app.bus.emit(Spike::new("task.create", Priority::Low, json!({ "id": t.id })));
     Ok(Json(serde_json::to_value(t).map_err(err)?))
 }
 
@@ -504,11 +523,13 @@ pub(crate) async fn run_task_core(app: &App, id: &str) -> Result<tasks::Task, St
     };
     let before = app.gateway.meter();
     let started_ms = engram_core::now_ms() as i64;
-    // Stream live progress onto the card as each tool step completes.
+    // Stream live progress onto the card and over the event bus as each step completes.
     let tasks = app.tasks.clone();
+    let bus = app.bus.clone();
     let tid = id.to_string();
     let on_step: engram_agent::StepCallback = Arc::new(move |i, tool, _ok| {
         tasks.set_progress(&tid, format!("step {i} · {tool}"));
+        bus.emit(Spike::new("task.step", Priority::Low, json!({ "id": tid.as_str(), "step": i, "tool": tool })));
     });
     let run = run_agent_task_cb(app, &prompt, 10, Some(on_step)).await?;
     let finished_ms = engram_core::now_ms() as i64;
@@ -527,7 +548,9 @@ pub(crate) async fn run_task_core(app: &App, id: &str) -> Result<tasks::Task, St
         started_ms,
         finished_ms,
     };
-    app.tasks.finish(id, receipt, status).ok_or_else(|| "task vanished".into())
+    let result = app.tasks.finish(id, receipt, status).ok_or_else(|| "task vanished".to_string());
+    app.bus.emit(Spike::new("task.done", Priority::Normal, json!({ "id": id, "status": status })));
+    result
 }
 
 async fn tasks_run(State(app): State<App>, Path(id): Path<String>) -> ApiResult {

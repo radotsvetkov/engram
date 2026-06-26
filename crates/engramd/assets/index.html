@@ -96,7 +96,13 @@
   .board { flex:1; display:grid; grid-template-columns:repeat(3,1fr); gap:10px; padding:16px; overflow:auto; }
   .col { background:var(--surface-1); border:1px solid var(--border); border-radius:12px; padding:10px;
     display:flex; flex-direction:column; gap:8px; min-height:0; }
-  .col.dragover { border-color:var(--accent); }
+  .col.dragover { border-color:var(--accent); background:rgba(69,200,168,.05); box-shadow:inset 0 0 0 1px rgba(69,200,168,.28); }
+  .card[draggable=true] { cursor:grab; }
+  .card[draggable=true]:active { cursor:grabbing; }
+  .card.dragging { opacity:.35; }
+  .rcpt-chip { margin-left:auto; display:inline-flex; align-items:center; gap:3px; font:10.5px var(--mono); color:var(--text-secondary);
+    background:var(--surface-1); border:1px solid var(--border-strong); border-radius:6px; padding:1px 7px; cursor:pointer; transition:.12s; }
+  .rcpt-chip:hover { border-color:var(--ring); color:var(--accent); }
   .col h3 { margin:2px 4px 6px; font-size:12px; color:var(--text-secondary); font-weight:500;
     text-transform:uppercase; letter-spacing:.6px; display:flex; gap:6px; }
   .col h3 span { color:var(--text-muted); }
@@ -522,14 +528,16 @@ function offlineNotice(){ return state.offline ? '<div class="offline" role="sta
 function card(t){
   const running = t.status==='doing';
   const tags = (t.tool_tags||[]).map(x=>`<span class="tag ${x}">${x}</span>`).join('');
+  // every finished run carries a glass-box receipt chip - its signed ledger slice.
+  const rcpt = t.run ? `<span class="rcpt-chip" title="open the signed receipt for this run" onclick="openTaskReceipt('${t.id}',event)">◇ receipt</span>` : '';
   let foot='';
   if(running) foot=`<div class="meta"><span class="pulse"></span> ${esc(t.progress||'thinking…')}</div><div class="bar"></div>`;
-  else if(t.status==='done' && t.run) foot=`<div class="meta"><span class="check">✓</span> ${(t.run.tokens_in+t.run.tokens_out)} tok · $${(t.run.cost_usd||0).toFixed(4)} ${t.schedule_id?'· ⟳':''}</div>`;
-  else if(t.status==='failed') foot=`<div class="meta"><span class="xmark">✕</span> stopped at the step limit</div>`;
+  else if(t.status==='done' && t.run) foot=`<div class="meta"><span class="check">✓</span> ${(t.run.tokens_in+t.run.tokens_out)} tok · $${(t.run.cost_usd||0).toFixed(4)}${t.schedule_id?' · ⟳':''}${rcpt}</div>`;
+  else if(t.status==='failed') foot=`<div class="meta"><span class="xmark">✕</span> stopped${rcpt}</div>`;
   else foot=`<div class="meta">${tags||'<span class="muted">queued</span>'}</div>`;
   return `<div class="card ${running?'running':''}" draggable="true" data-id="${t.id}"
      role="button" tabindex="0" aria-label="${esc(t.title)}"
-     ondragstart="drag(event,'${t.id}')" onclick="openTask('${t.id}')"
+     ondragstart="drag(event,'${t.id}')" ondragend="dragend(event)" onclick="openTask('${t.id}')"
      onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openTask('${t.id}')}">
      <div class="t">${esc(t.title)}</div>${foot}</div>`;
 }
@@ -612,9 +620,11 @@ async function previewTask(id){
 
 // ---- drag ----
 let dragId=null;
-function drag(e,id){ dragId=id; }
-function dover(e){ e.preventDefault(); e.currentTarget.classList.add('dragover'); }
-function dleave(e){ e.currentTarget.classList.remove('dragover'); }
+function drag(e,id){ dragId=id; e.currentTarget.classList.add('dragging');
+  try{ e.dataTransfer.effectAllowed='move'; e.dataTransfer.setData('text/plain',id); }catch(_){} }
+function dragend(e){ e.currentTarget.classList.remove('dragging'); document.querySelectorAll('.col.dragover').forEach(c=>c.classList.remove('dragover')); }
+function dover(e){ e.preventDefault(); try{ e.dataTransfer.dropEffect='move'; }catch(_){} e.currentTarget.classList.add('dragover'); }
+function dleave(e){ if(!e.currentTarget.contains(e.relatedTarget)) e.currentTarget.classList.remove('dragover'); }
 async function drop(e,col){
   e.preventDefault(); e.currentTarget.classList.remove('dragover');
   if(!dragId) return; const id=dragId; dragId=null;
@@ -1197,7 +1207,34 @@ async function reverify(){
   }catch(e){ notify('Couldn’t verify — '+e.message); }
 }
 function copyHash(h){ try{ navigator.clipboard.writeText(h); notify('Hash copied','ok'); }catch(_){ } }
-document.addEventListener('click', e=>{ const r=document.getElementById('receipt'); if(r&&!r.hidden && !e.target.closest('#receipt') && !e.target.closest('#ledgerChip')) closeReceipt(); });
+document.addEventListener('click', e=>{ const r=document.getElementById('receipt'); if(r&&!r.hidden && !e.target.closest('#receipt') && !e.target.closest('#ledgerChip') && !e.target.closest('.rcpt-chip')) closeReceipt(); });
+
+// a task's own glass-box receipt - its signed ledger slice
+let _rcptTask=null;
+async function openTaskReceipt(id,e){
+  if(e) e.stopPropagation(); _rcptTask=id;
+  const el=document.getElementById('receipt'); el.hidden=false;
+  el.innerHTML='<div class="r-head"><span class="r-seal"></span><span class="r-title">Task receipt</span><span class="r-sub">reading…</span><button class="r-x" onclick="closeReceipt()">✕</button></div><div class="r-body"><div class="r-row"><span></span><span class="r-kind">loading the signed run…</span><span></span></div></div>';
+  try{ const r=await J('/v1/tasks/'+encodeURIComponent(id)+'/receipt'); renderTaskReceipt(r); }
+  catch(e2){ const s=el.querySelector('.r-sub'); if(s){ s.textContent=esc(e2.message); s.style.color='var(--danger)'; } }
+}
+function renderTaskReceipt(r){
+  const el=document.getElementById('receipt'), steps=r.steps||[];
+  const rows = steps.length ? steps.map((s,i)=>{
+    const h=(s.ledger_hash||'').slice(0,10), ok=s.ok?'<span style="color:var(--accent)">✓</span>':'<span style="color:var(--danger)">✕</span>';
+    return `<div class="r-row"><span class="r-seq">${s.ledger_seq||(i+1)}</span><span class="r-kind">${ok} ${esc(s.tool||'')}</span>`+
+      `<span class="r-hash" title="copy ${esc(s.ledger_hash||'')}" onclick="copyHash('${esc(s.ledger_hash||'')}')">${h?esc(h)+'…':'—'}</span></div>`;
+  }).join('') : '<div class="r-row"><span></span><span class="r-kind">no tools used · the answer is signed at the head</span><span></span></div>';
+  const ok=r.steps_match_ledger;
+  el.innerHTML=`
+    <div class="r-head"><span class="r-seal"></span><span class="r-title">Task receipt · ${esc((r.task&&r.task.title)||'')}</span>
+      <span class="r-sub" style="color:${ok?'var(--accent)':'var(--danger)'}">${ok?'✓ steps match ledger':'⚠ inconsistent'}</span>
+      <button class="r-x" onclick="closeReceipt()" title="Close (Esc)">✕</button></div>
+    <div class="r-body">${rows}</div>
+    <div class="r-meta"><span>head&nbsp; <b>${esc((r.ledger_head||'').slice(0,18))}…</b></span><span>key&nbsp;&nbsp; <b>${esc((r.pubkey||'').slice(0,18))}…</b> · ${esc(r.alg||'ed25519')}</span></div>
+    <div class="r-foot"><button class="sbtn" onclick="recheckReceipt()">Re-check</button><span class="hint">${esc(r.verify||'engramd verify ~/.engram')}</span></div>`;
+}
+function recheckReceipt(){ if(_rcptTask) openTaskReceipt(_rcptTask); }
 function paletteCommands(){
   const g='Go to', a='Actions', s='Settings', cmds=[];
   VIEWS.forEach(v=>cmds.push({group:g, t:v, ic:ICONS[v], run:()=>go(v)}));

@@ -7,18 +7,28 @@
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='5.4' fill='%23181c20'/%3E%3Cg fill='none' stroke='%23eef2f0' stroke-width='1.55' stroke-linecap='round' stroke-linejoin='round' transform='translate(2.4 4) scale(.8)'%3E%3Cpath d='M12 9V5.5'/%3E%3Cpath d='M14.6 13.5 17.6 15.2'/%3E%3Cpath d='M9.4 13.5 6.4 15.2'/%3E%3Ccircle cx='12' cy='12' r='3'/%3E%3Ccircle cx='12' cy='3.9' r='1.6'/%3E%3Ccircle cx='5' cy='16' r='1.6'/%3E%3C/g%3E%3Cg transform='translate(2.4 4) scale(.8)'%3E%3Ccircle cx='12' cy='12' r='.95' fill='%23eef2f0'/%3E%3Ccircle cx='19' cy='16' r='1.6' fill='%2345c8a8'/%3E%3C/g%3E%3C/svg%3E" />
 <style>
   :root {
-    --surface-0:#0c0d0f; --surface-1:#131417; --surface-2:#181a1e;
-    --border:rgba(255,255,255,.07); --border-strong:rgba(255,255,255,.12);
+    /* surfaces - cooled graphite, monotonic luminance steps; the rail is the darkest, so the
+       three columns separate without relying on a hairline. */
+    --rail:#08090b; --surface-0:#0c0d10; --surface-1:#111316; --surface-2:#181b1f; --surface-3:#21242a;
+    --border:rgba(255,255,255,.06); --border-strong:rgba(255,255,255,.10);
+    --border-hi:inset 0 1px 0 rgba(255,255,255,.05);
     --text-primary:#e8e9ec; --text-secondary:#a3a7af; --text-muted:#6c7078;
-    --accent:#45c8a8; --accent-ink:#04342c;
-    --surface-3:#202329;
-    --hover:rgba(255,255,255,.045); --active:rgba(255,255,255,.08);
-    --accent-soft:rgba(69,200,168,.12); --ring:rgba(69,200,168,.55);
+    --accent:#45c8a8; --accent-ink:#04342c; --accent-soft:rgba(69,200,168,.12); --ring:rgba(69,200,168,.5);
     --glow:drop-shadow(0 0 6px rgba(69,200,168,.45));
+    --hover:rgba(255,255,255,.045); --active:rgba(255,255,255,.075);
     --warning:#e0a23c; --danger:#e2675f;
     --web:#85b7eb; --web-bg:#101a24; --files:#ef9f27; --files-bg:#1a1812;
-    --radius:8px; --font-voice:Georgia, 'Times New Roman', serif;
-    --sans:-apple-system,'Inter',system-ui,sans-serif; --mono:ui-monospace,Menlo,monospace;
+    /* elevation - deep, soft, top-lit */
+    --e1:0 1px 2px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.05);
+    --e2:0 2px 8px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.05);
+    --e3:0 8px 28px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.05);
+    --e4:0 24px 70px rgba(0,0,0,.62), 0 2px 8px rgba(0,0,0,.4);
+    --r-chip:7px; --r-card:12px; --r-modal:16px; --radius:8px;
+    /* motion - calm and physical */
+    --ease-out:cubic-bezier(.22,.61,.36,1); --ease-spring:cubic-bezier(.34,1.4,.5,1); --ease-inout:cubic-bezier(.65,0,.35,1);
+    --dur-1:90ms; --dur-2:160ms; --dur-3:260ms; --dur-4:420ms;
+    --font-voice:Georgia, 'Times New Roman', serif;
+    --sans:-apple-system,'Inter',system-ui,sans-serif; --mono:'JetBrains Mono',ui-monospace,Menlo,monospace;
   }
   * { box-sizing:border-box; }
   html,body { margin:0; height:100%; }
@@ -31,7 +41,7 @@
   .app { display:grid; grid-template-columns:56px 252px 1fr; height:calc(100vh - 26px); }
 
   /* Rail */
-  .rail { background:var(--surface-1); border-right:1px solid var(--border); display:flex; flex-direction:column; padding:14px 8px; }
+  .rail { background:var(--rail); border-right:1px solid var(--border); display:flex; flex-direction:column; padding:14px 8px; }
   .brand { display:flex; align-items:center; gap:8px; padding:4px 8px 14px; }
   .dot { width:9px; height:9px; border-radius:50%; background:var(--accent); }
   .brand .mark { display:flex; color:var(--text-primary); }
@@ -91,9 +101,9 @@
     text-transform:uppercase; letter-spacing:.6px; display:flex; gap:6px; }
   .col h3 span { color:var(--text-muted); }
   .cards { display:flex; flex-direction:column; gap:8px; overflow:auto; }
-  .card { background:var(--surface-2); border:1px solid var(--border); border-radius:12px; padding:11px 12px; cursor:pointer; }
-  .card:hover { border-color:var(--border-strong); }
-  .card.running { border:1.5px solid var(--accent); box-shadow:0 0 0 3px rgba(69,200,168,.08); }
+  .card { background:var(--surface-2); border:1px solid var(--border-strong); border-radius:var(--r-card); padding:11px 12px; cursor:pointer; box-shadow:var(--e1); }
+  .card:hover { background:var(--surface-3); box-shadow:var(--e2); }
+  .card.running { box-shadow:var(--e2), 0 0 0 1px var(--accent), 0 0 18px -4px rgba(69,200,168,.5); }
   .card .t { line-height:1.35; }
   .card .meta { display:flex; gap:6px; align-items:center; margin-top:8px; flex-wrap:wrap; font-size:11px; color:var(--text-muted); }
   .tag { font-size:11px; padding:1px 6px; border-radius:6px; }
@@ -137,7 +147,7 @@
   .chat { max-width:720px; margin:0 auto; padding:24px 16px; display:flex; flex-direction:column; gap:14px; height:100%; }
   .feed { flex:1; overflow:auto; display:flex; flex-direction:column; gap:14px; }
   .msg.user { align-self:flex-end; background:var(--surface-2); border:1px solid var(--border); border-radius:16px 16px 5px 16px; padding:10px 14px; max-width:78%; line-height:1.5; white-space:pre-wrap; }
-  .msg.engram { font-family:var(--font-voice); font-size:15.5px; line-height:1.6; max-width:92%; color:var(--text-primary); white-space:pre-wrap; }
+  .msg.engram { font-family:var(--font-voice); font-size:16px; line-height:1.62; max-width:68ch; color:var(--text-primary); white-space:pre-wrap; }
   .msg .note { font-size:11px; color:var(--text-muted); margin-top:4px; }
   .panes { padding:16px; display:flex; flex-direction:column; gap:14px; max-width:920px; }
   .pane { background:var(--surface-1); border:1px solid var(--border); border-radius:12px; padding:14px; }
@@ -198,19 +208,23 @@
   .testline.ok { color:var(--accent); } .testline.bad { color:var(--danger); }
   @media (prefers-reduced-motion: reduce) { .pulse,.bar { animation:none; } }
   /* the trust spine - a persistent bottom status bar */
-  .statusbar { height:26px; flex:none; display:flex; align-items:center; padding:0 12px;
-    background:var(--surface-1); border-top:1px solid var(--border); font-size:11.5px; color:var(--text-muted); }
+  .statusbar { height:28px; flex:none; display:flex; align-items:center; padding:0 13px;
+    background:linear-gradient(#0d0f12, #08090b); border-top:1px solid var(--border-strong); box-shadow:var(--border-hi);
+    font-size:12px; color:var(--text-muted); }
   .statusbar .sb-left { display:flex; align-items:center; gap:7px; }
-  .statusbar .sb-center { position:absolute; left:50%; transform:translateX(-50%); display:flex; align-items:center; gap:6px; }
-  .statusbar .sb-right { margin-left:auto; display:flex; align-items:center; gap:10px; }
-  .statusbar .dot { width:7px; height:7px; border-radius:50%; background:var(--text-muted); transition:background .5s,box-shadow .5s; }
+  .statusbar .sb-center { position:absolute; left:50%; transform:translateX(-50%); display:flex; align-items:center; gap:7px; }
+  .statusbar .sb-right { margin-left:auto; display:flex; align-items:center; gap:11px; }
+  .statusbar .dot { width:7px; height:7px; border-radius:50%; background:var(--text-muted); transition:background .5s, box-shadow .5s; }
   .statusbar .dot.awake { background:var(--accent); box-shadow:0 0 7px rgba(69,200,168,.55); }
-  .statusbar .mono { font-family:var(--mono); }
-  .statusbar .sb-center .chip { background:none; border:none; padding:0; color:var(--text-secondary); cursor:default; }
-  .statusbar .sb-center .chip.ok b { color:var(--accent); }
+  .statusbar .mono, .statusbar .sb-center b, .statusbar .sb-right { font-variant-numeric:tabular-nums; }
+  .statusbar .sb-center .chip { display:inline-flex; align-items:center; gap:7px; background:none; border:none; padding:0; color:var(--text-secondary); cursor:pointer; }
+  .statusbar .sb-center .chip .seal { width:7px; height:7px; border-radius:50%; background:var(--accent); flex:none; }
+  .statusbar .sb-center .chip.ok b { color:var(--accent); font-weight:500; font-family:var(--mono); }
   .statusbar .sb-center .chip.bad { color:var(--danger); }
-  .statusbar .sb-center.flash .chip b { animation: spine 1.4s ease-out; }
-  @keyframes spine { 0%{ color:#bff3e6; text-shadow:0 0 8px rgba(69,200,168,.6); } 100%{ color:var(--accent); text-shadow:none; } }
+  .statusbar .sb-center .chip:hover b { text-decoration:underline; text-underline-offset:2px; }
+  /* one teal breath on the seal when a new entry chains - a heartbeat, never a loop */
+  .statusbar .sb-center.flash .seal { animation:breath var(--dur-4) var(--ease-inout); }
+  @keyframes breath { 0%{ box-shadow:0 0 0 0 rgba(69,200,168,.6); } 55%{ box-shadow:0 0 0 5px rgba(69,200,168,0); } 100%{ box-shadow:0 0 0 0 rgba(69,200,168,0); } }
   .kbtn { display:inline-flex; align-items:center; gap:6px; background:var(--surface-2); border:1px solid var(--border);
     color:var(--text-secondary); border-radius:var(--radius); padding:4px 9px; font-size:12px; cursor:pointer; transition:.15s; }
   .kbtn:hover { border-color:var(--border-strong); color:var(--text-primary); }
@@ -315,23 +329,39 @@
   .model-menu div.mm-i { padding:7px 10px; border-radius:7px; font-size:12.5px; color:var(--text-secondary); cursor:pointer; display:flex; align-items:center; gap:8px; }
   .model-menu div.mm-i:hover { background:var(--surface-1); color:var(--text-primary); }
   .model-menu div.mm-i.on { color:var(--accent); }
-  .ribbon { display:flex; flex-wrap:wrap; gap:6px; margin:4px 0 2px; }
-  .recall { display:inline-flex; align-items:center; gap:5px; font-size:11px; color:var(--text-secondary);
-    background:var(--surface-1); border:1px solid var(--border); border-radius:20px; padding:2px 9px; cursor:default; }
-  .recall .rg { font-family:var(--mono); color:var(--accent); }
-  .recall:hover { border-color:rgba(69,200,168,.3); }
-  .learned { font-size:11px; color:var(--text-muted); margin:2px 0 2px; }
+  /* the recall ribbon - a row of small physical "memory tokens" that assemble under an answer */
+  .ribbon { display:flex; flex-wrap:wrap; gap:7px; margin:9px 0 3px; }
+  .recall { display:inline-flex; align-items:center; gap:6px; font-size:11.5px; color:var(--text-secondary);
+    background:linear-gradient(var(--surface-2), var(--surface-1)); border:1px solid var(--border-strong);
+    border-radius:var(--r-chip); box-shadow:var(--e1); padding:3px 10px 3px 7px; position:relative; cursor:default;
+    transition:border-color var(--dur-1) var(--ease-out), transform var(--dur-1) var(--ease-out);
+    animation:recall-in var(--dur-3) var(--ease-out) backwards; }
+  .recall::before { content:''; width:2px; align-self:stretch; margin:-3px 6px -3px 0; background:var(--accent); opacity:.5; border-radius:2px; }
+  .recall:hover { border-color:var(--ring); transform:translateY(-1px); }
+  .recall .rg { font-family:var(--mono); color:var(--accent); font-size:10px; font-variant-numeric:tabular-nums;
+    filter:drop-shadow(0 0 4px rgba(69,200,168,.4)); }
+  .recall:nth-child(2){ animation-delay:55ms } .recall:nth-child(3){ animation-delay:110ms }
+  .recall:nth-child(4){ animation-delay:165ms } .recall:nth-child(5){ animation-delay:220ms }
+  @keyframes recall-in { from{ opacity:0; transform:translateY(6px); } to{ opacity:1; transform:none; } }
+  .learned { font-size:11.5px; color:var(--text-secondary); margin:8px 0 2px; display:flex; align-items:center; gap:7px; }
+  .learned::before { content:''; width:5px; height:5px; border-radius:50%; background:var(--accent); opacity:.7; flex:none; }
   /* finishing touches: calm focus rings, refined hovers, softer depth */
   * { -webkit-tap-highlight-color:transparent; }
   :focus { outline:none; }
   .nav a:focus-visible, .ses:focus-visible, .kbtn:focus-visible, .sbtn:focus-visible, .newchat:focus-visible,
   .proj-btn:focus-visible, .modelpick:focus-visible, .pal-item:focus-visible, .cc-cat:focus-visible { box-shadow:0 0 0 2px var(--ring); }
   .kbtn:hover, .modelpick:hover, .proj-btn:hover, .newchat:hover { background:var(--active); }
-  .palette .pal-box, .cc .cc-box { box-shadow:0 24px 70px rgba(0,0,0,.6), 0 2px 8px rgba(0,0,0,.4); }
+  .palette .pal-box, .cc .cc-box { box-shadow:var(--e4); }
   .overlay { background:rgba(5,6,8,.58); }
-  .card { transition:border-color .15s, background .15s; }
-  .card:hover { background:var(--surface-3); }
+  .card { transition:background var(--dur-1) var(--ease-out), box-shadow var(--dur-1) var(--ease-out); }
   ::-webkit-scrollbar-thumb:hover { background:#2c3036; }
+  /* floating menus settle with a slight physical overshoot - Apple, not Material */
+  .model-menu, .proj-menu { box-shadow:var(--e3); transform-origin:top left; animation:menu-in var(--dur-2) var(--ease-spring); }
+  .model-menu { transform-origin:bottom left; }
+  .palette .pal-box { animation:menu-in var(--dur-2) var(--ease-spring); transform-origin:top center; }
+  @keyframes menu-in { from{ opacity:0; transform:scale(.97) translateY(4px); } to{ opacity:1; transform:none; } }
+  .newchat { box-shadow:var(--e1); }
+  @media (prefers-reduced-motion: reduce) { .recall, .model-menu, .proj-menu, .pal-box, .statusbar .seal { animation:none !important; } }
 </style>
 </head>
 <body>
@@ -358,7 +388,7 @@
 </div>
 <footer class="statusbar">
   <span class="sb-left"><span class="dot" id="sbDot"></span><span id="sbDaemon" class="mono">engramd</span></span>
-  <span class="sb-center" id="sbSpine"><span class="chip ok" id="ledgerChip" role="status" aria-live="polite" title="every action is signed into a hash-chained ledger — run Verify ledger from ⌘K to re-check it offline">◇ ledger …</span></span>
+  <span class="sb-center" id="sbSpine"><span class="chip ok" id="ledgerChip" role="status" aria-live="polite" onclick="verifyLedgerNow()" title="every action is signed into a hash-chained ledger — click to re-verify the whole chain"><span class="seal"></span>ledger …</span></span>
   <span class="sb-right"><span id="sbTaint" title="taint policy — the agent can't send your context to the web unless you allow it">no egress</span><span class="chip" id="costChip" role="status" aria-live="polite" title="model spend today">$0.00</span></span>
 </footer>
 <div class="overlay palette" id="palette" hidden onclick="if(event.target===this)closePalette()">
@@ -441,7 +471,7 @@ async function poll(){
     const [v,m,h] = await Promise.all([J('/v1/ledger/verify'),J('/v1/meter'),J('/health')]);
     const lc=document.getElementById('ledgerChip'), spine=document.getElementById('sbSpine');
     if(v.ok){
-      lc.className='chip ok'; lc.innerHTML='◇ ledger verified · <b>'+v.entries+'</b>'; document.getElementById('banner').innerHTML='';
+      lc.className='chip ok'; lc.innerHTML='<span class="seal"></span>ledger verified · <b>'+v.entries+'</b>'; document.getElementById('banner').innerHTML='';
       // a single teal breath when a new entry chains - confidence shown, never claimed
       if(_lastLedgerN!==null && v.entries!==_lastLedgerN && spine){ spine.classList.remove('flash'); void spine.offsetWidth; spine.classList.add('flash'); }
       _lastLedgerN=v.entries;

@@ -133,15 +133,30 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Pick the embedder: a real model through the gateway (ENGRAM_EMBED=gateway), or
     // the dependency-free offline default. The gateway path probes its dimension once.
-    let embedder: Arc<dyn engram_memory::Embedder> =
-        if std::env::var("ENGRAM_EMBED").as_deref() == Ok("gateway") {
+    let embedder: Arc<dyn engram_memory::Embedder> = match std::env::var("ENGRAM_EMBED").as_deref() {
+        Ok("gateway") => {
             let probe = gateway.embed(&["dimension probe".into()], "init").await?;
             let dim = probe.first().map(|v| v.len()).unwrap_or(256);
             tracing::info!(dim, "using gateway embedder");
             Arc::new(embedder::GatewayEmbedder::new(gateway.clone(), dim))
-        } else {
-            Arc::new(TrigramHashEmbedder::default())
-        };
+        }
+        // Pure-Rust static model2vec embedder — real synonym recall, no model runtime.
+        Ok("static") => {
+            let model_dir =
+                std::env::var("ENGRAM_STATIC_MODEL").unwrap_or_else(|_| format!("{home}/embedder"));
+            match engram_memory::StaticEmbedder::load(&model_dir) {
+                Ok(e) => {
+                    tracing::info!(dir = %model_dir, dim = engram_memory::Embedder::dim(&e), "using static model2vec embedder");
+                    Arc::new(e)
+                }
+                Err(err) => {
+                    tracing::warn!(dir = %model_dir, error = %err, "static embedder load failed — falling back to trigram");
+                    Arc::new(TrigramHashEmbedder::default())
+                }
+            }
+        }
+        _ => Arc::new(TrigramHashEmbedder::default()),
+    };
 
     let memory = Arc::new(Memory::open(format!("{home}/brain.db"), embedder, ledger.clone())?);
     let signer = Arc::new(SkillSigner::load_or_create(format!("{home}/keys/skill.key"))?);

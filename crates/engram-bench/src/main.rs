@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use engram_core::Ledger;
-use engram_memory::{Memory, Region, TrigramHashEmbedder, WriteReq};
+use engram_memory::{Memory, Region, StaticEmbedder, TrigramHashEmbedder, WriteReq};
 
 struct Case {
     fact: &'static str,
@@ -42,6 +42,13 @@ fn cases() -> Vec<Case> {
         Case { fact: "the capital of France is Paris", query: "what is the capital of France" },
         Case { fact: "WebAssembly modules run in a fuel-bounded sandbox", query: "fuel bounded wasm sandboxing" },
         Case { fact: "recall fuses keyword and semantic ranking", query: "fusing semantic and keyword ranks" },
+        // True synonyms: no shared word OR character-trigram — only a learned embedder
+        // (not the morphological trigram baseline) can bridge these.
+        Case { fact: "she bought a new automobile last week", query: "purchasing a car recently" },
+        Case { fact: "the physician prescribed rest and fluids", query: "advice from a doctor" },
+        Case { fact: "the film received glowing reviews", query: "the movie got great write-ups" },
+        Case { fact: "he is fluent in several tongues", query: "speaks many languages" },
+        Case { fact: "the firm hired a dozen new staff", query: "the company recruited employees" },
     ]
 }
 
@@ -79,30 +86,31 @@ fn lexical_overlap(query: &str, fact: &str) -> bool {
     tokens(query).iter().any(|t| f.contains(t))
 }
 
-fn main() {
+struct Score {
+    hits: usize,
+    mrr: f32,
+    hard_hits: usize,
+    hard_total: usize,
+    n: usize,
+}
+
+/// Run the recall benchmark with one embedder and return its scores.
+fn evaluate(embedder: Arc<dyn engram_memory::Embedder>) -> Score {
     let dir = tempfile::tempdir().unwrap();
     let ledger = Arc::new(Ledger::open(dir.path()).unwrap());
-    let mem = Memory::open(
-        dir.path().join("bench.db"),
-        Arc::new(TrigramHashEmbedder::default()),
-        ledger,
-    )
-    .unwrap();
+    let mem = Memory::open(dir.path().join("bench.db"), embedder, ledger).unwrap();
 
     let cases = cases();
     let mut want: HashMap<&str, i64> = HashMap::new();
     for c in &cases {
-        let rec = mem.remember(WriteReq::new(Region::Semantic, c.fact)).unwrap();
-        want.insert(c.fact, rec.id);
+        want.insert(c.fact, mem.remember(WriteReq::new(Region::Semantic, c.fact)).unwrap().id);
     }
     for d in distractors() {
         mem.remember(WriteReq::new(Region::Semantic, d)).unwrap();
     }
 
     let k = 10;
-    let (mut hits, mut mrr) = (0usize, 0.0f32);
-    let (mut hard_total, mut hard_hits) = (0usize, 0usize);
-
+    let (mut hits, mut mrr, mut hard_total, mut hard_hits) = (0usize, 0.0f32, 0usize, 0usize);
     for c in &cases {
         let target = want[c.fact];
         let results = mem.recall(c.query, &[Region::Semantic], k).unwrap();
@@ -119,39 +127,53 @@ fn main() {
             }
         }
     }
+    Score { hits, mrr, hard_hits, hard_total, n: cases.len() }
+}
 
-    let n = cases.len();
-    let total_facts = n + distractors().len();
-    let bin = binary_size();
+fn main() {
+    let trig = evaluate(Arc::new(TrigramHashEmbedder::default()));
+    // Compare against the static (model2vec) embedder when ENGRAM_STATIC_MODEL points at a
+    // model directory — this is what measures the synonym-level recall jump.
+    let stat = std::env::var("ENGRAM_STATIC_MODEL").ok().and_then(|p| match StaticEmbedder::load(&p) {
+        Ok(e) => Some(evaluate(Arc::new(e))),
+        Err(err) => {
+            eprintln!("static embedder load failed ({p}): {err}");
+            None
+        }
+    });
 
+    let total_facts = trig.n + distractors().len();
     println!("# Engram benchmark — paraphrase recall & footprint\n");
-    println!("Embedder: trigram-hash (offline). Corpus: {total_facts} facts. Queries: {n}.\n");
-    println!("| Metric | Engram (hybrid) | Keyword-only baseline |");
-    println!("|---|---|---|");
-    println!(
-        "| Recall@{k} (all queries) | {:.0}% ({}/{}) | — |",
-        100.0 * hits as f32 / n as f32,
-        hits,
-        n
-    );
-    println!("| MRR | {:.3} | — |", mrr / n as f32);
-    println!(
-        "| Recall@{k} on zero-overlap paraphrases | {:.0}% ({}/{}) | 0% (by construction) |",
-        if hard_total == 0 { 0.0 } else { 100.0 * hard_hits as f32 / hard_total as f32 },
-        hard_hits,
-        hard_total
-    );
-    println!("| Binary size (full agent) | {} | hundreds of MB |", bin);
-    println!("| Idle RAM | 0 MB (socket-activated) | always-on process |");
-    println!(
-        "\n{} of {} queries share no content word with their target; a keyword index \
-         returns nothing for those. Hybrid recall recovers {} of them.",
-        hard_total, n, hard_hits
-    );
-    println!(
-        "\nNote: synonym-level paraphrase needs the transformer embedder (same Embedder \
-         trait, wired via the gateway); this harness is what measures it then."
-    );
+    println!("Corpus: {total_facts} facts. Queries: {}. Recall@10.\n", trig.n);
+
+    let row = |label: &str, s: &Score| {
+        let hard = if s.hard_total == 0 { 0.0 } else { 100.0 * s.hard_hits as f32 / s.hard_total as f32 };
+        println!(
+            "| {label} | {:.0}% ({}/{}) | {:.3} | {:.0}% ({}/{}) |",
+            100.0 * s.hits as f32 / s.n as f32,
+            s.hits,
+            s.n,
+            s.mrr / s.n as f32,
+            hard,
+            s.hard_hits,
+            s.hard_total
+        );
+    };
+    println!("| Embedder | Recall@10 | MRR | Recall@10 on zero-overlap paraphrases |");
+    println!("|---|---|---|---|");
+    row("trigram-hash (offline default)", &trig);
+    if let Some(s) = &stat {
+        row("static model2vec (pure-Rust)", s);
+    }
+    println!("| keyword-only baseline | — | — | 0% (by construction) |");
+
+    println!("\nBinary size (full agent): {}   ·   Idle RAM: 0 MB (socket-activated)", binary_size());
+    if stat.is_none() {
+        println!(
+            "\nNote: set ENGRAM_STATIC_MODEL=<model2vec dir> to measure the static embedder's \
+             synonym-level recall (this run shows the offline trigram baseline only)."
+        );
+    }
 }
 
 fn binary_size() -> String {

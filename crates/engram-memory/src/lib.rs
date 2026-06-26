@@ -15,9 +15,11 @@
 
 pub mod embed;
 pub mod region;
+pub mod static_embed;
 pub mod store;
 
 pub use embed::{cosine, Embedder, TrigramHashEmbedder};
+pub use static_embed::StaticEmbedder;
 pub use engram_core::Taint;
 pub use region::Region;
 pub use store::{Hit, Memory, MemoryError, Record, Stats, WriteReq};

@@ -160,7 +160,34 @@
   .chat { max-width:720px; margin:0 auto; padding:24px 16px; display:flex; flex-direction:column; gap:14px; height:100%; }
   .feed { flex:1; overflow:auto; display:flex; flex-direction:column; gap:14px; }
   .msg.user { align-self:flex-end; background:var(--surface-2); border:1px solid var(--border); border-radius:16px 16px 5px 16px; padding:10px 14px; max-width:78%; line-height:1.5; white-space:pre-wrap; }
-  .msg.engram { font-family:var(--font-voice); font-size:16px; line-height:1.62; max-width:68ch; color:var(--text-primary); white-space:pre-wrap; }
+  .msg.engram { font-family:var(--sans); font-size:14.5px; line-height:1.65; max-width:72ch; color:var(--text-primary); }
+  /* rendered markdown in replies */
+  .msg.engram > :first-child { margin-top:0; } .msg.engram > :last-child { margin-bottom:0; }
+  .msg.engram p { margin:0 0 11px; }
+  .msg.engram .md-h { font-weight:600; margin:16px 0 8px; line-height:1.3; }
+  .msg.engram .md-h1 { font-size:19px; } .msg.engram .md-h2 { font-size:16px; } .msg.engram .md-h3 { font-size:14.5px; } .msg.engram .md-h4 { font-size:13px; color:var(--text-secondary); }
+  .msg.engram .md-list { margin:0 0 11px; padding-left:22px; } .msg.engram .md-list li { margin:3px 0; }
+  .msg.engram blockquote { margin:0 0 11px; padding:2px 0 2px 14px; border-left:2px solid var(--accent); color:var(--text-secondary); }
+  .msg.engram hr { border:none; border-top:1px solid var(--border); margin:16px 0; }
+  .msg.engram a { color:var(--web); text-decoration:none; border-bottom:1px solid rgba(133,183,235,.35); }
+  .msg.engram a:hover { border-bottom-color:var(--web); }
+  .msg.engram code.ic { font:12.5px var(--mono); background:var(--surface-2); border:1px solid var(--border); border-radius:5px; padding:1px 5px; }
+  .msg.engram strong { font-weight:650; } .msg.engram em { font-style:italic; }
+  .cb { background:var(--surface-3); border:1px solid var(--border-strong); border-radius:var(--r-card); margin:0 0 12px; overflow:hidden; }
+  .cb-head { display:flex; align-items:center; justify-content:space-between; padding:6px 10px 6px 12px; border-bottom:1px solid var(--border);
+    font:11px var(--mono); color:var(--text-muted); text-transform:lowercase; }
+  .cb-copy { background:var(--surface-2); border:1px solid var(--border); color:var(--text-secondary); border-radius:6px; padding:2px 9px; font:11px var(--sans); cursor:pointer; transition:.12s; }
+  .cb-copy:hover { border-color:var(--border-strong); color:var(--text-primary); }
+  .cb-copy.done { color:var(--accent); border-color:var(--ring); }
+  .cb pre { margin:0; padding:12px 14px; overflow-x:auto; }
+  .cb code { font:12.5px/1.55 var(--mono); color:var(--text-primary); }
+  .cb .t-kw { color:var(--accent); } .cb .t-st { color:var(--web); } .cb .t-co { color:var(--text-muted); font-style:italic; } .cb .t-nu { color:var(--warning); }
+  .caret { display:inline-block; width:2px; height:1em; background:var(--accent); margin-left:1px; vertical-align:text-bottom; animation:blink .9s steps(1) infinite; }
+  @keyframes blink { 50% { opacity:0; } }
+  .thinking { display:inline-flex; gap:4px; align-items:center; padding:3px 0; }
+  .thinking i { width:6px; height:6px; border-radius:50%; background:var(--text-muted); animation:tpulse 1.1s ease-in-out infinite; }
+  .thinking i:nth-child(2){ animation-delay:.18s; } .thinking i:nth-child(3){ animation-delay:.36s; }
+  @keyframes tpulse { 0%,60%,100%{ opacity:.25; transform:translateY(0); } 30%{ opacity:.9; transform:translateY(-3px); } }
   .msg .note { font-size:11px; color:var(--text-muted); margin-top:4px; }
   /* terminal - the glass-box shell */
   .term-wrap { height:100%; display:grid; grid-template-columns:232px minmax(0,1fr); }
@@ -432,11 +459,21 @@
   .modelpick:hover { border-color:var(--border-strong); color:var(--text-primary); }
   .modelpick .mp-dot { width:6px; height:6px; border-radius:50%; background:var(--accent); }
   .model-menu { position:absolute; bottom:100%; left:0; margin-bottom:8px; background:var(--surface-2); border:1px solid var(--border-strong);
-    border-radius:11px; padding:6px; min-width:240px; z-index:30; box-shadow:0 16px 40px rgba(0,0,0,.5); }
-  .model-menu .mm-g { font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--text-muted); padding:7px 9px 3px; }
-  .model-menu div.mm-i { padding:7px 10px; border-radius:7px; font-size:12px; color:var(--text-secondary); cursor:pointer; display:flex; align-items:center; gap:8px; }
-  .model-menu div.mm-i:hover { background:var(--surface-1); color:var(--text-primary); }
-  .model-menu div.mm-i.on { color:var(--accent); }
+    border-radius:12px; width:312px; z-index:30; box-shadow:0 18px 48px rgba(0,0,0,.55); overflow:hidden; }
+  .mm-search { width:100%; box-sizing:border-box; background:none; border:none; border-bottom:1px solid var(--border); outline:none;
+    color:var(--text-primary); font-size:13px; padding:11px 13px; }
+  .mm-list { max-height:320px; overflow:auto; padding:5px; }
+  .model-menu .mm-g { font:10px var(--mono); text-transform:uppercase; letter-spacing:.06em; color:var(--text-muted); padding:8px 9px 3px; position:sticky; top:0; background:var(--surface-2); }
+  .model-menu div.mm-i { padding:7px 9px; border-radius:7px; font-size:13px; color:var(--text-secondary); cursor:pointer; display:flex; align-items:center; gap:9px; }
+  .model-menu div.mm-i.sel { background:var(--surface-1); color:var(--text-primary); }
+  .model-menu .mm-dot { width:7px; height:7px; border-radius:50%; flex:none; box-shadow:0 0 6px currentColor; }
+  .model-menu .mm-name { font-family:var(--mono); font-size:12px; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .model-menu .mm-meta { font-size:11px; color:var(--text-muted); flex:none; }
+  .model-menu .mm-chk { color:var(--accent); flex:none; }
+  .model-menu div.mm-i.on .mm-name { color:var(--accent); }
+  .mm-empty { padding:14px; text-align:center; color:var(--text-muted); font-size:12px; }
+  .mm-foot { padding:9px 12px; border-top:1px solid var(--border); font-size:12px; color:var(--text-muted); cursor:pointer; }
+  .mm-foot:hover { color:var(--text-primary); }
   /* the recall ribbon - a row of small physical "memory tokens" that assemble under an answer */
   .ribbon { display:flex; flex-wrap:wrap; gap:7px; margin:9px 0 3px; }
   .recall { display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--text-secondary);
@@ -997,6 +1034,65 @@ async function renderChat(){
   document.getElementById('composer').placeholder='Ask Engram anything…';
   wireComposer(); paintFeed();
 }
+// ---- markdown + code rendering for replies ----
+// Engram's replies are model output, so they're untrusted: we escape EVERYTHING first, then
+// transform the escaped text. Code fences are pulled out before escaping and re-inserted as
+// highlighted blocks, so markdown inside them isn't mangled.
+const HL_KW = {
+  js:'const let var function return if else for while do class extends new await async import from export default try catch finally throw typeof instanceof of in this true false null undefined yield switch case break continue',
+  ts:'const let var function return if else for while class interface type enum new await async import from export default try catch throw typeof of in this true false null undefined public private readonly extends implements',
+  rust:'fn let mut pub use struct enum impl trait match if else for while loop return self Self async await move ref const static where as dyn box type mod crate true false Some None Ok Err unsafe',
+  python:'def class return if elif else for while import from as with try except finally lambda True False None and or not in is pass yield async await raise global nonlocal',
+  bash:'if then else elif fi for do done while case esac function echo export local return cd set source then',
+  json:'true false null',
+};
+function hl(code, lang){
+  const hashComment = ['python','py','bash','sh','shell','yaml','yml','toml','ruby','rb'].includes(lang);
+  const cp = hashComment ? '(#[^\\n]*)' : '(\\/\\/[^\\n]*|\\/\\*[\\s\\S]*?\\*\\/)';
+  const re = new RegExp(cp + '|("(?:[^"\\\\]|\\\\.)*"|\'(?:[^\'\\\\]|\\\\.)*\'|`(?:[^`\\\\]|\\\\.)*`)|(\\b\\d[\\d_.eExXa-fA-F]*\\b)|([A-Za-z_$][\\w$]*)|([\\s\\S])', 'g');
+  const kw = new Set((HL_KW[lang]||HL_KW.js).split(' '));
+  let out='';
+  code.replace(re,(m,comment,str,num,word,other)=>{
+    if(comment!=null) out+=`<span class="t-co">${esc(comment)}</span>`;
+    else if(str!=null) out+=`<span class="t-st">${esc(str)}</span>`;
+    else if(num!=null) out+=`<span class="t-nu">${esc(num)}</span>`;
+    else if(word!=null) out+= kw.has(word)?`<span class="t-kw">${esc(word)}</span>`:esc(word);
+    else out+=esc(other);
+    return '';
+  });
+  return out;
+}
+let _cbN=0; const _cbStore={};
+function codeBlock(code, lang){
+  lang=(lang||'').toLowerCase(); const id='cb'+(_cbN++); _cbStore[id]=code;
+  return `<div class="cb"><div class="cb-head"><span>${esc(lang||'code')}</span><button class="cb-copy" onclick="copyCode('${id}',this)">Copy</button></div><pre><code>${hl(code,lang)}</code></pre></div>`;
+}
+function copyCode(id,btn){ const t=_cbStore[id]||''; (navigator.clipboard?navigator.clipboard.writeText(t):Promise.reject()).then(()=>{ btn.textContent='Copied'; btn.classList.add('done'); setTimeout(()=>{ btn.textContent='Copy'; btn.classList.remove('done'); },1200); }).catch(()=>{}); }
+function mdInline(t){ // t is already escaped
+  return t
+    .replace(/`([^`]+)`/g,'<code class="ic">$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')
+    .replace(/(^|[^*])\*([^*\n]+)\*/g,'$1<em>$2</em>')
+    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g,'<a href="$2" target="_blank" rel="noopener">$1</a>');
+}
+function mdToHtml(raw){
+  const blocks=[];
+  const text=String(raw).replace(/```([\w+#-]*)\n?([\s\S]*?)```/g,(m,lang,code)=>{ blocks.push(codeBlock(code.replace(/\n$/,''),lang)); return ` B${blocks.length-1} `; });
+  const lines=text.split('\n'); const out=[]; let i=0;
+  const isBlock=l=>/^\s*$/.test(l)||/^ B\d+ $/.test(l)||/^#{1,4}\s/.test(l)||/^\s*([-*]|\d+\.)\s+/.test(l)||/^\s*>\s?/.test(l)||/^---+\s*$/.test(l);
+  while(i<lines.length){
+    const ln=lines[i];
+    const bm=ln.match(/^ B(\d+) $/); if(bm){ out.push(blocks[+bm[1]]); i++; continue; }
+    if(/^\s*$/.test(ln)){ i++; continue; }
+    const hm=ln.match(/^(#{1,4})\s+(.*)$/); if(hm){ out.push(`<div class="md-h md-h${hm[1].length}">${mdInline(esc(hm[2]))}</div>`); i++; continue; }
+    if(/^---+\s*$/.test(ln)){ out.push('<hr>'); i++; continue; }
+    if(/^\s*>\s?/.test(ln)){ const buf=[]; while(i<lines.length&&/^\s*>\s?/.test(lines[i])){ buf.push(mdInline(esc(lines[i].replace(/^\s*>\s?/,'')))); i++; } out.push(`<blockquote>${buf.join('<br>')}</blockquote>`); continue; }
+    if(/^\s*([-*]|\d+\.)\s+/.test(ln)){ const ol=/^\s*\d+\./.test(ln); const buf=[]; while(i<lines.length&&/^\s*([-*]|\d+\.)\s+/.test(lines[i])){ buf.push(`<li>${mdInline(esc(lines[i].replace(/^\s*([-*]|\d+\.)\s+/,'')))}</li>`); i++; } out.push(`<${ol?'ol':'ul'} class="md-list">${buf.join('')}</${ol?'ol':'ul'}>`); continue; }
+    const buf=[]; while(i<lines.length&&!isBlock(lines[i])){ buf.push(mdInline(esc(lines[i]))); i++; } out.push(`<p>${buf.join('<br>')}</p>`);
+  }
+  return out.join('');
+}
+const thinkingDots='<span class="thinking"><i></i><i></i><i></i></span>';
 function paintFeed(){
   const f=document.getElementById('feed'); if(!f) return;
   const s=WS.byId[WS.activeSession], log=s?(s.messages||[]):[];
@@ -1004,7 +1100,8 @@ function paintFeed(){
     if(m.role==='user') return `<div class="msg user">${esc(m.text)}</div>`;
     const ribbon=(m.recalled&&m.recalled.length)?`<div class="ribbon">${m.recalled.slice(0,5).map(r=>`<span class="recall" title="${escAttr(r)}"><span class="rg">◇</span> ${esc((r||'').replace(/\s+/g,' ').slice(0,54))}</span>`).join('')}</div>`:'';
     const learned=(m.learned&&m.learned.length)?`<div class="learned">learned about you · ${m.learned.map(esc).join(' · ')}</div>`:'';
-    return `<div><div class="msg engram">${esc(m.text)||'…'}</div>${ribbon}${learned}</div>`;
+    const body = m.text ? (mdToHtml(m.text) + (m.streaming?'<span class="caret"></span>':'')) : (m.streaming?thinkingDots:'…');
+    return `<div><div class="msg engram">${body}</div>${ribbon}${learned}</div>`;
   }).join('') || '<div class="ses-empty" style="padding:26px 4px">Ask anything. Replies show the memories they drew on, and every action is signed into the ledger spine below.</div>';
   f.scrollTop=f.scrollHeight;
 }
@@ -1017,7 +1114,7 @@ async function chatSay(text){
   if(meta && (!meta.title || meta.title==='New chat')){ meta.title=text.replace(/\s+/g,' ').slice(0,42); document.getElementById('viewname').textContent=curProject().name+' / '+meta.title; }
   if(meta){ WS.sessions=[meta, ...WS.sessions.filter(x=>x.id!==sid)]; }   // bump to top
   renderSidebar();
-  const msg={role:'engram',text:''}; sess.messages.push(msg); paintFeed();
+  const msg={role:'engram',text:'',streaming:true}; sess.messages.push(msg); paintFeed();
   try {
     const r = await fetch('/v1/converse/stream',{method:'POST',headers:{...AUTH,'content-type':'application/json'},body:JSON.stringify({text, session:sid})});
     if(!r.ok||!r.body) throw new Error('HTTP '+r.status);
@@ -1042,33 +1139,64 @@ async function chatSay(text){
       }
     }
     if(!msg.text) msg.text='(no reply)';
-    if(WS.activeSession===sid) paintFeed();
+    msg.streaming=false; if(WS.activeSession===sid) paintFeed();
   } catch(e){
-    msg.text=msg.text||'(couldn’t reach Engram - '+(e.message||'try again')+')'; if(WS.activeSession===sid) paintFeed();
+    msg.text=msg.text||'(couldn’t reach Engram - '+(e.message||'try again')+')'; msg.streaming=false; if(WS.activeSession===sid) paintFeed();
   }
 }
 
-// ---- model picker (in the composer) ----
-let modelMenuOpen=false;
-function activeProviderModels(){ const k=(CFG&&CFG.provider&&CFG.provider.kind)||'mock'; return (PROVIDERS[k]||PROVIDERS.mock).models; }
+// ---- model picker (searchable, provider-grouped popover) ----
+let modelMenuOpen=false, mmFilter='', mmSel=0, mmSelList=[];
+const MODEL_META = {
+  'claude-haiku':'fast · cheap', 'claude-sonnet-4-6':'balanced', 'claude-opus-4-8':'most capable', 'claude-fable-5':'frontier',
+  'gpt-4o-mini':'fast · cheap', 'gpt-4o':'capable', 'o4-mini':'reasoning',
+  'anthropic/claude-3.5-sonnet':'balanced', 'openai/gpt-4o-mini':'fast · cheap', 'meta-llama/llama-3.1-70b-instruct':'open', 'google/gemini-flash-1.5':'fast',
+  'llama3.1':'local', 'qwen2.5':'local', 'mistral':'local', 'phi3':'local',
+};
+const PROVIDER_COLOR = { anthropic:'#45c8a8', openai:'#85b7eb', openrouter:'#b58cff', ollama:'#e0a23c', mock:'#8a9099' };
 function modelpickHtml(){
   const m=(CFG&&CFG.model_in_use)||'choose model';
   return `<span class="mp-wrap" style="position:relative"><button class="modelpick" type="button" onclick="toggleModelMenu(event)" title="Switch model (⌘M)"><span class="mp-dot"></span>${esc(m)} ⌄</button><span id="modelMenu"></span></span>`;
 }
-function toggleModelMenu(e){ if(e) e.stopPropagation(); modelMenuOpen=!modelMenuOpen; renderModelMenu(); }
+function toggleModelMenu(e){ if(e) e.stopPropagation(); modelMenuOpen=!modelMenuOpen; mmFilter=''; mmSel=0; renderModelMenu(); }
 function closeModelMenu(){ modelMenuOpen=false; const el=document.getElementById('modelMenu'); if(el) el.innerHTML=''; }
 function renderModelMenu(){
   const el=document.getElementById('modelMenu'); if(!el) return;
   if(!modelMenuOpen){ el.innerHTML=''; return; }
-  const cur=(CFG&&CFG.model_in_use)||'', kind=(CFG&&CFG.provider&&CFG.provider.kind)||'mock';
-  el.innerHTML=`<div class="model-menu"><div class="mm-g">${esc(kind)} models</div>
-    ${activeProviderModels().map(m=>`<div class="mm-i ${m===cur?'on':''}" onclick="pickModel('${escAttr(m)}')">${m===cur?'◇ ':''}${esc(m)}</div>`).join('')}
-    <div class="mm-i" style="color:var(--text-muted)" onclick="closeModelMenu();openCC('gateways')">More in Gateways…</div></div>`;
+  const cur=(CFG&&CFG.model_in_use)||'', f=mmFilter.toLowerCase(); const sel=[]; let rows='';
+  for(const [pk,p] of Object.entries(PROVIDERS)){
+    const models=p.models.filter(m=>!f || m.toLowerCase().includes(f) || p.label.toLowerCase().includes(f));
+    if(!models.length) continue;
+    rows+=`<div class="mm-g">${esc(p.label)}</div>`;
+    for(const m of models){ const i=sel.length; sel.push(m);
+      rows+=`<div class="mm-i ${i===mmSel?'sel':''} ${m===cur?'on':''}" data-i="${i}" onclick="pickModel('${escAttr(m)}')" onmousemove="mmSetSel(${i})">
+        <span class="mm-dot" style="background:${PROVIDER_COLOR[pk]||'#888'};color:${PROVIDER_COLOR[pk]||'#888'}"></span>
+        <span class="mm-name">${esc(m)}</span><span class="mm-meta">${esc(MODEL_META[m]||'')}</span>${m===cur?'<span class="mm-chk">✓</span>':''}</div>`;
+    }
+  }
+  mmSelList=sel; if(mmSel>=sel.length) mmSel=Math.max(0,sel.length-1);
+  el.innerHTML=`<div class="model-menu">
+    <input class="mm-search" id="mmSearch" placeholder="Search models…" value="${escAttr(mmFilter)}" oninput="mmFilterInput(this.value)" onkeydown="mmKey(event)">
+    <div class="mm-list">${rows||'<div class="mm-empty">no models match</div>'}</div>
+    <div class="mm-foot" onclick="closeModelMenu();openCC('gateways')">Configure providers &amp; keys…</div></div>`;
+  setTimeout(()=>{ const s=document.getElementById('mmSearch'); if(s&&document.activeElement!==s) s.focus(); },0);
 }
+function mmSetSel(i){ mmSel=i; document.querySelectorAll('#modelMenu .mm-i').forEach(el=>el.classList.toggle('sel', +el.dataset.i===i)); }
+function mmFilterInput(v){ mmFilter=v; mmSel=0; renderModelMenu(); }
+function mmKey(e){
+  if(e.key==='ArrowDown'){ e.preventDefault(); mmSel=Math.min(mmSel+1,mmSelList.length-1); mmSetSel(mmSel); mmScrollSel(); }
+  else if(e.key==='ArrowUp'){ e.preventDefault(); mmSel=Math.max(mmSel-1,0); mmSetSel(mmSel); mmScrollSel(); }
+  else if(e.key==='Enter'){ e.preventDefault(); if(mmSelList[mmSel]) pickModel(mmSelList[mmSel]); }
+  else if(e.key==='Escape'){ e.preventDefault(); closeModelMenu(); }
+}
+function mmScrollSel(){ const el=document.querySelector(`#modelMenu .mm-i[data-i="${mmSel}"]`); if(el) el.scrollIntoView({block:'nearest'}); }
 async function pickModel(m){
   closeModelMenu();
-  try{ const res=await J('/v1/config',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({provider:{model:m}})}); CFG=res; notify('Model · '+m,'ok'); if(state.route==='Chat') renderChat(); }
-  catch(e){ notify('Couldn’t switch model — '+e.message); }
+  try{ const res=await J('/v1/config',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({provider:{model:m}})}); CFG=res;
+    // patch the pill in place - a full renderChat() would lose scroll position and the feed
+    document.querySelectorAll('.modelpick').forEach(b=>{ b.innerHTML=`<span class="mp-dot"></span>${esc(m)} ⌄`; });
+    notify('Model · '+m,'ok');
+  }catch(e){ notify('Couldn’t switch model — '+e.message); }
 }
 document.addEventListener('click', e=>{ if(modelMenuOpen && !e.target.closest('.mp-wrap')) closeModelMenu(); });
 

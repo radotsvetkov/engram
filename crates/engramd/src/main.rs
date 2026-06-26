@@ -269,7 +269,8 @@ async fn dashboard() -> Html<String> {
 async fn health() -> ApiResult {
     // "offline" when no real model provider is configured — the UI surfaces this honestly
     // rather than returning fake answers.
-    let offline = std::env::var("ENGRAM_LLM_BASE_URL").is_err();
+    let offline = std::env::var("ENGRAM_ANTHROPIC_API_KEY").is_err()
+        && std::env::var("ENGRAM_LLM_BASE_URL").is_err();
     Ok(Json(json!({ "ok": true, "version": VERSION, "offline": offline })))
 }
 
@@ -843,6 +844,13 @@ async fn load_mcp(home: &str) -> Vec<Arc<dyn engram_agent::Tool>> {
 fn make_provider() -> Box<dyn Provider> {
     #[cfg(feature = "http")]
     {
+        // Native Anthropic provider (prompt-caches the tools+system prefix) takes priority
+        // when an Anthropic key is set; ENGRAM_LLM_BASE_URL optionally overrides the host.
+        if let Ok(key) = std::env::var("ENGRAM_ANTHROPIC_API_KEY") {
+            let base = std::env::var("ENGRAM_LLM_BASE_URL").unwrap_or_default();
+            tracing::info!("using native anthropic provider (prompt caching on)");
+            return Box::new(engram_gateway::AnthropicProvider::new(base, key));
+        }
         if let (Ok(base), Ok(key)) =
             (std::env::var("ENGRAM_LLM_BASE_URL"), std::env::var("ENGRAM_LLM_API_KEY"))
         {
@@ -850,7 +858,7 @@ fn make_provider() -> Box<dyn Provider> {
             tracing::info!(%base, "using http LLM provider");
             return Box::new(engram_gateway::HttpProvider::new(id, base, key));
         }
-        tracing::warn!("http feature on but ENGRAM_LLM_BASE_URL/API_KEY unset — using mock");
+        tracing::warn!("http feature on but no provider key set — using mock");
     }
     Box::new(MockProvider)
 }

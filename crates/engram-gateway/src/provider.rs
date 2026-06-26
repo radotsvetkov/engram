@@ -124,7 +124,261 @@ fn mock_vec(text: &str) -> Vec<f32> {
 }
 
 #[cfg(feature = "http")]
+pub use anthropic::AnthropicProvider;
+#[cfg(feature = "http")]
 pub use http::HttpProvider;
+
+#[cfg(feature = "http")]
+mod anthropic {
+    //! A native Anthropic Messages-API provider. Unlike the OpenAI-compatible path, this
+    //! puts the system prompt in its own field, uses `tool_use`/`tool_result` content
+    //! blocks, authenticates with `x-api-key`, and — the reason it exists — marks the
+    //! stable tools+system prefix with `cache_control`, so Anthropic prompt-caches it
+    //! across the agent loop's many turns (large cost/latency win on long runs).
+
+    use super::*;
+    use crate::types::ToolCall;
+
+    pub struct AnthropicProvider {
+        client: reqwest::Client,
+        base_url: String,
+        api_key: String,
+    }
+
+    impl AnthropicProvider {
+        pub fn new(base_url: impl Into<String>, api_key: impl Into<String>) -> Self {
+            let base = base_url.into();
+            let base = if base.trim().is_empty() {
+                "https://api.anthropic.com/v1".to_string()
+            } else {
+                base.trim_end_matches('/').to_string()
+            };
+            Self { client: reqwest::Client::new(), base_url: base, api_key: api_key.into() }
+        }
+    }
+
+    /// Append `block` to the last message if it has the same role, else start a new one —
+    /// so consecutive tool results (from parallel tool calls) collapse into one user
+    /// message with several `tool_result` blocks, keeping Anthropic's role alternation.
+    fn push_block(msgs: &mut Vec<serde_json::Value>, role: &str, block: serde_json::Value) {
+        if let Some(last) = msgs.last_mut() {
+            if last["role"] == role {
+                if let Some(arr) = last["content"].as_array_mut() {
+                    arr.push(block);
+                    return;
+                }
+            }
+        }
+        msgs.push(serde_json::json!({ "role": role, "content": [block] }));
+    }
+
+    /// Convert a provider-agnostic request into an Anthropic Messages body. Pure and
+    /// unit-tested: system is lifted out and marked cacheable; assistant tool calls become
+    /// `tool_use` blocks; tool results become `tool_result` blocks on a user message.
+    pub(crate) fn anthropic_body(req: &CompletionRequest) -> serde_json::Value {
+        let mut system_text = String::new();
+        let mut msgs: Vec<serde_json::Value> = Vec::new();
+        for m in &req.messages {
+            match m.role {
+                Role::System => {
+                    if !system_text.is_empty() {
+                        system_text.push_str("\n\n");
+                    }
+                    system_text.push_str(&m.content);
+                }
+                Role::User => {
+                    push_block(&mut msgs, "user", serde_json::json!({ "type": "text", "text": m.content }));
+                    for img in &m.images {
+                        push_block(
+                            &mut msgs,
+                            "user",
+                            serde_json::json!({
+                                "type": "image",
+                                "source": { "type": "base64", "media_type": "image/png", "data": img }
+                            }),
+                        );
+                    }
+                }
+                Role::Assistant => {
+                    if !m.content.is_empty() {
+                        push_block(&mut msgs, "assistant", serde_json::json!({ "type": "text", "text": m.content }));
+                    }
+                    for tc in &m.tool_calls {
+                        push_block(
+                            &mut msgs,
+                            "assistant",
+                            serde_json::json!({ "type": "tool_use", "id": tc.id, "name": tc.name, "input": tc.arguments }),
+                        );
+                    }
+                }
+                Role::Tool => {
+                    push_block(
+                        &mut msgs,
+                        "user",
+                        serde_json::json!({
+                            "type": "tool_result",
+                            "tool_use_id": m.tool_call_id.clone().unwrap_or_default(),
+                            "content": m.content
+                        }),
+                    );
+                }
+            }
+        }
+        let mut body = serde_json::json!({
+            "model": req.model,
+            "max_tokens": req.max_tokens,
+            "temperature": req.temperature,
+            "messages": msgs,
+        });
+        if !system_text.is_empty() {
+            // cache_control on the system block caches the tools+system prefix (Anthropic's
+            // cache order is tools -> system -> messages), reused across the loop's turns.
+            body["system"] = serde_json::json!([
+                { "type": "text", "text": system_text, "cache_control": { "type": "ephemeral" } }
+            ]);
+        }
+        if !req.tools.is_empty() {
+            body["tools"] = serde_json::Value::Array(
+                req.tools
+                    .iter()
+                    .map(|t| {
+                        serde_json::json!({ "name": t.name, "description": t.description, "input_schema": t.parameters })
+                    })
+                    .collect(),
+            );
+        }
+        body
+    }
+
+    #[async_trait]
+    impl Provider for AnthropicProvider {
+        async fn complete(&self, req: &CompletionRequest) -> Result<Completion, GatewayError> {
+            let body = anthropic_body(req);
+            let resp = self
+                .client
+                .post(format!("{}/messages", self.base_url))
+                .header("x-api-key", &self.api_key)
+                .header("anthropic-version", "2023-06-01")
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| GatewayError::Provider(e.to_string()))?;
+            let status = resp.status();
+            let json: serde_json::Value =
+                resp.json().await.map_err(|e| GatewayError::Provider(e.to_string()))?;
+            if !status.is_success() {
+                return Err(GatewayError::Provider(format!("{status}: {json}")));
+            }
+            let mut text = String::new();
+            let mut tool_calls = Vec::new();
+            if let Some(blocks) = json["content"].as_array() {
+                for b in blocks {
+                    match b["type"].as_str() {
+                        Some("text") => text.push_str(b["text"].as_str().unwrap_or("")),
+                        Some("tool_use") => tool_calls.push(ToolCall {
+                            id: b["id"].as_str().unwrap_or("").to_string(),
+                            name: b["name"].as_str().unwrap_or("").to_string(),
+                            arguments: b["input"].clone(),
+                        }),
+                        _ => {}
+                    }
+                }
+            }
+            let u = &json["usage"];
+            let cache_read = u["cache_read_input_tokens"].as_u64().unwrap_or(0);
+            let cache_create = u["cache_creation_input_tokens"].as_u64().unwrap_or(0);
+            if cache_read > 0 {
+                tracing::debug!(cache_read, "anthropic prompt cache hit");
+            }
+            // Count all processed input (fresh + cache create + cache read) for metering;
+            // cost stays a conservative upper bound (no cache discount applied).
+            let tokens_in =
+                (u["input_tokens"].as_u64().unwrap_or(0) + cache_read + cache_create) as u32;
+            let tokens_out = u["output_tokens"].as_u64().unwrap_or(0) as u32;
+            Ok(Completion { text, model: req.model.clone(), tokens_in, tokens_out, tool_calls })
+        }
+
+        async fn embed(&self, _texts: &[String]) -> Result<Vec<Vec<f32>>, GatewayError> {
+            Err(GatewayError::Provider(
+                "anthropic has no embeddings endpoint — use the offline embedder or a separate provider"
+                    .into(),
+            ))
+        }
+
+        fn id(&self) -> &str {
+            "anthropic"
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::types::{Message, ToolCall, ToolDef};
+
+        #[test]
+        fn lifts_system_marks_it_cacheable_and_shapes_tools_and_blocks() {
+            let req = CompletionRequest::new(
+                "claude-haiku-4-5",
+                vec![
+                    Message::system("you are engram"),
+                    Message::user("hi"),
+                    Message::assistant_tool_calls(
+                        "",
+                        vec![ToolCall { id: "t1".into(), name: "echo".into(), arguments: serde_json::json!({ "x": 1 }) }],
+                    ),
+                    Message::tool_result("t1", "echoed"),
+                ],
+            )
+            .tools(vec![ToolDef {
+                name: "echo".into(),
+                description: "e".into(),
+                parameters: serde_json::json!({ "type": "object" }),
+            }]);
+            let body = anthropic_body(&req);
+
+            // System is lifted out of messages into a cacheable block.
+            assert_eq!(body["system"][0]["text"], "you are engram");
+            assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
+            // Tools use Anthropic's input_schema shape.
+            assert_eq!(body["tools"][0]["name"], "echo");
+            assert!(body["tools"][0]["input_schema"].is_object());
+            // Messages: user, assistant(tool_use), user(tool_result).
+            let msgs = body["messages"].as_array().unwrap();
+            assert_eq!(msgs[0]["role"], "user");
+            assert_eq!(msgs[1]["role"], "assistant");
+            assert_eq!(msgs[1]["content"][0]["type"], "tool_use");
+            assert_eq!(msgs[1]["content"][0]["id"], "t1");
+            assert_eq!(msgs[2]["role"], "user");
+            assert_eq!(msgs[2]["content"][0]["type"], "tool_result");
+            assert_eq!(msgs[2]["content"][0]["tool_use_id"], "t1");
+        }
+
+        #[test]
+        fn merges_parallel_tool_results_into_one_user_message() {
+            let req = CompletionRequest::new(
+                "m",
+                vec![
+                    Message::user("go"),
+                    Message::assistant_tool_calls(
+                        "",
+                        vec![
+                            ToolCall { id: "a".into(), name: "x".into(), arguments: serde_json::json!({}) },
+                            ToolCall { id: "b".into(), name: "y".into(), arguments: serde_json::json!({}) },
+                        ],
+                    ),
+                    Message::tool_result("a", "ra"),
+                    Message::tool_result("b", "rb"),
+                ],
+            );
+            let body = anthropic_body(&req);
+            let msgs = body["messages"].as_array().unwrap();
+            assert_eq!(msgs.len(), 3); // user, assistant(2 tool_use), user(2 tool_result)
+            assert_eq!(msgs[2]["content"].as_array().unwrap().len(), 2);
+            assert_eq!(msgs[2]["content"][0]["tool_use_id"], "a");
+            assert_eq!(msgs[2]["content"][1]["tool_use_id"], "b");
+        }
+    }
+}
 
 #[cfg(feature = "http")]
 mod http {

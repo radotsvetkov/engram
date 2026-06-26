@@ -22,4 +22,4 @@ pub use provider::{approx_tokens, GatewayError, MockProvider, Provider, Scripted
 pub use types::{Completion, CompletionRequest, Message, Role, ToolCall, ToolDef};
 
 #[cfg(feature = "http")]
-pub use provider::HttpProvider;
+pub use provider::{AnthropicProvider, HttpProvider};

@@ -545,6 +545,71 @@
     border-radius:var(--r-modal); box-shadow:var(--e4); padding:22px 24px 20px; animation:menu-in var(--dur-2) var(--ease-spring); transform-origin:top center; }
   .proj-modal h2 { font-size:17px; font-weight:600; margin:0 0 4px; }
   .proj-modal .sub { color:var(--text-muted); font-size:12px; line-height:1.55; margin-bottom:16px; }
+  /* ===== Artifacts (Open in canvas) ===== */
+  .chat-shell { display:flex; height:100%; min-height:0; min-width:0; }
+  .chat-shell > .chat { flex:1 1 auto; min-width:0; transition:max-width var(--dur-2,.16s) var(--ease-out,ease); }
+  .chat-shell.arts-open > .chat { max-width:560px; margin:0 0 0 auto; padding-right:10px; }
+  .art-pane { flex:0 0 0; width:0; min-width:0; overflow:hidden; display:flex; flex-direction:column;
+    border-left:1px solid var(--border); background:var(--surface-1);
+    transition:flex-basis var(--dur-2,.16s) var(--ease-out,ease); }
+  .chat-shell.arts-open > .art-pane { flex:0 0 46%; width:auto; min-width:380px; }
+
+  /* "Open in canvas" chip injected into a code block header */
+  .art-open { display:inline-flex; align-items:center; gap:5px; margin-left:auto; margin-right:7px;
+    background:var(--surface-2); border:1px solid var(--border); color:var(--text-secondary);
+    border-radius:6px; padding:2px 8px; font:11px var(--sans); cursor:pointer; transition:.12s; }
+  .art-open svg { opacity:.85; }
+  .art-open:hover { border-color:var(--ring); color:var(--accent); background:var(--accent-soft); }
+  .art-open.active { color:var(--accent); border-color:var(--ring); background:var(--accent-soft); }
+  .cb-head .art-open + .cb-copy { margin-left:0; }
+
+  /* Pane header */
+  .art-bar { flex:none; display:flex; align-items:center; gap:10px; padding:10px 12px 10px 16px;
+    border-bottom:1px solid var(--border); min-height:46px; }
+  .art-meta { display:flex; align-items:center; gap:8px; min-width:0; }
+  .art-tag { flex:none; font:10.5px var(--mono); text-transform:uppercase; letter-spacing:.04em;
+    color:var(--accent); background:var(--accent-soft); border:1px solid var(--ring);
+    border-radius:5px; padding:2px 7px; }
+  .art-title { font-size:13.5px; font-weight:600; color:var(--text-primary);
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:220px; }
+  .art-sub { flex:none; font-size:11px; color:var(--text-muted); }
+  .art-actions { margin-left:auto; display:flex; align-items:center; gap:6px; }
+  .art-btn { background:var(--surface-2); border:1px solid var(--border); color:var(--text-secondary);
+    border-radius:7px; padding:4px 11px; font:12px var(--sans); cursor:pointer; transition:.12s; }
+  .art-btn:hover { border-color:var(--border-strong); color:var(--text-primary); }
+  .art-btn.ok { color:var(--accent); border-color:var(--ring); }
+  .art-x { display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px;
+    background:none; border:1px solid transparent; border-radius:7px; color:var(--text-muted); cursor:pointer; transition:.12s; }
+  .art-x:hover { color:var(--text-primary); background:var(--surface-2); border-color:var(--border); }
+
+  /* Pane switcher (multiple artifacts) */
+  .art-tabs { flex:none; display:flex; gap:4px; padding:8px 12px; overflow-x:auto;
+    border-bottom:1px solid var(--border); }
+  .art-tab { display:inline-flex; align-items:center; gap:6px; white-space:nowrap;
+    background:none; border:1px solid transparent; color:var(--text-secondary);
+    border-radius:7px; padding:4px 10px; font:12px var(--sans); cursor:pointer; transition:.12s; max-width:200px; }
+  .art-tab span:last-child { overflow:hidden; text-overflow:ellipsis; }
+  .art-tab:hover { background:var(--surface-2); color:var(--text-primary); }
+  .art-tab.on { background:var(--accent-soft); border-color:var(--ring); color:var(--text-primary); }
+  .art-dot { flex:none; width:6px; height:6px; border-radius:50%; background:var(--text-muted); }
+  .art-tab.on .art-dot { background:var(--accent); }
+
+  /* Pane body — re-scope the highlighter token classes (existing rules are scoped to .cb) */
+  .art-body { flex:1; min-height:0; overflow:auto; padding:14px 16px; background:var(--surface-0); }
+  .art-body pre { margin:0; }
+  .art-body code { font:12.5px/1.6 var(--mono); color:var(--text-primary); white-space:pre; }
+  .art-body .t-kw { color:var(--accent); } .art-body .t-st { color:var(--web); }
+  .art-body .t-co { color:var(--text-muted); font-style:italic; } .art-body .t-nu { color:var(--warning); }
+
+  /* Collapse the split on narrow widths: pane takes over, chat hides behind it. */
+  @media (max-width: 900px){
+    .chat-shell.arts-open > .chat { display:none; }
+    .chat-shell.arts-open > .art-pane { flex:1 1 auto; width:auto; min-width:0; border-left:none; }
+    .art-title { max-width:140px; }
+  }
+  @media (prefers-reduced-motion: reduce){
+    .chat-shell > .chat, .art-pane { transition:none; }
+  }
 </style>
 </head>
 <body>
@@ -1048,8 +1113,11 @@ async function renderChat(){
   if(WS.activeSession && !WS.byId[WS.activeSession]){ try{ WS.byId[WS.activeSession]=await J('/v1/sessions/'+encodeURIComponent(WS.activeSession)); }catch(_){} }
   const meta=WS.sessions.find(x=>x.id===WS.activeSession);
   document.getElementById('viewname').textContent = curProject().name+' / '+((meta&&meta.title)||'New chat');
-  document.getElementById('view').innerHTML = `<div class="chat">${offlineNotice()}
-    <div class="feed" id="feed"></div>${composerHtml('chat')}</div>`;
+  // Artifacts split: wrap the chat column in a flex row so a right-hand artifact pane can open
+  // beside it. The pane starts collapsed (width 0); artOpen()/artClose() toggle .arts-open.
+  ARTS.open=false; ARTS.current=null; ARTS._sig='';
+  document.getElementById('view').innerHTML = `<div class="chat-shell"><div class="chat">${offlineNotice()}
+    <div class="feed" id="feed"></div>${composerHtml('chat')}</div><div class="art-pane" id="artPane"></div></div>`;
   document.getElementById('composer').placeholder='Ask Engram anything…';
   wireComposer(); paintFeed();
 }
@@ -1122,6 +1190,7 @@ function paintFeed(){
     const body = m.text ? (mdToHtml(m.text) + (m.streaming?'<span class="caret"></span>':'')) : (m.streaming?thinkingDots:'…');
     return `<div><div class="msg engram">${body}</div>${ribbon}${learned}</div>`;
   }).join('') || '<div class="ses-empty" style="padding:26px 4px">Ask anything. Replies show the memories they drew on, and every action is signed into the ledger spine below.</div>';
+  artsAfterPaint();   // detect substantial code/doc blocks, inject "Open in canvas" chips, sync the pane
   f.scrollTop=f.scrollHeight;
 }
 async function chatSay(text){
@@ -1788,6 +1857,7 @@ window.addEventListener('keydown', e=>{
     else if(k==='enter'){ e.preventDefault(); palRun(palSel); }
     return;
   }
+  if(k==='escape' && typeof ARTS!=='undefined' && ARTS.open){ e.preventDefault(); artClose(); return; }
   if(k==='escape' && !document.getElementById('cc').hidden){ e.preventDefault(); closeCC(); return; }
   if(k==='escape' && !document.getElementById('receipt').hidden){ e.preventDefault(); closeReceipt(); return; }
   if(k==='escape' && !document.getElementById('projModal').hidden){ e.preventDefault(); closeProjModal(); return; }
@@ -1927,6 +1997,165 @@ async function boot(){
   setInterval(async()=>{ await poll(); await refreshTasks(); }, 3000);
 }
 boot();
+
+// ===== ARTIFACTS (Open in canvas) =====
+// Client-side detection of substantial code/doc blocks in Engram replies, surfaced as an
+// "Open in canvas" chip that splits the chat into a feed + right-hand artifact pane.
+// No backend: we scan the rendered feed after each paintFeed() and reuse _cbStore raw code.
+// Model output is untrusted, so everything rendered here goes through esc()/escAttr()/hl().
+const ARTS = { open:false, current:null, byKey:{}, order:[], _sig:'' };
+
+// Stable identity for an artifact across streaming repaints: short FNV-1a hash of lang+content.
+function artHash(s){ let h=2166136261>>>0; for(let i=0;i<s.length;i++){ h^=s.charCodeAt(i); h=Math.imul(h,16777619); } return ('a'+(h>>>0).toString(36)); }
+
+// codeBlock() renders an *unlabeled* fence's header as the literal word "code" (esc(lang||'code')),
+// so when we read it back from .cb-head span we must fold "code"/"text" to '' — otherwise a
+// heading-only markdown block (lang reported as "code") would never qualify and the language tag
+// would read a bogus "CODE".
+function artNormLang(l){ l=(l||'').toLowerCase().trim(); return (l==='code'||l==='text')?'':l; }
+
+const ART_EXT = { js:'js',jsx:'jsx',ts:'ts',tsx:'tsx',rust:'rs',rs:'rs',python:'py',py:'py',bash:'sh',sh:'sh',shell:'sh',json:'json',yaml:'yml',yml:'yml',toml:'toml',html:'html',css:'css',sql:'sql',go:'go',ruby:'rb',rb:'rb',java:'java',c:'c',cpp:'cpp',md:'md',markdown:'md','':'txt' };
+const ART_LANGNAME = { js:'JavaScript',jsx:'JSX',ts:'TypeScript',tsx:'TSX',rust:'Rust',rs:'Rust',python:'Python',py:'Python',bash:'Shell',sh:'Shell',shell:'Shell',json:'JSON',yaml:'YAML',yml:'YAML',toml:'TOML',html:'HTML',css:'CSS',sql:'SQL',go:'Go',ruby:'Ruby',rb:'Ruby',md:'Markdown',markdown:'Markdown' };
+
+// Derive a human title from the content (leading comment / heading / declaration), else the language.
+function artTitle(code, lang){
+  const lines=String(code).split('\n').map(l=>l.trim()).filter(Boolean);
+  for(const l of lines.slice(0,4)){
+    let m=l.match(/^(?:\/\/|#|--|;)\s*(.+)$/);            // leading comment
+    if(m && m[1].length<=64) return m[1].replace(/\s+/g,' ');
+    m=l.match(/^#{1,3}\s+(.+)$/);                          // markdown heading
+    if(m) return m[1].replace(/\s+/g,' ').slice(0,64);
+    m=l.match(/^(?:export\s+)?(?:async\s+)?(?:fn|function|def|class|struct|interface|enum|impl|type)\s+([A-Za-z_$][\w$]*)/);
+    if(m) return m[1];
+  }
+  const ln=artNormLang(lang);
+  return ART_LANGNAME[ln] || (ln ? ln : 'Snippet');
+}
+
+// Does this code block clear the bar for an artifact? >=6 lines, or markdown w/ headings.
+function artQualifies(code, lang){
+  const lines=String(code).replace(/\n+$/,'').split('\n');
+  if(lines.length>=6) return true;
+  const l=artNormLang(lang);
+  if((l==='md'||l==='markdown'||l==='') && /^#{1,3}\s+\S/m.test(code)) return true;
+  return false;
+}
+
+// Register (or refresh) an artifact, returning its stable key.
+function artRegister(code, lang){
+  lang=artNormLang(lang);
+  const key=artHash(lang+' '+code);
+  const ext=ART_EXT[lang]!=null?ART_EXT[lang]:'txt';
+  if(!ARTS.byKey[key]){ ARTS.order.push(key); }
+  ARTS.byKey[key]={ key, code, lang, ext, title:artTitle(code,lang), langName:ART_LANGNAME[lang]||(lang?lang.toUpperCase():'Text'), lines:code.replace(/\n+$/,'').split('\n').length };
+  return key;
+}
+
+// Mark the chip for the active artifact (without re-rendering the pane).
+function artMarkChip(){
+  document.querySelectorAll('.art-open.active').forEach(b=>b.classList.remove('active'));
+  const a=ARTS.byKey[ARTS.current]; if(!a) return;
+  const chip=document.querySelector('.art-open[data-k="'+a.key+'"]'); if(chip) chip.classList.add('active');
+}
+
+// Scan the freshly-painted feed: register qualifying blocks, inject "Open in canvas" chips.
+// Called at the end of paintFeed(). Rebuilds the registry from on-screen blocks so it stays
+// in sync with session switches and streaming repaints. Raw code is recovered from _cbStore via
+// the per-block copyCode('cbN',...) onclick id, so it survives codeBlock() regenerating ids.
+function artsAfterPaint(){
+  const f=document.getElementById('feed'); if(!f) return;
+  ARTS.byKey={}; ARTS.order=[];
+  f.querySelectorAll('.cb').forEach(cb=>{
+    const copyBtn=cb.querySelector('.cb-copy'); if(!copyBtn) return;
+    const m=(copyBtn.getAttribute('onclick')||'').match(/copyCode\('([^']+)'/);
+    const codeEl=cb.querySelector('code');
+    const raw=(m && typeof _cbStore!=='undefined' && _cbStore[m[1]]!=null) ? _cbStore[m[1]] : (codeEl?codeEl.textContent:'');
+    const langEl=cb.querySelector('.cb-head span');
+    const lang=(langEl?langEl.textContent:'').trim();
+    if(!artQualifies(raw,lang)) return;
+    const key=artRegister(raw,lang);
+    if(cb.querySelector('.art-open')) return;
+    const head=cb.querySelector('.cb-head'); if(!head) return;
+    const btn=document.createElement('button');
+    btn.className='art-open'; btn.type='button'; btn.dataset.k=key; btn.title='Open in canvas';
+    btn.innerHTML='<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="14" y1="3" x2="14" y2="21"/></svg><span>Open in canvas</span>';
+    btn.addEventListener('click',()=>artOpen(key));
+    head.insertBefore(btn, copyBtn);
+  });
+  if(ARTS.open){
+    if(ARTS.current && ARTS.byKey[ARTS.current]){
+      // Only repaint the pane when the active artifact's content actually changed, so a
+      // token-by-token streaming repaint doesn't clobber the Copy "Copied" state or tab focus.
+      const a=ARTS.byKey[ARTS.current];
+      const sig=ARTS.current+'#'+ARTS.order.length+'#'+a.code.length;
+      if(sig!==ARTS._sig) artRenderPane(); else artMarkChip();
+    }
+    else if(ARTS.order.length) artOpen(ARTS.order[ARTS.order.length-1]);
+    else artClose();
+  }
+}
+
+function artShell(){ return document.querySelector('.chat-shell'); }
+
+function artOpen(key){
+  if(!ARTS.byKey[key]) return;
+  ARTS.current=key; ARTS.open=true;
+  const shell=artShell(); if(shell) shell.classList.add('arts-open');
+  artRenderPane();
+}
+
+function artClose(){
+  ARTS.open=false; ARTS.current=null; ARTS._sig='';
+  const shell=artShell(); if(shell) shell.classList.remove('arts-open');
+  const pane=document.getElementById('artPane'); if(pane) pane.innerHTML='';
+  document.querySelectorAll('.art-open.active').forEach(b=>b.classList.remove('active'));
+}
+
+function artRenderPane(){
+  const pane=document.getElementById('artPane'); if(!pane) return;
+  const a=ARTS.byKey[ARTS.current]; if(!a){ artClose(); return; }
+  ARTS._sig=ARTS.current+'#'+ARTS.order.length+'#'+a.code.length;
+  const multi=ARTS.order.length>1;
+  const tabs=multi ? `<div class="art-tabs">${ARTS.order.map(k=>{ const x=ARTS.byKey[k]; return `<button class="art-tab${k===ARTS.current?' on':''}" data-k="${escAttr(k)}" title="${escAttr(x.title)}"><span class="art-dot"></span><span>${esc(x.title)}</span></button>`; }).join('')}</div>` : '';
+  pane.innerHTML = `
+    <div class="art-bar">
+      <div class="art-meta">
+        <span class="art-tag">${esc(a.langName)}</span>
+        <span class="art-title" title="${escAttr(a.title)}">${esc(a.title)}</span>
+        <span class="art-sub">${a.lines} ${a.lines===1?'line':'lines'}</span>
+      </div>
+      <div class="art-actions">
+        <button class="art-btn" id="artCopy" title="Copy contents">Copy</button>
+        <button class="art-btn" id="artDl" title="Download file">Download</button>
+        <button class="art-x" id="artX" title="Close canvas (Esc)" aria-label="Close canvas">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+    </div>
+    ${tabs}
+    <div class="art-body"><pre><code>${hl(a.code, a.lang)}</code></pre></div>`;
+  pane.querySelector('#artX').addEventListener('click', artClose);
+  pane.querySelector('#artCopy').addEventListener('click', e=>{
+    const btn=e.currentTarget;
+    (navigator.clipboard?navigator.clipboard.writeText(a.code):Promise.reject())
+      .then(()=>{ btn.textContent='Copied'; btn.classList.add('ok'); setTimeout(()=>{ btn.textContent='Copy'; btn.classList.remove('ok'); },1200); })
+      .catch(()=>notify('Couldn’t copy to clipboard'));
+  });
+  pane.querySelector('#artDl').addEventListener('click', ()=>artDownload(a));
+  pane.querySelectorAll('.art-tab').forEach(t=> t.addEventListener('click',()=>artOpen(t.dataset.k)) );
+  artMarkChip();
+}
+
+function artDownload(a){
+  const safe=(a.title||'artifact').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,40)||'artifact';
+  const name=safe+'.'+(a.ext||'txt');
+  const blob=new Blob([a.code], {type:'text/plain;charset=utf-8'});
+  const url=URL.createObjectURL(blob);
+  const el=document.createElement('a'); el.href=url; el.download=name;
+  document.body.appendChild(el); el.click(); el.remove();
+  setTimeout(()=>URL.revokeObjectURL(url), 4000);
+  notify('Downloaded '+name,'ok');
+}
 </script>
 </body>
 </html>

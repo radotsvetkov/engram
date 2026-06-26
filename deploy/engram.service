@@ -8,7 +8,7 @@ ExecStart=/usr/local/bin/engramd
 Environment=ENGRAM_HOME=/var/lib/engram
 Environment=ENGRAM_ADDR=127.0.0.1:8088
 Environment=ENGRAM_IDLE_SECS=120
-# Hardening — minimal privileges for a self-modifying agent.
+# Hardening - minimal privileges for a self-modifying agent.
 DynamicUser=yes
 NoNewPrivileges=yes
 ProtectSystem=strict

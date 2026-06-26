@@ -42,7 +42,7 @@ ssh root@VPS '
 ```
 
 `engram.service` runs under `DynamicUser` with `ProtectSystem=strict`,
-`NoNewPrivileges`, and a private tmp — minimal privilege for a self-modifying agent.
+`NoNewPrivileges`, and a private tmp - minimal privilege for a self-modifying agent.
 State (the brain, the ledger, the signing keys) lives in `/var/lib/engram`.
 
 ## 3. TLS and the public edge (optional)
@@ -56,14 +56,14 @@ your.domain {
 }
 ```
 
-Put the dashboard behind auth before exposing it — a self-modifying agent's control
+Put the dashboard behind auth before exposing it - a self-modifying agent's control
 plane is sensitive. Until then, reach it over an SSH tunnel:
 `ssh -L 8088:127.0.0.1:8088 root@VPS` then open http://127.0.0.1:8088.
 
 ## 4. Scheduled wake
 
 Recurring jobs are stored in the brain. To wake the sleeping core on schedule,
-install a systemd timer alongside the socket — `engram-sched`'s `systemd::wake_timer`
+install a systemd timer alongside the socket - `engram-sched`'s `systemd::wake_timer`
 generates the `.service`/`.timer` pair, or adapt this:
 
 ```
@@ -75,13 +75,13 @@ Persistent=true
 WantedBy=timers.target
 ```
 
-`Persistent=true` means a fire missed while the box was off runs once on next boot —
+`Persistent=true` means a fire missed while the box was off runs once on next boot -
 matching the scheduler's skip-on-missed policy (one catch-up, never a stampede).
 
 ## Footprint
 
-The full agent — hybrid memory + SQLite, the WASM skill sandbox, the gateway, the
-scheduler, the audit ledger, and the HTTP server + dashboard — is a **~3 MB** binary
+The full agent - hybrid memory + SQLite, the WASM skill sandbox, the gateway, the
+scheduler, the audit ledger, and the HTTP server + dashboard - is a **~3 MB** binary
 that holds **0 MB resident at idle**, versus an always-on multi-hundred-MB Python/Node
 runtime. That is the deployment thesis, and it is why Engram costs nearly nothing when
 you are not using it.

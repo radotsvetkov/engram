@@ -3,7 +3,7 @@ Description=Engram core socket (zero-idle activation)
 
 [Socket]
 # systemd owns the listening socket. There is NO Engram process until a connection
-# arrives — this is the mechanism behind "0 MB resident at idle".
+# arrives - this is the mechanism behind "0 MB resident at idle".
 ListenStream=8088
 Accept=no
 

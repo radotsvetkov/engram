@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-# The Tauri desktop shell is its own crate (pulls heavy GUI deps) — keep it out of the
+# The Tauri desktop shell is its own crate (pulls heavy GUI deps) - keep it out of the
 # core workspace build/tests; build it with `cargo tauri` from desktop/.
 exclude = ["desktop"]
 members = [
@@ -21,7 +21,7 @@ edition = "2021"
 rust-version = "1.80"
 authors = ["Radoslav Tsvetkov <tsvetkov.rado@gmail.com>"]
 license = "MIT"
-description = "Engram — a brain-inspired, self-improving personal AI agent that costs nothing when idle"
+description = "Engram - a brain-inspired, self-improving personal AI agent that costs nothing when idle"
 
 [workspace.dependencies]
 tokio = { version = "1", default-features = false }

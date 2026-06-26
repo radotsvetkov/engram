@@ -3,7 +3,7 @@
 //! A thin native window onto the local agent. On launch it best-effort starts the
 //! `engramd` daemon (if it isn't already running) and opens a webview pointed at its
 //! dashboard. Because the window loads the daemon's own origin, the dashboard's API
-//! calls just work — no CORS, no duplicated frontend. When the window closes the
+//! calls just work - no CORS, no duplicated frontend. When the window closes the
 //! daemon is left to sleep itself to zero on idle, true to the zero-idle design.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]

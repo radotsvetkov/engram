@@ -43,5 +43,5 @@ Produces a native bundle (`.app`/`.dmg` on macOS, `.deb`/`.AppImage` on Linux,
 - For a fully self-contained bundle, ship `engramd` as a Tauri **sidecar**
   (`bundle.externalBin`) so users don't need it on `PATH`. The shell already
   best-effort-spawns it; wiring it as a sidecar is the packaging follow-up.
-- Closing the window leaves `engramd` to sleep to zero on idle — consistent with the
+- Closing the window leaves `engramd` to sleep to zero on idle - consistent with the
   zero-idle design rather than force-killing it.

@@ -9,7 +9,7 @@ dist/
 .vite/
 *.tsbuildinfo
 
-# Engram runtime state (local brain — never commit personal memory)
+# Engram runtime state (local brain - never commit personal memory)
 /.engram/
 *.engram
 brain/**/*.db

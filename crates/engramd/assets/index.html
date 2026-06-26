@@ -24,7 +24,7 @@
   ::placeholder { color:var(--text-muted); }
   ::-webkit-scrollbar { width:9px; height:9px; } ::-webkit-scrollbar-thumb { background:#23262c; border-radius:6px; }
 
-  .app { display:grid; grid-template-columns:148px 1fr; height:calc(100vh - 26px); }
+  .app { display:grid; grid-template-columns:56px 252px 1fr; height:calc(100vh - 26px); }
 
   /* Rail */
   .rail { background:var(--surface-1); border-right:1px solid var(--border); display:flex; flex-direction:column; padding:14px 8px; }
@@ -254,6 +254,65 @@
   .kbd-row kbd { font:11px var(--mono); background:var(--surface-2); border:1px solid var(--border); border-radius:4px; padding:2px 7px; color:var(--text-primary); }
   .ph { color:var(--text-muted); font-size:12.5px; line-height:1.6; }
   .ph b { color:var(--text-secondary); font-weight:500; }
+  /* icon rail (56px) */
+  .rail { padding:12px 0; align-items:center; }
+  .rail .brand { padding:2px 0 14px; justify-content:center; }
+  .rail .brand b { display:none; }
+  .rail .brand .mark svg { width:24px; height:24px; }
+  .rail .nav { width:100%; align-items:center; gap:4px; }
+  .rail .nav a { width:40px; height:40px; justify-content:center; padding:0; gap:0; border-radius:10px; }
+  .rail .nav a .lbl { display:none; }
+  .rail .nav a svg { width:18px; height:18px; }
+  .rail .railgear { width:40px; height:40px; justify-content:center; padding:0; margin:0 auto; }
+  .rail .railgear .lbl { display:none; }
+  .rail .status { display:none; }
+  /* workspace sidebar: projects -> sessions -> favorites */
+  .sidebar { background:var(--surface-1); border-right:1px solid var(--border); display:flex; flex-direction:column; min-height:0; padding:12px 10px; gap:8px; }
+  .newchat { display:flex; align-items:center; gap:9px; background:var(--surface-2); color:var(--text-primary);
+    border:1px solid var(--border-strong); border-radius:10px; padding:9px 12px; font-size:13px; cursor:pointer; transition:.15s; }
+  .newchat:hover { border-color:var(--accent); }
+  .newchat svg { width:16px; height:16px; }
+  .proj { position:relative; }
+  .proj-btn { display:flex; align-items:center; gap:8px; width:100%; background:none; border:1px solid var(--border);
+    border-radius:9px; padding:7px 10px; color:var(--text-secondary); font-size:12.5px; cursor:pointer; transition:.15s; }
+  .proj-btn:hover { background:var(--surface-2); color:var(--text-primary); }
+  .proj-dot { width:8px; height:8px; border-radius:2.5px; background:var(--accent); flex:none; }
+  .proj-name { flex:1; text-align:left; color:var(--text-primary); }
+  .proj-caret { color:var(--text-muted); font-size:11px; }
+  .proj-menu { position:absolute; top:38px; left:0; right:0; background:var(--surface-2); border:1px solid var(--border-strong);
+    border-radius:10px; padding:5px; z-index:20; box-shadow:0 14px 34px rgba(0,0,0,.45); }
+  .proj-menu div { padding:7px 9px; border-radius:7px; font-size:12.5px; color:var(--text-secondary); cursor:pointer; display:flex; align-items:center; gap:8px; }
+  .proj-menu div:hover { background:var(--surface-1); color:var(--text-primary); }
+  .proj-menu .add { color:var(--accent); border-top:1px solid var(--border); margin-top:4px; padding-top:9px; }
+  .ses-scroll { flex:1; overflow:auto; min-height:0; margin:0 -4px; padding:0 4px; }
+  .ses-group { font-size:10px; text-transform:uppercase; letter-spacing:.7px; color:var(--text-muted); padding:12px 8px 5px; }
+  .ses { display:flex; align-items:center; gap:6px; padding:7px 9px; border-radius:8px; cursor:pointer; color:var(--text-secondary); }
+  .ses:hover { background:var(--surface-2); color:var(--text-primary); }
+  .ses.active { background:var(--surface-2); color:var(--text-primary); box-shadow:inset 2px 0 0 var(--accent); }
+  .ses .ses-t { flex:1; font-size:12.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .ses .ses-actions { display:none; gap:1px; flex:none; }
+  .ses:hover .ses-actions, .ses.active .ses-actions { display:flex; }
+  .ses .ses-actions button { background:none; border:none; color:var(--text-muted); cursor:pointer; font-size:12px; padding:2px 4px; border-radius:4px; line-height:1; }
+  .ses .ses-actions button:hover { color:var(--text-primary); background:var(--surface-1); }
+  .ses .star { color:var(--warning); }
+  .ses-empty { color:var(--text-muted); font-size:12px; padding:8px 9px; line-height:1.5; }
+  /* chat: composer model picker + recall ribbon */
+  .composer-top { display:flex; align-items:center; gap:8px; margin-bottom:7px; }
+  .modelpick { display:inline-flex; align-items:center; gap:6px; background:var(--surface-2); border:1px solid var(--border);
+    color:var(--text-secondary); border-radius:20px; padding:3px 11px; font-size:12px; cursor:pointer; transition:.15s; }
+  .modelpick:hover { border-color:var(--border-strong); color:var(--text-primary); }
+  .modelpick .mp-dot { width:6px; height:6px; border-radius:50%; background:var(--accent); }
+  .model-menu { position:absolute; bottom:100%; left:0; margin-bottom:8px; background:var(--surface-2); border:1px solid var(--border-strong);
+    border-radius:11px; padding:6px; min-width:240px; z-index:30; box-shadow:0 16px 40px rgba(0,0,0,.5); }
+  .model-menu .mm-g { font-size:10px; text-transform:uppercase; letter-spacing:.6px; color:var(--text-muted); padding:7px 9px 3px; }
+  .model-menu div.mm-i { padding:7px 10px; border-radius:7px; font-size:12.5px; color:var(--text-secondary); cursor:pointer; display:flex; align-items:center; gap:8px; }
+  .model-menu div.mm-i:hover { background:var(--surface-1); color:var(--text-primary); }
+  .model-menu div.mm-i.on { color:var(--accent); }
+  .ribbon { display:flex; flex-wrap:wrap; gap:6px; margin:4px 0 2px; }
+  .recall { display:inline-flex; align-items:center; gap:5px; font-size:11px; color:var(--text-secondary);
+    background:var(--surface-1); border:1px solid var(--border); border-radius:20px; padding:2px 9px; cursor:default; }
+  .recall .rg { font-family:var(--mono); color:var(--accent); }
+  .learned { font-size:11px; color:var(--text-muted); margin:2px 0 2px; }
 </style>
 </head>
 <body>
@@ -262,9 +321,10 @@
     <div class="brand"><span class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round"><circle cx="19" cy="16" r="2.9" fill="#45c8a8" stroke="none" opacity=".16"/><path d="M12 9V5.5"/><path d="M14.6 13.5 17.6 15.2"/><path d="M9.4 13.5 6.4 15.2"/><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r=".95" fill="currentColor" stroke="none"/><circle cx="12" cy="3.9" r="1.6"/><circle cx="5" cy="16" r="1.6"/><circle cx="19" cy="16" r="1.6" fill="#45c8a8" stroke="#45c8a8"/></svg></span><b>engram</b></div>
     <div class="nav" id="nav"></div>
     <div class="spacer"></div>
-    <button class="railgear" onclick="openCC()" title="Settings (⌘,)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 13a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1.08 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg> Settings</button>
+    <button class="railgear" onclick="openCC()" title="Settings (⌘,)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 13a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1.08 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg><span class="lbl">Settings</span></button>
     <div class="status" id="status">waking…</div>
   </nav>
+  <aside class="sidebar" id="sidebar"></aside>
   <div class="main">
     <div id="banner" aria-live="assertive"></div>
     <header class="topbar">
@@ -350,7 +410,7 @@ function renderNav(){
   // Real anchors with a hash href: keyboard-focusable and Enter-activatable for free; the
   // hashchange listener routes. aria-current marks the active view for screen readers.
   document.getElementById('nav').innerHTML = VIEWS.map(v=>
-    `<a class="${state.route===v?'active':''}" href="#${v}"${state.route===v?' aria-current="page"':''}>${ICONS[v]} ${v}</a>`).join('');
+    `<a class="${state.route===v?'active':''}" href="#${v}" title="${v}"${state.route===v?' aria-current="page"':''}>${ICONS[v]}<span class="lbl">${v}</span></a>`).join('');
 }
 function go(v){ state.route=v; if(location.hash.slice(1)!==v) location.hash=v; document.getElementById('viewname').textContent=v; renderNav(); renderView(); }
 window.addEventListener('hashchange',()=>{ const v=location.hash.slice(1); if(VIEWS.includes(v)&&v!==state.route) go(v); });
@@ -430,6 +490,7 @@ function renderBoard(){
 // ---- composer + intent routing ----
 function composerHtml(){
   return `<div class="composer">
+    <div class="composer-top">${modelpickHtml()}</div>
     <textarea id="composer" rows="1" placeholder="Tell Engram what to do…"></textarea>
     <div class="hint"><small>↵ answer · ⌘↵ task · ⇧⌘↵ task &amp; run</small>
       <button class="send" onclick="submitComposer(false)">Create task</button></div></div>`;
@@ -566,46 +627,85 @@ async function approveShell(id){
   runTask(id);
 }
 
-// ---- Chat ----
-let chatLog=[];
+// ---- workspace: projects -> sessions -> favorites (client-side, persisted) ----
+const WS_KEY='engram.ws.v2';
+let WS=loadWS(), projMenuOpen=false;
+function loadWS(){
+  try{ const w=JSON.parse(localStorage.getItem(WS_KEY)); if(w&&w.projects&&w.sessions) return w; }catch(_){}
+  return { projects:[{id:'personal',name:'Personal'}], activeProject:'personal', sessions:[], activeSession:null };
+}
+function saveWS(){ try{ localStorage.setItem(WS_KEY, JSON.stringify(WS)); }catch(_){} }
+function curProject(){ return WS.projects.find(p=>p.id===WS.activeProject)||WS.projects[0]; }
+function curSessions(){ return WS.sessions.filter(s=>s.projectId===WS.activeProject); }
+function activeSess(){ return WS.sessions.find(s=>s.id===WS.activeSession)||null; }
+function newId(p){ return p+Date.now().toString(36)+Math.floor(Math.random()*1e4).toString(36); }
+function newSession(open){
+  const s={ id:newId('s'), projectId:WS.activeProject, title:'New chat', fav:false, ts:Date.now(), log:[] };
+  WS.sessions.unshift(s); WS.activeSession=s.id; saveWS(); renderSidebar();
+  if(open!==false) go('Chat'); else if(state.route==='Chat') renderChat();
+  return s;
+}
+function openSession(id){ WS.activeSession=id; saveWS(); renderSidebar(); if(state.route!=='Chat') go('Chat'); else renderChat(); }
+function favSession(id,e){ if(e) e.stopPropagation(); const s=WS.sessions.find(x=>x.id===id); if(s){ s.fav=!s.fav; saveWS(); renderSidebar(); } }
+function renameSession(id,e){ if(e) e.stopPropagation(); const s=WS.sessions.find(x=>x.id===id); if(!s) return; const n=prompt('Rename chat', s.title); if(n!=null){ s.title=n.trim()||s.title; saveWS(); renderSidebar(); } }
+function deleteSession(id,e){ if(e) e.stopPropagation(); WS.sessions=WS.sessions.filter(x=>x.id!==id); if(WS.activeSession===id) WS.activeSession=(curSessions()[0]||{}).id||null; saveWS(); renderSidebar(); if(state.route==='Chat') renderChat(); }
+function toggleProjMenu(){ projMenuOpen=!projMenuOpen; renderSidebar(); }
+function pickProject(id){ projMenuOpen=false; WS.activeProject=id; WS.activeSession=(curSessions()[0]||{}).id||null; saveWS(); renderSidebar(); if(state.route==='Chat') renderChat(); }
+function addProject(){ projMenuOpen=false; const n=prompt('New project name'); if(n&&n.trim()){ const id=newId('p'); WS.projects.push({id,name:n.trim()}); pickProject(id); } else renderSidebar(); }
+function renderSidebar(){
+  const el=document.getElementById('sidebar'); if(!el) return;
+  const proj=curProject(), sess=curSessions(), favs=sess.filter(s=>s.fav), rest=sess.filter(s=>!s.fav);
+  const row=s=>`<div class="ses ${s.id===WS.activeSession?'active':''}" onclick="openSession('${s.id}')" title="${escAttr(s.title)}">
+    <span class="ses-t">${esc(s.title||'New chat')}</span><span class="ses-actions">
+      <button class="${s.fav?'star':''}" title="${s.fav?'Unfavorite':'Favorite'}" onclick="favSession('${s.id}',event)">${s.fav?'★':'☆'}</button>
+      <button title="Rename" onclick="renameSession('${s.id}',event)">✎</button>
+      <button title="Delete" onclick="deleteSession('${s.id}',event)">✕</button></span></div>`;
+  const menu = projMenuOpen ? `<div class="proj-menu">${WS.projects.map(p=>`<div onclick="pickProject('${p.id}')"><span class="proj-dot"></span>${esc(p.name)}</div>`).join('')}<div class="add" onclick="addProject()">+ New project</div></div>` : '';
+  el.innerHTML = `
+    <button class="newchat" onclick="newSession()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg> New chat</button>
+    <div class="proj"><button class="proj-btn" onclick="toggleProjMenu()"><span class="proj-dot"></span><span class="proj-name">${esc(proj.name)}</span><span class="proj-caret">⌄</span></button>${menu}</div>
+    <div class="ses-scroll">
+      ${favs.length?`<div class="ses-group">★ Favorites</div>${favs.map(row).join('')}`:''}
+      <div class="ses-group">Chats</div>
+      ${rest.length?rest.map(row).join(''):'<div class="ses-empty">No chats yet — start one above. Engram remembers across all of them.</div>'}
+    </div>`;
+}
+
+// ---- Chat / Console - the active session's thread ----
 async function renderChat(){
+  if(!activeSess()){ if(curSessions().length){ WS.activeSession=curSessions()[0].id; saveWS(); } else newSession(false); renderSidebar(); }
+  const s=activeSess();
+  document.getElementById('viewname').textContent = curProject().name+' / '+((s&&s.title)||'New chat');
   document.getElementById('view').innerHTML = `<div class="chat">${offlineNotice()}
     <div class="feed" id="feed"></div>${composerHtml()}</div>`;
   document.getElementById('composer').placeholder='Ask Engram anything…';
-  wireComposer();
-  if(chatLog.length===0) await loadChatHistory();
-  paintFeed();
-}
-let historyLoaded=false;
-async function loadChatHistory(){
-  if(historyLoaded) return; historyLoaded=true;
-  try {
-    const recs = await J('/v1/memory/recent?region=episodic&n=24');
-    chatLog = (recs||[]).map(r => r.source==='assistant'
-      ? { role:'engram', text:(r.text||'').replace(/^assistant said:\s*/,'') }
-      : { role:'user', text:r.text });
-  } catch(_){}
+  wireComposer(); paintFeed();
 }
 function paintFeed(){
   const f=document.getElementById('feed'); if(!f) return;
-  f.innerHTML = chatLog.map(m=>{
+  const s=activeSess(), log=s?s.log:[];
+  f.innerHTML = log.map(m=>{
     if(m.role==='user') return `<div class="msg user">${esc(m.text)}</div>`;
-    const note=(m.recalled?.length||m.learned?.length)?`<div class="note">${m.recalled?.length?'recalled: '+m.recalled.slice(0,2).map(esc).join(' · '):''} ${m.learned?.length?'· learned: '+m.learned.map(esc).join(' · '):''}</div>`:'';
-    return `<div><div class="msg engram">${esc(m.text)}</div>${note}</div>`;
-  }).join('');
+    const ribbon=(m.recalled&&m.recalled.length)?`<div class="ribbon">${m.recalled.slice(0,5).map(r=>`<span class="recall" title="${escAttr(r)}"><span class="rg">◇</span> ${esc((r||'').replace(/\s+/g,' ').slice(0,54))}</span>`).join('')}</div>`:'';
+    const learned=(m.learned&&m.learned.length)?`<div class="learned">learned about you · ${m.learned.map(esc).join(' · ')}</div>`:'';
+    return `<div><div class="msg engram">${esc(m.text)||'…'}</div>${ribbon}${learned}</div>`;
+  }).join('') || '<div class="ses-empty" style="padding:26px 4px">Ask anything. Replies show the memories they drew on, and every action is signed into the ledger spine below.</div>';
   f.scrollTop=f.scrollHeight;
 }
 async function chatSay(text){
-  chatLog.push({role:'user',text});
-  const msg={role:'engram',text:''}; chatLog.push(msg); paintFeed();   // grows token-by-token
+  const s=activeSess()||newSession(false);
+  s.log.push({role:'user',text});
+  if(!s.title||s.title==='New chat'){ s.title=text.replace(/\s+/g,' ').slice(0,42); }
+  const msg={role:'engram',text:''}; s.log.push(msg); saveWS(); renderSidebar();
+  document.getElementById('viewname').textContent = curProject().name+' / '+s.title;
+  paintFeed();
   try {
     const r = await fetch('/v1/converse/stream',{method:'POST',headers:{...AUTH,'content-type':'application/json'},body:JSON.stringify({text})});
     if(!r.ok||!r.body) throw new Error('HTTP '+r.status);
     const reader=r.body.getReader(); const dec=new TextDecoder(); let buf='';
     for(;;){
       const {done,value}=await reader.read(); if(done) break;
-      buf+=dec.decode(value,{stream:true});
-      let i;
+      buf+=dec.decode(value,{stream:true}); let i;
       while((i=buf.indexOf('\n\n'))>=0){
         const frame=buf.slice(0,i); buf=buf.slice(i+2);
         let ev='message'; const dl=[];
@@ -615,15 +715,40 @@ async function chatSay(text){
         }
         const data=dl.join('\n');
         if(ev==='token'){ msg.text+=data; paintFeed(); }
-        else if(ev==='done'){ try{const d=JSON.parse(data); if(d.reply) msg.text=d.reply; msg.recalled=d.recalled; msg.learned=d.learned;}catch(_){} paintFeed(); }
+        else if(ev==='done'){ try{const d=JSON.parse(data); if(d.reply) msg.text=d.reply; msg.recalled=d.recalled; msg.learned=d.learned;}catch(_){} saveWS(); paintFeed(); }
         else if(ev==='error'){ msg.text='(couldn’t reach Engram - '+data+')'; paintFeed(); }
       }
     }
-    if(!msg.text){ msg.text='(no reply)'; paintFeed(); }
+    if(!msg.text) msg.text='(no reply)';
+    saveWS(); paintFeed();
   } catch(e){
-    msg.text=msg.text||'(couldn’t reach Engram - '+(e.message||'try again')+')'; paintFeed();
+    msg.text=msg.text||'(couldn’t reach Engram - '+(e.message||'try again')+')'; saveWS(); paintFeed();
   }
 }
+
+// ---- model picker (in the composer) ----
+let modelMenuOpen=false;
+function activeProviderModels(){ const k=(CFG&&CFG.provider&&CFG.provider.kind)||'mock'; return (PROVIDERS[k]||PROVIDERS.mock).models; }
+function modelpickHtml(){
+  const m=(CFG&&CFG.model_in_use)||'choose model';
+  return `<span class="mp-wrap" style="position:relative"><button class="modelpick" type="button" onclick="toggleModelMenu(event)" title="Switch model (⌘M)"><span class="mp-dot"></span>${esc(m)} ⌄</button><span id="modelMenu"></span></span>`;
+}
+function toggleModelMenu(e){ if(e) e.stopPropagation(); modelMenuOpen=!modelMenuOpen; renderModelMenu(); }
+function closeModelMenu(){ modelMenuOpen=false; const el=document.getElementById('modelMenu'); if(el) el.innerHTML=''; }
+function renderModelMenu(){
+  const el=document.getElementById('modelMenu'); if(!el) return;
+  if(!modelMenuOpen){ el.innerHTML=''; return; }
+  const cur=(CFG&&CFG.model_in_use)||'', kind=(CFG&&CFG.provider&&CFG.provider.kind)||'mock';
+  el.innerHTML=`<div class="model-menu"><div class="mm-g">${esc(kind)} models</div>
+    ${activeProviderModels().map(m=>`<div class="mm-i ${m===cur?'on':''}" onclick="pickModel('${escAttr(m)}')">${m===cur?'◇ ':''}${esc(m)}</div>`).join('')}
+    <div class="mm-i" style="color:var(--text-muted)" onclick="closeModelMenu();openCC('gateways')">More in Gateways…</div></div>`;
+}
+async function pickModel(m){
+  closeModelMenu();
+  try{ const res=await J('/v1/config',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({provider:{model:m}})}); CFG=res; notify('Model · '+m,'ok'); if(state.route==='Chat') renderChat(); }
+  catch(e){ notify('Couldn’t switch model — '+e.message); }
+}
+document.addEventListener('click', e=>{ if(modelMenuOpen && !e.target.closest('.mp-wrap')) closeModelMenu(); });
 
 // ---- Schedule ----
 async function renderSchedule(){
@@ -998,6 +1123,7 @@ window.addEventListener('keydown', e=>{
   const k=(e.key||'').toLowerCase();
   if((e.metaKey||e.ctrlKey) && k==='k'){ e.preventDefault(); document.getElementById('palette').hidden? openPalette(): closePalette(); return; }
   if((e.metaKey||e.ctrlKey) && k===','){ e.preventDefault(); document.getElementById('cc').hidden? openCC(): closeCC(); return; }
+  if((e.metaKey||e.ctrlKey) && k==='m' && document.getElementById('modelMenu')){ e.preventDefault(); toggleModelMenu(); return; }
   if(!document.getElementById('palette').hidden){
     if(k==='escape'){ e.preventDefault(); closePalette(); }
     else if(k==='arrowdown'){ e.preventDefault(); palMove(1); }
@@ -1034,11 +1160,12 @@ function connectEvents(){
   } catch(_){}
 }
 async function boot(){
-  renderNav();
+  renderNav(); renderSidebar();
+  try{ CFG=await J('/v1/config'); }catch(_){}   // for the composer's model picker
   await loadTasks(); lastTasksSig=JSON.stringify(state.tasks);
-  // Deep link via #hash, else front door: Chat when the board is empty, Tasks once there's work.
+  // Deep link via #hash, else the front door is the Console (chat).
   const hv=location.hash.slice(1);
-  state.route = VIEWS.includes(hv) ? hv : (state.tasks.length ? 'Tasks' : 'Chat');
+  state.route = VIEWS.includes(hv) ? hv : 'Chat';
   document.getElementById('viewname').textContent=state.route; renderNav(); renderView();
   poll(); connectEvents();
   // Chips poll + a slow board fallback if SSE is unavailable.

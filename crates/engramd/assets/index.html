@@ -174,7 +174,8 @@ function renderNav(){
   document.getElementById('nav').innerHTML = VIEWS.map(v=>
     `<a class="${state.route===v?'active':''}" onclick="go('${v}')">${ICONS[v]} ${v}</a>`).join('');
 }
-function go(v){ state.route=v; document.getElementById('viewname').textContent=v; renderNav(); renderView(); }
+function go(v){ state.route=v; if(location.hash.slice(1)!==v) location.hash=v; document.getElementById('viewname').textContent=v; renderNav(); renderView(); }
+window.addEventListener('hashchange',()=>{ const v=location.hash.slice(1); if(VIEWS.includes(v)&&v!==state.route) go(v); });
 
 // ---- top bar trust spine ----
 let lastLedger='', lastCost='';
@@ -469,8 +470,9 @@ function connectEvents(){
 async function boot(){
   renderNav();
   await loadTasks(); lastTasksSig=JSON.stringify(state.tasks);
-  // Front door: Chat when the board is empty, Tasks once there's work.
-  state.route = state.tasks.length ? 'Tasks' : 'Chat';
+  // Deep link via #hash, else front door: Chat when the board is empty, Tasks once there's work.
+  const hv=location.hash.slice(1);
+  state.route = VIEWS.includes(hv) ? hv : (state.tasks.length ? 'Tasks' : 'Chat');
   document.getElementById('viewname').textContent=state.route; renderNav(); renderView();
   poll(); connectEvents();
   // Chips poll + a slow board fallback if SSE is unavailable.

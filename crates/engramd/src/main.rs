@@ -249,6 +249,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/meter", get(meter))
         .route("/v1/memory/stats", get(memory_stats))
         .route("/v1/memory/recent", get(memory_recent))
+        .route("/v1/memory/graph", get(memory_graph))
         .route("/v1/remember", post(remember))
         .route("/v1/recall", get(recall))
         .route("/v1/forget", post(forget))
@@ -432,6 +433,29 @@ async fn memory_recent(State(app): State<App>, Query(q): Query<RecentQuery>) -> 
     let region = parse_region(q.region.as_deref());
     let recs = app.memory.recent(region, q.n.unwrap_or(20).min(100)).map_err(err)?;
     Ok(Json(serde_json::to_value(recs).map_err(err)?))
+}
+
+/// Nodes for the brain-graph visualization: recent memories across every region, trimmed to the
+/// fields the graph needs (region for color/cluster, tier for weight, importance/access for size).
+async fn memory_graph(State(app): State<App>, Query(q): Query<RecentQuery>) -> ApiResult {
+    let per = q.n.unwrap_or(60).min(150);
+    let regions = [Region::Identity, Region::Semantic, Region::Episodic, Region::Procedural];
+    let mut nodes = Vec::new();
+    for region in regions {
+        for r in app.memory.recent(region, per).map_err(err)? {
+            nodes.push(json!({
+                "id": r.id,
+                "region": r.region,
+                "text": r.text.chars().take(180).collect::<String>(),
+                "importance": r.importance,
+                "tier": r.tier,
+                "access": r.access_count,
+                "created_ms": r.created_ms,
+            }));
+        }
+    }
+    let stats = app.memory.stats().map_err(err)?;
+    Ok(Json(json!({ "nodes": nodes, "stats": stats })))
 }
 
 #[derive(Deserialize)]

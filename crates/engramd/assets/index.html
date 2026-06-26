@@ -203,6 +203,69 @@
   .item { padding:8px 0; border-bottom:1px solid var(--border); }
   .item .sub { font-size:11px; color:var(--text-muted); }
   .muted { color:var(--text-muted); }
+  /* memory - the living brain graph */
+  .brain-wrap { position:relative; height:100%; overflow:hidden;
+    background:radial-gradient(125% 90% at 50% 42%, rgba(69,200,168,.06), transparent 62%), var(--surface-0); }
+  #brainCanvas { position:absolute; inset:0; width:100%; height:100%; display:block; }
+  .brain-overlay { position:absolute; inset:0; display:flex; flex-direction:column; justify-content:space-between;
+    padding:18px 20px; pointer-events:none; }
+  .brain-overlay > * , .brain-legend .lg, .brain-recall input, .brain-recall button, .brain-teach { pointer-events:auto; }
+  .brain-head { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; }
+  .brain-title { font-size:17px; font-weight:600; }
+  .brain-title .brain-count { color:var(--text-muted); font-weight:400; font-size:13px; margin-left:9px; }
+  .brain-legend { display:flex; gap:6px; flex-wrap:wrap; align-items:center; justify-content:flex-end; }
+  .brain-legend .lg { display:inline-flex; align-items:center; gap:7px; font-size:12px; color:var(--text-secondary);
+    background:var(--surface-1); border:1px solid var(--border); border-radius:999px; padding:5px 11px; cursor:pointer; transition:.15s; user-select:none; }
+  .brain-legend .lg i { width:8px; height:8px; border-radius:50%; box-shadow:0 0 7px currentColor; }
+  .brain-legend .lg:hover { border-color:var(--border-strong); color:var(--text-primary); }
+  .brain-legend .lg.dim { opacity:.38; }
+  .brain-legend .lg b { color:var(--text-muted); font-weight:500; }
+  .brain-teach { background:var(--accent); color:var(--accent-ink); border:none; border-radius:999px; padding:6px 14px;
+    font-weight:600; font-size:12px; cursor:pointer; margin-left:4px; }
+  .brain-teach:hover { filter:brightness(1.06); }
+  .brain-foot { display:flex; }
+  .brain-recall { display:flex; gap:8px; width:min(540px,70%); }
+  .brain-recall input { flex:1; background:var(--surface-1); border:1px solid var(--border-strong); border-radius:11px;
+    padding:11px 15px; outline:none; font-size:14px; box-shadow:var(--e2); }
+  .brain-recall input:focus { border-color:var(--ring); box-shadow:0 0 0 3px var(--accent-soft); }
+  .brain-recall button { background:var(--accent); color:var(--accent-ink); border:none; border-radius:11px;
+    padding:0 18px; font-weight:600; cursor:pointer; box-shadow:var(--e2); }
+  .brain-recall button.clear { background:var(--surface-2); color:var(--text-secondary); }
+  .brain-note { align-self:center; margin-left:10px; font-size:12px; color:var(--text-muted); }
+  .brain-tip { position:absolute; z-index:30; max-width:300px; background:var(--surface-2); border:1px solid var(--border-strong);
+    border-radius:11px; padding:10px 13px; font-size:13px; line-height:1.5; box-shadow:var(--e3); pointer-events:none; }
+  .brain-tip .r { font:600 10px var(--mono); text-transform:uppercase; letter-spacing:.08em; margin-bottom:4px; }
+  .brain-tip .m { color:var(--text-muted); font-size:11px; margin-top:5px; }
+  .brain-detail { position:absolute; right:20px; bottom:84px; width:330px; z-index:25; background:var(--surface-1);
+    border:1px solid var(--border-strong); border-radius:14px; padding:16px 18px; box-shadow:var(--e4); }
+  .brain-detail .bd-r { font:600 10px var(--mono); text-transform:uppercase; letter-spacing:.08em; display:flex; align-items:center; gap:7px; }
+  .brain-detail .bd-r i { width:8px; height:8px; border-radius:50%; box-shadow:0 0 7px currentColor; }
+  .brain-detail .bd-x { position:absolute; top:12px; right:13px; cursor:pointer; color:var(--text-muted); background:none; border:none; font-size:16px; }
+  .brain-detail .bd-t { margin:9px 0 12px; line-height:1.55; }
+  .brain-detail .bd-meta { display:flex; gap:14px; font-size:11px; color:var(--text-muted); border-top:1px solid var(--border); padding-top:10px; }
+  .brain-empty { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; flex-direction:column;
+    gap:6px; color:var(--text-muted); text-align:center; pointer-events:none; }
+  .brain-empty b { color:var(--text-secondary); font-size:15px; }
+  /* teach modal */
+  .overlay.teach { align-items:center; }
+  .teach-card { width:min(520px,92vw); background:var(--surface-1); border:1px solid var(--border-strong); border-radius:16px;
+    padding:22px 24px; box-shadow:0 24px 64px rgba(0,0,0,.55); }
+  .teach-card h3 { margin:0 0 4px; font-size:17px; font-weight:600; }
+  .teach-sub { color:var(--text-muted); font-size:13px; margin-bottom:16px; }
+  .seg-row { display:flex; gap:6px; margin-bottom:12px; }
+  .seg-row .seg { flex:1; background:var(--surface-2); border:1px solid var(--border); color:var(--text-secondary);
+    border-radius:9px; padding:8px 6px; font-size:12px; cursor:pointer; transition:.14s; }
+  .seg-row .seg:hover { border-color:var(--border-strong); color:var(--text-primary); }
+  .seg-row .seg.on { border-color:var(--rc); color:var(--rc); background:var(--surface-3); box-shadow:inset 0 0 0 1px var(--rc); }
+  .teach-card textarea { width:100%; box-sizing:border-box; min-height:96px; resize:vertical; background:var(--surface-2);
+    border:1px solid var(--border-strong); border-radius:11px; padding:12px 14px; outline:none; color:var(--text-primary); font:14px/1.55 var(--sans); }
+  .teach-card textarea:focus { border-color:var(--ring); box-shadow:0 0 0 3px var(--accent-soft); }
+  .teach-foot { display:flex; align-items:center; justify-content:space-between; margin-top:14px; }
+  .teach-imp { font-size:12px; color:var(--text-muted); display:flex; align-items:center; gap:9px; }
+  .teach-imp input { accent-color:var(--accent); }
+  .teach-actions { display:flex; gap:8px; }
+  .teach-actions .ghost { background:var(--surface-2); border:1px solid var(--border); color:var(--text-secondary); border-radius:9px; padding:8px 15px; cursor:pointer; }
+  .teach-actions .primary { background:var(--accent); color:var(--accent-ink); border:none; border-radius:9px; padding:8px 17px; font-weight:600; cursor:pointer; }
   /* settings */
   .settings { max-width:780px; margin:0 auto; padding:22px 24px 64px; overflow-y:auto; height:100%; }
   .settings h2 { font-size:17px; font-weight:600; margin:0 0 4px; }
@@ -1026,36 +1089,160 @@ async function addJob(){ const name=document.getElementById('sname').value.trim(
 // ---- Memory ----
 const REGION_LABEL = { identity:'Identity - who you are', semantic:'Semantic - knowledge',
   episodic:'Episodic - conversations', procedural:'Skills - how-to' };
+// ---- Memory: the living brain graph ----
+const BRAIN_REGIONS = {
+  identity:   { label:'Identity',   color:'#45c8a8' },
+  semantic:   { label:'Semantic',   color:'#6ea8fe' },
+  episodic:   { label:'Episodic',   color:'#b58cff' },
+  procedural: { label:'Procedural', color:'#e0a23c' },
+};
+let BRAIN = null;
 async function renderMemory(){
-  const stats = await J('/v1/memory/stats');
-  const regions=['identity','semantic','episodic','procedural'];
-  const maxR=Math.max(1,...regions.map(r=>stats.by_region?.[r]||0));
-  const bars = regions.map(r=>{
-    const n=stats.by_region?.[r]||0;
-    return `<div style="display:flex;align-items:center;gap:10px;margin:5px 0">
-      <span style="width:180px;color:var(--text-secondary)">${REGION_LABEL[r]}</span>
-      <div style="flex:1;height:6px;background:var(--surface-2);border-radius:3px"><div style="height:6px;border-radius:3px;background:var(--accent);width:${100*n/maxR}%"></div></div>
-      <span class="sub" style="width:30px;text-align:right">${n}</span></div>`;
-  }).join('');
-  const tiers=stats.by_tier||{};
-  document.getElementById('view').innerHTML = `<div class="panes">
-    <div class="pane"><h2>The brain - ${stats.total} memories across its regions</h2>
-      ${bars}
-      <div class="sub" style="margin-top:8px">${(tiers.warm||0)} warm · ${(tiers.cold||0)} cold (consolidated)</div>
+  let data; try{ data = await J('/v1/memory/graph?n=80'); }catch(_){ data={nodes:[],stats:{}}; }
+  const stats=data.stats||{}, total=stats.total ?? (data.nodes||[]).length;
+  const legend = Object.entries(BRAIN_REGIONS).map(([k,r])=>
+    `<span class="lg" data-region="${k}" onclick="brainToggleRegion('${k}')"><i style="background:${r.color};color:${r.color}"></i>${r.label} <b>${stats.by_region?.[k]||0}</b></span>`).join('');
+  document.getElementById('view').innerHTML = `<div class="brain-wrap">
+    <canvas id="brainCanvas"></canvas>
+    <div class="brain-overlay">
+      <div class="brain-head">
+        <div class="brain-title">Memory <span class="brain-count">${total} ${total===1?'memory':'memories'} · ${(stats.by_tier?.warm||0)} warm · ${(stats.by_tier?.cold||0)} cold</span></div>
+        <div class="brain-legend">${legend}<button class="brain-teach" onclick="openTeach()">+ Teach</button></div>
+      </div>
+      <div class="brain-foot"><div class="brain-recall">
+        <input id="brainQ" placeholder="Recall a memory — try a paraphrase…" onkeydown="if(event.key==='Enter')brainRecall()">
+        <button onclick="brainRecall()">Recall</button><span id="brainNote" class="brain-note"></span>
+      </div></div>
     </div>
-    <div class="pane"><h2>Recall &amp; teach</h2>
-      <div class="row"><input id="q" placeholder="recall… try a paraphrase"><button onclick="recall()">Recall</button></div>
-      <div class="row"><select id="region"><option>semantic</option><option>identity</option><option>episodic</option><option>procedural</option></select>
-        <input id="fact" placeholder="remember a fact…"><button onclick="remember()">Remember</button></div>
-      <div id="hits" class="muted">${stats.total? 'Search what Engram knows.' : 'Engram hasn’t learned anything yet - it will as you talk.'}</div>
-    </div></div>`;
+    <div class="brain-tip" id="brainTip" hidden></div>
+    ${(data.nodes||[]).length?'':'<div class="brain-empty"><b>The brain is empty.</b><span>Engram grows this graph as you talk — or teach it a fact now.</span></div>'}
+  </div>`;
+  brainInit(data.nodes||[]);
 }
-async function recall(){ const q=document.getElementById('q').value.trim(); if(!q)return;
-  const hits=await J('/v1/recall?k=6&q='+encodeURIComponent(q));
-  document.getElementById('hits').innerHTML = hits.length? hits.map(h=>`<div class="item">${esc(h.record.text)}<div class="sub">${h.record.region} · score ${h.score.toFixed(3)} ${h.semantic_rank?'· semantic':''}</div></div>`).join('') : '<div class="muted">no matches</div>'; }
-async function remember(){ const text=document.getElementById('fact').value.trim(); if(!text)return;
-  await J('/v1/remember',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({region:document.getElementById('region').value,text})});
-  document.getElementById('fact').value=''; renderMemory(); }
+function hexA(hex,a){ const n=parseInt(hex.slice(1),16); return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},${a})`; }
+function brainInit(raw){
+  if(BRAIN && BRAIN.raf) cancelAnimationFrame(BRAIN.raf);
+  const canvas=document.getElementById('brainCanvas'); if(!canvas) return;
+  const B = BRAIN = { canvas, ctx:canvas.getContext('2d'), nodes:[], anchors:{}, hover:null, sel:null,
+    mouse:{x:-1,y:-1}, dim:new Set(), matched:null, t:0, raf:0, w:0, h:0, cx:0, cy:0, dpr:Math.min(2,window.devicePixelRatio||1) };
+  B.nodes = raw.map(n=>{
+    const reg = BRAIN_REGIONS[n.region]?n.region:'semantic';
+    const tierA = n.tier==='hot'?1 : n.tier==='warm'?0.72 : 0.5;
+    const r = 3.2 + (n.importance||0.3)*4.5 + Math.min(6, Math.log2((n.access||0)+1)*1.4);
+    return { ...n, reg, r, tierA, x:0, y:0, vx:0, vy:0 };
+  });
+  brainResize();
+  B.nodes.forEach(n=>{ const a=B.anchors[n.reg]; n.x=a.x+Math.cos(n.id*1.7)*60; n.y=a.y+Math.sin(n.id*2.3)*60; });
+  canvas.onmousemove = e=>{ const r=canvas.getBoundingClientRect(); B.mouse.x=e.clientX-r.left; B.mouse.y=e.clientY-r.top; };
+  canvas.onmouseleave = ()=>{ B.mouse.x=-1; B.mouse.y=-1; };
+  canvas.onclick = ()=>{ B.hover?brainShowDetail(B.hover):brainCloseDetail(); };
+  if(!window._brainResizeWired){ window._brainResizeWired=true; window.addEventListener('resize', ()=>brainResize()); }
+  brainLoop();
+}
+function brainResize(){
+  const B=BRAIN; if(!B) return; const c=B.canvas;
+  const w=c.clientWidth, h=c.clientHeight; if(!w||!h) return; B.w=w; B.h=h;
+  c.width=w*B.dpr; c.height=h*B.dpr; B.ctx.setTransform(B.dpr,0,0,B.dpr,0,0);
+  B.cx=w/2; B.cy=h/2; const R=Math.min(w,h)*0.30;
+  const ang={ identity:-Math.PI/2, semantic:0, episodic:Math.PI/2, procedural:Math.PI };
+  for(const k in BRAIN_REGIONS) B.anchors[k]={ x:B.cx+Math.cos(ang[k])*R, y:B.cy+Math.sin(ang[k])*R*0.84 };
+}
+function brainLoop(){
+  const B=BRAIN; if(!B) return;
+  if(state.route!=='Memory' || !document.getElementById('brainCanvas')){ B.raf=0; return; }
+  B.t++; brainStep(); brainDraw(); B.raf=requestAnimationFrame(brainLoop);
+}
+function brainStep(){
+  const B=BRAIN, ns=B.nodes, breathe=1+Math.sin(B.t*0.006)*0.012;
+  for(let i=0;i<ns.length;i++){ const n=ns[i]; let fx=0, fy=0; const a=B.anchors[n.reg];
+    fx+=(a.x-n.x)*0.004*breathe; fy+=(a.y-n.y)*0.004*breathe;
+    fx+=(B.cx-n.x)*0.0006; fy+=(B.cy-n.y)*0.0006;
+    for(let j=0;j<ns.length;j++){ if(i===j) continue; const m=ns[j];
+      let dx=n.x-m.x, dy=n.y-m.y, d2=dx*dx+dy*dy; if(d2<1) d2=1;
+      if(d2<14000){ const f=(n.reg===m.reg?260:430)/d2; fx+=dx*f; fy+=dy*f; } }
+    n.vx=(n.vx+fx)*0.84; n.vy=(n.vy+fy)*0.84; n.x+=n.vx; n.y+=n.vy;
+  }
+  B.hover=null;
+  if(B.mouse.x>=0){ let best=1e9;
+    for(const n of ns){ const dx=n.x-B.mouse.x, dy=n.y-B.mouse.y, d2=dx*dx+dy*dy, rr=(n.r+6)*(n.r+6);
+      if(d2<rr && d2<best){ best=d2; B.hover=n; } } }
+  brainTip();
+}
+function brainDraw(){
+  const B=BRAIN, ctx=B.ctx, ns=B.nodes; ctx.clearRect(0,0,B.w,B.h);
+  for(const n of ns){ const a=B.anchors[n.reg], reg=BRAIN_REGIONS[n.reg];
+    const dim=B.dim.has(n.reg)||(B.matched&&!B.matched.has(n.id));
+    ctx.strokeStyle=hexA(reg.color, dim?0.03:0.07); ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(n.x,n.y); ctx.lineTo(a.x,a.y); ctx.stroke(); }
+  for(const k in BRAIN_REGIONS){ const a=B.anchors[k], reg=BRAIN_REGIONS[k], dim=B.dim.has(k);
+    ctx.beginPath(); ctx.arc(a.x,a.y,5,0,7); ctx.fillStyle=hexA(reg.color, dim?0.3:0.95); ctx.fill();
+    ctx.fillStyle=hexA(reg.color, dim?0.3:0.7); ctx.font='600 11px ui-sans-serif,system-ui'; ctx.textAlign='center';
+    ctx.fillText(reg.label.toUpperCase(), a.x, a.y-12); }
+  for(const n of ns){ const reg=BRAIN_REGIONS[n.reg];
+    const dim=B.dim.has(n.reg)||(B.matched&&!B.matched.has(n.id)), hit=B.matched&&B.matched.has(n.id);
+    if(hit||n===B.hover){ const pulse=hit?(0.55+0.45*Math.sin(B.t*0.12)):1;
+      ctx.beginPath(); ctx.arc(n.x,n.y,n.r+5+(hit?3*pulse:2),0,7); ctx.fillStyle=hexA(reg.color,0.16*(hit?pulse:1)); ctx.fill(); }
+    ctx.beginPath(); ctx.arc(n.x,n.y,n.r,0,7); ctx.fillStyle=hexA(reg.color, dim?0.12:n.tierA); ctx.fill();
+    if(n.tier==='hot'&&!dim){ ctx.strokeStyle=hexA(reg.color,0.5); ctx.lineWidth=1; ctx.stroke(); }
+    if(n===B.hover||n===B.sel){ ctx.strokeStyle='#fff'; ctx.lineWidth=1.4; ctx.beginPath(); ctx.arc(n.x,n.y,n.r+2.5,0,7); ctx.stroke(); } }
+}
+function brainTip(){
+  const tip=document.getElementById('brainTip'); if(!tip) return; const B=BRAIN, n=B.hover;
+  if(!n){ tip.hidden=true; return; } const reg=BRAIN_REGIONS[n.reg];
+  tip.innerHTML=`<div class="r" style="color:${reg.color}">${reg.label} · ${n.tier}</div>${esc(n.text)}<div class="m">accessed ${n.access||0}×</div>`;
+  tip.hidden=false; let x=B.mouse.x+16, y=B.mouse.y+14;
+  if(x+tip.offsetWidth>B.w-10) x=B.mouse.x-tip.offsetWidth-14; if(y+tip.offsetHeight>B.h-10) y=B.mouse.y-tip.offsetHeight-12;
+  tip.style.left=x+'px'; tip.style.top=y+'px';
+}
+function brainToggleRegion(k){ const B=BRAIN; if(!B) return;
+  B.dim.has(k)?B.dim.delete(k):B.dim.add(k);
+  document.querySelectorAll(`.brain-legend .lg[data-region="${k}"]`).forEach(el=>el.classList.toggle('dim', B.dim.has(k))); }
+async function brainRecall(){
+  const B=BRAIN, q=(document.getElementById('brainQ')?.value||'').trim(), note=document.getElementById('brainNote');
+  if(!q){ if(B) B.matched=null; if(note) note.textContent=''; return; }
+  try{ const hits=await J('/v1/recall?k=8&q='+encodeURIComponent(q));
+    if(B) B.matched=new Set(hits.map(h=>h.record.id));
+    if(note) note.innerHTML = hits.length? `lit ${hits.length} ${hits.length===1?'memory':'memories'} · <span style="cursor:pointer;color:var(--accent)" onclick="brainClearRecall()">clear</span>` : 'no matches';
+  }catch(e){ if(note) note.textContent='recall failed'; }
+}
+function brainClearRecall(){ if(BRAIN) BRAIN.matched=null; const i=document.getElementById('brainQ'); if(i) i.value=''; const n=document.getElementById('brainNote'); if(n) n.textContent=''; }
+function brainShowDetail(n){
+  const B=BRAIN; B.sel=n; const reg=BRAIN_REGIONS[n.reg];
+  let d=document.getElementById('brainDetail');
+  if(!d){ d=document.createElement('div'); d.id='brainDetail'; d.className='brain-detail'; document.querySelector('.brain-wrap')?.appendChild(d); }
+  d.innerHTML=`<button class="bd-x" onclick="brainCloseDetail()">×</button>
+    <div class="bd-r" style="color:${reg.color}"><i style="background:${reg.color}"></i>${reg.label} · ${n.tier}</div>
+    <div class="bd-t">${esc(n.text)}</div>
+    <div class="bd-meta"><span>importance ${(n.importance||0).toFixed(2)}</span><span>accessed ${n.access||0}×</span><span>#${n.id}</span></div>`;
+  d.hidden=false;
+}
+function brainCloseDetail(){ const d=document.getElementById('brainDetail'); if(d) d.remove(); if(BRAIN) BRAIN.sel=null; }
+// ---- Teach modal ----
+function openTeach(){
+  let m=document.getElementById('teachOverlay');
+  if(!m){ m=document.createElement('div'); m.id='teachOverlay'; m.className='overlay teach'; document.body.appendChild(m); }
+  const regs=Object.entries(BRAIN_REGIONS).map(([k,r],i)=>`<button class="seg ${i===0?'on':''}" data-r="${k}" onclick="teachPick('${k}',this)" style="--rc:${r.color}">${r.label}</button>`).join('');
+  m.innerHTML=`<div class="teach-card">
+    <h3>Teach Engram</h3>
+    <div class="teach-sub">Add something to its memory. Pick the region, then write it the way you'd say it.</div>
+    <div class="seg-row">${regs}</div>
+    <textarea id="teachText" placeholder="e.g. I prefer concise answers. · I'm building Engram in Rust. · The launch is in September."></textarea>
+    <div class="teach-foot">
+      <label class="teach-imp">Importance <input type="range" id="teachImp" min="0" max="1" step="0.05" value="0.7"></label>
+      <div class="teach-actions"><button class="ghost" onclick="closeTeach()">Cancel</button><button class="primary" onclick="saveTeach()">Remember</button></div>
+    </div></div>`;
+  m.hidden=false; m._region='identity'; m.onclick=e=>{ if(e.target===m) closeTeach(); };
+  setTimeout(()=>document.getElementById('teachText')?.focus(),30);
+}
+function teachPick(k,btn){ document.querySelectorAll('#teachOverlay .seg').forEach(b=>b.classList.remove('on')); btn.classList.add('on'); document.getElementById('teachOverlay')._region=k; }
+function closeTeach(){ const m=document.getElementById('teachOverlay'); if(m) m.hidden=true; }
+async function saveTeach(){
+  const m=document.getElementById('teachOverlay'), text=(document.getElementById('teachText').value||'').trim(); if(!text) return;
+  const region=m._region||'identity', importance=parseFloat(document.getElementById('teachImp').value);
+  try{ await J('/v1/remember',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({region,text,importance})}); }
+  catch(e){ notify('Couldn’t save — '+e.message); return; }
+  closeTeach(); notify('Remembered','ok'); renderMemory();
+}
 
 // ---- Skills ----
 async function renderSkills(){

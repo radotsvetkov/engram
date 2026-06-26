@@ -67,6 +67,8 @@ The security edges here are what a bolted-on tool loop cannot retrofit:
 
 **`crates/engram-bench` — the benchmark harness.** A reproducible paraphrase recall harness that writes a labelled fact/query set plus distractors into the real memory broker and reports recall@10, MRR, and the zero-lexical-overlap subset where a keyword index scores zero by construction.
 
+**`crates/engram-eval` — deterministic harness regression testing.** Answers "tested by vibes": an eval *case* records a task plus the exact model completions a run received, and replaying it drives the *real* agent and *real* tools through the scripted provider — no model, no network, fully deterministic — asserting the tool sequence, answer, and stop reason against a baseline. Change a prompt, a tool, or the loop, re-run `engram-eval`, and a regression is a failing case, not a hunch. `engram-eval` runs the built-in suite (tool-use, planning, the token-budget stop, the loop guard); `engram-eval <dir>` runs every `*.json` case in a directory.
+
 ## Desktop
 
 The dashboard is now a redesigned single-page **control center** — one self-contained `index.html` (HTML + CSS + vanilla JS, no build step, no framework) served at `/` by `engramd` (`crates/engramd/assets/index.html`). It is a calm, dark, Claude-like window: a left rail (**Chat / Tasks / Schedule / Memory / Skills**) and one work surface, with an ambient **trust spine** in the top bar that answers the two questions other agent UIs leave open — *is this safe?* and *what's it costing?*. A live **"ledger verified · N"** chip (flipping to a red tamper banner the moment the audit chain fails to verify) sits next to a **"today's cost"** chip, so the agent's integrity and spend are always in view, not buried in a separate admin tool.

@@ -36,7 +36,7 @@
     -webkit-font-smoothing:antialiased; }
   button,input,textarea { font:inherit; color:inherit; }
   ::placeholder { color:var(--text-muted); }
-  ::-webkit-scrollbar { width:9px; height:9px; } ::-webkit-scrollbar-thumb { background:#23262c; border-radius:6px; }
+  ::-webkit-scrollbar { width:9px; height:9px; } ::-webkit-scrollbar-thumb { background:var(--surface-3); border-radius:6px; }
 
   .app { display:grid; grid-template-columns:56px 252px 1fr; height:calc(100vh - 26px); }
 
@@ -140,7 +140,8 @@
   .empty b { color:var(--text-secondary); font-weight:500; display:block; margin-bottom:12px; font-size:15px; }
   .examplechips { display:flex; gap:8px; justify-content:center; flex-wrap:wrap; }
   .examplechips button { background:var(--surface-2); border:1px solid var(--border); color:var(--text-secondary);
-    border-radius:16px; padding:5px 12px; cursor:pointer; }
+    border-radius:16px; padding:5px 12px; cursor:pointer; transition:border-color var(--dur-1) var(--ease-out), color var(--dur-1), background var(--dur-1); }
+  .examplechips button:hover { border-color:var(--ring); color:var(--text-primary); background:var(--surface-3); }
 
   /* Detail panel */
   .panel { position:fixed; top:0; right:0; width:340px; height:100vh; background:var(--surface-1);
@@ -148,7 +149,8 @@
     display:flex; flex-direction:column; z-index:20; }
   .panel.open { transform:translateX(0); }
   .panel header { display:flex; align-items:center; gap:8px; padding:14px; border-bottom:1px solid var(--border); }
-  .panel header .x { margin-left:auto; cursor:pointer; color:var(--text-muted); background:none; border:none; font-size:16px; }
+  .panel header .x { margin-left:auto; cursor:pointer; color:var(--text-muted); background:none; border:none; font-size:16px; transition:color var(--dur-1); }
+  .panel header .x:hover { color:var(--text-primary); }
   .panel .body { flex:1; overflow:auto; padding:14px; }
   .pill { font-size:11px; padding:2px 8px; border-radius:6px; background:var(--surface-2); color:var(--text-secondary); }
   .pill.done { color:var(--accent); } .pill.failed { color:var(--danger); } .pill.doing { color:var(--accent); }
@@ -224,7 +226,7 @@
   .tg-card { max-width:448px; text-align:center; background:var(--surface-1); border:1px solid var(--border); border-radius:16px; padding:34px 30px; box-shadow:var(--e2); }
   .tg-ic { color:var(--accent); margin-bottom:15px; }
   .tg-ic svg { width:44px; height:44px; }
-  .tg-card h2 { margin:0 0 10px; font-size:18px; font-weight:600; }
+  .tg-card h2 { margin:0 0 10px; font-size:17px; font-weight:600; }
   .tg-card p { color:var(--text-secondary); line-height:1.62; margin:0 0 20px; font-size:14px; }
   .tg-card .primary { background:var(--accent); color:var(--accent-ink); border:none; border-radius:9px; padding:10px 20px; font-weight:600; font-size:14px; cursor:pointer; }
   .tg-card .primary:hover { filter:brightness(1.06); }
@@ -275,7 +277,8 @@
     border:1px solid var(--border-strong); border-radius:14px; padding:16px 18px; box-shadow:var(--e4); }
   .brain-detail .bd-r { font:600 10px var(--mono); text-transform:uppercase; letter-spacing:.08em; display:flex; align-items:center; gap:7px; }
   .brain-detail .bd-r i { width:8px; height:8px; border-radius:50%; box-shadow:0 0 7px currentColor; }
-  .brain-detail .bd-x { position:absolute; top:12px; right:13px; cursor:pointer; color:var(--text-muted); background:none; border:none; font-size:16px; }
+  .brain-detail .bd-x { position:absolute; top:12px; right:13px; cursor:pointer; color:var(--text-muted); background:none; border:none; font-size:16px; transition:color var(--dur-1); }
+  .brain-detail .bd-x:hover { color:var(--text-primary); }
   .brain-detail .bd-t { margin:9px 0 12px; line-height:1.55; }
   .brain-detail .bd-meta { display:flex; gap:14px; font-size:11px; color:var(--text-muted); border-top:1px solid var(--border); padding-top:10px; }
   .brain-empty { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; flex-direction:column;
@@ -842,7 +845,7 @@
   html[data-engram-density="compact"] body { font-size:12.5px; }
 /* ---- composer attachments: add-context + file upload ---- */
 .attach-wrap{ position:relative; display:inline-flex; }
-.attach-btn{ display:inline-flex; align-items:center; justify-content:center; width:30px; height:30px;
+.attach-btn{ display:inline-flex; align-items:center; justify-content:center; width:34px; height:34px;
   border-radius:50%; border:1px solid var(--border); background:var(--surface-2); color:var(--text-secondary);
   cursor:pointer; transition:background var(--dur-2) var(--ease-out), color var(--dur-2), border-color var(--dur-2); }
 .attach-btn:hover{ background:var(--hover); color:var(--text-primary); border-color:var(--border-strong); }
@@ -1015,7 +1018,7 @@ function renderNav(){
   document.getElementById('nav').innerHTML = VIEWS.map(item).join('');
   const tn=document.getElementById('navTools'); if(tn) tn.innerHTML = TOOLS.map(item).join('');
 }
-function go(v){ if(typeof voiceCloseConversation==='function' && v!=='Chat') voiceCloseConversation(); state.route=v; if(location.hash.slice(1)!==v) location.hash=v; document.getElementById('viewname').textContent=v; renderNav(); renderView(); }
+function go(v){ if(typeof voiceCloseConversation==='function' && v!=='Chat') voiceCloseConversation(); if(typeof voiceStopRecog==='function' && v!=='Chat') voiceStopRecog(); state.route=v; if(location.hash.slice(1)!==v) location.hash=v; document.getElementById('viewname').textContent=v; renderNav(); renderView(); }
 window.addEventListener('hashchange',()=>{ const v=location.hash.slice(1); if(ALL_VIEWS.includes(v)&&v!==state.route) go(v); });
 
 // ---- the trust spine (bottom status bar) ----
@@ -1471,7 +1474,7 @@ function mdInline(t){ // t is already escaped
   t = t
     .replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')
     .replace(/(^|[^*])\*([^*\n]+)\*/g,'$1<em>$2</em>')
-    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g,'<a href="$2" target="_blank" rel="noopener">$1</a>');
+    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g,(m,txt,url)=>`<a href="${url.replace(/"/g,'%22').replace(/'/g,'%27')}" target="_blank" rel="noopener">${txt}</a>`);
   return t.replace(new RegExp(S+'(\\d+)'+S,'g'),(m,i)=>`<code class="ic">${codes[+i]}</code>`);
 }
 function mdToHtml(raw){

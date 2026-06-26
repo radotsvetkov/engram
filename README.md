@@ -35,7 +35,7 @@ Engram is a Rust workspace of small, single-purpose crates. Capability comes fro
 
 - **Memory broker (`store`)** — `remember` and `recall`. Recall fuses a **keyword** arm (FTS5 / BM25) and a **semantic** arm (brute-force vector cosine over candidate rows) with Reciprocal Rank Fusion, so a paraphrased query with no shared words still surfaces the right memory — exactly where a keyword-only agent returns nothing. Each hit reports which arm carried it, so the UI can show *why* a memory surfaced. Writes are ledgered before they land; `forget`/`restore` and idle `consolidate` (warm→cold demotion of stale, low-importance facts) are all recorded and reversible.
 - **Regions (`region`)** — memory is partitioned the way a brain is (Episodic, Semantic, Identity, Procedural), and recall consults only the regions that fit the task type, so a question about *who you are* does not scan every conversation you ever had.
-- **Embeddings (`embed`)** — an `Embedder` trait with a dependency-free default (signed feature hashing over word tokens and character trigrams, L2-normalized) that keeps the binary tiny and the pipeline testable offline. A real transformer embedding model plugs into the same trait through the gateway when present.
+- **Embeddings (`embed` / `static_embed`)** — an `Embedder` trait with a dependency-free default (signed feature hashing over word tokens and character trigrams, L2-normalized) that keeps the binary tiny and the pipeline testable offline, plus a **pure-Rust static (model2vec) embedder** for real synonym/paraphrase recall (`ENGRAM_EMBED=static`) — a distilled embedding table read straight from `model.safetensors`, no ONNX runtime, no ML crate. A provider embedding model also plugs into the same trait through the gateway. Changing embedders re-embeds existing memories into the new space.
 
 **`crates/engram-gateway` — the LLM gateway.** The single audited choke-point every model and embedding call passes through, so nothing reaches a model off the record. Provider-agnostic behind a `Provider` trait: an offline `MockProvider` runs everywhere with no credentials, and an `HttpProvider` (behind `--features http`, OpenAI-compatible, for Anthropic / OpenAI / OpenRouter) is opt-in so default builds stay small and offline. It meters tokens and cost per call, and enforces the first half of the taint rule — an untrusted call has its secret-bearing context stripped before it reaches the model, with the redaction metered and ledgered.
 
@@ -100,17 +100,15 @@ The control center is driven by these endpoints, alongside the existing `/v1/age
 
 ## Benchmark results
 
-Measured by `cargo run -p engram-bench` with the bundled offline trigram-hash embedder, over a 20-fact corpus and 12 paraphrase queries:
+Measured by `cargo run -p engram-bench` over a 25-fact corpus and 17 paraphrase queries (10 of them sharing no content word with their target). The harness compares the zero-dependency offline default against the pure-Rust static (model2vec) embedder:
 
-| Metric | Engram (hybrid) | Keyword-only baseline |
-|---|---|---|
-| Recall@10 (all queries) | **100%** (12/12) | — |
-| MRR | **0.917** | — |
-| Recall@10 on zero-lexical-overlap paraphrases | **100%** (5/5) | 0% (by construction) |
-| Binary size (full agent) | **3.2 MB** (native; musl on the VPS) | hundreds of MB |
-| Idle RAM | **0 MB** (socket-activated) | always-on process |
+| Embedder | Recall@10 | MRR | Recall@10 on zero-overlap paraphrases |
+|---|---|---|---|
+| trigram-hash (offline default) | 94% | 0.779 | 90% |
+| **static model2vec (pure-Rust)** | **100%** | **0.887** | **100%** |
+| keyword-only baseline | — | — | 0% (by construction) |
 
-Five of the twelve queries share no content word with their target; a keyword index returns nothing for those, and hybrid recall recovers all five. Synonym-level paraphrase ("car" → "automobile") needs the transformer embedder, which plugs into the same `Embedder` trait via the gateway; this same harness is what measures it once that model is wired.
+The static embedder closes the synonym gap the trigram default can't — *"purchasing a car"* recalls *"she bought a new automobile last week"* (no shared word or character-trigram). It needs no ONNX runtime or ML crate: inference is tokenize → look up each token's row in the distilled `[vocab, dim]` matrix → mean → normalize, all in pure Rust. The full-agent binary stays **5.6 MB** and idle RAM stays **0 MB**; the ~30 MB model is a data directory fetched at deploy time (`scripts/build_embedder.py`), never bundled. Enable with `ENGRAM_EMBED=static`; existing memories are re-embedded into the new space automatically.
 
 ## vs Hermes
 
@@ -187,7 +185,8 @@ It is configured by environment variables:
 | `ENGRAM_HOME` | `./brain` | Brain state directory: SQLite memory, ledger, and signing keys. |
 | `ENGRAM_ADDR` | `127.0.0.1:8088` | Address the HTTP API and dashboard bind to. |
 | `ENGRAM_IDLE_SECS` | `900` | Idle window, in seconds, before the core sleeps to zero. |
-| `ENGRAM_EMBED` | _(unset)_ | Set to `gateway` to embed memory through the gateway model instead of the offline trigram embedder (switching needs a fresh `ENGRAM_HOME`). |
+| `ENGRAM_EMBED` | _(unset)_ | `static` uses the pure-Rust model2vec embedder (real synonym recall; fetch a model with `scripts/build_embedder.py`). `gateway` embeds through the provider model. Unset uses the offline trigram default. Switching embedders re-embeds existing memories into the new space automatically. |
+| `ENGRAM_STATIC_MODEL` | `<ENGRAM_HOME>/embedder` | Directory of the model2vec model (`tokenizer.json` + `model.safetensors`) used when `ENGRAM_EMBED=static`. |
 | `ENGRAM_ANTHROPIC_API_KEY` | _(unset)_ | When set (with `--features http`), uses the native Anthropic provider — the Messages API with **prompt caching** of the tools+system prefix and token streaming. Takes priority over the OpenAI-compatible path; `ENGRAM_LLM_BASE_URL` optionally overrides the host. |
 | `ENGRAM_LLM_BASE_URL` | _(unset)_ | OpenAI-compatible base URL for a real provider (requires building with `--features http`). |
 | `ENGRAM_LLM_API_KEY` | _(unset)_ | API key for that provider. With both set, the gateway uses the real model for completions and embeddings; otherwise an offline mock. |

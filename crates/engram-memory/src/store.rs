@@ -141,11 +141,58 @@ impl Memory {
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.busy_timeout(Duration::from_secs(5))?;
         init_schema(&conn)?;
-        Ok(Memory {
+        let mem = Memory {
             conn: Mutex::new(conn),
             embedder,
             ledger,
-        })
+        };
+        mem.migrate_embedding_space()?;
+        Ok(mem)
+    }
+
+    /// Re-embed every stored memory when the active embedding model/space changes. Vectors
+    /// from a different model live in an incomparable space, so without this a query under
+    /// the new model would silently fail to match old memories. A no-op when the space is
+    /// unchanged; on a genuine switch it re-embeds in one transaction and records it.
+    fn migrate_embedding_space(&self) -> Result<()> {
+        let current = format!("{}:{}", self.embedder.name(), self.embedder.dim());
+        let mut conn = self.conn.lock().expect("memory mutex poisoned");
+        let stored: Option<String> = conn
+            .query_row("SELECT value FROM meta WHERE key = 'embed_space'", [], |r| r.get(0))
+            .optional()?;
+        if stored.as_deref() == Some(current.as_str()) {
+            return Ok(());
+        }
+        // Gather the live rows that need re-embedding (collect first so the statement is
+        // dropped before we open the write transaction).
+        let rows: Vec<(i64, String)> = {
+            let mut stmt = conn.prepare("SELECT id, text FROM facts WHERE deleted = 0")?;
+            let mapped = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+            let mut v = Vec::new();
+            for row in mapped {
+                v.push(row?);
+            }
+            v
+        };
+        // First-ever open with nothing stored: just stamp the space, nothing to migrate.
+        if stored.is_none() && rows.is_empty() {
+            conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('embed_space', ?1)", params![current])?;
+            return Ok(());
+        }
+        let tx = conn.transaction()?;
+        for (id, text) in &rows {
+            let emb = to_bytes(&self.embedder.embed(text));
+            tx.execute("UPDATE facts SET embedding = ?1 WHERE id = ?2", params![emb, id])?;
+        }
+        tx.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('embed_space', ?1)", params![current])?;
+        tx.commit()?;
+        drop(conn);
+        let _ = self.ledger.append(
+            "memory.reembed",
+            "core",
+            json!({ "space": current, "previous": stored, "rows": rows.len() }),
+        );
+        Ok(())
     }
 
     /// Store a memory: embed it, record it in the ledger, then persist it.
@@ -453,7 +500,8 @@ fn init_schema(conn: &Connection) -> Result<()> {
             deleted       INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_facts_region ON facts(region, deleted);
-        CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(text, tokenize = 'unicode61');",
+        CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(text, tokenize = 'unicode61');
+        CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);",
     )?;
     Ok(())
 }
@@ -608,6 +656,28 @@ mod tests {
         let trusted = m.recall_trusted("cheap VPS", &[Region::Semantic], 5).unwrap();
         assert_eq!(trusted.len(), 1);
         assert_eq!(trusted[0].record.taint, "trusted");
+    }
+
+    #[test]
+    fn switching_embedding_space_re_embeds_existing_memories() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Arc::new(Ledger::open(dir.path()).unwrap());
+        let path = dir.path().join("brain.db");
+        {
+            let m = Memory::open(&path, Arc::new(TrigramHashEmbedder::new(256)), ledger.clone()).unwrap();
+            m.remember(WriteReq::new(Region::Semantic, "Engram runs on a cheap VPS")).unwrap();
+        }
+        // Reopen under a different-dimension embedder — a new embedding space.
+        let m = Memory::open(&path, Arc::new(TrigramHashEmbedder::new(128)), ledger.clone()).unwrap();
+        // The migration ran and is recorded…
+        assert!(ledger.read_all().unwrap().iter().any(|e| e.kind == "memory.reembed"));
+        // …and recall still works against the re-embedded vectors.
+        assert_eq!(m.recall("cheap VPS", &[Region::Semantic], 5).unwrap().len(), 1);
+        // Reopening with the SAME embedder is a no-op — no second migration.
+        let before = ledger.read_all().unwrap().iter().filter(|e| e.kind == "memory.reembed").count();
+        let _again = Memory::open(&path, Arc::new(TrigramHashEmbedder::new(128)), ledger.clone()).unwrap();
+        let after = ledger.read_all().unwrap().iter().filter(|e| e.kind == "memory.reembed").count();
+        assert_eq!(before, after, "no migration when the embedding space is unchanged");
     }
 
     #[test]

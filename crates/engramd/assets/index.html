@@ -24,7 +24,7 @@
   ::placeholder { color:var(--text-muted); }
   ::-webkit-scrollbar { width:9px; height:9px; } ::-webkit-scrollbar-thumb { background:#23262c; border-radius:6px; }
 
-  .app { display:grid; grid-template-columns:148px 1fr; height:100vh; }
+  .app { display:grid; grid-template-columns:148px 1fr; height:calc(100vh - 26px); }
 
   /* Rail */
   .rail { background:var(--surface-1); border-right:1px solid var(--border); display:flex; flex-direction:column; padding:14px 8px; }
@@ -190,6 +190,70 @@
   .testline { font-size:12px; margin-top:10px; min-height:16px; }
   .testline.ok { color:var(--accent); } .testline.bad { color:var(--danger); }
   @media (prefers-reduced-motion: reduce) { .pulse,.bar { animation:none; } }
+  /* the trust spine - a persistent bottom status bar */
+  .statusbar { height:26px; flex:none; display:flex; align-items:center; padding:0 12px;
+    background:var(--surface-1); border-top:1px solid var(--border); font-size:11.5px; color:var(--text-muted); }
+  .statusbar .sb-left { display:flex; align-items:center; gap:7px; }
+  .statusbar .sb-center { position:absolute; left:50%; transform:translateX(-50%); display:flex; align-items:center; gap:6px; }
+  .statusbar .sb-right { margin-left:auto; display:flex; align-items:center; gap:10px; }
+  .statusbar .dot { width:7px; height:7px; border-radius:50%; background:var(--text-muted); transition:background .5s,box-shadow .5s; }
+  .statusbar .dot.awake { background:var(--accent); box-shadow:0 0 7px rgba(69,200,168,.55); }
+  .statusbar .mono { font-family:var(--mono); }
+  .statusbar .sb-center .chip { background:none; border:none; padding:0; color:var(--text-secondary); cursor:default; }
+  .statusbar .sb-center .chip.ok b { color:var(--accent); }
+  .statusbar .sb-center .chip.bad { color:var(--danger); }
+  .statusbar .sb-center.flash .chip b { animation: spine 1.4s ease-out; }
+  @keyframes spine { 0%{ color:#bff3e6; text-shadow:0 0 8px rgba(69,200,168,.6); } 100%{ color:var(--accent); text-shadow:none; } }
+  .kbtn { display:inline-flex; align-items:center; gap:6px; background:var(--surface-2); border:1px solid var(--border);
+    color:var(--text-secondary); border-radius:var(--radius); padding:4px 9px; font-size:12px; cursor:pointer; transition:.15s; }
+  .kbtn:hover { border-color:var(--border-strong); color:var(--text-primary); }
+  .kbtn kbd { font:11px var(--mono); color:var(--text-muted); }
+  .railgear { background:none; border:none; color:var(--text-secondary); cursor:pointer; padding:7px 9px; border-radius:var(--radius);
+    display:flex; align-items:center; gap:9px; font:inherit; width:100%; }
+  .railgear:hover { background:var(--surface-2); color:var(--text-primary); }
+  .railgear svg { width:16px; height:16px; opacity:.65; }
+  .railgear:hover svg { opacity:.9; }
+  /* overlays: command palette + settings command-center */
+  .overlay { position:fixed; inset:0; background:rgba(6,7,9,.5); backdrop-filter:blur(3px); z-index:80;
+    display:flex; align-items:flex-start; justify-content:center; animation:fade .12s ease-out; }
+  .overlay[hidden] { display:none; }
+  @keyframes fade { from{ opacity:0; } to{ opacity:1; } }
+  .palette .pal-box { width:min(640px,92vw); margin-top:13vh; background:var(--surface-1);
+    border:1px solid var(--border-strong); border-radius:14px; box-shadow:0 24px 64px rgba(0,0,0,.55); overflow:hidden; }
+  .pal-input { width:100%; box-sizing:border-box; background:none; border:none; outline:none; color:var(--text-primary);
+    font-size:15px; padding:15px 18px; border-bottom:1px solid var(--border); }
+  .pal-list { max-height:52vh; overflow:auto; padding:6px; }
+  .pal-group { font-size:10px; text-transform:uppercase; letter-spacing:.7px; color:var(--text-muted); padding:9px 12px 4px; }
+  .pal-item { display:flex; align-items:center; gap:11px; padding:9px 12px; border-radius:8px; cursor:pointer; }
+  .pal-item .pal-ic { width:16px; height:16px; color:var(--text-muted); flex:none; }
+  .pal-item .pal-ic svg { width:16px; height:16px; }
+  .pal-item .pal-t { flex:1; color:var(--text-primary); font-size:13px; }
+  .pal-item .pal-sub { font-size:11px; color:var(--text-muted); }
+  .pal-item .pal-key { font:11px var(--mono); color:var(--text-muted); background:var(--surface-2); border:1px solid var(--border); border-radius:4px; padding:1px 6px; }
+  .pal-item.sel { background:var(--surface-2); }
+  .pal-item.sel .pal-ic { color:var(--accent); }
+  .cc .cc-box { width:min(900px,95vw); height:min(640px,90vh); margin-top:5vh; display:grid; grid-template-columns:216px 1fr;
+    background:var(--surface-1); border:1px solid var(--border-strong); border-radius:16px; box-shadow:0 24px 72px rgba(0,0,0,.6); overflow:hidden; }
+  .cc-side { border-right:1px solid var(--border); display:flex; flex-direction:column; padding:12px 10px; min-height:0; }
+  .cc-side .cc-h { font-size:13px; font-weight:600; color:var(--text-primary); padding:2px 8px 10px; }
+  .cc-search { background:var(--surface-0); border:1px solid var(--border-strong); border-radius:8px; color:var(--text-primary);
+    padding:8px 10px; outline:none; font-size:12.5px; margin-bottom:8px; }
+  .cc-search:focus { border-color:var(--accent); }
+  .cc-cats { overflow:auto; display:flex; flex-direction:column; gap:1px; min-height:0; }
+  .cc-cat { display:flex; align-items:center; gap:10px; padding:7px 9px; border-radius:7px; cursor:pointer; color:var(--text-secondary); font-size:12.5px; }
+  .cc-cat:hover { background:var(--surface-2); color:var(--text-primary); }
+  .cc-cat.active { background:var(--surface-2); color:var(--text-primary); box-shadow:inset 2px 0 0 var(--accent); }
+  .cc-cat svg { width:15px; height:15px; opacity:.7; flex:none; }
+  .cc-cat.active svg { color:var(--accent); opacity:1; }
+  .cc-main { overflow:auto; padding:20px 24px 28px; min-height:0; }
+  .cc-main > h2 { font-size:17px; font-weight:600; margin:0 0 3px; }
+  .cc-main > .sub { color:var(--text-muted); font-size:12px; margin-bottom:18px; }
+  .cc-x { position:absolute; top:14px; right:18px; background:none; border:none; color:var(--text-muted); font-size:16px; cursor:pointer; z-index:1; }
+  .cc-x:hover { color:var(--text-primary); }
+  .kbd-row { display:flex; align-items:center; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--border); font-size:12.5px; color:var(--text-secondary); }
+  .kbd-row kbd { font:11px var(--mono); background:var(--surface-2); border:1px solid var(--border); border-radius:4px; padding:2px 7px; color:var(--text-primary); }
+  .ph { color:var(--text-muted); font-size:12.5px; line-height:1.6; }
+  .ph b { color:var(--text-secondary); font-weight:500; }
 </style>
 </head>
 <body>
@@ -198,6 +262,7 @@
     <div class="brand"><span class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round"><circle cx="19" cy="16" r="2.9" fill="#45c8a8" stroke="none" opacity=".16"/><path d="M12 9V5.5"/><path d="M14.6 13.5 17.6 15.2"/><path d="M9.4 13.5 6.4 15.2"/><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r=".95" fill="currentColor" stroke="none"/><circle cx="12" cy="3.9" r="1.6"/><circle cx="5" cy="16" r="1.6"/><circle cx="19" cy="16" r="1.6" fill="#45c8a8" stroke="#45c8a8"/></svg></span><b>engram</b></div>
     <div class="nav" id="nav"></div>
     <div class="spacer"></div>
+    <button class="railgear" onclick="openCC()" title="Settings (⌘,)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 13a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1.08 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg> Settings</button>
     <div class="status" id="status">waking…</div>
   </nav>
   <div class="main">
@@ -205,12 +270,25 @@
     <header class="topbar">
       <h1 id="viewname">Tasks</h1>
       <div class="right">
+        <button class="kbtn" onclick="openPalette()" title="Command palette"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3-3"/></svg> <kbd>⌘K</kbd></button>
         <button id="haltBtn" class="stopbtn" onclick="toggleHalt()" title="Emergency stop: halts every running task at its next step"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2.5"/></svg><span id="haltLabel">Stop</span></button>
-        <span class="chip ok" id="ledgerChip" role="status" aria-live="polite" title="every action is signed into a hash-chained ledger">ledger …</span>
-        <span class="chip" id="costChip" role="status" aria-live="polite" title="model spend today">$0.00</span>
       </div>
     </header>
     <div class="view" id="view"></div>
+  </div>
+</div>
+<footer class="statusbar">
+  <span class="sb-left"><span class="dot" id="sbDot"></span><span id="sbDaemon" class="mono">engramd</span></span>
+  <span class="sb-center" id="sbSpine"><span class="chip ok" id="ledgerChip" role="status" aria-live="polite" title="every action is signed into a hash-chained ledger — run Verify ledger from ⌘K to re-check it offline">◇ ledger …</span></span>
+  <span class="sb-right"><span id="sbTaint" title="taint policy — the agent can't send your context to the web unless you allow it">no egress</span><span class="chip" id="costChip" role="status" aria-live="polite" title="model spend today">$0.00</span></span>
+</footer>
+<div class="overlay palette" id="palette" hidden onclick="if(event.target===this)closePalette()">
+  <div class="pal-box"><input class="pal-input" id="palInput" placeholder="Search actions, views, settings…" autocomplete="off" spellcheck="false"><div class="pal-list" id="palList"></div></div>
+</div>
+<div class="overlay cc" id="cc" hidden onclick="if(event.target===this)closeCC()">
+  <div class="cc-box">
+    <div class="cc-side"><div class="cc-h">Settings</div><input class="cc-search" id="ccSearch" placeholder="Search settings…" autocomplete="off" spellcheck="false" oninput="ccFilter(this.value)"><div class="cc-cats" id="ccCats"></div></div>
+    <div class="cc-main" id="ccMain"><button class="cc-x" onclick="closeCC()" title="Close (Esc)">✕</button><div id="ccBody"></div></div>
   </div>
 </div>
 <div class="panel" id="panel" role="dialog" aria-modal="true" aria-labelledby="pTitle"><header><span class="pill" id="pStatus"></span><b id="pTitle"></b><button class="x" onclick="closePanel()" aria-label="Close">✕</button></header><div class="body" id="pBody"></div></div>
@@ -265,7 +343,7 @@ const ICONS = {
   Skills: SVG('<path d="M12 3.2l1.7 4.5 4.5 1.7-4.5 1.7L12 15.6l-1.7-4.5L5.8 9.4l4.5-1.7L12 3.2Z"/><path d="M18.4 14.2l.8 2.1 2.1.8-2.1.8-.8 2.1-.8-2.1-2.1-.8 2.1-.8.8-2.1Z"/>'),
   Settings: SVG('<circle cx="12" cy="12" r="3"/><path d="M19.4 13a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1.08 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/>'),
 };
-const VIEWS = ['Chat','Tasks','Schedule','Memory','Skills','Settings'];
+const VIEWS = ['Chat','Tasks','Schedule','Memory','Skills'];
 let state = { route:'Tasks', tasks:[], offline:false };
 
 function renderNav(){
@@ -277,20 +355,28 @@ function renderNav(){
 function go(v){ state.route=v; if(location.hash.slice(1)!==v) location.hash=v; document.getElementById('viewname').textContent=v; renderNav(); renderView(); }
 window.addEventListener('hashchange',()=>{ const v=location.hash.slice(1); if(VIEWS.includes(v)&&v!==state.route) go(v); });
 
-// ---- top bar trust spine ----
-let lastLedger='', lastCost='';
+// ---- the trust spine (bottom status bar) ----
+let _lastLedgerN=null;
 async function poll(){
   try {
     const [v,m,h] = await Promise.all([J('/v1/ledger/verify'),J('/v1/meter'),J('/health')]);
-    const lc=document.getElementById('ledgerChip');
-    if(v.ok){ lc.className='chip ok'; lc.innerHTML='ledger verified · <b>'+v.entries+'</b>'; document.getElementById('banner').innerHTML=''; }
-    else { lc.className='chip bad'; lc.textContent='tamper detected';
+    const lc=document.getElementById('ledgerChip'), spine=document.getElementById('sbSpine');
+    if(v.ok){
+      lc.className='chip ok'; lc.innerHTML='◇ ledger verified · <b>'+v.entries+'</b>'; document.getElementById('banner').innerHTML='';
+      // a single teal breath when a new entry chains - confidence shown, never claimed
+      if(_lastLedgerN!==null && v.entries!==_lastLedgerN && spine){ spine.classList.remove('flash'); void spine.offsetWidth; spine.classList.add('flash'); }
+      _lastLedgerN=v.entries;
+    } else { lc.className='chip bad'; lc.textContent='⚠ tamper detected';
       document.getElementById('banner').innerHTML='<div class="banner" role="alert">Tamper detected - the audit chain doesn’t verify. Showing the last good state.</div>'; }
-    document.getElementById('costChip').textContent='$'+(m.cost_usd||0).toFixed(4)+' today';
+    document.getElementById('costChip').textContent='$'+(m.cost_usd||0).toFixed(4);
     state.offline = !!h.offline;
+    const dot=document.getElementById('sbDot'); if(dot) dot.classList.add('awake');
+    const dn=document.getElementById('sbDaemon'); if(dn) dn.textContent = h.offline ? 'engramd · offline model' : ('engramd · v'+(h.version||''));
     document.getElementById('status').innerHTML = 'awake <span class="live">·</span> v'+h.version;
-    if(state.offline && state.route!=='Tasks' && state.route!=='Chat'){} // notice shown per-view
-  } catch(e){}
+  } catch(e){
+    const dot=document.getElementById('sbDot'); if(dot) dot.classList.remove('awake');
+    const dn=document.getElementById('sbDaemon'); if(dn) dn.textContent='engramd · sleeping';
+  }
 }
 
 // ---- Tasks board ----
@@ -610,98 +696,167 @@ const PROVIDERS = {
 let CFG = null;
 const gv = id => (document.getElementById(id)?.value ?? '').toString().trim();
 
-async function renderSettings(){
-  const v=document.getElementById('view');
-  v.innerHTML='<div class="settings"><div class="empty">Loading settings…</div></div>';
-  let persona='';
-  try { const [c,p] = await Promise.all([J('/v1/config'), J('/v1/persona')]); CFG=c; persona=p.persona||''; }
-  catch(e){ v.innerHTML='<div class="settings"><div class="offline">Couldn’t load settings — '+esc(e.message)+'</div></div>'; return; }
-  v.innerHTML=settingsHtml(CFG, persona);
-  renderMcpRows(CFG.mcp||[]);
-  wireProviderKind();
+// One searchable command-center, opened with ⌘, or the rail gear - not nine scattered screens.
+let ccActive='gateways', ccFilterStr='';
+const CC_CATS = [
+  {key:'gateways', name:'Gateways', kw:'model provider anthropic openai openrouter ollama backend', icon:SVG('<path d="M4 7h16M4 12h16M4 17h16"/><circle cx="8" cy="7" r="1.5" fill="currentColor" stroke="none"/><circle cx="15" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="10" cy="17" r="1.5" fill="currentColor" stroke="none"/>'), render:ccGateways},
+  {key:'keys', name:'Keys & security', kw:'api token secret password auth', icon:SVG('<circle cx="8" cy="15" r="4"/><path d="M10.8 12.2 20 3M17 6l2 2M14 9l2 2"/>'), render:ccKeys},
+  {key:'memory', name:'Memory & context', kw:'embeddings recall vector trigram tier', icon:ICONS.Memory, render:ccMemory},
+  {key:'tools', name:'Tools', kw:'mcp shell terminal taint egress', icon:SVG('<path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L4 17v3h3l5.3-5.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2-2 2.5-2.5Z"/>'), render:ccTools},
+  {key:'cost', name:'Cost', kw:'budget tokens spend limit', icon:SVG('<circle cx="12" cy="12" r="8.5"/><path d="M9.5 9.5a2.5 2 0 0 1 5 0c0 2.5-5 1-5 4a2.5 2 0 0 0 5 0M12 6.5v11"/>'), render:ccCost},
+  {key:'persona', name:'Persona', kw:'soul instructions voice rules', icon:SVG('<circle cx="12" cy="8" r="4"/><path d="M4 20a8 8 0 0 1 16 0"/>'), render:ccPersona},
+  {key:'workspace', name:'Workspace', kw:'projects working directory sessions', icon:SVG('<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>'), render:ccWorkspace},
+  {key:'appearance', name:'Appearance', kw:'theme dark accent density font zoom', icon:SVG('<circle cx="12" cy="12" r="8.5"/><path d="M12 3.5v17M3.5 12h17"/>'), render:ccAppearance},
+  {key:'voice', name:'Voice', kw:'speech tts stt microphone', icon:SVG('<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>'), render:ccVoice},
+  {key:'chat', name:'Chat', kw:'conversation streaming view mode', icon:ICONS.Chat, render:ccChat},
+  {key:'keyboard', name:'Keyboard', kw:'shortcuts keys bindings', icon:SVG('<rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/>'), render:ccKeyboard},
+  {key:'integrations', name:'Integrations', kw:'telegram webhook channel slack', icon:SVG('<path d="M10.5 13.5a4 4 0 0 0 5.6 0l2.1-2.1a4 4 0 0 0-5.6-5.6l-1.2 1.2"/><path d="M13.5 10.5a4 4 0 0 0-5.6 0l-2.1 2.1a4 4 0 0 0 5.6 5.6l1.2-1.2"/>'), render:ccIntegrations},
+  {key:'templates', name:'Templates', kw:'starters prompts snippets presets', icon:SVG('<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/>'), render:ccTemplates},
+  {key:'messaging', name:'Messaging', kw:'notifications channels delivery', icon:SVG('<path d="M4 5h16v11H8l-4 3Z"/>'), render:ccMessaging},
+  {key:'advanced', name:'Advanced', kw:'daemon idle restart export verify danger', icon:SVG('<circle cx="12" cy="12" r="3.2"/><path d="M12 3v3M12 18v3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M3 12h3M18 12h3M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1"/>'), render:ccAdvanced},
+  {key:'about', name:'About & FAQ', kw:'version ledger help moat faq', icon:SVG('<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5M12 8h.01"/>'), render:ccAbout},
+];
+async function openCC(cat){
+  if(cat) ccActive=cat;
+  document.getElementById('cc').hidden=false;
+  if(!CFG){ document.getElementById('ccBody').innerHTML='<div class="empty">Loading…</div>'; renderCatList(); await ccLoad(); }
+  renderCC();
+  setTimeout(()=>document.getElementById('ccSearch')?.focus(),30);
 }
+function closeCC(){ document.getElementById('cc').hidden=true; }
+async function ccLoad(){ try{ const [c,p]=await Promise.all([J('/v1/config'),J('/v1/persona')]); CFG=c; CFG._persona=p.persona||''; }catch(e){ CFG={_err:e.message}; } }
+async function ccReload(){ await ccLoad(); if(!document.getElementById('cc').hidden) renderCC(); }
+function ccGo(k){ ccActive=k; renderCC(); document.getElementById('ccMain').scrollTop=0; }
+function ccFilter(q){ ccFilterStr=(q||'').toLowerCase().trim();
+  const hit=CC_CATS.filter(c=>(c.name+' '+c.kw).toLowerCase().includes(ccFilterStr));
+  if(ccFilterStr && hit.length && !hit.find(c=>c.key===ccActive)) ccActive=hit[0].key;
+  renderCC();
+}
+function renderCatList(){
+  const cats = ccFilterStr ? CC_CATS.filter(c=>(c.name+' '+c.kw).toLowerCase().includes(ccFilterStr)) : CC_CATS;
+  document.getElementById('ccCats').innerHTML = cats.map(c=>`<div class="cc-cat ${c.key===ccActive?'active':''}" onclick="ccGo('${c.key}')">${c.icon} ${esc(c.name)}</div>`).join('') || '<div class="ph" style="padding:8px">no matches</div>';
+}
+function renderCCBody(){
+  const cat=CC_CATS.find(c=>c.key===ccActive)||CC_CATS[0];
+  const body=document.getElementById('ccBody');
+  if(CFG&&CFG._err){ body.innerHTML='<div class="offline">Couldn’t load settings — '+esc(CFG._err)+'</div>'; return; }
+  body.innerHTML = cat.render(CFG||{});
+  if(ccActive==='gateways') wireProviderKind();
+  if(ccActive==='tools') renderMcpRows((CFG&&CFG.mcp)||[]);
+}
+function renderCC(){ renderCatList(); renderCCBody(); }
+const ccHead=(t,s)=>`<h2>${t}</h2><div class="sub">${s}</div>`;
 
-function settingsHtml(c, persona){
-  const p=c.provider, kinds=Object.keys(PROVIDERS);
+function ccGateways(c){
+  const p=c.provider||{kind:'mock',model:'',base_url:'',api_key_set:false}, kinds=Object.keys(PROVIDERS);
   const opt=(val,sel,label)=>`<option value="${escAttr(val)}"${val===sel?' selected':''}>${esc(label)}</option>`;
-  const noteHttp = c.http_enabled ? '' : '<div class="offline">This build has no network providers compiled in — only the offline mock works. Rebuild with <code>--features http</code> for real models.</div>';
-  return `<div class="settings">
-    <h2>Settings</h2>
-    <div class="sub">Configure the model, embeddings, security, cost, and tools. Saved locally in <code>config.json</code>; the model and security gates change without a restart.</div>
-    ${noteHttp}
+  const noteHttp = c.http_enabled===false ? '<div class="offline">This build has no network providers compiled in — only the offline mock works. Rebuild with <code>--features http</code> for real models.</div>' : '';
+  return ccHead('Gateways','Which model backend Engram thinks with. Hot-swaps live — no restart.')+noteHttp+`
     <div class="scard">
-      <h3>Model &amp; provider <span class="badge set" id="liveBadge">active: ${esc(c.provider_id)} · ${esc(c.model_in_use)}</span></h3>
-      <div class="desc">Which backend Engram thinks with. Anthropic and OpenRouter give frontier models; Ollama runs models on your machine with no key.</div>
-      <div class="field"><label>Backend</label>
-        <select id="pkind">${kinds.map(k=>opt(k,p.kind,PROVIDERS[k].label)).join('')}</select></div>
+      <h3>Model &amp; provider <span class="badge set">active: ${esc(c.provider_id||'mock')} · ${esc(c.model_in_use||'')}</span></h3>
+      <div class="field"><label>Backend</label><select id="pkind">${kinds.map(k=>opt(k,p.kind,PROVIDERS[k].label)).join('')}</select></div>
       <div class="row2">
-        <div class="field"><label>Model</label>
-          <input type="text" id="pmodel" list="modellist" value="${escAttr(p.model)}" placeholder="model id" autocomplete="off">
-          <datalist id="modellist"></datalist></div>
-        <div class="field"><label>Base URL</label>
-          <input type="text" id="pbase" value="${escAttr(p.base_url)}" placeholder="default" autocomplete="off"></div>
+        <div class="field"><label>Model</label><input type="text" id="pmodel" list="modellist" value="${escAttr(p.model)}" placeholder="model id" autocomplete="off"><datalist id="modellist"></datalist></div>
+        <div class="field"><label>Base URL</label><input type="text" id="pbase" value="${escAttr(p.base_url)}" placeholder="default" autocomplete="off"></div>
       </div>
       <div class="field" id="keyField"><label>API key ${p.api_key_set?'<span class="badge set">saved</span>':''}</label>
-        <input type="password" id="pkey" placeholder="${p.api_key_set?'•••••••• — blank keeps the saved key':''}" autocomplete="off">
-        <div class="hint" id="keyHint"></div></div>
-      <div class="sactions">
-        <button class="sbtn" onclick="testProvider()">Test connection</button>
-        ${p.api_key_set?'<button class="sbtn ghost" onclick="clearSecret(\'provider\',\'clear_api_key\')">Clear key</button>':''}
-        <span class="grow"></span>
-        <button class="sbtn primary" onclick="saveSettings()">Save</button>
-      </div>
+        <input type="password" id="pkey" placeholder="${p.api_key_set?'•••••••• — blank keeps the saved key':''}" autocomplete="off"><div class="hint" id="keyHint"></div></div>
+      <div class="sactions"><button class="sbtn" onclick="testProvider()">Test connection</button>${p.api_key_set?'<button class="sbtn ghost" onclick="clearSecret(\'provider\',\'clear_api_key\')">Clear key</button>':''}<span class="grow"></span><button class="sbtn primary" onclick="saveSettings()">Save</button></div>
       <div class="testline" id="testline"></div>
-    </div>
-
+    </div>`;
+}
+function ccKeys(c){
+  const s=c.security||{};
+  return ccHead('Keys &amp; security','The API token guards this dashboard and the HTTP API; the channel secret guards inbound webhooks. Stored locally, never sent to the browser.')+`
+    <div class="scard">
+      <div class="row2">
+        <div class="field"><label>API token ${s.api_token_set?'<span class="badge set">saved</span>':''}</label>
+          <input type="password" id="stok" placeholder="${s.api_token_set?'•••••••• — blank keeps it':'none'}" autocomplete="off">
+          ${s.api_token_set?'<div class="hint"><a href="#" onclick="clearSecret(\'security\',\'clear_api_token\');return false">remove token</a></div>':''}</div>
+        <div class="field"><label>Channel secret ${s.channel_secret_set?'<span class="badge set">saved</span>':''}</label>
+          <input type="password" id="ssec" placeholder="${s.channel_secret_set?'•••••••• — blank keeps it':'none'}" autocomplete="off">
+          ${s.channel_secret_set?'<div class="hint"><a href="#" onclick="clearSecret(\'security\',\'clear_channel_secret\');return false">remove secret</a></div>':''}</div>
+      </div>
+      <div class="sactions"><span class="grow"></span><button class="sbtn primary" onclick="saveSettings()">Save</button></div>
+    </div>`;
+}
+function ccMemory(c){
+  const e=c.embed||{kind:'trigram',model_dir:''};
+  const opt=(v,sel)=>`<option value="${v}"${v===sel?' selected':''}>${v}</option>`;
+  return ccHead('Memory &amp; context','How memories are indexed for recall. Trigram is offline and dependency-free; static loads a model2vec model; gateway uses the provider’s embeddings.')+`
     <div class="scard">
       <h3>Embeddings <span class="badge restart">restart to apply</span></h3>
-      <div class="desc">How memories are indexed for semantic recall. Trigram is offline and dependency-free; static loads a small model2vec model; gateway uses the provider’s embeddings.</div>
       <div class="row2">
-        <div class="field"><label>Mode</label>
-          <select id="ekind">${['trigram','static','gateway'].map(k=>opt(k,c.embed.kind,k)).join('')}</select></div>
-        <div class="field"><label>Static model directory</label>
-          <input type="text" id="edir" value="${escAttr(c.embed.model_dir)}" placeholder="(home)/embedder" autocomplete="off"></div>
+        <div class="field"><label>Mode</label><select id="ekind">${['trigram','static','gateway'].map(k=>opt(k,e.kind)).join('')}</select></div>
+        <div class="field"><label>Static model directory</label><input type="text" id="edir" value="${escAttr(e.model_dir)}" placeholder="(home)/embedder" autocomplete="off"></div>
       </div>
       <div class="sactions"><button class="sbtn" onclick="restartDaemon()">Restart daemon</button><span class="grow"></span><button class="sbtn primary" onclick="saveSettings()">Save</button></div>
-    </div>
-
-    <div class="scard">
-      <h3>Security</h3>
-      <div class="desc">Local gates. The API token guards this dashboard and the HTTP API; the channel secret guards inbound webhooks; shell access lets the agent run commands.</div>
-      <div class="row2">
-        <div class="field"><label>API token ${c.security.api_token_set?'<span class="badge set">saved</span>':''}</label>
-          <input type="password" id="stok" placeholder="${c.security.api_token_set?'•••••••• — blank keeps it':'none'}" autocomplete="off">
-          ${c.security.api_token_set?'<div class="hint"><a href="#" onclick="clearSecret(\'security\',\'clear_api_token\');return false">remove token</a></div>':''}</div>
-        <div class="field"><label>Channel secret ${c.security.channel_secret_set?'<span class="badge set">saved</span>':''}</label>
-          <input type="password" id="ssec" placeholder="${c.security.channel_secret_set?'•••••••• — blank keeps it':'none'}" autocomplete="off">
-          ${c.security.channel_secret_set?'<div class="hint"><a href="#" onclick="clearSecret(\'security\',\'clear_channel_secret\');return false">remove secret</a></div>':''}</div>
-      </div>
-      <label class="toggle"><input type="checkbox" id="sshell" ${c.security.allow_shell?'checked':''}><span class="track"></span> Allow the agent to run shell commands</label>
-      <div class="sactions"><span class="grow"></span><button class="sbtn primary" onclick="saveSettings()">Save</button></div>
-    </div>
-
-    <div class="scard">
-      <h3>Cost</h3>
-      <div class="desc">A hard ceiling on a single task run — it stops at the next step once it crosses this many tokens (input + output combined).</div>
-      <div class="field" style="max-width:240px"><label>Per-task token budget</label>
-        <input type="number" id="cbudget" min="1000" step="1000" value="${c.cost.task_token_budget}"></div>
-      <div class="sactions"><span class="grow"></span><button class="sbtn primary" onclick="saveSettings()">Save</button></div>
-    </div>
-
-    <div class="scard">
-      <h3>Persona <span class="badge set">live</span></h3>
-      <div class="desc">Standing instructions prepended to every agent run — your <code>SOUL.md</code>. Set the voice, priorities, and rules Engram should always follow. Saved changes shape the very next run.</div>
-      <div class="field"><textarea id="persona" rows="6" placeholder="e.g. You are concise and precise. Prefer primary sources. Never guess — say so when you’re unsure.">${esc(persona||'')}</textarea></div>
-      <div class="sactions"><span class="grow"></span><button class="sbtn primary" onclick="savePersona()">Save persona</button></div>
-    </div>
-
+    </div>`;
+}
+function ccTools(c){
+  const s=c.security||{};
+  return ccHead('Tools','External tool servers and the safety gates around them.')+`
     <div class="scard">
       <h3>MCP servers <span class="badge set">live</span></h3>
-      <div class="desc">External tool servers (Model Context Protocol). Each is launched as a subprocess and its tools become available to the agent. Saving reconnects them immediately.</div>
+      <div class="desc">Each server is launched as a subprocess; its tools become available to the agent. Saving reconnects them immediately.</div>
       <div id="mcplist"></div>
       <div class="sactions"><button class="sbtn" onclick="addMcpRow()">+ Add server</button><span class="grow"></span><button class="sbtn primary" onclick="saveSettings()">Save</button></div>
     </div>
-  </div>`;
+    <div class="scard">
+      <h3>Shell &amp; egress</h3>
+      <div class="desc">The agent is read-only by default. Shell access lets it run commands; the taint policy keeps your context from leaving the machine.</div>
+      <label class="toggle"><input type="checkbox" id="sshell" ${s.allow_shell?'checked':''}><span class="track"></span> Allow the agent to run shell commands</label>
+      <div class="ph" style="margin-top:11px"><b>No egress</b> — on by default. Once a run reads untrusted content, tools that would send data to the web are blocked. (A visual allowlist editor lands in Phase 2.)</div>
+      <div class="sactions"><span class="grow"></span><button class="sbtn primary" onclick="saveSettings()">Save</button></div>
+    </div>`;
+}
+function ccCost(c){
+  const cost=c.cost||{task_token_budget:250000};
+  return ccHead('Cost','A hard ceiling on a single task run — it stops at the next step once it crosses this many tokens (input + output).')+`
+    <div class="scard">
+      <div class="field" style="max-width:260px"><label>Per-task token budget</label><input type="number" id="cbudget" min="1000" step="1000" value="${cost.task_token_budget}"></div>
+      <div class="sactions"><span class="grow"></span><button class="sbtn primary" onclick="saveSettings()">Save</button></div>
+    </div>`;
+}
+function ccPersona(c){
+  return ccHead('Persona','Standing instructions prepended to every agent run — your <code>SOUL.md</code>. Saved changes shape the very next run.')+`
+    <div class="scard">
+      <div class="field"><textarea id="persona" rows="9" placeholder="e.g. You are concise and precise. Prefer primary sources. Never guess — say so when you’re unsure.">${esc(c._persona||'')}</textarea></div>
+      <div class="sactions"><span class="grow"></span><button class="sbtn primary" onclick="savePersona()">Save persona</button></div>
+    </div>`;
+}
+function ccWorkspace(){ return ccHead('Workspace','Projects, working directory, and session retention.')+
+  `<div class="scard"><div class="ph"><b>Projects &amp; sessions</b> arrive in the next build — each project will carry its own working directory, persona, default model, keys, and taint policy, and switching projects swaps the whole context at once.<br><br>Today everything runs in one default workspace. The brain (memory + signed ledger) lives in <code>~/.engram</code>.</div></div>`; }
+function ccAppearance(){ return ccHead('Appearance','Theme, accent, and density.')+
+  `<div class="scard"><div class="ph"><b>Theme</b> · Graphite — active.<br><b>Density</b> · Comfortable — active.<br><b>Accent</b> · Teal #45c8a8 — the trust colour, used only where trust is real.<br><br>A light theme, accent picker, compact density, and zoom land with the appearance pass.</div></div>`; }
+function ccVoice(){ return ccHead('Voice','Speech in and out.')+
+  `<div class="scard"><div class="ph">Push-to-talk dictation into the composer and spoken replies are on the roadmap, with a configurable engine and voice.</div></div>`; }
+function ccChat(){ return ccHead('Chat','Conversation rendering and defaults.')+
+  `<div class="scard"><div class="ph">A transparency view-mode (<b>Trace / Normal / Brief</b>), an in-composer model picker, streaming density, and code-block themes land with the chat rebuild.</div></div>`; }
+function ccKeyboard(){
+  const rows=[['Command palette','⌘K'],['Settings','⌘,'],['Send / answer in chat','↵'],['Create a task','⌘↵'],['Create &amp; run a task','⇧⌘↵'],['Close palette / settings / panel','Esc']];
+  return ccHead('Keyboard','Shortcuts. A full rebindable map with conflict detection is coming.')+
+    `<div class="scard">${rows.map(r=>`<div class="kbd-row"><span>${r[0]}</span><kbd>${r[1]}</kbd></div>`).join('')}</div>`;
+}
+function ccIntegrations(){ return ccHead('Integrations','Outside channels and triggers.')+
+  `<div class="scard"><div class="ph"><b>Telegram</b> · set <code>ENGRAM_TELEGRAM_TOKEN</code> to run Engram as a bot that answers messages.<br><b>Webhooks</b> · inbound channels post to <code>/v1/channel/{platform}</code>, guarded by the channel secret (Keys).<br><br>A click-to-connect integrations gallery is on the roadmap.</div></div>`; }
+function ccTemplates(){ return ccHead('Templates','Reusable starters.')+
+  `<div class="scard"><div class="ph">Session and project starters, prompt snippets, and persona presets will live here — so new work begins pre-shaped, not from a blank page.</div></div>`; }
+function ccMessaging(){ return ccHead('Messaging','Where Engram reaches you.')+
+  `<div class="scard"><div class="ph">Notification routing and scheduled-job delivery (for example a morning brief to Telegram) will be configured here.</div></div>`; }
+function ccAdvanced(){ return ccHead('Advanced','Daemon, ledger, and the danger zone.')+`
+    <div class="scard"><h3>Audit ledger</h3>
+      <div class="desc">Every state change is hash-chained and Ed25519-signed. Verify re-walks the whole chain and reports if anything was altered.</div>
+      <div class="sactions"><button class="sbtn" onclick="verifyLedgerNow()">Verify ledger now</button><span class="grow"></span></div></div>
+    <div class="scard"><h3>Daemon</h3>
+      <div class="desc">Engram sleeps to zero when idle and wakes on the next request. Restart applies boot-time settings (the embedder).</div>
+      <div class="sactions"><button class="sbtn" onclick="restartDaemon()">Restart daemon</button><span class="grow"></span></div></div>`;
+}
+function ccAbout(c){ return ccHead('About &amp; FAQ','What Engram is.')+`
+    <div class="scard"><div class="ph"><b>Engram</b> — a local AI workspace that proves what it did, remembers who you are, and costs nothing at rest.<br><br>
+    <b>Why it’s different</b> · every action is signed into a hash-chained ledger you can verify offline — a glass-box receipt no black box can reproduce. The brain grows a model of you across sessions. It sleeps to zero when idle. Tools can’t send your context to the web unless you allow it.<br><br>
+    <b>Verify offline</b> · run <code>engramd verify ~/.engram</code> to re-walk the signed chain without trusting the running daemon.<br><br>
+    Version ${esc((c&&c.version)||'0.1.0')}. The ledger spine sits at the bottom of every screen.</div></div>`;
 }
 
 function mcpRowHtml(s){
@@ -734,17 +889,16 @@ function wireProviderKind(){
   sel.addEventListener('change', apply); apply();
 }
 
+// Only one settings category is mounted at a time, so collect just the fields that exist -
+// the daemon merges a partial patch and leaves the rest untouched.
 function collectSettings(){
-  const patch={
-    provider:{ kind:gv('pkind'), model:gv('pmodel'), base_url:gv('pbase') },
-    embed:{ kind:gv('ekind'), model_dir:gv('edir') },
-    security:{ allow_shell: document.getElementById('sshell').checked },
-    cost:{ task_token_budget: parseInt(gv('cbudget'),10)||250000 },
-    mcp: collectMcp(),
-  };
-  const k=gv('pkey'); if(k) patch.provider.api_key=k;
-  const t=gv('stok'); if(t) patch.security.api_token=t;
-  const s=gv('ssec'); if(s) patch.security.channel_secret=s;
+  const has=id=>!!document.getElementById(id), patch={};
+  if(has('pkind')){ patch.provider={ kind:gv('pkind'), model:gv('pmodel'), base_url:gv('pbase') }; const k=gv('pkey'); if(k) patch.provider.api_key=k; }
+  if(has('ekind')) patch.embed={ kind:gv('ekind'), model_dir:gv('edir') };
+  if(has('sshell')||has('stok')||has('ssec')){ patch.security={}; if(has('sshell')) patch.security.allow_shell=document.getElementById('sshell').checked;
+    const t=gv('stok'); if(t) patch.security.api_token=t; const s=gv('ssec'); if(s) patch.security.channel_secret=s; }
+  if(has('cbudget')) patch.cost={ task_token_budget: parseInt(gv('cbudget'),10)||250000 };
+  if(has('mcplist')) patch.mcp=collectMcp();
   return patch;
 }
 
@@ -759,7 +913,7 @@ async function saveSettings(){
     if(mcpShort) msg='Saved — only '+res.mcp_connected+' of '+res.mcp_requested+' MCP servers connected';
     else if(res.restart_needed) msg='Saved — the embeddings change needs a restart';
     notify(msg, mcpShort?'bad':'ok');
-    await renderSettings();
+    await ccReload();
     poll();
   }catch(e){ notify('Save failed — '+e.message); }
 }
@@ -779,7 +933,7 @@ async function clearSecret(section,flag){
   const body={}; body[section]={}; body[section][flag]=true;
   try{ await J('/v1/config',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
     if(flag==='clear_api_token') setClientToken('');   // the gate is now open again
-    notify('Removed','ok'); await renderSettings(); poll(); }
+    notify('Removed','ok'); await ccReload(); poll(); }
   catch(e){ notify('Failed — '+e.message); }
 }
 
@@ -798,10 +952,61 @@ async function restartDaemon(){
   try{ await J('/v1/restart',{method:'POST',headers:{'content-type':'application/json'},body:'{}'}); }catch(_){/* the connection drops as it exits — expected */}
   let n=0; const iv=setInterval(async()=>{
     n++;
-    try{ const h=await fetch('/health'); if(h.ok){ clearInterval(iv); _restarting=false; notify('Engram is back','ok'); if(state.route==='Settings') renderSettings(); poll(); return; } }catch(_){}
+    try{ const h=await fetch('/health'); if(h.ok){ clearInterval(iv); _restarting=false; notify('Engram is back','ok'); ccReload(); poll(); return; } }catch(_){}
     if(n>40){ clearInterval(iv); _restarting=false; notify('Engram didn’t come back on its own — relaunch the app or start the daemon.'); }
   }, 500);
 }
+
+// ---- command palette (⌘K): one searchable place for navigation, actions, and settings ----
+async function verifyLedgerNow(){
+  try{ const v=await J('/v1/ledger/verify'); notify(v.ok?('Ledger verified · '+v.entries+' entries · intact'):'⚠ Tamper detected', v.ok?'ok':'bad'); poll(); }
+  catch(e){ notify('Couldn’t verify — '+e.message); }
+}
+function paletteCommands(){
+  const g='Go to', a='Actions', s='Settings', cmds=[];
+  VIEWS.forEach(v=>cmds.push({group:g, t:v, ic:ICONS[v], run:()=>go(v)}));
+  cmds.push({group:a, t:'New task', sub:'create a task', run:()=>{ go('Tasks'); setTimeout(()=>document.getElementById('composer')?.focus(),60); }});
+  cmds.push({group:a, t:'Ask Engram', sub:'open chat', ic:ICONS.Chat, run:()=>go('Chat')});
+  cmds.push({group:a, t:'Verify ledger', sub:'re-check the signed chain', run:verifyLedgerNow});
+  cmds.push({group:a, t:halted?'Resume agents':'Emergency stop', sub:'halt running tasks at the next step', run:toggleHalt});
+  cmds.push({group:s, t:'Open settings', key:'⌘,', ic:ICONS.Settings, run:()=>openCC()});
+  CC_CATS.forEach(c=>cmds.push({group:s, t:c.name, sub:'settings', ic:c.icon, run:()=>openCC(c.key)}));
+  return cmds;
+}
+let palSel=0, palItems=[];
+function openPalette(){ if(!document.getElementById('cc').hidden) closeCC();
+  document.getElementById('palette').hidden=false;
+  const inp=document.getElementById('palInput'); inp.value=''; renderPalette(''); inp.focus(); }
+function closePalette(){ document.getElementById('palette').hidden=true; }
+function renderPalette(q){
+  q=(q||'').toLowerCase().trim();
+  const all=paletteCommands();
+  palItems = q ? all.filter(c=>(c.t+' '+(c.sub||'')+' '+c.group).toLowerCase().includes(q)) : all;
+  palSel=0; let html='', last=null;
+  palItems.forEach((c,i)=>{ if(c.group!==last){ html+=`<div class="pal-group">${esc(c.group)}</div>`; last=c.group; }
+    html+=`<div class="pal-item ${i===0?'sel':''}" data-i="${i}" onmousemove="palHover(${i})" onclick="palRun(${i})">
+      <span class="pal-ic">${c.ic||''}</span><span class="pal-t">${esc(c.t)}</span>${c.sub?`<span class="pal-sub">${esc(c.sub)}</span>`:''}${c.key?`<span class="pal-key">${esc(c.key)}</span>`:''}</div>`; });
+  document.getElementById('palList').innerHTML = html || '<div class="pal-group">no matches</div>';
+}
+function palHover(i){ palSel=i; document.querySelectorAll('.pal-item').forEach(el=>el.classList.toggle('sel', +el.dataset.i===i)); }
+function palRun(i){ const c=palItems[i]; closePalette(); if(c&&c.run) c.run(); }
+function palMove(d){ if(!palItems.length) return; palSel=(palSel+d+palItems.length)%palItems.length;
+  document.querySelectorAll('.pal-item').forEach(el=>el.classList.toggle('sel', +el.dataset.i===palSel));
+  document.querySelector('.pal-item.sel')?.scrollIntoView({block:'nearest'}); }
+document.addEventListener('input', e=>{ if(e.target&&e.target.id==='palInput') renderPalette(e.target.value); });
+window.addEventListener('keydown', e=>{
+  const k=(e.key||'').toLowerCase();
+  if((e.metaKey||e.ctrlKey) && k==='k'){ e.preventDefault(); document.getElementById('palette').hidden? openPalette(): closePalette(); return; }
+  if((e.metaKey||e.ctrlKey) && k===','){ e.preventDefault(); document.getElementById('cc').hidden? openCC(): closeCC(); return; }
+  if(!document.getElementById('palette').hidden){
+    if(k==='escape'){ e.preventDefault(); closePalette(); }
+    else if(k==='arrowdown'){ e.preventDefault(); palMove(1); }
+    else if(k==='arrowup'){ e.preventDefault(); palMove(-1); }
+    else if(k==='enter'){ e.preventDefault(); palRun(palSel); }
+    return;
+  }
+  if(k==='escape' && !document.getElementById('cc').hidden){ e.preventDefault(); closeCC(); }
+});
 
 function renderView(){
   if(state.route==='Tasks') renderBoard();
@@ -809,7 +1014,6 @@ function renderView(){
   else if(state.route==='Schedule') renderSchedule();
   else if(state.route==='Memory') renderMemory();
   else if(state.route==='Skills') renderSkills();
-  else if(state.route==='Settings') renderSettings();
 }
 
 // Refresh the board only when tasks actually changed (so idle re-renders don't fight typing).

@@ -85,12 +85,16 @@
     transition:border-color .16s, box-shadow .16s; }
   .composer:focus-within { border-color:rgba(69,200,168,.4); box-shadow:0 0 0 3px var(--accent-soft); }
   .composer textarea { width:100%; background:none; border:none; resize:none; outline:none; min-height:22px; max-height:160px; }
-  .composer .hint { display:flex; align-items:center; margin-top:7px; }
-  .composer .hint small { color:var(--text-muted); font-size:11px; }
-  .composer .send { margin-left:auto; background:var(--accent); color:var(--accent-ink); border:none;
+  .composer .hint { display:flex; align-items:center; margin-top:7px; gap:10px; }
+  .composer .hint small { color:var(--text-muted); font-size:11px; display:inline-flex; align-items:center; gap:5px; }
+  .composer .hint small kbd { font:10px var(--mono); background:var(--surface-2); border:1px solid var(--border); border-radius:4px; padding:1px 5px; color:var(--text-secondary); }
+  .composer .comp-actions { margin-left:auto; display:flex; align-items:center; gap:7px; }
+  .composer .send { background:var(--accent); color:var(--accent-ink); border:none;
     border-radius:20px; padding:6px 15px; font-weight:600; font-size:12px; cursor:pointer; transition:filter .15s, transform .1s; }
   .composer .send:active { transform:translateY(1px); }
   .composer .send:hover { filter:brightness(1.06); }
+  .composer .send.send-icon { display:inline-flex; align-items:center; justify-content:center; width:34px; height:34px; padding:0; border-radius:50%; }
+  .composer .send.send-icon:disabled { opacity:.4; cursor:default; }
 
   /* Board */
   .board-wrap { display:flex; flex-direction:column; height:100%; }
@@ -718,13 +722,13 @@ function renderBoard(){
           <button onclick="prefill('Summarize this week\'s top Rust news')">Summarize Rust news</button>
           <button onclick="prefill('Find me 3 quotes about curiosity')">Find 3 quotes</button>
         </div></div>
-      <div style="padding:16px">${composerHtml()}</div></div>`;
+      <div style="padding:16px">${composerHtml('tasks')}</div></div>`;
   } else {
     const colHtml=(key,label)=>`<div class="col" data-col="${key}">
        <h3>${label} <span>${cols[key].length}</span></h3><div class="cards">${cols[key].map(card).join('')}</div></div>`;
     v.innerHTML = `<div class="board-wrap">${offlineNotice()}
       <div class="board">${colHtml('todo','To do')}${colHtml('doing','Running')}${colHtml('done','Done')}</div>
-      <div style="padding:0 16px 16px">${composerHtml()}</div></div>`;
+      <div style="padding:0 16px 16px">${composerHtml('tasks')}</div></div>`;
   }
   wireComposer();
   const c=document.getElementById('composer');
@@ -733,22 +737,33 @@ function renderBoard(){
 }
 
 // ---- composer + intent routing ----
-function composerHtml(){
+// The composer adapts to its view: in Chat, Enter SENDS the message (like Claude) and the
+// primary control is a send arrow; in the Tasks board, Enter creates a task. Shift+Enter is a
+// newline in both. Task-making is still reachable from chat via Cmd+Enter.
+function composerHtml(ctx){
+  ctx = ctx==='tasks' ? 'tasks' : 'chat';
+  const sendBtn = ctx==='chat'
+    ? `<button class="send send-icon" title="Send (Enter)" aria-label="Send" onclick="converseInline(document.getElementById('composer').value)"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M6 11l6-6 6 6"/></svg></button>`
+    : `<button class="send" onclick="submitComposer(false)">Create task</button>`;
+  const hint = ctx==='chat'
+    ? `<small><kbd>↵</kbd> send <kbd>⇧↵</kbd> newline <kbd>⌘↵</kbd> task</small>`
+    : `<small><kbd>↵</kbd> create <kbd>⌘↵</kbd> create &amp; run</small>`;
   return `<div class="composer">
     <div class="composer-top">${modelpickHtml()}</div>
-    <textarea id="composer" rows="1" placeholder="Tell Engram what to do…"></textarea>
-    <div class="hint"><small>↵ answer · ⌘↵ task · ⇧⌘↵ task &amp; run</small>
-      <button class="send" onclick="submitComposer(false)">Create task</button></div></div>`;
+    <textarea id="composer" data-ctx="${ctx}" rows="1" placeholder="${ctx==='chat'?'Message Engram…':'Tell Engram what to do…'}"></textarea>
+    <div class="hint">${hint}<div class="comp-actions">${sendBtn}</div></div></div>`;
 }
 function prefill(t){ const c=document.getElementById('composer'); if(c){ c.value=t; c.focus(); } }
 function wireComposer(){
   const c=document.getElementById('composer'); if(!c) return;
-  c.addEventListener('input',()=>{ c.style.height='auto'; c.style.height=Math.min(c.scrollHeight,160)+'px'; });
+  const ctx=c.dataset.ctx||'chat';
+  c.addEventListener('input',()=>{ c.style.height='auto'; c.style.height=Math.min(c.scrollHeight,180)+'px'; });
   c.addEventListener('keydown',e=>{
-    if(e.key!=='Enter') return;
+    if(e.key!=='Enter' || e.isComposing) return;   // let IME composition finish
+    if(e.shiftKey) return;                          // Shift+Enter = newline
     e.preventDefault();
-    if(e.metaKey||e.ctrlKey) submitComposer(e.shiftKey); // ⌘ create, ⇧⌘ create+run
-    else converseInline(c.value);                         // ↵ answer
+    if(ctx==='chat'){ if(e.metaKey||e.ctrlKey) submitComposer(false); else converseInline(c.value); }
+    else { if(e.metaKey||e.ctrlKey) submitComposer(true); else submitComposer(false); }
   });
 }
 async function converseInline(text){
@@ -1030,7 +1045,7 @@ async function renderChat(){
   const meta=WS.sessions.find(x=>x.id===WS.activeSession);
   document.getElementById('viewname').textContent = curProject().name+' / '+((meta&&meta.title)||'New chat');
   document.getElementById('view').innerHTML = `<div class="chat">${offlineNotice()}
-    <div class="feed" id="feed"></div>${composerHtml()}</div>`;
+    <div class="feed" id="feed"></div>${composerHtml('chat')}</div>`;
   document.getElementById('composer').placeholder='Ask Engram anything…';
   wireComposer(); paintFeed();
 }

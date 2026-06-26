@@ -831,6 +831,68 @@
   html[data-engram-density="compact"] .scard { padding:11px 13px; margin-bottom:9px; }
   html[data-engram-density="compact"] .field { margin-bottom:9px; }
   html[data-engram-density="compact"] body { font-size:12.5px; }
+/* ---- composer attachments: add-context + file upload ---- */
+.attach-wrap{ position:relative; display:inline-flex; }
+.attach-btn{ display:inline-flex; align-items:center; justify-content:center; width:30px; height:30px;
+  border-radius:50%; border:1px solid var(--border); background:var(--surface-2); color:var(--text-secondary);
+  cursor:pointer; transition:background var(--dur-2) var(--ease-out), color var(--dur-2), border-color var(--dur-2); }
+.attach-btn:hover{ background:var(--hover); color:var(--text-primary); border-color:var(--border-strong); }
+.attach-btn[aria-expanded="true"]{ color:var(--accent); border-color:var(--ring); }
+.attach-menu{ position:absolute; bottom:38px; right:0; z-index:40; min-width:210px; padding:5px;
+  background:var(--surface-2); border:1px solid var(--border-strong); border-radius:var(--r-card);
+  box-shadow:var(--e3); display:flex; flex-direction:column; gap:2px; }
+.attach-menu .am-i{ display:flex; align-items:center; gap:9px; padding:8px 10px; border-radius:var(--radius);
+  cursor:pointer; color:var(--text-primary); font-size:13px; background:transparent; border:0; text-align:left; width:100%; }
+.attach-menu .am-i:hover{ background:var(--hover); }
+.attach-menu .am-i svg{ width:15px; height:15px; flex:0 0 auto; color:var(--text-secondary); }
+.attach-menu .am-i .am-sub{ margin-left:auto; color:var(--text-muted); font-size:11px; }
+/* pills above the textarea */
+.attach-pills{ display:flex; flex-wrap:wrap; gap:6px; padding:0 0 7px; }
+.attach-pills:empty{ display:none; }
+.attach-pill{ display:inline-flex; align-items:center; gap:6px; max-width:230px; padding:4px 6px 4px 8px;
+  background:var(--surface-3); border:1px solid var(--border); border-radius:var(--r-chip);
+  font-size:12px; color:var(--text-secondary); }
+.attach-pill .ap-ic{ display:inline-flex; flex:0 0 auto; color:var(--accent); }
+.attach-pill .ap-ic svg{ width:13px; height:13px; }
+.attach-pill .ap-name{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text-primary); }
+.attach-pill .ap-meta{ flex:0 0 auto; color:var(--text-muted); font-size:11px; }
+.attach-pill .ap-x{ flex:0 0 auto; display:inline-flex; align-items:center; justify-content:center; width:16px; height:16px;
+  border:0; background:transparent; color:var(--text-muted); cursor:pointer; border-radius:4px; font-size:13px; line-height:1; }
+.attach-pill .ap-x:hover{ background:var(--hover); color:var(--danger); }
+.attach-pill.kind-url .ap-ic{ color:var(--web); }
+.attach-pill.kind-memory .ap-ic{ color:var(--accent); }
+.attach-pill.busy{ opacity:.6; }
+/* tiny inline recall picker for "Pin a memory" */
+.attach-recall{ position:absolute; bottom:38px; right:0; z-index:41; width:300px; padding:7px;
+  background:var(--surface-2); border:1px solid var(--border-strong); border-radius:var(--r-card); box-shadow:var(--e3); }
+.attach-recall input{ width:100%; padding:7px 9px; background:var(--surface-1); border:1px solid var(--border);
+  border-radius:var(--radius); color:var(--text-primary); outline:none; }
+.attach-recall input:focus{ border-color:var(--ring); }
+.attach-recall .ar-list{ margin-top:6px; max-height:210px; overflow:auto; display:flex; flex-direction:column; gap:2px; }
+.attach-recall .ar-i{ padding:7px 9px; border-radius:var(--radius); cursor:pointer; font-size:12px;
+  color:var(--text-secondary); line-height:1.4; }
+.attach-recall .ar-i:hover{ background:var(--hover); color:var(--text-primary); }
+.attach-recall .ar-empty{ padding:8px 9px; color:var(--text-muted); font-size:12px; }
+  /* ---- inline slash-command menu (composer) ---- */
+  .composer { position:relative; }
+  .slash-menu {
+    position:absolute; left:0; right:0; bottom:calc(100% + 8px);
+    background:var(--surface-1); border:1px solid var(--border-strong); border-radius:12px;
+    box-shadow:var(--e3); padding:5px; z-index:40; max-height:300px; overflow-y:auto;
+    animation:slash-rise .12s var(--ease-out);
+  }
+  @keyframes slash-rise { from{ opacity:0; transform:translateY(5px); } to{ opacity:1; transform:none; } }
+  .slash-hd { font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--text-muted); padding:7px 10px 4px; }
+  .slash-item { display:flex; align-items:center; gap:11px; padding:8px 10px; border-radius:8px; cursor:pointer; }
+  .slash-item .slash-ic { width:16px; height:16px; color:var(--text-muted); flex:none; display:inline-flex; }
+  .slash-item .slash-ic svg { width:16px; height:16px; }
+  .slash-item .slash-cmd { font:12px var(--mono); color:var(--accent); flex:none; min-width:84px; }
+  .slash-item .slash-t { flex:1; color:var(--text-secondary); font-size:12px; }
+  .slash-item.sel { background:var(--surface-2); }
+  .slash-item.sel .slash-ic { color:var(--accent); }
+  .slash-item.sel .slash-t { color:var(--text-primary); }
+  .slash-empty { padding:9px 12px; color:var(--text-muted); font-size:12px; }
+  @media (prefers-reduced-motion: reduce){ .slash-menu { animation:none; } }
 </style>
 </head>
 <body>
@@ -1038,17 +1100,28 @@ function composerHtml(ctx){
   const hint = ctx==='chat'
     ? `<small><kbd>↵</kbd> send <kbd>⇧↵</kbd> newline <kbd>⌘↵</kbd> task</small>`
     : `<small><kbd>↵</kbd> create <kbd>⌘↵</kbd> create &amp; run</small>`;
+  // Add-context is a chat-only affordance; the tasks board composer creates tasks, not turns.
+  const attachCtl = ctx==='chat'
+    ? `<span class="attach-wrap" id="attachWrap"><button id="attachBtn" class="attach-btn" type="button" aria-haspopup="true" aria-expanded="false" aria-label="Add context" title="Add context or files" onclick="attachToggleMenu(event)"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.5 12.5 21a5 5 0 0 1-7-7l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7L9.6 18.7a1.6 1.6 0 0 1-2.3-2.3l8-8"/></svg></button><input id="attachFileInput" type="file" multiple hidden onchange="attachOnFiles(this)"></span>`
+    : '';
+  const pills = ctx==='chat' ? `<div class="attach-pills" id="attachPills"></div>` : '';
   return `<div class="composer">
+    <div id="slashMenu" class="slash-menu" hidden></div>
     <div class="composer-top">${modelpickHtml()}</div>
-    <textarea id="composer" data-ctx="${ctx}" rows="1" placeholder="${ctx==='chat'?'Message Engram…':'Tell Engram what to do…'}"></textarea>
-    <div class="hint">${hint}<div class="comp-actions"><button id="voiceMic" class="voice-mic" type="button" aria-pressed="false" aria-label="Dictate" title="Dictate (push to talk)" onclick="voiceToggleDictation(this)">${voiceMicSvg()}</button>${sendBtn}</div></div></div>`;
+    ${pills}<textarea id="composer" data-ctx="${ctx}" rows="1" placeholder="${ctx==='chat'?'Message Engram…':'Tell Engram what to do…'}"></textarea>
+    <div class="hint">${hint}<div class="comp-actions">${attachCtl}<button id="voiceMic" class="voice-mic" type="button" aria-pressed="false" aria-label="Dictate" title="Dictate (push to talk)" onclick="voiceToggleDictation(this)">${voiceMicSvg()}</button>${sendBtn}</div></div></div>`;
 }
 function prefill(t){ const c=document.getElementById('composer'); if(c){ c.value=t; c.focus(); } }
 function wireComposer(){
   const c=document.getElementById('composer'); if(!c) return;
   const ctx=c.dataset.ctx||'chat';
-  c.addEventListener('input',()=>{ c.style.height='auto'; c.style.height=Math.min(c.scrollHeight,180)+'px'; });
+  // Repaint any pinned attachments from ATTACH so they survive a mid-compose re-render
+  // (renderChat re-runs wireComposer); no-ops when #attachPills is absent (tasks ctx).
+  if(typeof attachRenderPills==='function') attachRenderPills();
+  c.addEventListener('input',()=>{ c.style.height='auto'; c.style.height=Math.min(c.scrollHeight,180)+'px'; if(typeof slashSync==='function') slashSync(); });
+  c.addEventListener('blur',()=>{ setTimeout(()=>{ if(typeof slashHide==='function') slashHide(); },120); });
   c.addEventListener('keydown',e=>{
+    if(typeof slashKeydown==='function' && slashKeydown(e)) return;   // slash menu owns nav keys when open
     if(e.key!=='Enter' || e.isComposing) return;   // let IME composition finish
     if(e.shiftKey) return;                          // Shift+Enter = newline
     e.preventDefault();
@@ -1057,13 +1130,17 @@ function wireComposer(){
   });
 }
 async function converseInline(text){
-  text=text.trim(); if(!text) return;
+  text=text.trim();
+  // Snapshot any pinned context BEFORE the empty-text guard so an attachment-only send is
+  // still possible, and BEFORE the re-render below clears the pills element.
+  const attachments = (typeof attachTake==='function') ? attachTake() : [];
+  if(!text && !attachments.length) return;
   const c=document.getElementById('composer'); c.value=''; c.style.height='auto';
   // Settle on one session BEFORE switching/rendering, so go()->renderChat and chatSay don't
   // each create their own (the empty-state race).
   if(!WS.activeSession){ if(WS.sessions.length) WS.activeSession=WS.sessions[0].id; else await newSession(false); }
   if(state.route!=='Chat') go('Chat'); else renderChat();
-  chatSay(text);
+  chatSay(text, attachments);
 }
 async function submitComposer(run){
   const c=document.getElementById('composer'); const title=c.value.trim(); if(!title) return;
@@ -1414,7 +1491,8 @@ function paintFeed(){
   artsAfterPaint();   // detect substantial code/doc blocks, inject "Open in canvas" chips, sync the pane
   f.scrollTop=f.scrollHeight;
 }
-async function chatSay(text){
+async function chatSay(text, attachments){
+  attachments = Array.isArray(attachments) ? attachments : [];
   let sid=WS.activeSession, sess=WS.byId[sid];
   if(!sess){ const s=await newSession(false); if(!s) return; sid=s.id; sess=WS.byId[sid]; }
   if(!sess.messages) sess.messages=[];
@@ -1425,7 +1503,7 @@ async function chatSay(text){
   renderSidebar();
   const msg={role:'engram',text:'',streaming:true}; sess.messages.push(msg); paintFeed();
   try {
-    const r = await fetch('/v1/converse/stream',{method:'POST',headers:{...AUTH,'content-type':'application/json'},body:JSON.stringify({text, session:sid})});
+    const r = await fetch('/v1/converse/stream',{method:'POST',headers:{...AUTH,'content-type':'application/json'},body:JSON.stringify({text, session:sid, attachments})});
     if(!r.ok||!r.body) throw new Error('HTTP '+r.status);
     const reader=r.body.getReader(); const dec=new TextDecoder(); let buf='';
     for(;;){
@@ -3296,6 +3374,284 @@ catch(e){
     + '<pre style="white-space:pre-wrap;background:#181b1f;border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:12px;margin-top:10px;font:12px ui-monospace,monospace;color:#e2675f">'
     + String((e&&e.stack)||e).replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]))
     + '</pre></div>';
+}
+
+// ===== Composer attachments: add-context + file upload ============================
+// Context the user pins to their next message. Each item is {kind:'file'|'url'|'memory',
+// name, text, size, ref}. On send it becomes the request's `attachments` array, which the
+// daemon prepends to the model context as a "The user attached:" system message.
+// Module-level only; no top-level code that can throw. boot() already runs after this.
+// IMPORTANT: `text` is data sent verbatim to the model -- it is NEVER HTML-escaped here.
+// Escaping is applied only at render time (attachRenderPills) for innerHTML safety.
+const ATTACH = { items: [] };
+const ATTACH_MAX_TEXT = 200000; // 200KB of inlined text per file is plenty of context
+function attachIsTextType(file){
+  const n=(file.name||'').toLowerCase(), t=(file.type||'').toLowerCase();
+  if(t.startsWith('text/')) return true;
+  if(/^(application\/(json|xml|javascript|x-sh|x-yaml|toml)|application\/.*\+xml)$/.test(t)) return true;
+  return /\.(txt|md|markdown|csv|tsv|log|json|ya?ml|toml|ini|cfg|conf|env|rs|py|js|ts|tsx|jsx|go|java|c|h|cpp|hpp|rb|php|html?|css|scss|sh|bash|zsh|sql|xml|svg|diff|patch|gitignore|dockerfile)$/.test(n)
+    || /^(dockerfile|makefile|readme|license)$/.test(n);
+}
+function attachSvg(kind){
+  if(kind==='url') return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/></svg>';
+  if(kind==='memory') return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 12v9"/><path d="M12 12L4 7.5"/><path d="M12 12l8-4.5"/></svg>';
+  return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.5 12.5 21a5 5 0 0 1-7-7l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7L9.6 18.7a1.6 1.6 0 0 1-2.3-2.3l8-8"/></svg>';
+}
+function attachFmtSize(n){
+  if(n==null) return '';
+  if(n<1024) return n+' B';
+  if(n<1048576) return (n/1024).toFixed(n<10240?1:0)+' KB';
+  return (n/1048576).toFixed(1)+' MB';
+}
+// Render the removable pills above the textarea. Always escape names/meta (innerHTML).
+function attachRenderPills(){
+  const box=document.getElementById('attachPills'); if(!box) return;
+  box.innerHTML = ATTACH.items.map((it,i)=>{
+    const meta = it.kind==='memory' ? 'memory' : (it.kind==='url' ? 'link' : (it.ref?'uploaded':attachFmtSize(it.size)));
+    return `<span class="attach-pill kind-${esc(it.kind)} ${it.busy?'busy':''}" title="${escAttr(it.name)}">
+      <span class="ap-ic">${attachSvg(it.kind)}</span>
+      <span class="ap-name">${esc(it.name)}</span>
+      ${meta?`<span class="ap-meta">${esc(meta)}</span>`:''}
+      <button class="ap-x" type="button" aria-label="Remove" title="Remove" onclick="attachRemove(${i})">&times;</button></span>`;
+  }).join('');
+}
+function attachRemove(i){ ATTACH.items.splice(i,1); attachRenderPills(); }
+function attachClear(){ ATTACH.items.length=0; attachRenderPills(); }
+// Snapshot of the pinned context to send with a message; called from converseInline.
+function attachTake(){
+  if(!ATTACH.items.length) return [];
+  const out = ATTACH.items.map(it=>({
+    kind: it.kind, name: it.name,
+    text: (it.text||'').slice(0, ATTACH_MAX_TEXT),
+    size: it.size, ref: it.ref||null,
+  }));
+  attachClear();
+  return out;
+}
+// ---- menu ----
+function attachToggleMenu(ev){
+  if(ev) ev.stopPropagation();
+  if(document.getElementById('attachMenu')){ attachCloseMenu(); return; }
+  attachCloseRecall();
+  const wrap=document.getElementById('attachWrap'); if(!wrap) return;
+  const btn=document.getElementById('attachBtn'); if(btn) btn.setAttribute('aria-expanded','true');
+  const m=document.createElement('div'); m.id='attachMenu'; m.className='attach-menu'; m.setAttribute('role','menu');
+  m.innerHTML=`
+    <button class="am-i" type="button" role="menuitem" onclick="attachPickFiles()">${attachSvg('file')}<span>Attach files</span><span class="am-sub">text or binary</span></button>
+    <button class="am-i" type="button" role="menuitem" onclick="attachAddUrl()">${attachSvg('url')}<span>Add a URL</span></button>
+    <button class="am-i" type="button" role="menuitem" onclick="attachOpenRecall()">${attachSvg('memory')}<span>Pin a memory</span></button>`;
+  wrap.appendChild(m);
+}
+function attachCloseMenu(){ const m=document.getElementById('attachMenu'); if(m) m.remove();
+  const btn=document.getElementById('attachBtn'); if(btn) btn.setAttribute('aria-expanded','false'); }
+// Dismiss the menu / recall popovers on any outside click (mirrors the model-menu pattern).
+document.addEventListener('click', e=>{
+  if(!e.target.closest || !e.target.closest('#attachWrap')){ attachCloseMenu(); attachCloseRecall(); }
+});
+// Escape closes the attach popovers (mirrors other dismissable overlays).
+document.addEventListener('keydown', e=>{
+  if(e.key==='Escape' && (document.getElementById('attachMenu')||document.getElementById('attachRecall'))){
+    attachCloseMenu(); attachCloseRecall();
+  }
+});
+// ---- files ----
+function attachPickFiles(){ attachCloseMenu(); const inp=document.getElementById('attachFileInput'); if(inp){ inp.value=''; inp.click(); } }
+async function attachOnFiles(input){
+  const files = Array.from(input.files||[]); if(!files.length) return;
+  for(const f of files){
+    if(attachIsTextType(f)){
+      try{
+        const text = await f.text();
+        ATTACH.items.push({ kind:'file', name:f.name, size:f.size, text });
+      }catch(_){ notify('Couldn’t read '+f.name); }
+      attachRenderPills();
+    } else {
+      // Binary: stash a placeholder pill, upload, then fill in the server ref.
+      const it={ kind:'file', name:f.name, size:f.size, text:'', busy:true };
+      ATTACH.items.push(it); attachRenderPills();
+      try{
+        const b64 = await uplFileToBase64(f);
+        const res = await J('/v1/upload',{method:'POST',headers:{'content-type':'application/json'},
+          body:JSON.stringify({ name:f.name, content_b64:b64, mime:f.type||'application/octet-stream' })});
+        it.ref = res.ref || res.path || f.name;
+        // NOTE: raw text for the model context -- do NOT esc() here, only at render time.
+        it.text = `(binary file uploaded — ${attachFmtSize(f.size)}, ${f.type||'unknown type'}, ref ${it.ref})`;
+      }catch(e){
+        it.text = `(binary file ${f.name} — could not be uploaded: ${(e&&e.message)||'error'})`;
+        notify('Upload failed: '+((e&&e.message)||f.name));
+      } finally { it.busy=false; attachRenderPills(); }
+    }
+  }
+  input.value='';
+}
+// FileReader -> bare base64 (strip the data: prefix) for the JSON upload endpoint.
+function uplFileToBase64(file){
+  return new Promise((resolve,reject)=>{
+    const r=new FileReader();
+    r.onload=()=>{ const s=String(r.result||''); const i=s.indexOf(','); resolve(i>=0?s.slice(i+1):s); };
+    r.onerror=()=>reject(new Error('read failed'));
+    r.readAsDataURL(file);
+  });
+}
+// ---- url ----
+function attachAddUrl(){
+  attachCloseMenu();
+  const u=(prompt('Add a URL as context:')||'').trim(); if(!u) return;
+  let name=u; try{ const x=new URL(u); name=x.hostname + (x.pathname!=='/'?x.pathname:''); }catch(_){ }
+  ATTACH.items.push({ kind:'url', name, text:'URL: '+u });
+  attachRenderPills();
+}
+// ---- pin a memory (reuses /v1/recall) ----
+let _attachRecallSeq=0;
+function attachOpenRecall(){
+  attachCloseMenu(); attachCloseRecall();
+  const wrap=document.getElementById('attachWrap'); if(!wrap) return;
+  const p=document.createElement('div'); p.id='attachRecall'; p.className='attach-recall';
+  p.innerHTML=`<input id="attachRecallQ" placeholder="Search your memory to pin…" autocomplete="off" oninput="attachRecallSearch(this.value)">
+    <div class="ar-list" id="attachRecallList"><div class="ar-empty">type to search</div></div>`;
+  wrap.appendChild(p);
+  const i=document.getElementById('attachRecallQ'); if(i) i.focus();
+}
+function attachCloseRecall(){ const p=document.getElementById('attachRecall'); if(p) p.remove(); }
+async function attachRecallSearch(q){
+  q=(q||'').trim(); const list=document.getElementById('attachRecallList'); if(!list) return;
+  if(!q){ list.innerHTML='<div class="ar-empty">type to search</div>'; return; }
+  const seq=++_attachRecallSeq;
+  try{
+    const hits=await J('/v1/recall?k=8&q='+encodeURIComponent(q));
+    if(seq!==_attachRecallSeq) return; // a newer keystroke won
+    if(!hits.length){ list.innerHTML='<div class="ar-empty">no matches</div>'; return; }
+    list.innerHTML=hits.map(h=>{
+      const t=(h.record&&h.record.text)||''; const id=(h.record&&h.record.id)||0;
+      return `<div class="ar-i" data-id="${escAttr(String(id))}" data-text="${escAttr(t)}" onclick="attachPinMemory(this)">${esc(t.replace(/\s+/g,' ').slice(0,160))}</div>`;
+    }).join('');
+  }catch(_){ if(seq===_attachRecallSeq) list.innerHTML='<div class="ar-empty">recall failed</div>'; }
+}
+function attachPinMemory(el){
+  const text=el.getAttribute('data-text')||''; const id=el.getAttribute('data-id')||'';
+  ATTACH.items.push({ kind:'memory', name:'memory #'+id, text:'Memory #'+id+': '+text });
+  attachCloseRecall(); attachRenderPills();
+}
+
+// ---- inline slash-command menu (composer) -----------------------------------
+// Mirrors the command-palette (renderPalette/palMove/palRun) but lives inline above the
+// composer. Activates only while the textarea value starts with "/" and the command token is
+// still being typed (no space yet) - so normal typing and Enter-to-send are never touched.
+// Every cross-call is feature-detected so module load order is irrelevant (boot runs last).
+let _slashSel = 0, _slashItems = [];
+function slashCommands(){
+  const I = (typeof ICONS!=='undefined') ? ICONS : {};
+  // arg:true  -> command takes trailing text; selecting it completes "/cmd " and waits.
+  // run(arg)  -> arg is the trimmed text after the command (string, may be '').
+  return [
+    { cmd:'/task',     t:'Turn this message into a task',     ic:I.Tasks,    arg:true,
+      run:(a)=>{ const c=document.getElementById('composer'); if(c) c.value=a; if(typeof submitComposer==='function') submitComposer(false); } },
+    { cmd:'/run',      t:'Create the task and run it now',    ic:I.Tasks,    arg:true,
+      run:(a)=>{ const c=document.getElementById('composer'); if(c) c.value=a; if(typeof submitComposer==='function') submitComposer(true); } },
+    { cmd:'/recall',   t:'Search memory for a phrase',        ic:I.Memory,   arg:true,
+      run:(a)=>{ slashClear(); if(typeof go==='function') go('Memory');
+        const q=document.getElementById('brainQ'); if(q){ q.value=a; }
+        if(typeof brainRecall==='function') brainRecall(); } },
+    { cmd:'/model',    t:'Pick the model',                    ic:I.Skills,   arg:false,
+      run:()=>{ slashClear(); if(document.getElementById('modelMenu') && typeof toggleModelMenu==='function') toggleModelMenu();
+        else if(typeof notify==='function') notify('Model picker unavailable here','warn'); } },
+    { cmd:'/clear',    t:'Start a new chat',                  ic:I.Chat,     arg:false,
+      run:async()=>{ slashClear(); if(typeof newSession==='function') await newSession(true);  // newSession(true) navigates to Chat itself
+        else if(typeof go==='function') go('Chat'); } },
+    { cmd:'/schedule', t:'Open scheduled runs',               ic:I.Schedule, arg:false,
+      run:()=>{ slashClear(); if(typeof go==='function') go('Schedule'); } },
+    { cmd:'/terminal', t:'Open the glass-box terminal',       ic:I.Terminal, arg:false,
+      run:()=>{ slashClear(); if(typeof go==='function') go('Terminal'); } },
+    { cmd:'/settings', t:'Open settings',                     ic:I.Settings, arg:false,
+      run:()=>{ slashClear(); if(typeof openCC==='function') openCC(); } },
+    { cmd:'/help',     t:'List slash commands',               ic:I.Chat,     arg:false,
+      run:()=>{ if(typeof notify==='function') notify('Commands: '+slashCommands().map(c=>c.cmd).join('  '),'ok'); slashClear(); } },
+  ];
+}
+function slashEl(){ return document.getElementById('slashMenu'); }
+function slashOpen(){ const m=slashEl(); return !!(m && !m.hidden); }
+function slashClear(){ const c=document.getElementById('composer'); if(c){ c.value=''; c.style.height='auto'; } slashHide(); }
+function slashHide(){ const m=slashEl(); if(m){ m.hidden=true; m.innerHTML=''; } _slashItems=[]; _slashSel=0; }
+// Decide whether the current textarea text should drive the menu. Returns the query token
+// (the part after "/") when the menu should be open, or null to keep it closed.
+function slashToken(val){
+  if(!val || val[0]!=='/') return null;        // must START with "/"
+  if(val.indexOf(' ') !== -1) return null;      // a space ends command-name typing -> close
+  return val.slice(1);                          // text after the leading "/"
+}
+function slashSync(){
+  const c=document.getElementById('composer'); if(!c){ slashHide(); return; }
+  const tok = slashToken(c.value);
+  if(tok===null){ slashHide(); return; }
+  slashRender(tok);
+}
+function slashRender(token){
+  const q=(token||'').toLowerCase();
+  const all=slashCommands();
+  _slashItems = q ? all.filter(c=>c.cmd.slice(1).toLowerCase().startsWith(q)) : all;
+  _slashSel=0;
+  const m=slashEl(); if(!m) return;
+  if(!_slashItems.length){ m.hidden=false; m.innerHTML='<div class="slash-empty">no command matches</div>'; return; }
+  let html='<div class="slash-hd">Commands</div>';
+  _slashItems.forEach((c,i)=>{
+    html += `<div class="slash-item ${i===0?'sel':''}" data-i="${i}"`
+         +  ` onmousemove="slashHover(${i})" onmousedown="event.preventDefault()" onclick="slashRun(${i})">`
+         +  `<span class="slash-ic">${c.ic||''}</span>`
+         +  `<span class="slash-cmd">${esc(c.cmd)}</span>`
+         +  `<span class="slash-t">${esc(c.t)}</span></div>`;
+  });
+  m.innerHTML=html; m.hidden=false;
+}
+function slashHover(i){ _slashSel=i; document.querySelectorAll('#slashMenu .slash-item').forEach(el=>el.classList.toggle('sel', +el.dataset.i===i)); }
+function slashMove(d){
+  if(!_slashItems.length) return;
+  _slashSel=(_slashSel+d+_slashItems.length)%_slashItems.length;
+  document.querySelectorAll('#slashMenu .slash-item').forEach(el=>el.classList.toggle('sel', +el.dataset.i===_slashSel));
+  document.querySelector('#slashMenu .slash-item.sel')?.scrollIntoView({block:'nearest'});
+}
+function slashRun(i){
+  const c=_slashItems[i]; if(!c) return;
+  const ta=document.getElementById('composer');
+  if(c.arg){
+    // Complete to "/cmd " and keep typing the argument; Enter then runs it via slashTrySubmit.
+    if(ta){ ta.value=c.cmd+' '; ta.focus(); ta.dispatchEvent(new Event('input',{bubbles:true})); }
+    slashHide();
+    return;
+  }
+  slashHide();
+  try{ c.run(''); }catch(err){ if(typeof notify==='function') notify('Command failed','err'); }
+}
+// Called from the composer keydown handler. Returns true if it consumed the event (menu open).
+// When it consumes, it ALSO stops propagation so the window-level keydown (palette/Esc/panel
+// handlers) does not double-act on the same key - otherwise Esc would close the menu AND any
+// open side panel/modal in one press.
+function slashKeydown(e){
+  if(!slashOpen()) return false;
+  const k=(e.key||'').toLowerCase();
+  const eat=()=>{ e.preventDefault(); e.stopPropagation(); };
+  if(k==='arrowdown'){ eat(); slashMove(1); return true; }
+  if(k==='arrowup'){ eat(); slashMove(-1); return true; }
+  if(k==='escape'){ eat(); slashHide(); return true; }
+  if(k==='tab'){ eat(); if(_slashItems.length) slashRun(_slashSel); return true; }
+  if(k==='enter' && !e.shiftKey && !e.isComposing){
+    if(!_slashItems.length){ slashHide(); return false; }  // nothing to pick -> fall through to send
+    eat(); slashRun(_slashSel); return true;
+  }
+  return false;
+}
+// When the composer holds "/cmd <arg>" and the user presses Enter, run that command instead
+// of sending raw text. Returns true if handled. Called from the composer Enter path.
+function slashTrySubmit(){
+  const c=document.getElementById('composer'); if(!c) return false;
+  const v=c.value; if(!v || v[0]!=='/') return false;
+  const sp=v.indexOf(' ');
+  const name = sp===-1 ? v : v.slice(0,sp);
+  const arg  = sp===-1 ? '' : v.slice(sp+1).trim();
+  const cmd  = slashCommands().find(x=>x.cmd===name);
+  if(!cmd) return false;
+  slashHide();
+  try{ cmd.run(arg); }catch(err){ if(typeof notify==='function') notify('Command failed','err'); }
+  return true;
 }
 </script>
 </body>

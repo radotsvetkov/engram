@@ -262,6 +262,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/channel/{platform}", post(channels::channel_handler))
         .route("/v1/converse", post(converse_handler))
         .route("/v1/converse/stream", post(converse_stream_handler))
+        .route("/v1/upload", post(upload_handler))
         .route("/v1/ledger/tail", get(ledger_tail))
         .route("/v1/ledger/verify", get(ledger_verify))
         .route("/v1/schedule", get(schedule_list).post(schedule_add))
@@ -949,11 +950,15 @@ struct ConverseReq {
     /// When set, the turn is appended to this chat session so it survives a reload.
     #[serde(default)]
     session: Option<String>,
+    /// Context the user pinned in the composer (attached files, URLs, pinned memories).
+    /// Surfaced to the model as a system message before the user's turn.
+    #[serde(default)]
+    attachments: Vec<converse::Attachment>,
 }
 
 async fn converse_handler(State(app): State<App>, Json(r): Json<ConverseReq>) -> ApiResult {
     let persona = r.session.as_ref().and_then(|sid| app.workspace.persona_for_session(sid));
-    let turn = converse::converse(&app.memory, &app.gateway, &r.text, &app.model(), persona.as_deref())
+    let turn = converse::converse(&app.memory, &app.gateway, &r.text, &app.model(), persona.as_deref(), &r.attachments)
         .await
         .map_err(ApiError)?;
     if let Some(sid) = &r.session {
@@ -984,7 +989,7 @@ async fn converse_stream_handler(
         let mut on_delta = move |frag: String| {
             let _ = txd.send(Event::default().event("token").data(frag));
         };
-        match converse::converse_stream(&app.memory, &app.gateway, &r.text, &model, persona.as_deref(), &mut on_delta).await {
+        match converse::converse_stream(&app.memory, &app.gateway, &r.text, &model, persona.as_deref(), &r.attachments, &mut on_delta).await {
             Ok(turn) => {
                 if let Some(sid) = &r.session {
                     app.workspace.append_turn(sid, &r.text, &turn.reply, turn.recalled.clone(), turn.learned.clone());
@@ -1005,6 +1010,48 @@ async fn converse_stream_handler(
         }
     };
     Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+#[derive(Deserialize)]
+struct UploadReq {
+    name: String,
+    /// Bare base64 (no data: prefix) of the file bytes.
+    content_b64: String,
+    #[serde(default)]
+    mime: Option<String>,
+}
+
+/// Store an uploaded (typically binary) file under `<home>/uploads` and return a ref the
+/// chat composer can attach to a turn. The filename is sanitized to a basename plus a short
+/// nanos prefix, so a hostile `name` can't traverse out of the uploads dir.
+async fn upload_handler(State(app): State<App>, Json(r): Json<UploadReq>) -> ApiResult {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(r.content_b64.as_bytes())
+        .map_err(err)?;
+    if bytes.len() > 25 * 1024 * 1024 {
+        return Err(ApiError("file too large (25MB max)".into()));
+    }
+    let base = std::path::Path::new(&r.name)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(|s| s.replace(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_')), "_"))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "file".to_string());
+    let dir = std::path::Path::new(&app.home).join("uploads");
+    std::fs::create_dir_all(&dir).map_err(err)?;
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let stored = format!("{:x}-{}", nanos, base);
+    std::fs::write(dir.join(&stored), &bytes).map_err(err)?;
+    Ok(Json(json!({
+        "ref": stored,
+        "name": base,
+        "size": bytes.len(),
+        "mime": r.mime.unwrap_or_else(|| "application/octet-stream".into()),
+    })))
 }
 
 async fn skills(State(app): State<App>) -> ApiResult {

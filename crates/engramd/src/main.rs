@@ -152,6 +152,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/voice/stream", get(voice_stream))
         .route("/v1/channel/{platform}", post(channels::channel_handler))
         .route("/v1/converse", post(converse_handler))
+        .route("/v1/converse/stream", post(converse_stream_handler))
         .route("/v1/ledger/tail", get(ledger_tail))
         .route("/v1/ledger/verify", get(ledger_verify))
         .route("/v1/schedule", get(schedule_list).post(schedule_add))
@@ -699,6 +700,42 @@ async fn converse_handler(State(app): State<App>, Json(r): Json<ConverseReq>) ->
         "recalled": turn.recalled,
         "learned": turn.learned,
     })))
+}
+
+/// Streaming converse: the reply streams to the chat token-by-token as Server-Sent Events
+/// (`token` events), then a final `done` event carries the recalled/learned metadata. A
+/// push-to-pull bridge: the model deltas are pushed into a channel and the SSE response
+/// pulls from it.
+async fn converse_stream_handler(
+    State(app): State<App>,
+    Json(r): Json<ConverseReq>,
+) -> axum::response::sse::Sse<impl futures_core::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>>
+{
+    use axum::response::sse::{Event, KeepAlive, Sse};
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
+    tokio::spawn(async move {
+        let txd = tx.clone();
+        let mut on_delta = move |frag: String| {
+            let _ = txd.send(Event::default().event("token").data(frag));
+        };
+        match converse::converse_stream(&app.memory, &app.gateway, &r.text, &mut on_delta).await {
+            Ok(turn) => {
+                let _ = tx.send(Event::default().event("done").data(
+                    json!({ "reply": turn.reply, "recalled": turn.recalled, "learned": turn.learned })
+                        .to_string(),
+                ));
+            }
+            Err(e) => {
+                let _ = tx.send(Event::default().event("error").data(e));
+            }
+        }
+    });
+    let stream = async_stream::stream! {
+        while let Some(ev) = rx.recv().await {
+            yield Ok(ev);
+        }
+    };
+    Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
 async fn skills(State(app): State<App>) -> ApiResult {

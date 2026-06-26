@@ -19,6 +19,20 @@ pub struct Turn {
 }
 
 pub async fn converse(memory: &Memory, gateway: &Gateway, text: &str) -> Result<Turn, String> {
+    // The non-streaming path is the streaming one with a sink that discards fragments.
+    let mut sink = |_: String| {};
+    converse_stream(memory, gateway, text, &mut sink).await
+}
+
+/// Streaming conversation: identical recall / identity-learning / persistence, but the
+/// model's reply is streamed fragment-by-fragment to `on_delta` as it generates, and the
+/// assembled [`Turn`] is returned at the end.
+pub async fn converse_stream(
+    memory: &Memory,
+    gateway: &Gateway,
+    text: &str,
+    on_delta: &mut (dyn FnMut(String) + Send),
+) -> Result<Turn, String> {
     // 1. Record the user's message as a lived experience.
     memory
         .remember(WriteReq::new(Region::Episodic, text).source("user").actor("user"))
@@ -56,7 +70,7 @@ pub async fn converse(memory: &Memory, gateway: &Gateway, text: &str) -> Result<
     let model = std::env::var("ENGRAM_MODEL").unwrap_or_else(|_| "claude-haiku".into());
     let req = CompletionRequest::new(model, messages);
     let completion = gateway
-        .complete(Call::new(req).actor("converse").tainted(Taint::Trusted))
+        .complete_stream(Call::new(req).actor("converse").tainted(Taint::Trusted), on_delta)
         .await
         .map_err(|e| e.to_string())?;
 

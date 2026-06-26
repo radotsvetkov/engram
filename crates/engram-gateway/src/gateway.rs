@@ -116,7 +116,37 @@ impl Gateway {
         }
 
         let completion = self.provider.complete(&call.request).await?;
-        let cost = self.cost(&completion);
+        self.record_call(&call, &completion, redacted)?;
+        Ok(completion)
+    }
+
+    /// Like [`Gateway::complete`], but streams text fragments to `on_delta` as they arrive
+    /// and returns the full completion at the end. Metering and the audit entry are written
+    /// once, on completion, exactly as for a non-streaming call.
+    pub async fn complete_stream(
+        &self,
+        mut call: Call,
+        on_delta: &mut (dyn FnMut(String) + Send),
+    ) -> Result<Completion, GatewayError> {
+        let mut redacted = 0usize;
+        if call.taint.is_untrusted() {
+            let before = call.request.messages.len();
+            call.request.messages.retain(|m| !m.secret);
+            redacted = before - call.request.messages.len();
+        }
+        let completion = self.provider.complete_stream(&call.request, on_delta).await?;
+        self.record_call(&call, &completion, redacted)?;
+        Ok(completion)
+    }
+
+    /// Meter and audit a finished model call (shared by the streaming and non-streaming paths).
+    fn record_call(
+        &self,
+        call: &Call,
+        completion: &Completion,
+        redacted: usize,
+    ) -> Result<(), GatewayError> {
+        let cost = self.cost(completion);
         self.meter.record(completion.tokens_in, completion.tokens_out, cost);
         self.ledger.append(
             "llm.call",
@@ -131,7 +161,7 @@ impl Gateway {
                 "redacted_secrets": redacted,
             }),
         )?;
-        Ok(completion)
+        Ok(())
     }
 
     /// Embed texts through the provider, metered and audited.

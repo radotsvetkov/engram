@@ -19,6 +19,21 @@ pub enum GatewayError {
 #[async_trait]
 pub trait Provider: Send + Sync {
     async fn complete(&self, req: &CompletionRequest) -> Result<Completion, GatewayError>;
+    /// Stream a completion, calling `on_delta` with each text fragment as it arrives, and
+    /// returning the full completion at the end. The default is a non-streaming fallback
+    /// (produce the whole completion, emit its text once) so every provider works; real
+    /// streaming providers override it.
+    async fn complete_stream(
+        &self,
+        req: &CompletionRequest,
+        on_delta: &mut (dyn FnMut(String) + Send),
+    ) -> Result<Completion, GatewayError> {
+        let c = self.complete(req).await?;
+        if !c.text.is_empty() {
+            on_delta(c.text.clone());
+        }
+        Ok(c)
+    }
     async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, GatewayError>;
     /// Generate an image from a prompt, returning PNG bytes. Default: unsupported.
     async fn generate_image(&self, _prompt: &str) -> Result<Vec<u8>, GatewayError> {
@@ -138,6 +153,7 @@ mod anthropic {
 
     use super::*;
     use crate::types::ToolCall;
+    use futures_util::StreamExt;
 
     pub struct AnthropicProvider {
         client: reqwest::Client,
@@ -250,6 +266,25 @@ mod anthropic {
         body
     }
 
+    /// Pull complete SSE events (blank-line separated) out of `buf`, leaving any partial
+    /// trailing event for the next chunk. Calls `on_data` with each parsed `data:` JSON.
+    fn drain_sse(buf: &mut String, mut on_data: impl FnMut(&serde_json::Value)) {
+        while let Some(pos) = buf.find("\n\n") {
+            let frame: String = buf.drain(..pos + 2).collect();
+            for line in frame.lines() {
+                if let Some(data) = line.strip_prefix("data:") {
+                    let data = data.trim();
+                    if data.is_empty() || data == "[DONE]" {
+                        continue;
+                    }
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
+                        on_data(&v);
+                    }
+                }
+            }
+        }
+    }
+
     #[async_trait]
     impl Provider for AnthropicProvider {
         async fn complete(&self, req: &CompletionRequest) -> Result<Completion, GatewayError> {
@@ -296,6 +331,62 @@ mod anthropic {
                 (u["input_tokens"].as_u64().unwrap_or(0) + cache_read + cache_create) as u32;
             let tokens_out = u["output_tokens"].as_u64().unwrap_or(0) as u32;
             Ok(Completion { text, model: req.model.clone(), tokens_in, tokens_out, tool_calls })
+        }
+
+        async fn complete_stream(
+            &self,
+            req: &CompletionRequest,
+            on_delta: &mut (dyn FnMut(String) + Send),
+        ) -> Result<Completion, GatewayError> {
+            let mut body = anthropic_body(req);
+            body["stream"] = serde_json::json!(true);
+            let resp = self
+                .client
+                .post(format!("{}/messages", self.base_url))
+                .header("x-api-key", &self.api_key)
+                .header("anthropic-version", "2023-06-01")
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| GatewayError::Provider(e.to_string()))?;
+            let status = resp.status();
+            if !status.is_success() {
+                let txt = resp.text().await.unwrap_or_default();
+                return Err(GatewayError::Provider(format!("{status}: {txt}")));
+            }
+            let mut stream = resp.bytes_stream();
+            let mut buf = String::new();
+            let mut text = String::new();
+            let (mut tin, mut tout, mut cread, mut ccreate) = (0u64, 0u64, 0u64, 0u64);
+            while let Some(chunk) = stream.next().await {
+                let bytes = chunk.map_err(|e| GatewayError::Provider(e.to_string()))?;
+                buf.push_str(&String::from_utf8_lossy(&bytes));
+                drain_sse(&mut buf, |v| match v["type"].as_str() {
+                    Some("content_block_delta") if v["delta"]["type"] == "text_delta" => {
+                        if let Some(t) = v["delta"]["text"].as_str() {
+                            text.push_str(t);
+                            on_delta(t.to_string());
+                        }
+                    }
+                    Some("message_start") => {
+                        let u = &v["message"]["usage"];
+                        tin += u["input_tokens"].as_u64().unwrap_or(0);
+                        cread += u["cache_read_input_tokens"].as_u64().unwrap_or(0);
+                        ccreate += u["cache_creation_input_tokens"].as_u64().unwrap_or(0);
+                    }
+                    Some("message_delta") => {
+                        tout += v["usage"]["output_tokens"].as_u64().unwrap_or(0);
+                    }
+                    _ => {}
+                });
+            }
+            Ok(Completion {
+                text,
+                model: req.model.clone(),
+                tokens_in: (tin + cread + ccreate) as u32,
+                tokens_out: tout as u32,
+                tool_calls: Vec::new(),
+            })
         }
 
         async fn embed(&self, _texts: &[String]) -> Result<Vec<Vec<f32>>, GatewayError> {
@@ -376,6 +467,31 @@ mod anthropic {
             assert_eq!(msgs[2]["content"].as_array().unwrap().len(), 2);
             assert_eq!(msgs[2]["content"][0]["tool_use_id"], "a");
             assert_eq!(msgs[2]["content"][1]["tool_use_id"], "b");
+        }
+
+        #[test]
+        fn drain_sse_extracts_text_deltas_and_buffers_a_partial_event() {
+            let mut buf = String::new();
+            buf.push_str("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10}}}\n\n");
+            buf.push_str("data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\n");
+            buf.push_str("data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\" world\"}}\n\n");
+            // A partial event (no terminating blank line yet) must NOT be consumed.
+            buf.push_str("data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"!\"}}");
+
+            let mut got = String::new();
+            let collect = |out: &mut String, v: &serde_json::Value| {
+                if v["delta"]["type"] == "text_delta" {
+                    out.push_str(v["delta"]["text"].as_str().unwrap_or(""));
+                }
+            };
+            drain_sse(&mut buf, |v| collect(&mut got, v));
+            assert_eq!(got, "Hello world"); // the partial "!" is still buffered
+            assert!(buf.contains("\"!\""));
+
+            buf.push_str("\n\n"); // the rest of the chunk arrives
+            drain_sse(&mut buf, |v| collect(&mut got, v));
+            assert_eq!(got, "Hello world!");
+            assert!(buf.is_empty());
         }
     }
 }

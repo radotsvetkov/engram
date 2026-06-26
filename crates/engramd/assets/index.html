@@ -422,14 +422,33 @@ function paintFeed(){
   f.scrollTop=f.scrollHeight;
 }
 async function chatSay(text){
-  chatLog.push({role:'user',text}); paintFeed();
+  chatLog.push({role:'user',text});
+  const msg={role:'engram',text:''}; chatLog.push(msg); paintFeed();   // grows token-by-token
   try {
-    const r = await J('/v1/converse',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text})});
-    chatLog.push({role:'engram',text:r.reply||r.error||'',recalled:r.recalled,learned:r.learned});
+    const r = await fetch('/v1/converse/stream',{method:'POST',headers:{...AUTH,'content-type':'application/json'},body:JSON.stringify({text})});
+    if(!r.ok||!r.body) throw new Error('HTTP '+r.status);
+    const reader=r.body.getReader(); const dec=new TextDecoder(); let buf='';
+    for(;;){
+      const {done,value}=await reader.read(); if(done) break;
+      buf+=dec.decode(value,{stream:true});
+      let i;
+      while((i=buf.indexOf('\n\n'))>=0){
+        const frame=buf.slice(0,i); buf=buf.slice(i+2);
+        let ev='message'; const dl=[];
+        for(const line of frame.split('\n')){
+          if(line.startsWith('event:')) ev=line.slice(6).trim();
+          else if(line.startsWith('data:')) dl.push(line.slice(5).replace(/^ /,''));
+        }
+        const data=dl.join('\n');
+        if(ev==='token'){ msg.text+=data; paintFeed(); }
+        else if(ev==='done'){ try{const d=JSON.parse(data); if(d.reply) msg.text=d.reply; msg.recalled=d.recalled; msg.learned=d.learned;}catch(_){} paintFeed(); }
+        else if(ev==='error'){ msg.text='(couldn’t reach Engram — '+data+')'; paintFeed(); }
+      }
+    }
+    if(!msg.text){ msg.text='(no reply)'; paintFeed(); }
   } catch(e){
-    chatLog.push({role:'engram',text:'(couldn’t reach Engram — '+(e.message||'try again')+')'});
+    msg.text=msg.text||'(couldn’t reach Engram — '+(e.message||'try again')+')'; paintFeed();
   }
-  paintFeed();
 }
 
 // ---- Schedule ----

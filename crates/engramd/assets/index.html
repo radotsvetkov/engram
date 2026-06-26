@@ -48,10 +48,12 @@
   .brand .mark svg { width:21px; height:21px; }
   .brand b { font-weight:600; }
   .nav { display:flex; flex-direction:column; gap:2px; }
-  .nav a { display:flex; align-items:center; gap:9px; padding:7px 9px; border-radius:var(--radius);
+  .nav a { position:relative; display:flex; align-items:center; gap:9px; padding:7px 9px; border-radius:var(--radius);
     color:var(--text-secondary); cursor:pointer; text-decoration:none; }
   .nav a:hover { background:var(--hover); color:var(--text-primary); }
   .nav a.active { background:var(--active); color:var(--text-primary); }
+  .nav a.active::before { content:''; position:absolute; left:-8px; top:50%; transform:translateY(-50%); width:3px; height:18px;
+    background:var(--accent); border-radius:0 3px 3px 0; box-shadow:0 0 8px rgba(69,200,168,.5); }
   .nav a svg { width:16px; height:16px; opacity:.6; transition:opacity .15s, color .15s, filter .15s; }
   .nav a:hover svg { opacity:.9; }
   .nav a.active svg { opacity:1; color:var(--accent); filter:var(--glow); }
@@ -111,6 +113,8 @@
     background:var(--surface-3); box-shadow:var(--e4); transform:rotate(2deg) scale(1.03);
     cursor:grabbing; will-change:left,top; }
   body.dragging-active { cursor:grabbing; user-select:none; }
+  .card.just-dropped { animation:drop-in .4s var(--ease-out); }
+  @keyframes drop-in { 0% { transform:scale(.95); box-shadow:0 0 0 2px var(--accent), var(--e2); } 100% { transform:scale(1); } }
   .rcpt-chip { margin-left:auto; display:inline-flex; align-items:center; gap:3px; font:11px var(--mono); color:var(--text-secondary);
     background:var(--surface-1); border:1px solid var(--border-strong); border-radius:6px; padding:1px 7px; cursor:pointer; transition:.12s; }
   .rcpt-chip:hover { border-color:var(--ring); color:var(--accent); }
@@ -853,7 +857,7 @@ async function moveTask(id, key){
   if(t && STATUS_COLS[t.status]===key) return;            // dropped back in the same column - no-op
   if(key==='doing'){ runTask(id); return; }
   const status = key==='done' ? 'done' : 'todo';
-  if(t){ t.status=status; if(state.route==='Tasks') renderBoard(); }   // optimistic
+  if(t){ t.status=status; if(state.route==='Tasks'){ renderBoard(); const el=document.querySelector(`.card[data-id="${id}"]`); if(el){ el.classList.add('just-dropped'); setTimeout(()=>el.classList.remove('just-dropped'),420); } } }   // optimistic, with a settle animation
   try{ await J('/v1/tasks/'+id,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({status})}); }catch(_){}
   await loadTasks(); if(state.route==='Tasks') renderBoard();
 }

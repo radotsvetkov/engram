@@ -49,6 +49,8 @@ struct App {
     mcp_tools: Vec<Arc<dyn engram_agent::Tool>>,
     browser: Arc<dyn engram_agent::BrowserSession>,
     tasks: Arc<tasks::TaskStore>,
+    /// Runtime-mutable shell consent — toggled by the desktop's approval card.
+    allow_shell: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Uniform error → JSON 500.
@@ -128,6 +130,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         mcp_tools,
         browser: engram_agent::browser_session(),
         tasks: Arc::new(tasks::TaskStore::open(std::path::Path::new(&home))),
+        allow_shell: Arc::new(std::sync::atomic::AtomicBool::new(
+            std::env::var("ENGRAM_TOOLS_SHELL").as_deref() == Ok("1"),
+        )),
     };
 
     let router = Router::new()
@@ -155,6 +160,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/tasks/{id}", axum::routing::patch(tasks_update).delete(tasks_delete))
         .route("/v1/tasks/{id}/run", post(tasks_run))
         .route("/v1/tasks/{id}/audit", get(task_audit))
+        .route("/v1/policy", get(policy_get).post(policy_set))
         .layer(axum::middleware::from_fn_with_state(app.clone(), keep_awake))
         .with_state(app.clone());
 
@@ -308,7 +314,7 @@ async fn run_agent_task_cb(
     on_step: Option<engram_agent::StepCallback>,
 ) -> Result<engram_agent::AgentRun, String> {
     let policy = engram_agent::Policy {
-        allow_shell: std::env::var("ENGRAM_TOOLS_SHELL").as_deref() == Ok("1"),
+        allow_shell: app.allow_shell.load(std::sync::atomic::Ordering::Relaxed),
         shell_backend: match std::env::var("ENGRAM_SHELL_BACKEND").as_deref() {
             Ok("docker") => Some(std::env::var("ENGRAM_DOCKER_IMAGE").unwrap_or_else(|_| "alpine".into())),
             Ok("ssh") => std::env::var("ENGRAM_SSH_HOST").ok().map(|h| format!("ssh:{h}")),
@@ -417,6 +423,25 @@ async fn voice_handler(State(app): State<App>, Json(r): Json<VoiceReq>) -> ApiRe
     let audio_out = app.gateway.tts(&run.answer, voice, "voice").await.map_err(err)?;
     let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&audio_out);
     Ok(Json(json!({ "transcript": transcript, "reply": run.answer, "audio_b64": audio_b64 })))
+}
+
+async fn policy_get(State(app): State<App>) -> ApiResult {
+    Ok(Json(json!({ "allow_shell": app.allow_shell.load(std::sync::atomic::Ordering::Relaxed) })))
+}
+
+#[derive(Deserialize)]
+struct PolicyReq {
+    allow_shell: Option<bool>,
+}
+
+/// Grant or revoke a standing capability (the desktop's "always allow"). The decision is
+/// recorded in the audit ledger, so even a consent change is on the record.
+async fn policy_set(State(app): State<App>, Json(r): Json<PolicyReq>) -> ApiResult {
+    if let Some(v) = r.allow_shell {
+        app.allow_shell.store(v, std::sync::atomic::Ordering::Relaxed);
+        let _ = app.ledger.append("policy.set", "user", json!({ "allow_shell": v }));
+    }
+    Ok(Json(json!({ "allow_shell": app.allow_shell.load(std::sync::atomic::Ordering::Relaxed) })))
 }
 
 async fn tasks_list(State(app): State<App>) -> ApiResult {

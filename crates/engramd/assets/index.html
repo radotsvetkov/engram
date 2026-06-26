@@ -105,6 +105,10 @@
   .panel .body { flex:1; overflow:auto; padding:14px; }
   .pill { font-size:11px; padding:2px 8px; border-radius:6px; background:var(--surface-2); color:var(--text-secondary); }
   .pill.done { color:var(--accent); } .pill.failed { color:var(--danger); } .pill.doing { color:var(--accent); }
+  .approval { background:rgba(224,162,60,.1); border:1px solid rgba(224,162,60,.35); border-radius:10px; padding:11px 12px; margin-bottom:14px; }
+  .approval b { color:var(--warning); }
+  .approval button { background:var(--accent); color:var(--accent-ink); border:none; border-radius:6px; padding:6px 12px; font-weight:500; cursor:pointer; }
+  .approval button.ghost { background:var(--surface-2); color:var(--text-secondary); }
   .answer { font-family:var(--font-voice); font-size:15px; line-height:1.5; margin:14px 0; }
   .step { padding:8px 0; border-bottom:1px solid var(--border); }
   .step .top { display:flex; gap:8px; align-items:center; }
@@ -288,6 +292,13 @@ async function openTask(id){
   let html='';
   if(t.status==='todo') html+=`<div class="row"><button onclick="runTask('${id}')">Run now</button></div>`;
   if(t.run){
+    const denied=(t.run.steps||[]).find(s=>!s.ok && /shell/i.test(s.tool) && /disabled|refused/i.test(s.observation));
+    if(denied){
+      html+=`<div class="approval"><b>Wants to run shell</b>
+        <div class="sub">Runs a command in the work folder · writes nothing outside it</div>
+        <div class="row" style="margin-top:8px"><button onclick="approveShell('${id}')">Allow &amp; re-run</button>
+          <button class="ghost" onclick="closePanel()">Skip</button></div></div>`;
+    }
     html+=`<div class="answer">${esc(t.run.answer)}</div>`;
     const audit = await J('/v1/tasks/'+id+'/audit').catch(()=>({entries:[]}));
     const stepRows = (t.run.steps||[]).map((s,i)=>{
@@ -328,6 +339,10 @@ function schedPreview(inputId,outId){
 }
 function closePanel(){ panelId=null; document.getElementById('panel').classList.remove('open'); }
 async function delTask(id){ await fetch('/v1/tasks/'+id,{method:'DELETE'}); closePanel(); await loadTasks(); renderBoard(); }
+async function approveShell(id){
+  await J('/v1/policy',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({allow_shell:true})});
+  runTask(id);
+}
 
 // ---- Chat ----
 let chatLog=[];

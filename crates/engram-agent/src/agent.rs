@@ -7,13 +7,23 @@
 //! after which the shell and secret context are off the table for the rest of the run.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use engram_core::Taint;
-use engram_gateway::{Call, CompletionRequest, Gateway, Message};
+use engram_gateway::{
+    approx_tokens, Call, Completion, CompletionRequest, Gateway, GatewayError, Message, Role, ToolCall,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tokio::task::JoinSet;
 
 use crate::tool::{ToolCtx, ToolRegistry};
+
+/// Summarize older turns once the working transcript exceeds this many estimated tokens,
+/// so a long run never overflows the model's context window.
+const COMPACT_TOKEN_THRESHOLD: u32 = 12_000;
+/// How many times to retry a transient provider failure before giving up.
+const MODEL_RETRIES: u32 = 3;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AgentError {
@@ -95,11 +105,16 @@ impl Agent {
         let _ = ctx.ledger.append("agent.start", "agent", json!({ "task": task }));
 
         for _ in 0..self.max_steps {
+            // Keep the working context within budget so a long run never overflows the
+            // model's window — summarize older turns, keep the freshest verbatim.
+            self.maybe_compact(&mut messages, &ctx).await;
+
             let req = CompletionRequest::new(&self.model, messages.clone())
                 .tools(tool_defs.clone())
-                .max_tokens(1024);
-            let completion =
-                self.gateway.complete(Call::new(req).actor("agent").tainted(ctx.taint)).await?;
+                .max_tokens(2048);
+            // Resilient model call: a transient provider failure retries with backoff
+            // instead of aborting the whole run.
+            let completion = self.complete_with_retry(req, ctx.taint).await?;
 
             if completion.tool_calls.is_empty() {
                 let _ = ctx.ledger.append("agent.finish", "agent", json!({ "steps": steps.len() }));
@@ -110,26 +125,25 @@ impl Agent {
                 completion.text.clone(),
                 completion.tool_calls.clone(),
             ));
-            for call in &completion.tool_calls {
-                let (observation, ok) = match self.tools.get(&call.name) {
-                    // The no-egress half of the taint rule, enforced once for every tool
-                    // (native and MCP): a run that has read untrusted content cannot then
-                    // send data out. Injection cannot reach an exfil channel.
-                    Some(tool) if ctx.taint.is_untrusted() && tool.is_egress() => (
-                        "error: egress refused — this run read untrusted content (injection guard)".to_string(),
-                        false,
-                    ),
-                    Some(tool) => match tool.run(&call.arguments, &ctx).await {
-                        Ok(o) => {
-                            if tool.taints() {
-                                ctx.taint = Taint::Untrusted;
-                            }
-                            (o, true)
-                        }
-                        Err(e) => (format!("error: {e}"), false),
-                    },
-                    None => (format!("error: unknown tool '{}'", call.name), false),
-                };
+
+            // Run this turn's tool calls CONCURRENTLY. Egress is gated on the taint as it
+            // stood BEFORE the batch: same-batch calls were chosen from pre-taint context,
+            // so injection can't cross within a batch; cross-turn egress stays blocked.
+            let egress_blocked = ctx.taint.is_untrusted();
+            let outcomes = self.run_tools(&completion.tool_calls, &ctx, egress_blocked).await;
+
+            // If any taint-raising tool ran, the run is tainted for every later turn.
+            let raised = completion
+                .tool_calls
+                .iter()
+                .zip(&outcomes)
+                .any(|(c, (_o, ok))| *ok && self.tools.get(&c.name).is_some_and(|t| t.taints()));
+            if raised {
+                ctx.taint = Taint::Untrusted;
+            }
+
+            // Record results in call order: deterministic ledger chain and message order.
+            for (call, (observation, ok)) in completion.tool_calls.iter().zip(outcomes) {
                 let truncated = truncate(&observation, ctx.policy.max_obs_len);
                 let (ledger_seq, ledger_hash) = ctx
                     .ledger
@@ -159,6 +173,143 @@ impl Agent {
             stopped: "limit",
         })
     }
+
+    /// Call the model, retrying a transient provider error with exponential backoff. A
+    /// local ledger error is not retried (it isn't transient).
+    async fn complete_with_retry(
+        &self,
+        req: CompletionRequest,
+        taint: Taint,
+    ) -> Result<Completion, AgentError> {
+        let mut attempt = 0u32;
+        loop {
+            let call = Call::new(req.clone()).actor("agent").tainted(taint);
+            match self.gateway.complete(call).await {
+                Ok(c) => return Ok(c),
+                Err(e @ GatewayError::Ledger(_)) => return Err(e.into()),
+                Err(e) => {
+                    attempt += 1;
+                    if attempt >= MODEL_RETRIES {
+                        return Err(e.into());
+                    }
+                    let backoff = Duration::from_millis(250u64 * (1u64 << (attempt - 1)));
+                    tracing::warn!(attempt, error = %e, "model call failed; retrying after backoff");
+                    tokio::time::sleep(backoff).await;
+                }
+            }
+        }
+    }
+
+    /// Execute a turn's tool calls concurrently, returning `(observation, ok)` per call in
+    /// the original order. Each task gets its own cheap `ctx` clone (all `Arc`s), and the
+    /// no-egress gate is applied with the pre-batch taint decision.
+    async fn run_tools(
+        &self,
+        calls: &[ToolCall],
+        ctx: &ToolCtx,
+        egress_blocked: bool,
+    ) -> Vec<(String, bool)> {
+        let mut set = JoinSet::new();
+        for (i, call) in calls.iter().enumerate() {
+            let tool = self.tools.get(&call.name).cloned();
+            let ctx = ctx.clone();
+            let args = call.arguments.clone();
+            let name = call.name.clone();
+            set.spawn(async move {
+                let out = match tool {
+                    // The no-egress half of the taint rule — refuse an egress tool once the
+                    // run has read untrusted content. Covers native and MCP tools alike.
+                    Some(t) if egress_blocked && t.is_egress() => (
+                        "error: egress refused — this run read untrusted content (injection guard)".to_string(),
+                        false,
+                    ),
+                    Some(t) => match t.run(&args, &ctx).await {
+                        Ok(o) => (o, true),
+                        Err(e) => (format!("error: {e}"), false),
+                    },
+                    None => (format!("error: unknown tool '{name}'"), false),
+                };
+                (i, out)
+            });
+        }
+        // Default to an error so a panicked task surfaces as a failed step, never a gap.
+        let mut outcomes: Vec<(String, bool)> =
+            calls.iter().map(|_| ("error: tool task did not complete".to_string(), false)).collect();
+        while let Some(res) = set.join_next().await {
+            if let Ok((i, out)) = res {
+                outcomes[i] = out;
+            }
+        }
+        outcomes
+    }
+
+    /// Compact the transcript when it grows past the token budget: keep the system prompt
+    /// and the most recent complete turn (assistant tool-calls + their results) verbatim,
+    /// and replace everything in between with a model-written progress summary. Operates on
+    /// whole turns so tool-call/result pairing is never broken.
+    async fn maybe_compact(&self, messages: &mut Vec<Message>, ctx: &ToolCtx) {
+        let total: u32 = messages.iter().map(msg_tokens).sum();
+        if total <= COMPACT_TOKEN_THRESHOLD || messages.len() < 6 {
+            return;
+        }
+        // Tail = the last assistant-with-tool-calls message and everything after it.
+        let tail_start = messages
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, m)| m.role == Role::Assistant && !m.tool_calls.is_empty())
+            .map(|(i, _)| i)
+            .unwrap_or(messages.len());
+        if tail_start <= 2 {
+            return; // not enough history between the task and the tail to be worth it
+        }
+        let task = messages.get(1).map(|m| m.content.clone()).unwrap_or_default();
+        let summary = self.summarize(&render_transcript(&messages[2..tail_start]), ctx.taint).await;
+
+        let mut rebuilt = Vec::with_capacity(messages.len() - (tail_start - 2) + 1);
+        rebuilt.push(messages[0].clone()); // system
+        rebuilt.push(Message::user(format!(
+            "Original task:\n{task}\n\nProgress so far (older steps compacted to save context):\n{summary}"
+        )));
+        rebuilt.extend_from_slice(&messages[tail_start..]);
+        let _ = ctx.ledger.append(
+            "agent.compact",
+            "agent",
+            json!({ "from_tokens": total, "kept_tail_msgs": messages.len() - tail_start }),
+        );
+        *messages = rebuilt;
+    }
+
+    /// Ask the model to compress a transcript slice into a concise progress note. Falls
+    /// back to head+tail truncation if the summarization call fails, so compaction never
+    /// blocks the run.
+    async fn summarize(&self, transcript: &str, taint: Taint) -> String {
+        let req = CompletionRequest::new(
+            &self.model,
+            vec![
+                Message::system(
+                    "You compress an AI agent's transcript. Output a concise progress note that \
+                     preserves concrete facts discovered (names, numbers, file paths, URLs, IDs), \
+                     the actions taken and their outcomes, and what still remains to do. No preamble.",
+                ),
+                Message::user(transcript.to_string()),
+            ],
+        )
+        .max_tokens(600);
+        match self.gateway.complete(Call::new(req).actor("agent").tainted(taint)).await {
+            Ok(c) if !c.text.trim().is_empty() => c.text,
+            _ => {
+                let chars: Vec<char> = transcript.chars().collect();
+                if chars.len() <= 4000 {
+                    transcript.to_string()
+                } else {
+                    let head: String = chars[..2000].iter().collect();
+                    let tail: String = chars[chars.len() - 1500..].iter().collect();
+                    format!("{head}\n…[middle elided in compaction]…\n{tail}")
+                }
+            }
+        }
+    }
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -170,6 +321,46 @@ fn truncate(s: &str, max: usize) -> String {
         end -= 1;
     }
     format!("{}… [truncated {} bytes]", &s[..end], s.len() - end)
+}
+
+/// Rough token footprint of one message — its text plus any tool-call names/arguments.
+fn msg_tokens(m: &Message) -> u32 {
+    let mut t = approx_tokens(&m.content);
+    for c in &m.tool_calls {
+        t += approx_tokens(&c.name) + approx_tokens(&c.arguments.to_string());
+    }
+    t
+}
+
+/// Flatten a slice of messages into a plain-text transcript for summarization.
+fn render_transcript(messages: &[Message]) -> String {
+    let mut s = String::new();
+    for m in messages {
+        match m.role {
+            Role::System => continue,
+            Role::User => {
+                s.push_str("USER: ");
+                s.push_str(&m.content);
+                s.push('\n');
+            }
+            Role::Assistant => {
+                if !m.content.is_empty() {
+                    s.push_str("ASSISTANT: ");
+                    s.push_str(&m.content);
+                    s.push('\n');
+                }
+                for c in &m.tool_calls {
+                    s.push_str(&format!("CALL {}({})\n", c.name, c.arguments));
+                }
+            }
+            Role::Tool => {
+                s.push_str("RESULT: ");
+                s.push_str(&m.content);
+                s.push('\n');
+            }
+        }
+    }
+    s
 }
 
 #[cfg(test)]
@@ -192,6 +383,18 @@ mod tests {
     }
     fn final_answer(text: &str) -> Completion {
         Completion { text: text.into(), model: "test".into(), tokens_in: 0, tokens_out: 1, tool_calls: vec![] }
+    }
+    fn multi_call(calls: Vec<(&str, &str, serde_json::Value)>) -> Completion {
+        Completion {
+            text: String::new(),
+            model: "test".into(),
+            tokens_in: 0,
+            tokens_out: 0,
+            tool_calls: calls
+                .into_iter()
+                .map(|(id, name, args)| ToolCall { id: id.into(), name: name.into(), arguments: args })
+                .collect(),
+        }
     }
 
     #[tokio::test]
@@ -433,5 +636,119 @@ mod tests {
         // Each step captured its own signed ledger position inline (audit pairing fix).
         assert!(run.steps[0].ledger_seq > 0 && !run.steps[0].ledger_hash.is_empty());
         assert!(run.steps[1].ledger_seq > run.steps[0].ledger_seq, "ledger seq advances per step");
+    }
+
+    #[tokio::test]
+    async fn runs_a_turns_tool_calls_concurrently_and_in_order() {
+        use crate::tool::Tool;
+
+        struct Echo; // sleeps, so serial execution would be visibly slower than concurrent
+        #[async_trait::async_trait]
+        impl Tool for Echo {
+            fn name(&self) -> &str { "echo" }
+            fn description(&self) -> &str { "echoes its n" }
+            fn schema(&self) -> serde_json::Value { json!({ "type": "object" }) }
+            async fn run(&self, args: &serde_json::Value, _: &ToolCtx) -> Result<String, String> {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                Ok(format!("echo-{}", args["n"]))
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Arc::new(Ledger::open(dir.path()).unwrap());
+        let memory = Arc::new(
+            Memory::open(dir.path().join("b.db"), Arc::new(TrigramHashEmbedder::default()), ledger.clone()).unwrap(),
+        );
+        let signer = Arc::new(SkillSigner::load_or_create(dir.path().join("k")).unwrap());
+        let skills = Arc::new(Registry::open(dir.path(), signer, ledger.clone()).unwrap());
+        let provider = ScriptedProvider::new(vec![
+            multi_call(vec![
+                ("a", "echo", json!({ "n": 1 })),
+                ("b", "echo", json!({ "n": 2 })),
+                ("c", "echo", json!({ "n": 3 })),
+            ]),
+            final_answer("done"),
+        ]);
+        let gateway = Arc::new(Gateway::new(Box::new(provider), ledger.clone()));
+        let ctx = ToolCtx {
+            memory,
+            skills,
+            gateway: gateway.clone(),
+            ledger: ledger.clone(),
+            taint: Taint::Trusted,
+            policy: Policy::default(),
+            workdir: dir.path().to_path_buf(),
+            model: "test".into(),
+            depth: 0,
+            browser: Arc::new(crate::tool::NoBrowser),
+        };
+        let tools = ToolRegistry::new().with(Arc::new(Echo));
+        let start = std::time::Instant::now();
+        let run = Agent::new(gateway, tools, "test").run("go", ctx).await.unwrap();
+        let elapsed = start.elapsed();
+
+        // All three ran, results returned in call order.
+        assert_eq!(run.steps.len(), 3);
+        assert_eq!(run.steps[0].observation, "echo-1");
+        assert_eq!(run.steps[1].observation, "echo-2");
+        assert_eq!(run.steps[2].observation, "echo-3");
+        assert!(run.steps.iter().all(|s| s.ok));
+        // Concurrent: ~50ms, not the ~150ms a serial loop of three 50ms calls would take.
+        assert!(elapsed.as_millis() < 130, "tools did not run concurrently: {elapsed:?}");
+    }
+
+    #[tokio::test]
+    async fn compacts_the_transcript_when_it_grows_large() {
+        use crate::tool::Tool;
+
+        struct BigTool; // returns a large observation to push the transcript past the budget
+        #[async_trait::async_trait]
+        impl Tool for BigTool {
+            fn name(&self) -> &str { "big" }
+            fn description(&self) -> &str { "returns a lot of text" }
+            fn schema(&self) -> serde_json::Value { json!({ "type": "object" }) }
+            async fn run(&self, _: &serde_json::Value, _: &ToolCtx) -> Result<String, String> {
+                Ok("lorem ipsum dolor ".repeat(8000)) // ~140k chars ≈ tens of thousands of tokens
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Arc::new(Ledger::open(dir.path()).unwrap());
+        let memory = Arc::new(
+            Memory::open(dir.path().join("b.db"), Arc::new(TrigramHashEmbedder::default()), ledger.clone()).unwrap(),
+        );
+        let signer = Arc::new(SkillSigner::load_or_create(dir.path().join("k")).unwrap());
+        let skills = Arc::new(Registry::open(dir.path(), signer, ledger.clone()).unwrap());
+        // big, big, [summary for compaction], final
+        let provider = ScriptedProvider::new(vec![
+            call("1", "big", json!({})),
+            call("2", "big", json!({})),
+            final_answer("compact summary: did two big reads"),
+            final_answer("done"),
+        ]);
+        let gateway = Arc::new(Gateway::new(Box::new(provider), ledger.clone()));
+        let ctx = ToolCtx {
+            memory,
+            skills,
+            gateway: gateway.clone(),
+            ledger: ledger.clone(),
+            taint: Taint::Trusted,
+            // Don't truncate observations, so the transcript actually grows past the budget.
+            policy: Policy { max_obs_len: 500_000, ..Policy::default() },
+            workdir: dir.path().to_path_buf(),
+            model: "test".into(),
+            depth: 0,
+            browser: Arc::new(crate::tool::NoBrowser),
+        };
+        let tools = ToolRegistry::new().with(Arc::new(BigTool));
+        let run = Agent::new(gateway, tools, "test").max_steps(5).run("go", ctx).await.unwrap();
+
+        assert_eq!(run.answer, "done");
+        // Compaction fired and is recorded in the signed ledger.
+        let entries = ledger.read_all().unwrap();
+        assert!(
+            entries.iter().any(|e| e.kind == "agent.compact"),
+            "expected an agent.compact ledger entry after the transcript grew"
+        );
     }
 }

@@ -267,6 +267,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/schedule", get(schedule_list).post(schedule_add))
         .route("/v1/schedule/preview", get(schedule_preview))
         .route("/v1/schedule/{id}", axum::routing::delete(schedule_remove))
+        .route("/v1/schedule/{id}/run", post(schedule_run))
         .route("/v1/tasks", get(tasks_list).post(tasks_create))
         .route("/v1/tasks/{id}", axum::routing::patch(tasks_update).delete(tasks_delete))
         .route("/v1/tasks/{id}/run", post(tasks_run))
@@ -861,6 +862,9 @@ fn spawn_scheduler_tick(app: App) {
                 let title = job.payload.get("title").and_then(|v| v.as_str()).unwrap_or(&job.name);
                 let task = app.tasks.create(title.to_string(), String::new(), "schedule".into());
                 tracing::info!(job = %job.name, task = %task.id, "scheduler firing a task");
+                // Record the task on the job before running so a crash mid-run still leaves a
+                // pointer to the (failed) receipt for the UI's "last run" affordance.
+                let _ = app.sched.set_last_task(&job.id, &task.id);
                 let _ = run_task_core(&app, &task.id).await;
                 let _ = app.sched.mark_fired(&job.id, now);
             }
@@ -1077,6 +1081,8 @@ async fn schedule_preview(State(_app): State<App>, Query(q): Query<PreviewQuery>
         Ok(rec) => Ok(Json(json!({
             "ok": true,
             "next_fire_ms": rec.next_after(now).map(|t| t.timestamp_millis()),
+            // Hand the UI the structured recurrence so it can render a live cadence badge.
+            "recurrence": rec,
         }))),
         Err(e) => Ok(Json(json!({ "ok": false, "error": e.to_string() }))),
     }
@@ -1092,6 +1098,30 @@ async fn schedule_add(State(app): State<App>, Json(r): Json<ScheduleReq>) -> Api
 async fn schedule_remove(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
     let removed = app.sched.remove(&id).map_err(err)?;
     Ok(Json(json!({ "removed": removed })))
+}
+
+/// Run a scheduled job on demand: build a task from its payload (the same shape the
+/// in-process tick uses), run it through the agent, record it as the job's `last_task_id`
+/// so the UI can open the per-task receipt, and return the task id + final status.
+async fn schedule_run(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
+    let job = app
+        .sched
+        .list()
+        .into_iter()
+        .find(|j| j.id == id)
+        .ok_or_else(|| ApiError("schedule not found".into()))?;
+    let title = job
+        .payload
+        .get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&job.name)
+        .to_string();
+    let task = app.tasks.create(title, String::new(), "schedule".into());
+    // Record the task on the job before running so a crash mid-run still leaves a pointer to
+    // the (failed) receipt for the UI's "last run" affordance.
+    let _ = app.sched.set_last_task(&job.id, &task.id);
+    let updated = run_task_core(&app, &task.id).await.map_err(ApiError)?;
+    Ok(Json(json!({ "task_id": task.id, "status": updated.status })))
 }
 
 fn parse_region(s: Option<&str>) -> Region {

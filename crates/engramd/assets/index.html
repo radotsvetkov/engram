@@ -610,6 +610,48 @@
   @media (prefers-reduced-motion: reduce){
     .chat-shell > .chat, .art-pane { transition:none; }
   }
+/* ── Schedule view ─────────────────────────────────────────────── */
+.sched-head { display:flex; align-items:baseline; justify-content:space-between; gap:10px; }
+.sched-head .sched-count { font-size:11px; color:var(--text-muted); font-variant-numeric:tabular-nums; }
+.sched-compose { display:flex; flex-direction:column; gap:8px; }
+.sched-compose .row { margin-bottom:0; }
+.sched-preview { display:flex; align-items:center; gap:8px; min-height:22px; font-size:12px; color:var(--text-muted); }
+.sched-preview.empty { opacity:0; }
+.sched-list { display:flex; flex-direction:column; gap:10px; }
+.sched-card { background:var(--surface-1); border:1px solid var(--border); border-radius:var(--r-card); box-shadow:var(--e1); padding:12px 13px; display:flex; flex-direction:column; gap:9px; transition:border-color var(--dur-2) var(--ease-out), transform var(--dur-2) var(--ease-out); }
+.sched-card:hover { border-color:var(--border-strong); }
+.sched-card.is-running { border-color:var(--ring); }
+.sched-card .sc-top { display:flex; align-items:center; gap:10px; }
+.sched-card .sc-name { font-weight:500; color:var(--text-primary); flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.cadence-badge { display:inline-flex; align-items:center; gap:6px; flex-shrink:0; background:var(--surface-2); border:1px solid var(--border); border-radius:var(--r-chip); padding:3px 9px 3px 7px; font-size:11px; color:var(--text-secondary); white-space:nowrap; }
+.cadence-badge .cad-glyph { display:inline-flex; color:var(--accent); }
+.cadence-badge .cad-glyph svg { width:13px; height:13px; }
+.cadence-badge.cad-once .cad-glyph { color:var(--warning); }
+.cadence-badge.cad-soon { border-color:var(--ring); }
+.sc-actions { display:flex; align-items:center; gap:4px; flex-shrink:0; }
+.sc-btn { display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; border-radius:8px; background:transparent; border:1px solid transparent; color:var(--text-muted); cursor:pointer; transition:background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out); }
+.sc-btn svg { width:16px; height:16px; }
+.sc-btn:hover { background:var(--hover); color:var(--text-primary); }
+.sc-btn.sc-run:hover { color:var(--accent); border-color:var(--ring); }
+.sc-btn.sc-del:hover { color:var(--danger); border-color:rgba(226,103,95,.45); }
+.sc-btn:disabled { opacity:.45; cursor:default; }
+.sc-btn .sc-spin { width:13px; height:13px; border:2px solid var(--accent-soft); border-top-color:var(--accent); border-radius:50%; animation:scSpin .7s linear infinite; }
+@keyframes scSpin { to { transform:rotate(360deg); } }
+.sc-meter { height:3px; border-radius:3px; background:var(--surface-3); overflow:hidden; }
+.sc-meter > i { display:block; height:100%; border-radius:3px; background:linear-gradient(90deg,var(--accent),var(--accent) 70%,rgba(69,200,168,.55)); transition:width var(--dur-3) var(--ease-out); }
+.sc-meter.sc-due > i { background:var(--warning); }
+.sc-foot { display:flex; align-items:center; justify-content:space-between; gap:10px; font-size:11px; color:var(--text-muted); font-variant-numeric:tabular-nums; }
+.sc-foot .sc-next { color:var(--text-secondary); }
+.sc-foot .sc-next b { color:var(--text-primary); font-weight:600; }
+.sc-last { color:var(--text-muted); }
+.sc-last.sc-link { cursor:pointer; }
+.sc-last.sc-link:hover { color:var(--accent); }
+.sched-empty { display:flex; flex-direction:column; align-items:center; text-align:center; gap:10px; padding:34px 18px; color:var(--text-muted); }
+.sched-empty .se-glyph { color:var(--text-muted); opacity:.6; }
+.sched-empty .se-glyph svg { width:34px; height:34px; }
+.sched-empty .se-title { color:var(--text-secondary); font-size:13px; }
+.sched-empty .se-hint { font-size:12px; max-width:340px; line-height:1.55; }
+.sched-empty .se-hint code { background:var(--surface-2); border:1px solid var(--border); border-radius:5px; padding:1px 5px; font-family:var(--mono); font-size:11px; color:var(--text-secondary); }
 </style>
 </head>
 <body>
@@ -1960,7 +2002,7 @@ async function enableShell(){
 function renderView(){
   if(state.route==='Tasks') renderBoard();
   else if(state.route==='Chat') renderChat();
-  else if(state.route==='Schedule') renderSchedule();
+  else if(state.route==='Schedule') renderScheduleView();
   else if(state.route==='Memory') renderMemory();
   else if(state.route==='Skills') renderSkills();
   else if(state.route==='Terminal') renderTerminal();
@@ -2155,6 +2197,209 @@ function artDownload(a){
   document.body.appendChild(el); el.click(); el.remove();
   setTimeout(()=>URL.revokeObjectURL(url), 4000);
   notify('Downloaded '+name,'ok');
+}
+
+// ── Schedule: cadence + premium cards ────────────────────────────
+// Glyphs on the 24px line grid (match the rail's stroke language).
+const CAD_GLYPH = {
+  once:     SVG('<circle cx="12" cy="12" r="8.5"/><path d="M12 8v4.2l2.8 1.7"/>'),
+  interval: SVG('<path d="M3.5 12a8.5 8.5 0 0 1 14.5-6M20.5 12a8.5 8.5 0 0 1-14.5 6"/><path d="M18 3v3.2h-3.2M6 21v-3.2h3.2"/>'),
+  daily:    SVG('<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.2 5.2l1.4 1.4M17.4 17.4l1.4 1.4M5.2 18.8l1.4-1.4M17.4 6.6l1.4-1.4"/>'),
+  weekdays: SVG('<rect x="3" y="5" width="18" height="16" rx="2.4"/><path d="M3 9.5h18M8 3v3.5M16 3v3.5"/><path d="M8.5 14h7"/>'),
+  weekly:   SVG('<rect x="3" y="5" width="18" height="16" rx="2.4"/><path d="M3 9.5h18M8 3v3.5M16 3v3.5"/><circle cx="12" cy="15" r="1.7"/>'),
+};
+const CAD_DOW = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];   // recur.rs: 0=Mon … 6=Sun
+function cadHM(h, m){
+  h = (h|0); m = (m|0);
+  const ap = h < 12 ? 'AM' : 'PM';
+  let hr = h % 12; if(hr === 0) hr = 12;
+  return m ? `${hr}:${String(m).padStart(2,'0')} ${ap}` : `${hr}:00 ${ap}`;
+}
+function cadDur(secs){
+  secs = Math.max(1, secs|0);
+  if(secs % 86400 === 0){ const d = secs/86400; return d===1?'day':`${d} days`; }
+  if(secs % 3600  === 0){ const h = secs/3600;  return h===1?'hour':`${h} hr`; }
+  if(secs % 60    === 0){ const m = secs/60;    return m===1?'min':`${m} min`; }
+  return `${secs} sec`;
+}
+// Turn a Recurrence (serde tag "kind", snake_case) into { label, glyph, kind }.
+// Field names verified against crates/engram-sched/src/recur.rs.
+function cadenceSchedule(rec){
+  if(!rec || !rec.kind) return { kind:'once', label:'—', glyph:CAD_GLYPH.once };
+  switch(rec.kind){
+    case 'once': {
+      const d = new Date(rec.at_ms);
+      const label = 'Once ' + d.toLocaleDateString(undefined,{month:'short',day:'numeric'}) + (
+        (d.getHours()||d.getMinutes()) ? ' ' + cadHM(d.getHours(), d.getMinutes()) : '');
+      return { kind:'once', label, glyph:CAD_GLYPH.once };
+    }
+    case 'interval':
+      return { kind:'interval', label:'Every ' + cadDur(rec.secs), glyph:CAD_GLYPH.interval };
+    case 'daily':
+      return { kind:'daily', label:'Daily ' + cadHM(rec.hour, rec.min), glyph:CAD_GLYPH.daily };
+    case 'weekdays':
+      return { kind:'weekdays', label:'Mon–Fri ' + cadHM(rec.hour, rec.min), glyph:CAD_GLYPH.weekdays };
+    case 'weekly':
+      return { kind:'weekly', label:(CAD_DOW[(rec.weekday|0)%7]) + ' ' + cadHM(rec.hour, rec.min), glyph:CAD_GLYPH.weekly };
+    default:
+      return { kind:String(rec.kind), label:String(rec.kind), glyph:CAD_GLYPH.once };
+  }
+}
+// Compact relative duration: "4h 12m", "23h", "2d 3h", "now".
+function schedRel(ms){
+  ms = Math.abs(ms|0);
+  const s = Math.round(ms/1000);
+  if(s < 60) return s <= 1 ? 'now' : s + 's';
+  const m = Math.floor(s/60);
+  if(m < 60) return m + 'm';
+  const h = Math.floor(m/60), rm = m % 60;
+  if(h < 24) return rm ? `${h}h ${rm}m` : `${h}h`;
+  const d = Math.floor(h/24), rh = h % 24;
+  return rh ? `${d}d ${rh}h` : `${d}d`;
+}
+function schedNextLabel(job){
+  const now = Date.now(), dt = job.next_fire_ms - now;
+  if(dt <= 0) return '<b>due</b> now';
+  return 'next in <b>' + schedRel(dt) + '</b>';
+}
+// Fraction of the cycle elapsed (last/created fire → next fire), clamped [0.04,1].
+function schedProgress(job){
+  const now = Date.now();
+  const start = job.last_fire_ms || job.created_ms || (job.next_fire_ms - 60000);
+  const span = job.next_fire_ms - start;
+  if(span <= 0) return 1;
+  return Math.max(0.04, Math.min(1, (now - start) / span));
+}
+const SCHED_RUNNING = new Set();   // job ids currently firing from the UI
+
+function schedCardHtml(job){
+  const cad = cadenceSchedule(job.recurrence);
+  const soon = (job.next_fire_ms - Date.now()) < 3600000;   // within the hour
+  const badge = `<span class="cadence-badge cad-${esc(cad.kind)}${soon?' cad-soon':''}" title="${escAttr(cad.label)}"><span class="cad-glyph">${cad.glyph}</span>${esc(cad.label)}</span>`;
+  const running = SCHED_RUNNING.has(job.id);
+  // attrJson() (= escAttr(JSON.stringify(x))) is the house idiom for passing values into an
+  // inline handler: double-quote-safe and apostrophe-safe through HTML decoding, unlike a
+  // bare '${escAttr(x)}' which a job name like "it's" would break out of (job.name is untrusted).
+  const runBtn = running
+    ? `<button class="sc-btn sc-run" disabled aria-label="Running"><span class="sc-spin"></span></button>`
+    : `<button class="sc-btn sc-run" onclick="runJobNow(${attrJson(job.id)},event)" title="Run now" aria-label="Run now">${SVG('<path d="M7 5.5v13l11-6.5-11-6.5Z"/>')}</button>`;
+  const delBtn = `<button class="sc-btn sc-del" onclick="deleteJob(${attrJson(job.id)},${attrJson(job.name)},event)" title="Delete schedule" aria-label="Delete schedule">${SVG('<path d="M5 7h14M9.5 7V5.4A1.4 1.4 0 0 1 10.9 4h2.2a1.4 1.4 0 0 1 1.4 1.4V7M7 7l.8 11.3A1.6 1.6 0 0 0 9.4 20h5.2a1.6 1.6 0 0 0 1.6-1.5L17 7"/>')}</button>`;
+  const pct = Math.round(schedProgress(job) * 100);
+  const due = job.next_fire_ms <= Date.now();
+  let last = '';
+  if(job.last_fire_ms){
+    const lbl = 'last run ' + schedRel(Date.now() - job.last_fire_ms) + ' ago';
+    last = job.last_task_id
+      ? `<span class="sc-last sc-link" title="open the signed receipt for the last run" onclick="openTaskReceipt(${attrJson(job.last_task_id)},event)">◇ ${esc(lbl)}</span>`
+      : `<span class="sc-last">${esc(lbl)}</span>`;
+  } else {
+    last = `<span class="sc-last">never run</span>`;
+  }
+  return `<div class="sched-card${running?' is-running':''}" data-job="${escAttr(job.id)}">
+    <div class="sc-top">
+      <span class="sc-name">${esc(job.name)}</span>
+      ${badge}
+      <span class="sc-actions">${runBtn}${delBtn}</span>
+    </div>
+    <div class="sc-meter${due?' sc-due':''}"><i style="width:${pct}%"></i></div>
+    <div class="sc-foot"><span class="sc-next">${schedNextLabel(job)}</span>${last}</div>
+  </div>`;
+}
+
+async function renderScheduleView(){
+  let jobs = [];
+  try { jobs = await J('/v1/schedule') || []; }
+  catch(e){ notify('Couldn’t load schedules — ' + e.message); jobs = []; }
+  jobs.sort((a,b)=> (a.next_fire_ms||0) - (b.next_fire_ms||0));   // soonest first
+  const n = jobs.length;
+  const list = n
+    ? `<div class="sched-list">${jobs.map(schedCardHtml).join('')}</div>`
+    : `<div class="sched-empty">
+        <span class="se-glyph">${ICONS.Schedule}</span>
+        <div class="se-title">Nothing scheduled yet</div>
+        <div class="se-hint">Engram can run a task on a cadence and wake itself to do it — even from sleep. Try <code>every Monday at 9am</code> or <code>every 30 minutes</code>.</div>
+      </div>`;
+  document.getElementById('view').innerHTML = `<div class="panes"><div class="pane">
+    <div class="sched-head"><h2>Schedule a recurring run</h2><span class="sched-count">${n} ${n===1?'job':'jobs'}</span></div>
+    <div class="sched-compose">
+      <div class="row">
+        <input id="sname" placeholder="name" style="flex:.5">
+        <input id="swhen" placeholder="every Monday at 9am" oninput="schedPreviewCadence()" onkeydown="if(event.key==='Enter')addJobPro()">
+        <button onclick="addJobPro()">Add</button>
+      </div>
+      <div id="swhenprev" class="sched-preview empty"></div>
+    </div>
+  </div>
+  <div class="pane">
+    <div class="sched-head"><h2>Upcoming</h2></div>
+    ${list}
+  </div></div>`;
+}
+
+// Live cadence preview in the composer: renders the parsed badge + glyph, not just a date.
+let schedPrevTimer = null;
+function schedPreviewCadence(){
+  clearTimeout(schedPrevTimer);
+  schedPrevTimer = setTimeout(async ()=>{
+    const inp = document.getElementById('swhen'), out = document.getElementById('swhenprev');
+    if(!inp || !out) return;
+    const when = inp.value.trim();
+    if(!when){ out.className = 'sched-preview empty'; out.innerHTML = ''; return; }
+    let r;
+    // /v1/schedule/preview answers 200 with {ok:false} for an unparseable phrase, so J() only
+    // throws here on a real network error.
+    try { r = await J('/v1/schedule/preview?when=' + encodeURIComponent(when)); }
+    catch(_){ r = { ok:false }; }
+    if(r.ok && r.recurrence){
+      const cad = cadenceSchedule(r.recurrence);
+      const next = r.next_fire_ms ? schedRel(r.next_fire_ms - Date.now()) : null;
+      out.className = 'sched-preview';
+      out.innerHTML = `<span class="cadence-badge cad-${esc(cad.kind)}"><span class="cad-glyph">${cad.glyph}</span>${esc(cad.label)}</span>`
+        + (next ? `<span style="color:var(--text-muted)">first run in ${esc(next)}</span>` : '');
+    } else {
+      out.className = 'sched-preview';
+      out.innerHTML = `<span style="color:var(--text-muted)">${esc(when)} — not a cadence I understand</span>`;
+    }
+  }, 200);
+}
+
+async function addJobPro(){
+  const nameEl = document.getElementById('sname'), whenEl = document.getElementById('swhen');
+  const name = (nameEl?.value.trim()) || 'job';
+  const when = whenEl?.value.trim();
+  if(!when){ whenEl?.focus(); return; }
+  try {
+    await J('/v1/schedule', { method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({ name, when, payload:{ title:name } }) });
+    notify('Scheduled · ' + name, 'ok');
+    renderScheduleView();
+  } catch(e){ notify('Couldn’t schedule — ' + e.message); }
+}
+
+// Run-now: create+run a task from the job payload via the new endpoint; opens its receipt.
+async function runJobNow(id, e){
+  if(e) e.stopPropagation();
+  if(SCHED_RUNNING.has(id)) return;
+  SCHED_RUNNING.add(id);
+  const card = document.querySelector(`.sched-card[data-job="${CSS.escape(id)}"]`);
+  if(card){ const b = card.querySelector('.sc-run'); if(b){ b.disabled = true; b.innerHTML = '<span class="sc-spin"></span>'; } card.classList.add('is-running'); }
+  try {
+    const r = await J('/v1/schedule/' + encodeURIComponent(id) + '/run', { method:'POST' });
+    notify('Running now', 'ok');
+    if(r && r.task_id) setTimeout(()=>openTaskReceipt(r.task_id), 250);
+  } catch(err){ notify('Couldn’t run job — ' + err.message); }
+  finally { SCHED_RUNNING.delete(id); if(state.route === 'Schedule') renderScheduleView(); }
+}
+
+// Delete: wired to the existing DELETE /v1/schedule/{id}.
+async function deleteJob(id, name, e){
+  if(e) e.stopPropagation();
+  if(!confirm('Delete schedule “' + name + '”? Future runs will stop.')) return;
+  try {
+    await J('/v1/schedule/' + encodeURIComponent(id), { method:'DELETE' });
+    notify('Schedule deleted', 'ok');
+    renderScheduleView();
+  } catch(err){ notify('Couldn’t delete — ' + err.message); }
 }
 </script>
 </body>

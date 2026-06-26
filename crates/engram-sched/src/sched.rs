@@ -44,6 +44,9 @@ pub struct Job {
     pub next_fire_ms: i64,
     pub created_ms: i64,
     pub last_fire_ms: Option<i64>,
+    /// The id of the most recent task this job spawned, so the UI can open its receipt.
+    #[serde(default)]
+    pub last_task_id: Option<String>,
 }
 
 pub struct Scheduler {
@@ -86,6 +89,7 @@ impl Scheduler {
             next_fire_ms: next.timestamp_millis(),
             created_ms,
             last_fire_ms: None,
+            last_task_id: None,
         };
         {
             let mut jobs = self.jobs.lock().expect("sched mutex poisoned");
@@ -139,6 +143,19 @@ impl Scheduler {
             json!({ "id": id, "rescheduled": result.as_ref().map(|j| j.next_fire_ms) }),
         )?;
         Ok(result)
+    }
+
+    /// Record the task most recently spawned for a job, so the UI can link to its receipt.
+    /// Persists, but does not touch the ledger (the fire itself is already audited).
+    pub fn set_last_task(&self, id: &str, task_id: &str) -> Result<()> {
+        let mut jobs = self.jobs.lock().expect("sched mutex poisoned");
+        let job = jobs
+            .iter_mut()
+            .find(|j| j.id == id)
+            .ok_or_else(|| SchedError::NotFound(id.to_string()))?;
+        job.last_task_id = Some(task_id.to_string());
+        save(&self.path, &jobs)?;
+        Ok(())
     }
 
     pub fn remove(&self, id: &str) -> Result<bool> {

@@ -299,7 +299,7 @@ impl Memory {
             let sql = format!(
                 "SELECT facts_fts.rowid FROM facts_fts \
                  JOIN facts f ON f.id = facts_fts.rowid \
-                 WHERE facts_fts MATCH ?1 AND f.deleted = 0 AND {region}{taint} \
+                 WHERE facts_fts MATCH ?1 AND f.deleted = 0 AND f.superseded_by IS NULL AND {region}{taint} \
                  ORDER BY bm25(facts_fts) LIMIT ?2",
                 region = region_clause("f.", regions),
                 taint = taint_clause("f.")
@@ -313,7 +313,7 @@ impl Memory {
 
         // --- semantic arm (cosine over every candidate region row) ---
         let sem_sql = format!(
-            "SELECT id, embedding FROM facts WHERE deleted = 0 AND {region}{taint}",
+            "SELECT id, embedding FROM facts WHERE deleted = 0 AND superseded_by IS NULL AND {region}{taint}",
             region = region_clause("", regions),
             taint = taint_clause("")
         );
@@ -394,6 +394,42 @@ impl Memory {
             params![entry.seq as i64, id],
         )?;
         Ok(true)
+    }
+
+    /// Mark `old_id` as superseded by `by_id`: the old fact becomes history — kept (not
+    /// deleted) and still in the ledger, but no longer surfaced by recall — while the new
+    /// fact is the current truth. This is how a changed fact ("moved to Munich") evolves
+    /// without erasing the past. Returns false if `old_id` wasn't a current, live memory.
+    pub fn supersede(&self, old_id: i64, by_id: i64) -> Result<bool> {
+        let n = {
+            let conn = self.conn.lock().expect("memory mutex poisoned");
+            conn.execute(
+                "UPDATE facts SET superseded_by = ?1 \
+                 WHERE id = ?2 AND deleted = 0 AND superseded_by IS NULL",
+                params![by_id, old_id],
+            )?
+        };
+        if n > 0 {
+            let _ = self.ledger.append("memory.supersede", "core", json!({ "old": old_id, "by": by_id }));
+        }
+        Ok(n > 0)
+    }
+
+    /// IDs of current (live, non-superseded) memories in `region` whose text starts with
+    /// `prefix` — used to find the prior singular fact a new one replaces.
+    pub fn current_with_prefix(&self, region: Region, prefix: &str) -> Result<Vec<i64>> {
+        let conn = self.conn.lock().expect("memory mutex poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT id FROM facts \
+             WHERE region = ?1 AND deleted = 0 AND superseded_by IS NULL AND text LIKE ?2",
+        )?;
+        let like = format!("{prefix}%"); // prefixes are fixed RULE strings, no LIKE wildcards
+        let rows = stmt.query_map(params![region.as_str(), like], |r| r.get::<_, i64>(0))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
     }
 
     /// Undo a [`forget`], bringing the memory back into recall.
@@ -497,12 +533,16 @@ fn init_schema(conn: &Connection) -> Result<()> {
             created_ms    INTEGER NOT NULL,
             last_access_ms INTEGER NOT NULL,
             access_count  INTEGER NOT NULL DEFAULT 0,
-            deleted       INTEGER NOT NULL DEFAULT 0
+            deleted       INTEGER NOT NULL DEFAULT 0,
+            superseded_by INTEGER
         );
         CREATE INDEX IF NOT EXISTS idx_facts_region ON facts(region, deleted);
         CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(text, tokenize = 'unicode61');
         CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);",
     )?;
+    // Add the supersession column to brains created before temporal validity (ignored if
+    // it already exists).
+    let _ = conn.execute("ALTER TABLE facts ADD COLUMN superseded_by INTEGER", []);
     Ok(())
 }
 
@@ -678,6 +718,26 @@ mod tests {
         let _again = Memory::open(&path, Arc::new(TrigramHashEmbedder::new(128)), ledger.clone()).unwrap();
         let after = ledger.read_all().unwrap().iter().filter(|e| e.kind == "memory.reembed").count();
         assert_eq!(before, after, "no migration when the embedding space is unchanged");
+    }
+
+    #[test]
+    fn supersede_makes_the_old_fact_history_not_recalled() {
+        let (m, _d) = mem();
+        let berlin = m.remember(WriteReq::new(Region::Identity, "User lives Berlin")).unwrap();
+        let munich = m.remember(WriteReq::new(Region::Identity, "User lives Munich")).unwrap();
+        // Before supersession both surface.
+        assert_eq!(m.recall("where the user lives", &[Region::Identity], 5).unwrap().len(), 2);
+
+        assert!(m.supersede(berlin.id, munich.id).unwrap());
+
+        // Only the current truth recalls — the stale fact can't be confidently wrong.
+        let hits = m.recall("where the user lives", &[Region::Identity], 5).unwrap();
+        assert!(hits.iter().all(|h| h.record.id != berlin.id), "superseded fact must not recall");
+        assert!(hits.iter().any(|h| h.record.id == munich.id));
+        // The prefix lookup now sees only the current value.
+        assert_eq!(m.current_with_prefix(Region::Identity, "User lives ").unwrap(), vec![munich.id]);
+        // Superseding a non-current id is a no-op.
+        assert!(!m.supersede(berlin.id, munich.id).unwrap());
     }
 
     #[test]

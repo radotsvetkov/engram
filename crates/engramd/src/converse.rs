@@ -45,18 +45,31 @@ pub async fn converse_stream(
     let hits = memory.recall_trusted(text, &regions, 5).map_err(|e| e.to_string())?;
     let recalled: Vec<String> = hits.iter().map(|h| h.record.text.clone()).collect();
 
-    // 3. Deepen the model of the user from what they just said.
+    // 3. Deepen the model of the user from what they just said. A changed *singular*
+    //    attribute (name, where they live/work) supersedes the prior value — the old fact
+    //    becomes history (kept, ledgered) and stops surfacing, so recall isn't confidently
+    //    wrong. Additive facts (likes, uses) accumulate.
     let learned = extract_identity(text);
-    for fact in &learned {
-        memory
+    for l in &learned {
+        let rec = memory
             .remember(
-                WriteReq::new(Region::Identity, fact.clone())
+                WriteReq::new(Region::Identity, l.fact.clone())
                     .source("inferred")
                     .importance(0.8)
                     .actor("core"),
             )
             .map_err(|e| e.to_string())?;
+        if l.supersede {
+            for old in
+                memory.current_with_prefix(Region::Identity, &l.prefix).map_err(|e| e.to_string())?
+            {
+                if old != rec.id {
+                    let _ = memory.supersede(old, rec.id);
+                }
+            }
+        }
     }
+    let learned: Vec<String> = learned.into_iter().map(|l| l.fact).collect();
 
     // 4. Assemble context and answer through the gateway (mock unless --features http).
     let mut messages = vec![Message::system(
@@ -88,24 +101,36 @@ pub async fn converse_stream(
     Ok(Turn { reply: completion.text, recalled, learned })
 }
 
+/// An inferred identity fact, with the prefix it was derived from and whether it is a
+/// *singular* attribute (a new value supersedes the old) or additive (it accumulates).
+#[derive(Debug)]
+struct Learned {
+    prefix: String,
+    fact: String,
+    supersede: bool,
+}
+
 /// Cheap, transparent identity extraction. Deliberately simple and auditable — every
 /// inferred fact lands in the identity region and the ledger, where it can be seen and
-/// forgotten. (A model-based extractor can replace this behind the same write path.)
-fn extract_identity(text: &str) -> Vec<String> {
-    const RULES: &[(&str, &str)] = &[
-        ("i like ", "User likes "),
-        ("i love ", "User loves "),
-        ("i prefer ", "User prefers "),
-        ("i'm ", "User is "),
-        ("i am ", "User is "),
-        ("my name is ", "User's name is "),
-        ("i work ", "User works "),
-        ("i live ", "User lives "),
-        ("i use ", "User uses "),
+/// forgotten. Singular attributes (name, where you live/work, who you are) supersede the
+/// prior value; preferences (like/love/prefer/use) accumulate. (A model-based extractor can
+/// replace this behind the same write path.)
+fn extract_identity(text: &str) -> Vec<Learned> {
+    // (pattern, output prefix, supersede-prior?)
+    const RULES: &[(&str, &str, bool)] = &[
+        ("i like ", "User likes ", false),
+        ("i love ", "User loves ", false),
+        ("i prefer ", "User prefers ", false),
+        ("i use ", "User uses ", false),
+        ("i'm ", "User is ", true),
+        ("i am ", "User is ", true),
+        ("my name is ", "User's name is ", true),
+        ("i work ", "User works ", true),
+        ("i live ", "User lives ", true),
     ];
     let lower = text.to_lowercase();
-    let mut out = Vec::new();
-    for (pat, prefix) in RULES {
+    let mut out: Vec<Learned> = Vec::new();
+    for (pat, prefix, supersede) in RULES {
         if let Some(idx) = lower.find(pat) {
             let rest = &text[idx + pat.len()..];
             let frag = rest.split(['.', '!', '?', '\n', ',']).next().unwrap_or("");
@@ -113,11 +138,13 @@ fn extract_identity(text: &str) -> Vec<String> {
             let frag = frag.split(" and ").next().unwrap_or(frag);
             let frag = frag.split(" but ").next().unwrap_or(frag).trim();
             if !frag.is_empty() && frag.len() < 120 {
-                out.push(format!("{prefix}{frag}"));
+                let fact = format!("{prefix}{frag}");
+                if !out.iter().any(|l| l.fact == fact) {
+                    out.push(Learned { prefix: prefix.to_string(), fact, supersede: *supersede });
+                }
             }
         }
     }
-    out.dedup();
     out
 }
 
@@ -128,14 +155,19 @@ mod tests {
     #[test]
     fn extracts_identity_facts() {
         let f = extract_identity("Hi, I like Rust and I prefer minimal dependencies.");
-        assert!(f.iter().any(|s| s == "User likes Rust"), "got {f:?}");
-        assert!(f.iter().any(|s| s == "User prefers minimal dependencies"), "got {f:?}");
+        assert!(f.iter().any(|l| l.fact == "User likes Rust"), "got {f:?}");
+        assert!(f.iter().any(|l| l.fact == "User prefers minimal dependencies"), "got {f:?}");
+        // Preferences are additive, not superseding.
+        assert!(f.iter().all(|l| !l.supersede));
     }
 
     #[test]
-    fn extracts_name() {
+    fn extracts_name_as_a_superseding_singular() {
         let f = extract_identity("my name is Radoslav");
-        assert_eq!(f, vec!["User's name is Radoslav".to_string()]);
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].fact, "User's name is Radoslav");
+        assert!(f[0].supersede, "name is a singular attribute that supersedes the prior value");
+        assert_eq!(f[0].prefix, "User's name is ");
     }
 
     #[test]

@@ -144,18 +144,18 @@
     <div class="status" id="status">waking…</div>
   </nav>
   <div class="main">
-    <div id="banner"></div>
+    <div id="banner" aria-live="assertive"></div>
     <header class="topbar">
       <h1 id="viewname">Tasks</h1>
       <div class="right">
-        <span class="chip ok" id="ledgerChip" title="every action is signed into a hash-chained ledger">ledger …</span>
-        <span class="chip" id="costChip" title="model spend today">$0.00</span>
+        <span class="chip ok" id="ledgerChip" role="status" aria-live="polite" title="every action is signed into a hash-chained ledger">ledger …</span>
+        <span class="chip" id="costChip" role="status" aria-live="polite" title="model spend today">$0.00</span>
       </div>
     </header>
     <div class="view" id="view"></div>
   </div>
 </div>
-<div class="panel" id="panel"><header><span class="pill" id="pStatus"></span><b id="pTitle"></b><button class="x" onclick="closePanel()">✕</button></header><div class="body" id="pBody"></div></div>
+<div class="panel" id="panel" role="dialog" aria-modal="true" aria-labelledby="pTitle"><header><span class="pill" id="pStatus"></span><b id="pTitle"></b><button class="x" onclick="closePanel()" aria-label="Close">✕</button></header><div class="body" id="pBody"></div></div>
 
 <script>
 // When the daemon is deployed with ENGRAM_API_TOKEN, it injects the token here so the
@@ -192,8 +192,10 @@ const VIEWS = ['Chat','Tasks','Schedule','Memory','Skills'];
 let state = { route:'Tasks', tasks:[], offline:false };
 
 function renderNav(){
+  // Real anchors with a hash href: keyboard-focusable and Enter-activatable for free; the
+  // hashchange listener routes. aria-current marks the active view for screen readers.
   document.getElementById('nav').innerHTML = VIEWS.map(v=>
-    `<a class="${state.route===v?'active':''}" onclick="go('${v}')">${ICONS[v]} ${v}</a>`).join('');
+    `<a class="${state.route===v?'active':''}" href="#${v}"${state.route===v?' aria-current="page"':''}>${ICONS[v]} ${v}</a>`).join('');
 }
 function go(v){ state.route=v; if(location.hash.slice(1)!==v) location.hash=v; document.getElementById('viewname').textContent=v; renderNav(); renderView(); }
 window.addEventListener('hashchange',()=>{ const v=location.hash.slice(1); if(VIEWS.includes(v)&&v!==state.route) go(v); });
@@ -206,7 +208,7 @@ async function poll(){
     const lc=document.getElementById('ledgerChip');
     if(v.ok){ lc.className='chip ok'; lc.innerHTML='ledger verified · <b>'+v.entries+'</b>'; document.getElementById('banner').innerHTML=''; }
     else { lc.className='chip bad'; lc.textContent='tamper detected';
-      document.getElementById('banner').innerHTML='<div class="banner">Tamper detected — the audit chain doesn’t verify. Showing the last good state.</div>'; }
+      document.getElementById('banner').innerHTML='<div class="banner" role="alert">Tamper detected — the audit chain doesn’t verify. Showing the last good state.</div>'; }
     document.getElementById('costChip').textContent='$'+(m.cost_usd||0).toFixed(4)+' today';
     state.offline = !!h.offline;
     document.getElementById('status').innerHTML = 'awake <span class="live">·</span> v'+h.version;
@@ -217,7 +219,7 @@ async function poll(){
 // ---- Tasks board ----
 async function loadTasks(){ state.tasks = await J('/v1/tasks'); }
 const STATUS_COLS = { todo:'todo', doing:'doing', failed:'done', done:'done', scheduled:'todo' };
-function offlineNotice(){ return state.offline ? '<div class="offline">Running in offline demo mode — add a model key to think for real.</div>' : ''; }
+function offlineNotice(){ return state.offline ? '<div class="offline" role="status">Running in offline demo mode — add a model key to think for real.</div>' : ''; }
 
 function card(t){
   const running = t.status==='doing';
@@ -228,7 +230,9 @@ function card(t){
   else if(t.status==='failed') foot=`<div class="meta"><span class="xmark">✕</span> stopped at the step limit</div>`;
   else foot=`<div class="meta">${tags||'<span class="muted">queued</span>'}</div>`;
   return `<div class="card ${running?'running':''}" draggable="true" data-id="${t.id}"
-     ondragstart="drag(event,'${t.id}')" onclick="openTask('${t.id}')">
+     role="button" tabindex="0" aria-label="${esc(t.title)}"
+     ondragstart="drag(event,'${t.id}')" onclick="openTask('${t.id}')"
+     onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openTask('${t.id}')}">
      <div class="t">${esc(t.title)}</div>${foot}</div>`;
 }
 function renderBoard(){
@@ -314,7 +318,9 @@ async function drop(e,col){
 let panelId=null;
 async function openTask(id){
   panelId=id; const t=state.tasks.find(x=>x.id===id); if(!t) return;
-  document.getElementById('panel').classList.add('open');
+  const panel=document.getElementById('panel');
+  panel.classList.add('open');
+  panel.querySelector('.x')?.focus();   // move focus into the dialog for keyboard users
   document.getElementById('pTitle').textContent=t.title;
   const ps=document.getElementById('pStatus'); ps.textContent=t.status; ps.className='pill '+t.status;
   const body=document.getElementById('pBody');
@@ -368,6 +374,8 @@ function schedPreview(inputId,outId){
   },250);
 }
 function closePanel(){ panelId=null; document.getElementById('panel').classList.remove('open'); }
+// Escape closes the open task dialog (standard dialog affordance).
+window.addEventListener('keydown', e=>{ if(e.key==='Escape' && document.getElementById('panel').classList.contains('open')) closePanel(); });
 async function delTask(id){ await fetch('/v1/tasks/'+id,{method:'DELETE', headers:AUTH}); closePanel(); await loadTasks(); renderBoard(); }
 async function approveShell(id){
   await J('/v1/policy',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({allow_shell:true})});

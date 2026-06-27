@@ -2338,7 +2338,6 @@ async function boot(){
 const ARTS = { open:false, current:null, byKey:{}, order:[], _sig:'' };
 
 // Stable identity for an artifact across streaming repaints: short FNV-1a hash of lang+content.
-function artHash(s){ let h=2166136261>>>0; for(let i=0;i<s.length;i++){ h^=s.charCodeAt(i); h=Math.imul(h,16777619); } return ('a'+(h>>>0).toString(36)); }
 
 // codeBlock() renders an *unlabeled* fence's header as the literal word "code" (esc(lang||'code')),
 // so when we read it back from .cb-head span we must fold "code"/"text" to '' — otherwise a
@@ -2374,9 +2373,10 @@ function artQualifies(code, lang){
 }
 
 // Register (or refresh) an artifact, returning its stable key.
-function artRegister(code, lang){
+function artRegister(code, lang, key){
   lang=artNormLang(lang);
-  const key=artHash(lang+' '+code);
+  // key is a stable positional id passed by the caller (NOT a content hash) so a block streaming
+  // token-by-token keeps the same identity and an open artifact isn't orphaned each repaint.
   const ext=ART_EXT[lang]!=null?ART_EXT[lang]:'txt';
   if(!ARTS.byKey[key]){ ARTS.order.push(key); }
   ARTS.byKey[key]={ key, code, lang, ext, title:artTitle(code,lang), langName:ART_LANGNAME[lang]||(lang?lang.toUpperCase():'Text'), lines:code.replace(/\n+$/,'').split('\n').length };
@@ -2396,7 +2396,7 @@ function artMarkChip(){
 // the per-block copyCode('cbN',...) onclick id, so it survives codeBlock() regenerating ids.
 function artsAfterPaint(){
   const f=document.getElementById('feed'); if(!f) return;
-  ARTS.byKey={}; ARTS.order=[];
+  ARTS.byKey={}; ARTS.order=[]; let artN=0;
   f.querySelectorAll('.cb').forEach(cb=>{
     const copyBtn=cb.querySelector('.cb-copy'); if(!copyBtn) return;
     const m=(copyBtn.getAttribute('onclick')||'').match(/copyCode\('([^']+)'/);
@@ -2405,7 +2405,7 @@ function artsAfterPaint(){
     const langEl=cb.querySelector('.cb-head span');
     const lang=(langEl?langEl.textContent:'').trim();
     if(!artQualifies(raw,lang)) return;
-    const key=artRegister(raw,lang);
+    const key=artRegister(raw,lang,'art'+(artN++));
     if(cb.querySelector('.art-open')) return;
     const head=cb.querySelector('.cb-head'); if(!head) return;
     const btn=document.createElement('button');

@@ -364,6 +364,10 @@
   .ask-ok { background:var(--accent); color:var(--accent-ink); border:none; border-radius:9px; padding:8px 17px; font-weight:600; cursor:pointer; }
   .ask-ok:hover { filter:brightness(1.06); }
   .ask-ok.danger { background:var(--danger); color:#fff; }
+  /* templates */
+  .tmpl-chips { display:flex; flex-wrap:wrap; gap:8px; margin-top:11px; }
+  .tmpl-chip { background:var(--surface-2); border:1px solid var(--border); color:var(--text-secondary); border-radius:999px; padding:7px 14px; cursor:pointer; font-size:13px; }
+  .tmpl-chip:hover { border-color:var(--accent); color:var(--text-primary); }
   /* settings */
   .settings { max-width:780px; margin:0 auto; padding:22px 24px 64px; overflow-y:auto; height:100%; }
   .settings h2 { font-size:17px; font-weight:600; margin:0 0 4px; }
@@ -2092,8 +2096,51 @@ function ccKeyboard(){
 }
 function ccIntegrations(){ return ccHead('Integrations','Outside channels and triggers.')+
   `<div class="scard"><div class="ph"><b>Telegram</b> · set <code>ENGRAM_TELEGRAM_TOKEN</code> to run Engram as a bot that answers messages.<br><b>Webhooks</b> · inbound channels post to <code>/v1/channel/{platform}</code>, guarded by the channel secret (Keys).<br><br>A click-to-connect integrations gallery is on the roadmap.</div></div>`; }
-function ccTemplates(){ return ccHead('Templates','Reusable starters.')+
-  `<div class="scard"><div class="ph">Session and project starters, prompt snippets, and persona presets will live here — so new work begins pre-shaped, not from a blank page.</div></div>`; }
+// A small, bounded starter set (deliberately NOT a marketplace) - enough to begin work
+// pre-shaped. Each starter is a real action: create a task, apply a persona, prefill the composer.
+const TEMPLATES = {
+  tasks: [
+    { name:'Research a topic', desc:'Gather sources and summarize the key findings with citations.', title:'Research a topic I will name: gather sources and summarize the key findings, with citations.' },
+    { name:'Plan my week', desc:'Draft a plan from what Engram remembers about you.', title:'Draft a plan for my week, using what you know about my priorities and routines.' },
+    { name:'Triage a list', desc:'Sort items into act / reply / archive, with reasons.', title:'Triage the list I paste into Act now / Reply later / Archive, each with a one-line reason.' },
+  ],
+  personas: [
+    { name:'Concise analyst', desc:'Answer first, then a short why. No filler.', text:'Be precise and brief. Lead with the answer, then a short why. No filler, no hedging.' },
+    { name:'Warm companion', desc:'Encouraging, personal, uses what it remembers.', text:'Be warm, encouraging, and personal. Draw on what you remember about me. Keep it human.' },
+    { name:'Code reviewer', desc:'Critical, security-minded, cites lines.', text:'Review code critically for bugs, security, and clarity. Be specific and cite line numbers.' },
+  ],
+  prompts: [ "Explain this like I'm five.", 'Give me the pros and cons.', 'Walk me through it step by step.' ],
+};
+function ccTemplates(){
+  const tcard = (name,desc,btn,onclick)=>`<div class="integ-card">
+    <div class="ih"><span class="it">${esc(name)}</span></div>
+    <div class="id">${esc(desc)}</div>
+    <div class="integ-act"><button class="sbtn primary" onclick="${onclick}">${esc(btn)}</button></div></div>`;
+  const tasks = TEMPLATES.tasks.map(t=>tcard(t.name,t.desc,'Create task',`templateTask(${attrJson(t.title)})`)).join('');
+  const personas = TEMPLATES.personas.map(p=>tcard(p.name,p.desc,'Use persona',`templatePersona(${attrJson(p.name)},${attrJson(p.text)})`)).join('');
+  const prompts = TEMPLATES.prompts.map(p=>`<button class="tmpl-chip" onclick="templatePrompt(${attrJson(p)})">${esc(p)}</button>`).join('');
+  return ccHead('Templates','Reusable starters — begin work pre-shaped, not from a blank page.')+`
+    <div class="scard"><h3>Task starters</h3><div class="desc">One click drops a pre-shaped task on the board, ready to run.</div>
+      <div class="integ-grid">${tasks}</div></div>
+    <div class="scard"><h3>Personas</h3><div class="desc">Apply a standing style to how Engram answers. (Edit it any time under Persona.)</div>
+      <div class="integ-grid">${personas}</div></div>
+    <div class="scard"><h3>Quick prompts</h3><div class="desc">Drop a starter straight into the chat composer.</div>
+      <div class="tmpl-chips">${prompts}</div></div>`;
+}
+async function templateTask(title){
+  try{ const t=await J('/v1/tasks',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({title,origin:'template'})});
+    closeCC(); await loadTasks(); go('Tasks'); if(typeof openTask==='function') openTask(t.id); notify('Task created — press Run to start','ok');
+  }catch(e){ notify('Couldn’t create task — '+e.message); }
+}
+async function templatePersona(name,text){
+  try{ await J('/v1/persona',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({persona:text})});
+    if(typeof CFG==='object'&&CFG) CFG._persona=text; notify('Persona applied: '+name,'ok'); ccGo('persona');
+  }catch(e){ notify('Couldn’t apply persona — '+e.message); }
+}
+function templatePrompt(text){
+  closeCC(); go('Chat');
+  setTimeout(()=>{ const c=document.getElementById('composer'); if(c){ c.value=text; c.focus(); c.dispatchEvent(new Event('input')); } },140);
+}
 function ccMessaging(){ return ccHead('Messaging','Where Engram reaches you.')+
   `<div class="scard"><div class="ph">Notification routing and scheduled-job delivery (for example a morning brief to Telegram) will be configured here.</div></div>`; }
 function ccAdvanced(){ return ccHead('Advanced','Daemon, ledger, and the danger zone.')+`

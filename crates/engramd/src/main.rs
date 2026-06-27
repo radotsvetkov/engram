@@ -299,6 +299,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/tasks", get(tasks_list).post(tasks_create))
         .route("/v1/tasks/{id}", axum::routing::patch(tasks_update).delete(tasks_delete))
         .route("/v1/tasks/{id}/agent", post(tasks_assign))
+        .route("/v1/tasks/{id}/handoff", post(task_handoff))
         .route("/v1/tasks/{id}/review", post(task_review))
         .route("/v1/tasks/{id}/dissent", post(task_dissent))
         .route("/v1/tasks/{id}/run", post(tasks_run))
@@ -947,6 +948,33 @@ async fn tasks_assign(State(app): State<App>, Path(id): Path<String>, Json(p): J
         .append("task.assign", "user", json!({ "task": id, "agent": agent, "agent_name": agent_name }))
         .map_err(err)?;
     Ok(Json(serde_json::to_value(t).map_err(err)?))
+}
+
+/// Hand a card from its current agent to another, with a note. Reassigns, appends to the card's
+/// hand-off trail, and signs `task.handoff` (from → to + note) - a multi-agent collaboration you
+/// can audit end to end.
+async fn task_handoff(State(app): State<App>, Path(id): Path<String>, Json(p): Json<Value>) -> ApiResult {
+    let to_id = p.get("to").and_then(Value::as_str).filter(|s| !s.is_empty()).map(String::from);
+    let note = p.get("note").and_then(Value::as_str).unwrap_or("").trim().to_string();
+    let to_name = match &to_id {
+        Some(aid) => app.agents.get(aid).ok_or_else(|| err("no such agent"))?.name,
+        None => "Default agent".into(),
+    };
+    let task = app.tasks.get(&id).ok_or_else(|| err("task not found"))?;
+    let from_name = task
+        .agent
+        .as_ref()
+        .and_then(|aid| app.agents.get(aid))
+        .map(|a| a.name)
+        .unwrap_or_else(|| "Default agent".into());
+    let updated = app
+        .tasks
+        .handoff(&id, to_id, &from_name, &to_name, &note)
+        .ok_or_else(|| err("task not found"))?;
+    app.ledger
+        .append("task.handoff", "user", json!({ "task": id, "from": from_name, "to": to_name, "note": note }))
+        .map_err(err)?;
+    Ok(Json(serde_json::to_value(updated).map_err(err)?))
 }
 
 /// Pre-run specialist review: surface a grounded objection (citing real recalled memories) if the

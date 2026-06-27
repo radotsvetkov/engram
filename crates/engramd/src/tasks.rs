@@ -45,6 +45,10 @@ pub struct Task {
     /// default agent. When set, the run adopts the agent's role + model and signs as that actor.
     #[serde(default)]
     pub agent: Option<String>,
+    /// The hand-off trail: each time the card passes between agents, with the note explaining why.
+    /// Makes a multi-agent collaboration on one card auditable end to end.
+    #[serde(default)]
+    pub handoffs: Vec<Handoff>,
     pub created_ms: i64,
     pub updated_ms: i64,
     /// Live progress while running, e.g. "step 3 · web_search".
@@ -56,6 +60,19 @@ pub struct Task {
 
 fn default_origin() -> String {
     "manual".into()
+}
+
+/// One pass of a card between agents.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Handoff {
+    /// The agent the card came from ("" / "Default" when previously unassigned).
+    pub from: String,
+    /// The agent it was handed to.
+    pub to: String,
+    /// Why - the note that makes the collaboration legible.
+    #[serde(default)]
+    pub note: String,
+    pub ts_ms: i64,
 }
 
 /// Guess which capabilities a task will use, from its words - drives the card's tags.
@@ -135,6 +152,7 @@ impl TaskStore {
             tool_tags,
             schedule_id: None,
             agent: None,
+            handoffs: Vec::new(),
             created_ms: now,
             updated_ms: now,
             progress: None,
@@ -176,6 +194,24 @@ impl TaskStore {
         let task = t.iter_mut().find(|x| x.id == id)?;
         task.agent = agent;
         task.updated_ms = now_ms() as i64;
+        let out = task.clone();
+        self.save(&t);
+        Some(out)
+    }
+
+    /// Hand a card to another agent: reassign it and append the hand-off (with its note) to the trail.
+    pub fn handoff(&self, id: &str, to_agent: Option<String>, from_name: &str, to_name: &str, note: &str) -> Option<Task> {
+        let mut t = self.tasks.lock().expect("tasks mutex");
+        let task = t.iter_mut().find(|x| x.id == id)?;
+        task.agent = to_agent;
+        let now = now_ms() as i64;
+        task.handoffs.push(Handoff {
+            from: from_name.to_string(),
+            to: to_name.to_string(),
+            note: note.to_string(),
+            ts_ms: now,
+        });
+        task.updated_ms = now;
         let out = task.clone();
         self.save(&t);
         Some(out)

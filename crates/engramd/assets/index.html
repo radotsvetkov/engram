@@ -409,6 +409,13 @@
   .agent-manage:hover { border-color:var(--accent); color:var(--text-primary); }
   .card-agent { display:inline-block; margin-top:6px; font:600 10px var(--mono); letter-spacing:.03em; color:var(--accent);
     background:var(--accent-soft); border:1px solid color-mix(in srgb, var(--accent) 30%, transparent); border-radius:999px; padding:1px 8px; }
+  /* agent hand-off trail */
+  .handoff-trail { margin:0 0 13px; padding:10px 12px; border:1px solid var(--border); border-radius:10px; background:var(--surface-2); }
+  .ht-lbl { font:600 10px var(--mono); text-transform:uppercase; letter-spacing:.06em; color:var(--text-muted); margin-bottom:7px; }
+  .ht-row { font-size:12.5px; padding:6px 0; border-top:1px solid var(--border); }
+  .ht-row:first-of-type { border-top:none; padding-top:0; }
+  .ht-from { color:var(--text-muted); } .ht-to { color:var(--accent); font-weight:600; } .ht-arr { color:var(--text-muted); margin:0 6px; }
+  .ht-note { color:var(--text-secondary); margin-top:3px; line-height:1.45; }
   /* skills view — the honest expertise ladder */
   .skills-wrap { padding:26px 30px; max-width:920px; margin:0 auto; height:100%; overflow-y:auto; }
   .skills-head h2 { margin:0; font-size:20px; }
@@ -1502,7 +1509,12 @@ async function openTask(id, fromPoll){
   if(!window._agentsLoaded){ window._agentsLoaded=true; J('/v1/agents').then(a=>{ AGENTS=a||[]; if(panelId===id) openTask(id,true); }).catch(()=>{}); }
   let html='';
   { const agentOpts=['<option value="">Default agent</option>'].concat(AGENTS.map(a=>`<option value="${escAttr(a.id)}"${t.agent===a.id?' selected':''}>${esc(a.name)}</option>`)).join('');
-    html+=`<div class="agent-row"><span class="muted" style="font-size:11px">agent</span><select class="agent-pick" onchange="assignAgent('${id}',this.value)">${agentOpts}</select><span style="flex:1"></span><button class="ghost agent-manage" onclick="openCC('agents')">Manage team</button></div>`; }
+    const handoffBtn = AGENTS.length ? `<button class="ghost agent-manage" onclick="handoffModal('${id}')">Hand off →</button>` : '';
+    html+=`<div class="agent-row"><span class="muted" style="font-size:11px">agent</span><select class="agent-pick" onchange="assignAgent('${id}',this.value)">${agentOpts}</select><span style="flex:1"></span>${handoffBtn}<button class="ghost agent-manage" onclick="openCC('agents')">Manage team</button></div>`;
+    if(t.handoffs && t.handoffs.length){
+      html+=`<div class="handoff-trail"><div class="ht-lbl">hand-off trail · signed</div>${t.handoffs.map(h=>`<div class="ht-row"><span class="ht-from">${esc(h.from||'Default')}</span><span class="ht-arr">→</span><span class="ht-to">${esc(h.to)}</span>${h.note?`<div class="ht-note">${esc(h.note)}</div>`:''}</div>`).join('')}</div>`;
+    }
+  }
   if(t.status==='todo') html+=`<div class="row"><button onclick="runWithReview('${id}')">Run now</button><button class="ghost" onclick="previewTask('${id}')" title="see what the agent would do - nothing is executed">Preview</button></div><div id="previewOut" class="sub"></div>`;
   if(t.run){
     const denied=(t.run.steps||[]).find(s=>!s.ok && /shell/i.test(s.tool) && /disabled|refused/i.test(s.observation));
@@ -2522,6 +2534,25 @@ async function assignAgent(id, agentId){
     await loadTasks(); if(state.route==='Tasks') renderBoard(); openTask(id,true);
     notify(agentId?'Agent assigned · signed':'Reset to the default agent','ok');
   }catch(e){ notify('Couldn’t assign — '+e.message); }
+}
+// Hand a card to another agent with a signed note — the auditable team collaborating on one mission.
+function handoffModal(id){
+  const opts=['<option value="">Default agent</option>'].concat((AGENTS||[]).map(a=>`<option value="${escAttr(a.id)}">${esc(a.name)}</option>`)).join('');
+  const ov=document.createElement('div'); ov.className='overlay ask';
+  ov.innerHTML=`<div class="ask-card" style="width:min(540px,93vw)">
+    <div class="ask-title">Hand off this card</div>
+    <div class="ask-msg">Pass it to another agent with a note. The hand-off is signed and added to the card's trail.</div>
+    <select class="ask-input" id="hoTo">${opts}</select>
+    <textarea class="ask-input" id="hoNote" rows="3" placeholder="What's done, what's next, why hand it over…" style="resize:vertical;font:inherit;line-height:1.5"></textarea>
+    <div class="ask-actions"><button class="ask-ghost" onclick="this.closest('.overlay').remove()">Cancel</button><button class="ask-ok" onclick="handoffDo('${escAttr(id)}',this)">Hand off</button></div>
+  </div>`;
+  document.body.appendChild(ov); setTimeout(()=>ov.querySelector('#hoTo').focus(),20);
+}
+async function handoffDo(id, btn){
+  const ov=btn.closest('.overlay'); const to=ov.querySelector('#hoTo').value, note=ov.querySelector('#hoNote').value.trim();
+  try{ await J('/v1/tasks/'+id+'/handoff',{method:'POST',headers:MIND_JSON,body:JSON.stringify({to,note})});
+    ov.remove(); await loadTasks(); if(state.route==='Tasks') renderBoard(); openTask(id); notify('Handed off · signed','ok');
+  }catch(e){ notify('Couldn’t hand off — '+e.message); }
 }
 // ---- Auditable dissent: a grounded pre-run objection, or silence (never theatre) ----------------
 let _pendingDissent=null;

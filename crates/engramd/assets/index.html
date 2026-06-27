@@ -168,6 +168,7 @@
   /* live run - watch the agent work */
   .liverun { display:flex; flex-direction:column; gap:10px; }
   .lr-head { display:flex; align-items:center; gap:9px; font-size:13px; font-weight:600; color:var(--text-primary); }
+  .lr-meter { margin-left:auto; font:11px var(--mono); font-weight:400; color:var(--text-muted); white-space:nowrap; }
   .lr-steps { display:flex; flex-direction:column; }
   .lr-step { animation:lr-in .26s var(--ease-out); }
   @keyframes lr-in { from { opacity:0; transform:translateY(5px); } to { opacity:1; transform:none; } }
@@ -1187,11 +1188,15 @@ async function runTaskLive(id){
   liveRunId=id;
   const body=document.getElementById('pBody'); if(!body){ liveRunId=null; return; }
   body.innerHTML = `<div class="liverun">
-    <div class="lr-head"><span class="pulse"></span><span id="lrStatus">Engram is working…</span></div>
+    <div class="lr-head"><span class="pulse"></span><span id="lrStatus">Engram is working…</span><span id="lrMeter" class="lr-meter"></span></div>
     <div id="lrSteps" class="lr-steps"></div>
     <div id="lrAnswer" class="lr-answer"></div></div>`;
   const stepsEl=document.getElementById('lrSteps');
-  const finish=async()=>{ liveRunId=null; await loadTasks(); if(state.route==='Tasks') renderBoard(); };
+  const t0=Date.now(); let lrTokens=0, lrCost=0;
+  const lrMeter=()=>{ const el=document.getElementById('lrMeter'); if(!el) return; const n=stepsEl?stepsEl.children.length:0;
+    el.textContent = `${n?n+(n===1?' step':' steps')+' · ':''}${lrTokens?lrTokens+' tok · ':''}${lrCost?'$'+lrCost.toFixed(4)+' · ':''}${((Date.now()-t0)/1000).toFixed(1)}s`; };
+  const tick=setInterval(lrMeter,250);
+  const finish=async()=>{ clearInterval(tick); lrMeter(); liveRunId=null; await loadTasks(); if(state.route==='Tasks') renderBoard(); };
   try{
     const r=await fetch('/v1/tasks/'+encodeURIComponent(id)+'/run/stream',{method:'POST',headers:{...AUTH}});
     if(!r.ok||!r.body) throw new Error('HTTP '+r.status);
@@ -1209,10 +1214,12 @@ async function runTaskLive(id){
           const row=document.createElement('div'); row.className='step lr-step'+(s.ok?'':' bad');
           row.innerHTML=`<div class="top"><span class="lr-n">${s.index}</span><span class="verb">${esc(s.tool)}</span><span class="lr-ok">${s.ok?'✓':'✕'}</span>${stamp?`<span class="stamp" title="this step's signed ledger entry" onclick="openReceipt()">${esc(stamp)}</span>`:''}</div>${s.observation?`<div class="obs">${esc(String(s.observation).slice(0,700))}</div>`:''}`;
           if(stepsEl){ stepsEl.appendChild(row); stepsEl.scrollTop=stepsEl.scrollHeight; }
+          if(typeof s.tokens==='number') lrTokens=s.tokens; if(typeof s.cost==='number') lrCost=s.cost; lrMeter();
         }
         else if(ev==='done'){ let t; try{ t=JSON.parse(data); }catch(_){}
           document.querySelector('.lr-head .pulse')?.remove();
           const st=document.getElementById('lrStatus'); if(st) st.textContent=(t&&t.status==='done')?'Done':'Stopped';
+          if(t&&t.run){ lrTokens=(t.run.tokens_in||0)+(t.run.tokens_out||0); if(typeof t.run.cost_usd==='number') lrCost=t.run.cost_usd; }
           if(stepsEl && !stepsEl.children.length) stepsEl.innerHTML='<div class="lr-none">No tools were needed — Engram answered directly.</div>';
           if(t&&t.run&&t.run.answer){ const a=document.getElementById('lrAnswer'); if(a) a.innerHTML=mdToHtml(t.run.answer); }
           await finish();

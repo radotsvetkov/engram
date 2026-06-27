@@ -832,16 +832,24 @@ pub(crate) async fn run_task_core(
     let bus = app.bus.clone();
     let tid = id.to_string();
     let step_tx2 = step_tx.clone();
+    // Captured so each streamed step can carry this run's cumulative tokens/cost so far (the live
+    // meter), measured as the delta from the gateway meter at the start of the run.
+    let gw = app.gateway.clone();
+    let (base_in, base_out, base_cost) = (before.tokens_in, before.tokens_out, before.cost_usd);
     let on_step: engram_agent::StepCallback = Arc::new(move |i, rec: &engram_agent::StepRecord| {
         tasks.set_progress(&tid, format!("step {i} · {}", rec.tool));
         bus.emit(Spike::new("task.step", Priority::Low, json!({ "id": tid.as_str(), "step": i, "tool": rec.tool })));
         if let Some(tx) = &step_tx2 {
-            // Stream the step as it lands - tool, args, the (truncated) observation, and the
-            // step's own signed ledger seq+hash, so the UI can show the glass box filling in live.
+            // Stream the step as it lands - tool, args, the (truncated) observation, the step's own
+            // signed ledger seq+hash, and the live token/cost meter, so the UI shows the glass box
+            // filling in (and the bill ticking up) live.
             let obs: String = rec.observation.chars().take(2000).collect();
+            let m = gw.meter();
             let _ = tx.send(json!({
                 "index": i, "tool": rec.tool, "args": rec.args, "observation": obs,
                 "ok": rec.ok, "seq": rec.ledger_seq, "hash": rec.ledger_hash,
+                "tokens": m.tokens_in.saturating_sub(base_in) + m.tokens_out.saturating_sub(base_out),
+                "cost": (m.cost_usd - base_cost).max(0.0),
             }));
         }
     });

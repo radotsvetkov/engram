@@ -5,6 +5,20 @@ architect / strategist / design / skeptic panel, then consolidated. The scope ga
 feature is one sentence:* **"Does this produce a signature a competitor can't?"** *If it doesn't
 deepen verifiable memory, verifiable expertise, or verifiable dissent, it is sprawl and gets cut.*
 
+## Status — 2026-06-27: roadmap shipped
+
+All phases below are implemented and deployed. Phase 0 (no-bluff basics, real Telegram connect,
+templates, in-app dialogs); Phase 1 (Consciousness — signed, editable, always-loaded working memory
+driving every run); Phase 1.5 (recall ribbon under each answer, now persisted across reload; the 2D
+brain animates growth); Phase 2 (durable named role-scoped agents signing their own steps + cards,
+assignable on the kanban with **hand-off trails**; honest Skills version-ladder with verified/unverified
+pills); Phase 3 (auditable dissent — grounded, cited, model-gated, or silent). Beyond the roadmap, by
+explicit user request: the brain is now a **2.5D orbitable** canvas graph (drag/zoom, settles to rest,
+click-to-open; honest — clusters not anatomy), the Workspace settings panel is a real project manager,
+and the LLM API key is policy-bound to memory only (`skip_serializing`). Two adversarial code reviews
+(backend + frontend) ran over the new code; findings fixed. The one remaining item, exercising the
+live model-judgment paths (dissent, etc.), is gated on the user connecting a provider key.
+
 ## North star
 
 Engram is the personal agent whose **conduct AND reasoning you can verify** — a glass-box brain

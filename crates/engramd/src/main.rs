@@ -1282,11 +1282,36 @@ async fn upload_handler(State(app): State<App>, Json(r): Json<UploadReq>) -> Api
 }
 
 async fn skills(State(app): State<App>) -> ApiResult {
+    // The signed learning history: every replay→A/B→promote/reject decision, with its real
+    // before/after scores. This is the honest expertise signal - shown verbatim, never inferred.
+    let learn: Vec<(Value, u64, String)> = app
+        .ledger
+        .read_all()
+        .map_err(err)?
+        .into_iter()
+        .filter(|e| e.kind == "skill.learn")
+        .filter_map(|e| {
+            serde_json::from_str::<Value>(e.payload.get()).ok().map(|v| (v, e.seq, e.hash))
+        })
+        .collect();
     let mut out = Vec::new();
     for id in app.registry.skills().map_err(err)? {
         let active = app.registry.active_version(&id).map_err(err)?;
         let versions = app.registry.versions(&id).map_err(err)?;
-        out.push(json!({ "id": id, "active": active, "versions": versions }));
+        // The gold-signal size: recorded (input, accepted-output) pairs a candidate is scored
+        // against. Zero means there is no scored signal yet - the UI must say "unverified".
+        let runs = app.registry.accepted_runs(&id).map(|r| r.len()).unwrap_or(0);
+        let events: Vec<Value> = learn
+            .iter()
+            .filter(|(v, _, _)| v.get("id").and_then(Value::as_str) == Some(id.as_str()))
+            .map(|(v, seq, hash)| {
+                let mut o = v.clone();
+                o["seq"] = json!(seq);
+                o["hash"] = json!(hash);
+                o
+            })
+            .collect();
+        out.push(json!({ "id": id, "active": active, "versions": versions, "runs": runs, "learn": events }));
     }
     Ok(Json(json!({ "skills": out })))
 }

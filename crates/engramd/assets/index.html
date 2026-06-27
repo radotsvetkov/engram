@@ -393,6 +393,16 @@
   .tmpl-chips { display:flex; flex-wrap:wrap; gap:8px; margin-top:11px; }
   .tmpl-chip { background:var(--surface-2); border:1px solid var(--border); color:var(--text-secondary); border-radius:999px; padding:7px 14px; cursor:pointer; font-size:13px; }
   .tmpl-chip:hover { border-color:var(--accent); color:var(--text-primary); }
+  /* agent picker on a kanban card */
+  .agent-row { display:flex; align-items:center; gap:9px; margin:2px 0 13px; padding-bottom:12px; border-bottom:1px solid var(--border); }
+  .agent-row .muted { text-transform:uppercase; letter-spacing:.06em; font-family:var(--mono); }
+  .agent-pick { background:var(--surface-2); border:1px solid var(--border-strong); color:var(--text-primary); border-radius:8px; padding:5px 9px; font:inherit; font-size:13px; cursor:pointer; }
+  .agent-pick:hover { border-color:var(--accent); }
+  .agent-manage { font:inherit; font-size:11px !important; padding:4px 11px !important; background:var(--surface-2); color:var(--text-secondary);
+    border:1px solid var(--border-strong); border-radius:8px; cursor:pointer; }
+  .agent-manage:hover { border-color:var(--accent); color:var(--text-primary); }
+  .card-agent { display:inline-block; margin-top:6px; font:600 10px var(--mono); letter-spacing:.03em; color:var(--accent);
+    background:var(--accent-soft); border:1px solid color-mix(in srgb, var(--accent) 30%, transparent); border-radius:999px; padding:1px 8px; }
   /* settings */
   .settings { max-width:780px; margin:0 auto; padding:22px 24px 64px; overflow-y:auto; height:100%; }
   .settings h2 { font-size:17px; font-weight:600; margin:0 0 4px; }
@@ -1189,12 +1199,15 @@ function card(t){
   else foot=`<div class="meta">${tags||'<span class="muted">queued</span>'}</div>`;
   // No HTML5 draggable - we use a pointer-based drag (see boardPointerDown) that actually works
   // in WKWebView and feels like Linear. Click vs drag is discriminated by a movement threshold.
+  const agentBadge = t.agent ? `<span class="card-agent" title="runs as this agent">◇ ${esc((AGENTS.find(a=>a.id===t.agent)||{}).name||'agent')}</span>` : '';
   return `<div class="card ${running?'running':''}" data-id="${t.id}"
      role="button" tabindex="0" aria-label="${escAttr(t.title)}"
      onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openTask('${t.id}')}">
-     <div class="t">${esc(t.title)}</div>${foot}</div>`;
+     <div class="t">${esc(t.title)}</div>${agentBadge}${foot}</div>`;
 }
 function renderBoard(){
+  // Load the team once so card badges can name the assigned agent (guarded; repaints once).
+  if(!window._agentsLoaded){ window._agentsLoaded=true; J('/v1/agents').then(a=>{ AGENTS=a||[]; if(state.route==='Tasks') renderBoard(); }).catch(()=>{}); }
   const comp = document.getElementById('composer');
   const cv = comp?.value || '';                         // preserve in-progress typing
   const wasFocused = document.activeElement === comp;   // …and focus + caret
@@ -1431,7 +1444,11 @@ async function openTask(id, fromPoll){
   document.getElementById('pTitle').textContent=t.title;
   const ps=document.getElementById('pStatus'); ps.textContent=t.status; ps.className='pill '+t.status;
   const body=document.getElementById('pBody');
+  // Load the team once, then repaint so the picker shows the agents (lazy; cached after).
+  if(!window._agentsLoaded){ window._agentsLoaded=true; J('/v1/agents').then(a=>{ AGENTS=a||[]; if(panelId===id) openTask(id,true); }).catch(()=>{}); }
   let html='';
+  { const agentOpts=['<option value="">Default agent</option>'].concat(AGENTS.map(a=>`<option value="${escAttr(a.id)}"${t.agent===a.id?' selected':''}>${esc(a.name)}</option>`)).join('');
+    html+=`<div class="agent-row"><span class="muted" style="font-size:11px">agent</span><select class="agent-pick" onchange="assignAgent('${id}',this.value)">${agentOpts}</select><span style="flex:1"></span><button class="ghost agent-manage" onclick="openCC('agents')">Manage team</button></div>`; }
   if(t.status==='todo') html+=`<div class="row"><button onclick="runTaskLive('${id}')">Run now</button><button class="ghost" onclick="previewTask('${id}')" title="see what the agent would do - nothing is executed">Preview</button></div><div id="previewOut" class="sub"></div>`;
   if(t.run){
     const denied=(t.run.steps||[]).find(s=>!s.ok && /shell/i.test(s.tool) && /disabled|refused/i.test(s.observation));
@@ -2066,6 +2083,7 @@ const CC_CATS = [
   {key:'tools', name:'Tools', kw:'mcp shell terminal taint egress', icon:SVG('<path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L4 17v3h3l5.3-5.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2-2 2.5-2.5Z"/>'), render:ccTools},
   {key:'cost', name:'Cost', kw:'budget tokens spend limit estimate', icon:SVG('<circle cx="12" cy="12" r="8.5"/><path d="M9.5 9.5a2.5 2 0 0 1 5 0c0 2.5-5 1-5 4a2.5 2 0 0 0 5 0M12 6.5v11"/>'), render:ccCost2},
   {key:'persona', name:'Persona', kw:'soul instructions voice rules', icon:SVG('<circle cx="12" cy="8" r="4"/><path d="M4 20a8 8 0 0 1 16 0"/>'), render:ccPersona},
+  {key:'agents', name:'Agents', kw:'team subagents roles specialists model assign delegate kanban', icon:SVG('<circle cx="9" cy="8" r="3"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0"/><circle cx="17.5" cy="9.5" r="2.3"/><path d="M16 19a4.5 4.5 0 0 1 5.5-4.4"/>'), render:ccAgents},
   {key:'workspace', name:'Workspace', kw:'projects working directory sessions', icon:SVG('<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>'), render:ccWorkspace},
   {key:'appearance', name:'Appearance', kw:'theme dark light accent density font zoom', icon:SVG('<circle cx="12" cy="12" r="8.5"/><path d="M12 3.5v17M3.5 12h17"/>'), render:ccAppearance2},
   {key:'voice', name:'Voice', kw:'speech tts stt microphone', icon:SVG('<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>'), render:ccVoice},
@@ -2249,6 +2267,69 @@ async function templatePersona(name,text){
 function templatePrompt(text){
   closeCC(); go('Chat');
   setTimeout(()=>{ const c=document.getElementById('composer'); if(c){ c.value=text; c.focus(); c.dispatchEvent(new Event('input')); } },140);
+}
+
+// ---- Agents: the auditable team (durable, named, role-scoped) -----------------------------------
+let AGENTS=[];
+function agentsGridHtml(){
+  if(!AGENTS.length) return `<div class="mind-empty"><b>No agents yet.</b><br>Create a specialist — a role and its own model — then assign it to a kanban card. Every step it runs is signed as that agent.</div>`;
+  return AGENTS.map(a=>{
+    const model = a.model ? esc(a.model) : '<span style="opacity:.65">default model</span>';
+    const role = (a.role||'').replace(/\s+/g,' ').trim();
+    return `<div class="integ-card">
+      <div class="ih"><span class="it">${esc(a.name)}</span><span class="badge">${model}</span></div>
+      <div class="id">${role?esc(role.slice(0,130)):'<span style="opacity:.6">No role set — runs with the default behaviour.</span>'}</div>
+      <div class="integ-act"><button class="sbtn" onclick="agentEdit('${escAttr(a.id)}')">Edit</button><span style="flex:1"></span><button class="sbtn ghost" onclick="agentDelete('${escAttr(a.id)}')">Delete</button></div>
+    </div>`;
+  }).join('');
+}
+function ccAgents(){
+  // Render from cache; refresh async and repaint the grid in place (renderCCBody is sync).
+  J('/v1/agents').then(a=>{ AGENTS=a||[]; if(ccActive==='agents'){ const el=document.getElementById('agentsGrid'); if(el) el.innerHTML=agentsGridHtml(); } }).catch(()=>{});
+  return ccHead('Agents','Your auditable team. Each agent runs with its own role and model; assign one to a kanban card and every step it takes is signed as that agent — a team you can audit, not an opaque swarm.')+`
+    <div class="scard"><div class="sactions" style="margin-bottom:12px"><button class="sbtn primary" onclick="agentEdit('')">+ New agent</button><span class="grow"></span></div>
+      <div class="integ-grid" id="agentsGrid">${agentsGridHtml()}</div></div>`;
+}
+function agentEdit(id){
+  const a = AGENTS.find(x=>x.id===id) || {id:'',name:'',role:'',model:''};
+  const models = Object.keys(MODEL_META).map(m=>`<option value="${escAttr(m)}">`).join('');
+  const ov=document.createElement('div'); ov.className='overlay ask';
+  ov.innerHTML=`<div class="ask-card" style="width:min(560px,93vw)">
+    <div class="ask-title">${a.id?'Edit agent':'New agent'}</div>
+    <div class="ask-msg">A specialist with a narrow role drifts less and hallucinates less. It signs every step it runs as itself.</div>
+    <input class="ask-input" id="agName" placeholder="Name — e.g. Scout, Reviewer, Researcher" value="${escAttr(a.name)}" autocomplete="off">
+    <textarea class="ask-input" id="agRole" rows="4" placeholder="Role / system prompt — what this agent specializes in and how it behaves." style="resize:vertical;font:inherit;line-height:1.5">${esc(a.role)}</textarea>
+    <input class="ask-input" id="agModel" list="agModels" placeholder="Model (optional) — blank uses the default" value="${escAttr(a.model)}" autocomplete="off"><datalist id="agModels">${models}</datalist>
+    <div class="ask-actions"><button class="ask-ghost" onclick="this.closest('.overlay').remove()">Cancel</button><button class="ask-ok" onclick="agentSave('${escAttr(a.id)}',this)">Save</button></div>
+  </div>`;
+  document.body.appendChild(ov);
+  setTimeout(()=>{ const n=ov.querySelector('#agName'); n.focus(); n.select(); },20);
+}
+async function agentSave(id, btn){
+  const ov=btn.closest('.overlay');
+  const name=ov.querySelector('#agName').value.trim();
+  const role=ov.querySelector('#agRole').value.trim();
+  const model=ov.querySelector('#agModel').value.trim();
+  if(!name){ notify('An agent needs a name'); return; }
+  try{
+    const body=JSON.stringify({name,role,model});
+    if(id) await J('/v1/agents/'+id,{method:'POST',headers:MIND_JSON,body});
+    else await J('/v1/agents',{method:'POST',headers:MIND_JSON,body});
+    ov.remove(); notify('Agent saved · signed','ok'); if(ccActive==='agents') renderCC();
+  }catch(e){ notify('Couldn’t save — '+e.message); }
+}
+async function agentDelete(id){
+  const a=AGENTS.find(x=>x.id===id);
+  if(!await askConfirm({title:'Delete agent?',message:'“'+(a?a.name:'this agent')+'” will be removed. Cards assigned to it fall back to the default agent.',ok:'Delete',danger:true})) return;
+  try{ await J('/v1/agents/'+id,{method:'DELETE'}); notify('Agent deleted','ok'); if(ccActive==='agents') renderCC(); }
+  catch(e){ notify('Couldn’t delete — '+e.message); }
+}
+// Assign (or clear) the agent that runs a kanban card - a signed, auditable event.
+async function assignAgent(id, agentId){
+  try{ await J('/v1/tasks/'+id+'/agent',{method:'POST',headers:MIND_JSON,body:JSON.stringify({agent:agentId})});
+    await loadTasks(); if(state.route==='Tasks') renderBoard(); openTask(id,true);
+    notify(agentId?'Agent assigned · signed':'Reset to the default agent','ok');
+  }catch(e){ notify('Couldn’t assign — '+e.message); }
 }
 function ccMessaging(){ return ccHead('Messaging','Where Engram reaches you.')+
   `<div class="scard"><div class="ph">Notification routing and scheduled-job delivery (for example a morning brief to Telegram) will be configured here.</div></div>`; }

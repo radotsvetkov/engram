@@ -330,7 +330,12 @@
   .mind-panel { position:absolute; left:20px; top:62px; bottom:84px; width:332px; z-index:24; display:flex; flex-direction:column;
     background:var(--surface-1); border:1px solid var(--border-strong); border-radius:14px; box-shadow:var(--e4); overflow:hidden; }
   .mind-h { padding:13px 15px 11px; border-bottom:1px solid var(--border); }
-  .mind-h .mt { font:600 11px var(--mono); text-transform:uppercase; letter-spacing:.09em; color:var(--accent); display:flex; align-items:center; gap:7px; }
+  .mind-h .mt { font:600 11px var(--mono); text-transform:uppercase; letter-spacing:.09em; color:var(--accent); display:flex; align-items:center; justify-content:space-between; gap:7px; }
+  .mind-toggle { background:var(--surface-2); border:1px solid var(--border); color:var(--text-muted); width:22px; height:21px; border-radius:6px; cursor:pointer; font-size:11px; line-height:1; flex-shrink:0; padding:0; }
+  .mind-toggle:hover { color:var(--text-primary); border-color:var(--accent); }
+  .mind-panel.collapsed { bottom:auto; }
+  .mind-panel.collapsed .ms, .mind-panel.collapsed .mind-lines, .mind-panel.collapsed .mind-foot { display:none; }
+  .mind-panel.collapsed .mind-h { border-bottom:none; padding-bottom:12px; }
   .mind-h .mt b { color:var(--text-muted); font-weight:500; letter-spacing:0; text-transform:none; font-family:var(--sans); }
   .mind-h .ms { font-size:11.5px; color:var(--text-muted); margin-top:5px; line-height:1.45; }
   .mind-lines { flex:1; overflow-y:auto; padding:8px; display:flex; flex-direction:column; gap:6px; }
@@ -351,6 +356,7 @@
   .mind-empty { padding:22px 16px; color:var(--text-muted); font-size:12.5px; line-height:1.55; text-align:center; }
   .mind-empty b { color:var(--text-secondary); }
   @media (max-width:880px){ .mind-panel { display:none; } }
+  .brain-hint { position:absolute; right:18px; bottom:16px; font:11px var(--mono); color:var(--text-muted); opacity:.5; pointer-events:none; letter-spacing:.01em; }
   .brain-empty { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; flex-direction:column;
     gap:6px; color:var(--text-muted); text-align:center; pointer-events:none; }
   .brain-empty b { color:var(--text-secondary); font-size:15px; }
@@ -1886,7 +1892,7 @@ async function renderMemory(){
     </div>
     <div class="mind-panel" id="mindPanel">
       <div class="mind-h">
-        <div class="mt">◉ Consciousness <b id="mindVer"></b></div>
+        <div class="mt"><span>◉ Consciousness <b id="mindVer"></b></span><button class="mind-toggle" onclick="mindToggle()" title="Show / hide" aria-label="Toggle consciousness panel">▾</button></div>
         <div class="ms">The working memory loaded into every answer — distilled from your brain, editable, signed.</div>
       </div>
       <div class="mind-lines" id="mindLines"></div>
@@ -1897,55 +1903,61 @@ async function renderMemory(){
       </div>
     </div>
     <div class="brain-tip" id="brainTip" hidden></div>
+    <div class="brain-hint">drag to orbit · scroll to zoom · click a memory to open it</div>
     ${(data.nodes||[]).length?'':'<div class="brain-empty"><b>The brain is empty.</b><span>Engram grows this graph as you talk — or teach it a fact now.</span></div>'}
   </div>`;
   brainInit(data.nodes||[]);
   renderMind();
 }
 function hexA(hex,a){ const n=parseInt(hex.slice(1),16); return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},${a})`; }
+// 3D brain: a force-directed graph in space you can ORBIT (drag) and ZOOM (wheel). The layout
+// SETTLES - forces cool to rest (alpha decay) so nodes stop moving: no eye-jitter, and they stay put
+// to click. Anatomy is not claimed: regions cluster and depth is for exploration, not a lobe map.
+const BRAIN_ANCH = {            // unit tetrahedron - four well-separated region anchors in 3D space
+  identity:   [0, 0.9, 0],
+  semantic:   [0.92, -0.32, 0.10],
+  episodic:   [-0.46, -0.32, 0.80],
+  procedural: [-0.46, -0.32, -0.80],
+};
+function brainNode(n, born){
+  const reg=BRAIN_REGIONS[n.region]?n.region:'semantic', a=BRAIN_ANCH[reg];
+  const tierA=n.tier==='hot'?1:n.tier==='warm'?0.72:0.5;
+  const r=3.2+(n.importance||0.3)*4.5+Math.min(6,Math.log2((n.access||0)+1)*1.4);
+  const h=n.id*2.3999632;       // stable pseudo-random offset around the anchor (not re-random per load)
+  return { ...n, reg, r, tierA, born,
+    x:a[0]+Math.cos(h)*0.32, y:a[1]+Math.sin(h*1.7)*0.32, z:a[2]+Math.cos(h*2.3)*0.32,
+    vx:0, vy:0, vz:0, sx:0, sy:0, depth:0, ps:1 };
+}
 function brainInit(raw){
   if(BRAIN && BRAIN.raf) cancelAnimationFrame(BRAIN.raf);
   const canvas=document.getElementById('brainCanvas'); if(!canvas) return;
-  const B = BRAIN = { canvas, ctx:canvas.getContext('2d'), nodes:[], anchors:{}, hover:null, sel:null,
-    mouse:{x:-1,y:-1}, dim:new Set(), matched:null, t:0, raf:0, w:0, h:0, cx:0, cy:0, dpr:Math.min(2,window.devicePixelRatio||1) };
-  B.nodes = raw.map((n,i)=>{
-    const reg = BRAIN_REGIONS[n.region]?n.region:'semantic';
-    const tierA = n.tier==='hot'?1 : n.tier==='warm'?0.72 : 0.5;
-    const r = 3.2 + (n.importance||0.3)*4.5 + Math.min(6, Math.log2((n.access||0)+1)*1.4);
-    // `born` ramps 0→1 to scale the node in; a negative start staggers the formation so the brain
-    // visibly assembles when you open Memory, rather than snapping in all at once.
-    return { ...n, reg, r, tierA, x:0, y:0, vx:0, vy:0, born:-i*0.016 };
-  });
+  const B = BRAIN = { canvas, ctx:canvas.getContext('2d'), nodes:[], hover:null, sel:null,
+    mouse:{x:-1,y:-1}, dim:new Set(), matched:null, t:0, raf:0, w:0,h:0,cx:0,cy:0, R:200,
+    dpr:Math.min(2,window.devicePixelRatio||1), cam:{yaw:0.6, pitch:-0.30, zoom:1}, drag:null, alpha:1 };
+  B.nodes = raw.map((n,i)=>brainNode(n, -i*0.016));   // stagger the birth so the brain assembles
   brainResize();
-  B.nodes.forEach(n=>{ const a=B.anchors[n.reg]; n.x=a.x+Math.cos(n.id*1.7)*60; n.y=a.y+Math.sin(n.id*2.3)*60; });
-  canvas.onmousemove = e=>{ const r=canvas.getBoundingClientRect(); B.mouse.x=e.clientX-r.left; B.mouse.y=e.clientY-r.top; };
-  canvas.onmouseleave = ()=>{ B.mouse.x=-1; B.mouse.y=-1; };
-  canvas.onclick = ()=>{ B.hover?brainShowDetail(B.hover):brainCloseDetail(); };
+  brainWireInput(canvas);
   if(!window._brainResizeWired){ window._brainResizeWired=true; window.addEventListener('resize', ()=>brainResize()); }
   if(!window._brainPollWired){ window._brainPollWired=true; setInterval(brainPoll, 3500); }
   brainLoop();
 }
-// Merge a fresh graph into the LIVE brain without resetting it: new memories are pushed in with
-// born:0 (so they animate in), and existing nodes' tier/size are refreshed - the brain grows in place.
+// Merge a fresh graph into the LIVE brain without resetting it: new memories arrive with born:0 (so
+// they animate in), existing nodes refresh their tier/size, and forgotten nodes drop.
 function brainMergeGraph(raw){
   const B=BRAIN; if(!B) return 0;
-  const byId=new Map(B.nodes.map(n=>[n.id,n]));
-  const fresh=new Set();
-  let added=0;
+  const byId=new Map(B.nodes.map(n=>[n.id,n])); const fresh=new Set(); let added=0;
   for(const n of raw){ fresh.add(n.id);
-    const r = 3.2 + (n.importance||0.3)*4.5 + Math.min(6, Math.log2((n.access||0)+1)*1.4);
-    const tierA = n.tier==='hot'?1 : n.tier==='warm'?0.72 : 0.5;
+    const tierA=n.tier==='hot'?1:n.tier==='warm'?0.72:0.5;
+    const r=3.2+(n.importance||0.3)*4.5+Math.min(6,Math.log2((n.access||0)+1)*1.4);
     const ex=byId.get(n.id);
     if(ex){ ex.tier=n.tier; ex.access=n.access; ex.importance=n.importance; ex.tierA=tierA; ex.r=r; continue; }
-    const reg = BRAIN_REGIONS[n.region]?n.region:'semantic', a=B.anchors[reg]||{x:B.cx,y:B.cy};
-    B.nodes.push({ ...n, reg, r, tierA, x:a.x+Math.cos(n.id*1.7)*40, y:a.y+Math.sin(n.id*2.3)*40, vx:0, vy:0, born:0 });
-    added++;
+    B.nodes.push(brainNode(n, 0)); added++;
   }
-  // Drop nodes that were forgotten server-side (so the count stays honest).
-  if(raw.length) B.nodes = B.nodes.filter(n=>fresh.has(n.id));
+  if(raw.length) B.nodes=B.nodes.filter(n=>fresh.has(n.id));
+  // Deliberately do NOT re-warm the settled layout: a new memory appears at its own anchor spot
+  // (with the birth animation) without shaking every other node - the brain stays calm to read.
   return added;
 }
-// Poll the graph while Memory is open, so new memories appear (and grow in) as they form.
 async function brainPoll(){
   if(state.route!=='Memory' || !BRAIN || document.hidden) return;
   let data; try{ data=await J('/v1/memory/graph?n=80'); }catch(_){ return; }
@@ -1957,61 +1969,83 @@ async function brainPoll(){
 }
 function brainResize(){
   const B=BRAIN; if(!B) return; const c=B.canvas;
-  const w=c.clientWidth, h=c.clientHeight; if(!w||!h) return; B.w=w; B.h=h;
+  const w=c.clientWidth,h=c.clientHeight; if(!w||!h) return; B.w=w; B.h=h;
   c.width=w*B.dpr; c.height=h*B.dpr; B.ctx.setTransform(B.dpr,0,0,B.dpr,0,0);
-  B.cx=w/2; B.cy=h/2; const R=Math.min(w,h)*0.30;
-  const ang={ identity:-Math.PI/2, semantic:0, episodic:Math.PI/2, procedural:Math.PI };
-  for(const k in BRAIN_REGIONS) B.anchors[k]={ x:B.cx+Math.cos(ang[k])*R, y:B.cy+Math.sin(ang[k])*R*0.84 };
+  B.cx=w/2; B.cy=h/2; B.R=Math.min(w,h)*0.34;
 }
-function brainLoop(){
-  const B=BRAIN; if(!B) return;
+function brainLoop(){ const B=BRAIN; if(!B) return;
   if(state.route!=='Memory' || !document.getElementById('brainCanvas')){ B.raf=0; return; }
-  B.t++; brainStep(); brainDraw(); B.raf=requestAnimationFrame(brainLoop);
-}
+  B.t++; brainStep(); brainDraw(); B.raf=requestAnimationFrame(brainLoop); }
 function brainStep(){
-  const B=BRAIN, ns=B.nodes, breathe=1+Math.sin(B.t*0.006)*0.012;
-  for(let i=0;i<ns.length;i++){ const n=ns[i]; let fx=0, fy=0; const a=B.anchors[n.reg];
-    if(n.born<1) n.born=Math.min(1, n.born+0.028);   // grow newly-born nodes in
-    fx+=(a.x-n.x)*0.004*breathe; fy+=(a.y-n.y)*0.004*breathe;
-    fx+=(B.cx-n.x)*0.0006; fy+=(B.cy-n.y)*0.0006;
-    for(let j=0;j<ns.length;j++){ if(i===j) continue; const m=ns[j];
-      let dx=n.x-m.x, dy=n.y-m.y, d2=dx*dx+dy*dy; if(d2<1) d2=1;
-      if(d2<14000){ const f=(n.reg===m.reg?260:430)/d2; fx+=dx*f; fy+=dy*f; } }
-    n.vx=(n.vx+fx)*0.84; n.vy=(n.vy+fy)*0.84; n.x+=n.vx; n.y+=n.vy;
+  const B=BRAIN, ns=B.nodes;
+  for(const n of ns){ if(n.born<1) n.born=Math.min(1,n.born+0.03); }   // birth ramp (always)
+  if(B.alpha>0.015){ const al=B.alpha;                                  // forces fade out -> settle
+    for(let i=0;i<ns.length;i++){ const n=ns[i], a=BRAIN_ANCH[n.reg];
+      let fx=(a[0]-n.x)*0.022, fy=(a[1]-n.y)*0.022, fz=(a[2]-n.z)*0.022;
+      for(let j=0;j<ns.length;j++){ if(i===j)continue; const m=ns[j];
+        let dx=n.x-m.x,dy=n.y-m.y,dz=n.z-m.z,d2=dx*dx+dy*dy+dz*dz; if(d2<0.0004)d2=0.0004;
+        if(d2<0.55){ const f=(n.reg===m.reg?0.00035:0.00062)/d2; fx+=dx*f; fy+=dy*f; fz+=dz*f; } }
+      n.vx=(n.vx+fx)*0.80; n.vy=(n.vy+fy)*0.80; n.vz=(n.vz+fz)*0.80;
+      n.x+=n.vx*al; n.y+=n.vy*al; n.z+=n.vz*al;
+    }
+    B.alpha*=0.95;
   }
-  B.hover=null;
-  if(B.mouse.x>=0){ let best=1e9;
-    for(const n of ns){ const dx=n.x-B.mouse.x, dy=n.y-B.mouse.y, d2=dx*dx+dy*dy, rr=(n.r+6)*(n.r+6);
-      if(d2<rr && d2<best){ best=d2; B.hover=n; } } }
-  brainTip();
 }
 function brainDraw(){
-  const B=BRAIN, ctx=B.ctx, ns=B.nodes; ctx.clearRect(0,0,B.w,B.h);
-  for(const n of ns){ const a=B.anchors[n.reg], reg=BRAIN_REGIONS[n.reg];
-    const dim=B.dim.has(n.reg)||(B.matched&&!B.matched.has(n.id));
-    ctx.strokeStyle=hexA(reg.color, dim?0.03:0.07); ctx.lineWidth=1;
-    ctx.beginPath(); ctx.moveTo(n.x,n.y); ctx.lineTo(a.x,a.y); ctx.stroke(); }
-  for(const k in BRAIN_REGIONS){ const a=B.anchors[k], reg=BRAIN_REGIONS[k], dim=B.dim.has(k);
-    ctx.beginPath(); ctx.arc(a.x,a.y,5,0,7); ctx.fillStyle=hexA(reg.color, dim?0.3:0.95); ctx.fill();
-    ctx.fillStyle=hexA(reg.color, dim?0.3:0.7); ctx.font='600 11px ui-sans-serif,system-ui'; ctx.textAlign='center';
-    ctx.fillText(reg.label.toUpperCase(), a.x, a.y-12); }
-  for(const n of ns){ const reg=BRAIN_REGIONS[n.reg];
-    const dim=B.dim.has(n.reg)||(B.matched&&!B.matched.has(n.id)), hit=B.matched&&B.matched.has(n.id);
-    const b=Math.max(0,Math.min(1,n.born==null?1:n.born)), grow=1-Math.pow(1-b,3), rr=n.r*grow;
-    if(b<1){ ctx.beginPath(); ctx.arc(n.x,n.y, n.r+4+(1-b)*15, 0,7); ctx.strokeStyle=hexA(reg.color,0.55*(1-b)); ctx.lineWidth=1.5; ctx.stroke(); }
-    if(hit||n===B.hover){ const pulse=hit?(0.55+0.45*Math.sin(B.t*0.12)):1;
-      ctx.beginPath(); ctx.arc(n.x,n.y,rr+5+(hit?3*pulse:2),0,7); ctx.fillStyle=hexA(reg.color,0.16*(hit?pulse:1)); ctx.fill(); }
-    ctx.beginPath(); ctx.arc(n.x,n.y,rr,0,7); ctx.fillStyle=hexA(reg.color, dim?0.12:n.tierA); ctx.fill();
-    if(n.tier==='hot'&&!dim){ ctx.strokeStyle=hexA(reg.color,0.5); ctx.lineWidth=1; ctx.stroke(); }
-    if(n===B.hover||n===B.sel){ ctx.strokeStyle='#fff'; ctx.lineWidth=1.4; ctx.beginPath(); ctx.arc(n.x,n.y,rr+2.5,0,7); ctx.stroke(); } }
+  const B=BRAIN, ctx=B.ctx, c=B.cam; ctx.clearRect(0,0,B.w,B.h);
+  // project every node + anchor through the orbit camera (yaw, pitch) with perspective
+  const cyw=Math.cos(c.yaw), syw=Math.sin(c.yaw), cp=Math.cos(c.pitch), sp=Math.sin(c.pitch), F=3.0;
+  const pr=(x,y,z)=>{ const x1=x*cyw+z*syw, z1=-x*syw+z*cyw, y2=y*cp-z1*sp, z2=y*sp+z1*cp, persp=F/(F-z2);
+    return [B.cx+x1*B.R*persp*c.zoom, B.cy+y2*B.R*persp*c.zoom, z2, persp*c.zoom]; };
+  for(const n of B.nodes){ const p=pr(n.x,n.y,n.z); n.sx=p[0]; n.sy=p[1]; n.depth=p[2]; n.ps=p[3]; }
+  const ap={}; for(const k in BRAIN_ANCH){ const a=BRAIN_ANCH[k]; ap[k]=pr(a[0],a[1],a[2]); }
+  // hover: nearest projected node to the cursor (reliable now that nodes are settled)
+  if(B.mouse.x>=0 && !(B.drag&&B.drag.moved>4)){ let best=1e9, hv=null;
+    for(const n of B.nodes){ const dx=n.sx-B.mouse.x, dy=n.sy-B.mouse.y, d2=dx*dx+dy*dy, rr=(n.r*n.ps+7);
+      if(d2<rr*rr && d2<best){ best=d2; hv=n; } }
+    B.hover=hv;
+  } else B.hover=null;
+  const order=[...B.nodes].sort((a,b)=>a.depth-b.depth);   // back-to-front (painter's)
+  for(const n of order){ const a=ap[n.reg], reg=BRAIN_REGIONS[n.reg], dim=B.dim.has(n.reg)||(B.matched&&!B.matched.has(n.id));
+    ctx.strokeStyle=hexA(reg.color, dim?0.02:0.05); ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(n.sx,n.sy); ctx.lineTo(a[0],a[1]); ctx.stroke(); }
+  for(const k in BRAIN_REGIONS){ const a=ap[k], reg=BRAIN_REGIONS[k], dim=B.dim.has(k);
+    ctx.beginPath(); ctx.arc(a[0],a[1],5*a[3],0,7); ctx.fillStyle=hexA(reg.color,dim?0.3:0.9); ctx.fill();
+    ctx.fillStyle=hexA(reg.color,dim?0.3:0.72); ctx.font='600 11px ui-sans-serif,system-ui'; ctx.textAlign='center'; ctx.fillText(reg.label.toUpperCase(), a[0], a[1]-13); }
+  for(const n of order){ const reg=BRAIN_REGIONS[n.reg], dim=B.dim.has(n.reg)||(B.matched&&!B.matched.has(n.id)), hit=B.matched&&B.matched.has(n.id);
+    const b=Math.max(0,Math.min(1,n.born==null?1:n.born)), grow=1-Math.pow(1-b,3);
+    const da=0.42+0.58*((n.depth+1.2)/2.4), rr=Math.max(1.3, n.r*grow*Math.min(2,n.ps)*0.82);
+    if(b<1){ ctx.beginPath(); ctx.arc(n.sx,n.sy, rr+4+(1-b)*16,0,7); ctx.strokeStyle=hexA(reg.color,0.5*(1-b)); ctx.lineWidth=1.5; ctx.stroke(); }
+    if(hit||n===B.hover){ const pulse=hit?(0.55+0.45*Math.sin(B.t*0.12)):1; ctx.beginPath(); ctx.arc(n.sx,n.sy,rr+5+(hit?3*pulse:2),0,7); ctx.fillStyle=hexA(reg.color,0.16*(hit?pulse:1)); ctx.fill(); }
+    ctx.beginPath(); ctx.arc(n.sx,n.sy,rr,0,7); ctx.fillStyle=hexA(reg.color,(dim?0.1:n.tierA)*da); ctx.fill();
+    if(n.tier==='hot'&&!dim){ ctx.strokeStyle=hexA(reg.color,0.5*da); ctx.lineWidth=1; ctx.stroke(); }
+    if(n===B.hover||n===B.sel){ ctx.strokeStyle='#fff'; ctx.lineWidth=1.4; ctx.beginPath(); ctx.arc(n.sx,n.sy,rr+2.5,0,7); ctx.stroke(); } }
+  brainTip();
 }
 function brainTip(){
   const tip=document.getElementById('brainTip'); if(!tip) return; const B=BRAIN, n=B.hover;
   if(!n){ tip.hidden=true; return; } const reg=BRAIN_REGIONS[n.reg];
-  tip.innerHTML=`<div class="r" style="color:${reg.color}">${reg.label} · ${n.tier}</div>${esc(n.text)}<div class="m">accessed ${n.access||0}×</div>`;
+  tip.innerHTML=`<div class="r" style="color:${reg.color}">${reg.label} · ${n.tier}</div>${esc(n.text)}<div class="m">accessed ${n.access||0}× · click to open</div>`;
   tip.hidden=false; let x=B.mouse.x+16, y=B.mouse.y+14;
   if(x+tip.offsetWidth>B.w-10) x=B.mouse.x-tip.offsetWidth-14; if(y+tip.offsetHeight>B.h-10) y=B.mouse.y-tip.offsetHeight-12;
   tip.style.left=x+'px'; tip.style.top=y+'px';
+}
+// Orbit (drag), zoom (wheel), click-to-open. A drag rotates the camera; a press that barely moves is
+// treated as a click on the node under the cursor.
+function brainWireInput(canvas){
+  canvas.onmousemove=e=>{ const r=canvas.getBoundingClientRect(); BRAIN.mouse.x=e.clientX-r.left; BRAIN.mouse.y=e.clientY-r.top; };
+  canvas.onmouseleave=()=>{ if(BRAIN && !BRAIN.drag){ BRAIN.mouse.x=-1; BRAIN.mouse.y=-1; } };
+  canvas.onmousedown=e=>{ if(BRAIN) BRAIN.drag={lx:e.clientX, ly:e.clientY, moved:0}; };
+  canvas.onwheel=e=>{ e.preventDefault(); if(!BRAIN) return; const z=BRAIN.cam.zoom*(1-e.deltaY*0.0014); BRAIN.cam.zoom=Math.max(0.45,Math.min(4,z)); };
+  canvas.style.cursor='grab';
+  if(!window._brainDragWired){ window._brainDragWired=true;
+    window.addEventListener('mousemove', e=>{ const B=BRAIN; if(!B||!B.drag) return;
+      const dx=e.clientX-B.drag.lx, dy=e.clientY-B.drag.ly; B.drag.moved+=Math.abs(dx)+Math.abs(dy); B.drag.lx=e.clientX; B.drag.ly=e.clientY;
+      B.cam.yaw+=dx*0.008; B.cam.pitch=Math.max(-1.4,Math.min(1.4, B.cam.pitch+dy*0.008));
+      if(B.canvas) B.canvas.style.cursor='grabbing'; });
+    window.addEventListener('mouseup', ()=>{ const B=BRAIN; if(!B||!B.drag) return; const wasClick=B.drag.moved<5; B.drag=null;
+      if(B.canvas) B.canvas.style.cursor='grab';
+      if(wasClick){ B.hover?brainShowDetail(B.hover):brainCloseDetail(); } });
+  }
 }
 function brainToggleRegion(k){ const B=BRAIN; if(!B) return;
   B.dim.has(k)?B.dim.delete(k):B.dim.add(k);
@@ -2039,7 +2073,16 @@ function brainCloseDetail(){ const d=document.getElementById('brainDetail'); if(
 
 // ---- Consciousness panel: the always-loaded working memory, distilled from the brain ----------
 let MIND={lines:[]};
+function mindToggle(){
+  const p=document.getElementById('mindPanel'); if(!p) return;
+  const collapsed=p.classList.toggle('collapsed');
+  try{ localStorage.setItem('engram.mindCollapsed', collapsed?'1':'0'); }catch(_){}
+  const t=p.querySelector('.mind-toggle'); if(t) t.textContent=collapsed?'▸':'▾';
+}
 async function renderMind(){
+  const panel=document.getElementById('mindPanel');
+  if(panel){ let col='0'; try{ col=localStorage.getItem('engram.mindCollapsed')||'0'; }catch(_){}
+    panel.classList.toggle('collapsed', col==='1'); const tg=panel.querySelector('.mind-toggle'); if(tg) tg.textContent=col==='1'?'▸':'▾'; }
   const wrap=document.getElementById('mindLines'); if(!wrap) return;
   let st; try{ st=await J('/v1/consciousness'); }catch(_){ st={lines:[]}; }
   MIND=st;

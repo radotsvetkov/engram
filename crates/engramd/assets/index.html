@@ -326,6 +326,31 @@
   .brain-detail .bd-x:hover { color:var(--text-primary); }
   .brain-detail .bd-t { margin:9px 0 12px; line-height:1.55; }
   .brain-detail .bd-meta { display:flex; gap:14px; font-size:11px; color:var(--text-muted); border-top:1px solid var(--border); padding-top:10px; }
+  /* consciousness panel — the always-loaded working memory, docked as a glass card over the brain */
+  .mind-panel { position:absolute; left:20px; top:62px; bottom:84px; width:332px; z-index:24; display:flex; flex-direction:column;
+    background:var(--surface-1); border:1px solid var(--border-strong); border-radius:14px; box-shadow:var(--e4); overflow:hidden; }
+  .mind-h { padding:13px 15px 11px; border-bottom:1px solid var(--border); }
+  .mind-h .mt { font:600 11px var(--mono); text-transform:uppercase; letter-spacing:.09em; color:var(--accent); display:flex; align-items:center; gap:7px; }
+  .mind-h .mt b { color:var(--text-muted); font-weight:500; letter-spacing:0; text-transform:none; font-family:var(--sans); }
+  .mind-h .ms { font-size:11.5px; color:var(--text-muted); margin-top:5px; line-height:1.45; }
+  .mind-lines { flex:1; overflow-y:auto; padding:8px; display:flex; flex-direction:column; gap:6px; }
+  .mind-line { position:relative; padding:9px 11px 8px 12px; border-radius:10px; background:var(--surface-2); border:1px solid var(--border); border-left:3px solid var(--lc,#45c8a8); }
+  .mind-line:hover { border-color:var(--border-strong); }
+  .mind-line .ml-t { font-size:13px; line-height:1.5; color:var(--text-primary); padding-right:34px; }
+  .mind-line .ml-b { display:flex; align-items:center; gap:9px; margin-top:6px; font:500 10px var(--mono); text-transform:uppercase; letter-spacing:.05em; color:var(--text-muted); }
+  .mind-line .ml-b i { font-style:normal; }
+  .mind-line .ml-src { cursor:pointer; display:flex; align-items:center; gap:4px; }
+  .mind-line .ml-src.mem:hover { color:var(--lc,#45c8a8); }
+  .mind-line .ml-pin { margin-left:auto; opacity:.8; }
+  .mind-line .ml-act { position:absolute; top:6px; right:7px; display:flex; gap:3px; opacity:0; transition:opacity var(--dur-1); }
+  .mind-line:hover .ml-act { opacity:1; }
+  .mind-line .ml-act button { background:none; border:none; color:var(--text-muted); cursor:pointer; font-size:12px; line-height:1; padding:3px 4px; border-radius:5px; }
+  .mind-line .ml-act button:hover { color:var(--text-primary); background:var(--surface-3); }
+  .mind-foot { display:flex; gap:7px; padding:10px 12px; border-top:1px solid var(--border); }
+  .mind-foot .sbtn { flex:1; justify-content:center; }
+  .mind-empty { padding:22px 16px; color:var(--text-muted); font-size:12.5px; line-height:1.55; text-align:center; }
+  .mind-empty b { color:var(--text-secondary); }
+  @media (max-width:880px){ .mind-panel { display:none; } }
   .brain-empty { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; flex-direction:column;
     gap:6px; color:var(--text-muted); text-align:center; pointer-events:none; }
   .brain-empty b { color:var(--text-secondary); font-size:15px; }
@@ -1795,10 +1820,23 @@ async function renderMemory(){
         <button onclick="brainRecall()">Recall</button><span id="brainNote" class="brain-note"></span>
       </div></div>
     </div>
+    <div class="mind-panel" id="mindPanel">
+      <div class="mind-h">
+        <div class="mt">◉ Consciousness <b id="mindVer"></b></div>
+        <div class="ms">The working memory loaded into every answer — distilled from your brain, editable, signed.</div>
+      </div>
+      <div class="mind-lines" id="mindLines"></div>
+      <div class="mind-foot">
+        <button class="sbtn" onclick="mindDistill()">Re-distill</button>
+        <button class="sbtn ghost" onclick="mindRevert()">Revert</button>
+        <button class="sbtn ghost" onclick="mindAdd()">+ Line</button>
+      </div>
+    </div>
     <div class="brain-tip" id="brainTip" hidden></div>
     ${(data.nodes||[]).length?'':'<div class="brain-empty"><b>The brain is empty.</b><span>Engram grows this graph as you talk — or teach it a fact now.</span></div>'}
   </div>`;
   brainInit(data.nodes||[]);
+  renderMind();
 }
 function hexA(hex,a){ const n=parseInt(hex.slice(1),16); return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},${a})`; }
 function brainInit(raw){
@@ -1898,6 +1936,65 @@ function brainShowDetail(n){
   d.hidden=false;
 }
 function brainCloseDetail(){ const d=document.getElementById('brainDetail'); if(d) d.remove(); if(BRAIN) BRAIN.sel=null; }
+
+// ---- Consciousness panel: the always-loaded working memory, distilled from the brain ----------
+let MIND={lines:[]};
+async function renderMind(){
+  const wrap=document.getElementById('mindLines'); if(!wrap) return;
+  let st; try{ st=await J('/v1/consciousness'); }catch(_){ st={lines:[]}; }
+  MIND=st;
+  const ver=document.getElementById('mindVer'); if(ver) ver.textContent=(st.lines||[]).length?`${st.lines.length}/9 lines`:'';
+  const lines=st.lines||[];
+  if(!lines.length){ wrap.innerHTML=`<div class="mind-empty"><b>Working memory is empty.</b><br>Distill it from your brain, or add a line you want loaded into every answer.</div>`; return; }
+  wrap.innerHTML = lines.map(l=>{
+    const reg=BRAIN_REGIONS[l.region]||BRAIN_REGIONS.semantic;
+    const isMem=l.source&&l.source.kind==='memory';
+    const src = isMem
+      ? `<span class="ml-src mem" onclick="mindFocus(${(l.source.id|0)})" title="Open the source memory in the brain">◇ #${l.source.id}</span>`
+      : `<span class="ml-src">✎ yours</span>`;
+    const pin = l.pinned ? `<span class="ml-pin" title="Pinned — kept when you re-distill">📌</span>` : '';
+    return `<div class="mind-line" style="--lc:${reg.color}">
+      <div class="ml-act"><button onclick="mindEdit('${escAttr(l.id)}')" title="Edit">✎</button><button onclick="mindRemove('${escAttr(l.id)}')" title="Remove">×</button></div>
+      <div class="ml-t">${esc(l.text)}</div>
+      <div class="ml-b"><i style="color:${reg.color}">${esc(reg.label)}</i>${src}${pin}</div>
+    </div>`;
+  }).join('');
+}
+function mindApply(st){ MIND=st; renderMind(); }
+const MIND_JSON={'content-type':'application/json'};
+async function mindDistill(){
+  try{ mindApply(await J('/v1/consciousness/distill',{method:'POST'})); notify('Re-distilled from your brain · signed','ok'); }
+  catch(e){ notify('Couldn’t distill — '+e.message); }
+}
+async function mindRevert(){
+  try{ mindApply(await J('/v1/consciousness/revert',{method:'POST'})); notify('Reverted to the previous version · signed','ok'); }
+  catch(e){ notify('Nothing to revert to'); }
+}
+async function mindAdd(){
+  const v=await askInput({title:'Add to working memory',label:'A durable fact you want loaded into every answer. Saved as yours, and signed.',placeholder:'e.g. I work in Europe/Sofia time',ok:'Add'});
+  if(v===null) return; const t=v.trim(); if(!t) return;
+  try{ mindApply(await J('/v1/consciousness/add',{method:'POST',headers:MIND_JSON,body:JSON.stringify({text:t})})); notify('Added to working memory · signed','ok'); }
+  catch(e){ notify('Couldn’t add — '+e.message); }
+}
+async function mindEdit(id){
+  const l=(MIND.lines||[]).find(x=>x.id===id); if(!l) return;
+  const v=await askInput({title:'Edit working memory',label:'Always loaded into every answer. Editing pins this line, so re-distilling keeps it.',value:l.text,ok:'Save'});
+  if(v===null) return; const t=v.trim(); if(!t) return;
+  try{ mindApply(await J('/v1/consciousness/edit',{method:'POST',headers:MIND_JSON,body:JSON.stringify({id,text:t})})); notify('Updated · pinned · signed','ok'); }
+  catch(e){ notify('Couldn’t edit — '+e.message); }
+}
+async function mindRemove(id){
+  if(!await askConfirm({title:'Remove this line?',message:'It stops loading into answers. You can Revert to undo.',ok:'Remove',danger:true})) return;
+  try{ mindApply(await J('/v1/consciousness/remove',{method:'POST',headers:MIND_JSON,body:JSON.stringify({id})})); notify('Removed · signed (Revert to undo)','ok'); }
+  catch(e){ notify('Couldn’t remove — '+e.message); }
+}
+function mindFocus(memId){
+  const B=BRAIN; if(!B) return;
+  const node=B.nodes.find(n=>n.id===memId);
+  if(!node){ notify('That memory isn’t in the current graph view'); return; }
+  brainShowDetail(node);
+  const orig=node.r; node.r=orig*1.9; setTimeout(()=>{ if(node) node.r=orig; }, 900);
+}
 // ---- Teach modal ----
 function openTeach(){
   let m=document.getElementById('teachOverlay');

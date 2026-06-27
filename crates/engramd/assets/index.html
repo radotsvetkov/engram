@@ -432,6 +432,18 @@
   .sk-empty { text-align:center; color:var(--text-muted); padding:60px 20px; display:flex; flex-direction:column; gap:8px; }
   .sk-empty b { color:var(--text-secondary); font-size:16px; }
   .sk-empty span { max-width:460px; margin:0 auto; line-height:1.55; font-size:13px; }
+  /* auditable dissent — the grounded specialist note */
+  .dissent { border:1px solid color-mix(in srgb,var(--warning) 36%,var(--border-strong)); background:color-mix(in srgb,var(--warning) 7%,var(--surface-1)); border-radius:12px; padding:14px 15px; }
+  .dis-head { display:flex; align-items:center; gap:8px; font:600 12px var(--mono); text-transform:uppercase; letter-spacing:.06em; color:var(--warning); }
+  .dis-ic { font-size:14px; }
+  .dis-obj { margin:9px 0 13px; font-size:14px; line-height:1.55; color:var(--text-primary); }
+  .dis-lbl { font:600 10px var(--mono); text-transform:uppercase; letter-spacing:.05em; color:var(--text-muted); margin-bottom:6px; }
+  .dis-grounds { display:flex; flex-direction:column; gap:5px; }
+  .dis-ground { font-size:12.5px; line-height:1.5; color:var(--text-secondary); padding:6px 10px; border-radius:8px; background:var(--surface-2); border-left:3px solid var(--lc,var(--accent)); cursor:pointer; }
+  .dis-ground:hover { color:var(--text-primary); }
+  .dis-ground .rg { font-family:var(--mono); color:var(--lc,var(--accent)); margin-right:4px; }
+  .dis-actions { display:flex; gap:8px; margin-top:14px; }
+  .dis-foot { margin-top:11px; font-size:11px; color:var(--text-muted); line-height:1.5; }
   /* settings */
   .settings { max-width:780px; margin:0 auto; padding:22px 24px 64px; overflow-y:auto; height:100%; }
   .settings h2 { font-size:17px; font-weight:600; margin:0 0 4px; }
@@ -1478,7 +1490,7 @@ async function openTask(id, fromPoll){
   let html='';
   { const agentOpts=['<option value="">Default agent</option>'].concat(AGENTS.map(a=>`<option value="${escAttr(a.id)}"${t.agent===a.id?' selected':''}>${esc(a.name)}</option>`)).join('');
     html+=`<div class="agent-row"><span class="muted" style="font-size:11px">agent</span><select class="agent-pick" onchange="assignAgent('${id}',this.value)">${agentOpts}</select><span style="flex:1"></span><button class="ghost agent-manage" onclick="openCC('agents')">Manage team</button></div>`; }
-  if(t.status==='todo') html+=`<div class="row"><button onclick="runTaskLive('${id}')">Run now</button><button class="ghost" onclick="previewTask('${id}')" title="see what the agent would do - nothing is executed">Preview</button></div><div id="previewOut" class="sub"></div>`;
+  if(t.status==='todo') html+=`<div class="row"><button onclick="runWithReview('${id}')">Run now</button><button class="ghost" onclick="previewTask('${id}')" title="see what the agent would do - nothing is executed">Preview</button></div><div id="previewOut" class="sub"></div>`;
   if(t.run){
     const denied=(t.run.steps||[]).find(s=>!s.ok && /shell/i.test(s.tool) && /disabled|refused/i.test(s.observation));
     if(denied){
@@ -2380,6 +2392,33 @@ async function assignAgent(id, agentId){
     await loadTasks(); if(state.route==='Tasks') renderBoard(); openTask(id,true);
     notify(agentId?'Agent assigned · signed':'Reset to the default agent','ok');
   }catch(e){ notify('Couldn’t assign — '+e.message); }
+}
+// ---- Auditable dissent: a grounded pre-run objection, or silence (never theatre) ----------------
+let _pendingDissent=null;
+async function runWithReview(id){
+  let d=null;
+  try{ const r=await J('/v1/tasks/'+id+'/review',{method:'POST'}); d=r&&r.dissent; }catch(_){}
+  if(d && d.grounds && d.grounds.length){ _pendingDissent={id,d}; showDissent(d); return; }
+  runTaskLive(id);   // nothing grounded conflicts (or no model to assess) — just run
+}
+function showDissent(d){
+  const body=document.getElementById('pBody'); if(!body) return;
+  const grounds=(d.grounds||[]).map(g=>{ const reg=BRAIN_REGIONS[g.region]||BRAIN_REGIONS.semantic;
+    return `<div class="dis-ground" style="--lc:${reg.color}" onclick="recallOpen(${g.id|0})" title="open this memory in the brain"><span class="rg">◇</span> ${esc(g.text)}</div>`; }).join('');
+  body.innerHTML=`<div class="dissent">
+    <div class="dis-head"><span class="dis-ic">⚑</span> Specialist note</div>
+    <div class="dis-obj">${esc(d.objection)}</div>
+    <div class="dis-lbl">grounded on ${d.grounds.length} memor${d.grounds.length===1?'y':'ies'} — click any to verify</div>
+    <div class="dis-grounds">${grounds}</div>
+    <div class="dis-actions"><button class="sbtn primary" onclick="dissentResolve('proceed')">Proceed anyway</button><button class="sbtn ghost" onclick="dissentResolve('revise')">Cancel &amp; revise</button></div>
+    <div class="dis-foot">Your choice and these grounds are signed into the ledger together.</div>
+  </div>`;
+}
+async function dissentResolve(choice){
+  const p=_pendingDissent; if(!p) return; _pendingDissent=null;
+  try{ await J('/v1/tasks/'+p.id+'/dissent',{method:'POST',headers:MIND_JSON,body:JSON.stringify({objection:p.d.objection,grounds:(p.d.grounds||[]).map(g=>g.id),choice})}); }catch(_){}
+  if(choice==='proceed'){ notify('Proceeding — decision signed','ok'); runTaskLive(p.id); }
+  else { notify('Held back — decision signed','ok'); openTask(p.id,true); }
 }
 function ccMessaging(){ return ccHead('Messaging','Where Engram reaches you.')+
   `<div class="scard"><div class="ph">Notification routing and scheduled-job delivery (for example a morning brief to Telegram) will be configured here.</div></div>`; }

@@ -26,6 +26,7 @@ mod channels;
 mod config;
 mod conscious;
 mod converse;
+mod dissent;
 mod embedder;
 mod seed;
 mod tasks;
@@ -298,6 +299,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/tasks", get(tasks_list).post(tasks_create))
         .route("/v1/tasks/{id}", axum::routing::patch(tasks_update).delete(tasks_delete))
         .route("/v1/tasks/{id}/agent", post(tasks_assign))
+        .route("/v1/tasks/{id}/review", post(task_review))
+        .route("/v1/tasks/{id}/dissent", post(task_dissent))
         .route("/v1/tasks/{id}/run", post(tasks_run))
         .route("/v1/tasks/{id}/run/stream", post(tasks_run_stream))
         .route("/v1/tasks/{id}/audit", get(task_audit))
@@ -944,6 +947,51 @@ async fn tasks_assign(State(app): State<App>, Path(id): Path<String>, Json(p): J
         .append("task.assign", "user", json!({ "task": id, "agent": agent, "agent_name": agent_name }))
         .map_err(err)?;
     Ok(Json(serde_json::to_value(t).map_err(err)?))
+}
+
+/// Pre-run specialist review: surface a grounded objection (citing real recalled memories) if the
+/// task conflicts with what Engram knows. Returns `{ dissent: null }` when nothing real conflicts or
+/// no model is connected to assess - it never invents an objection.
+async fn task_review(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
+    let task = app.tasks.get(&id).ok_or_else(|| err("task not found"))?;
+    let prompt = if task.detail.trim().is_empty() {
+        task.title.clone()
+    } else {
+        format!("{}\n\n{}", task.title, task.detail)
+    };
+    // A reviewing agent uses its own model (right model per task); else the global default.
+    let model = task
+        .agent
+        .as_ref()
+        .and_then(|aid| app.agents.get(aid))
+        .and_then(|a| (!a.model.is_empty()).then_some(a.model))
+        .unwrap_or_else(|| app.model());
+    let d = dissent::review(&app.memory, &app.gateway, &model, &prompt).await;
+    Ok(Json(json!({ "dissent": d })))
+}
+
+/// Record the user's response to a specialist objection - signing plan + objection + grounds +
+/// choice as ONE ledger artifact, attributed to the agent that raised it. The disagreement itself
+/// becomes auditable.
+async fn task_dissent(State(app): State<App>, Path(id): Path<String>, Json(p): Json<Value>) -> ApiResult {
+    let objection = p.get("objection").and_then(Value::as_str).unwrap_or("");
+    let grounds = p.get("grounds").cloned().unwrap_or_else(|| json!([]));
+    let choice = p.get("choice").and_then(Value::as_str).unwrap_or("proceed");
+    let actor = app
+        .tasks
+        .get(&id)
+        .and_then(|t| t.agent)
+        .and_then(|aid| app.agents.get(&aid))
+        .map(|a| a.name)
+        .unwrap_or_else(|| "specialist".into());
+    app.ledger
+        .append(
+            "dissent",
+            actor,
+            json!({ "task": id, "objection": objection, "grounds": grounds, "choice": choice }),
+        )
+        .map_err(err)?;
+    Ok(Json(json!({ "ok": true })))
 }
 
 async fn tasks_delete(State(app): State<App>, Path(id): Path<String>) -> ApiResult {

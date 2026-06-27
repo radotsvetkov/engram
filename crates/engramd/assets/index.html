@@ -590,10 +590,13 @@
     border-radius:var(--r-chip); box-shadow:var(--e1); padding:3px 10px 3px 7px; position:relative; cursor:default;
     transition:border-color var(--dur-1) var(--ease-out), transform var(--dur-1) var(--ease-out);
     animation:recall-in var(--dur-3) var(--ease-out) backwards; }
-  .recall::before { content:''; width:2px; align-self:stretch; margin:-3px 6px -3px 0; background:var(--accent); opacity:.5; border-radius:2px; }
+  .recall::before { content:''; width:2px; align-self:stretch; margin:-3px 6px -3px 0; background:var(--lc,var(--accent)); opacity:.7; border-radius:2px; }
   .recall:hover { border-color:var(--ring); transform:translateY(-1px); }
-  .recall .rg { font-family:var(--mono); color:var(--accent); font-size:10px; font-variant-numeric:tabular-nums;
+  .recall.clk { cursor:pointer; }
+  .recall.clk:hover { border-color:var(--lc,var(--ring)); }
+  .recall .rg { font-family:var(--mono); color:var(--lc,var(--accent)); font-size:10px; font-variant-numeric:tabular-nums;
     filter:drop-shadow(0 0 4px rgba(69,200,168,.4)); }
+  .rb-lbl { align-self:center; font:600 9.5px var(--mono); text-transform:uppercase; letter-spacing:.07em; color:var(--text-muted); margin-right:2px; }
   .recall:nth-child(2){ animation-delay:55ms } .recall:nth-child(3){ animation-delay:110ms }
   .recall:nth-child(4){ animation-delay:165ms } .recall:nth-child(5){ animation-delay:220ms }
   @keyframes recall-in { from{ opacity:0; transform:translateY(6px); } to{ opacity:1; transform:none; } }
@@ -1686,7 +1689,10 @@ function paintFeed(){
   const s=WS.byId[WS.activeSession], log=s?(s.messages||[]):[];
   f.innerHTML = log.map(m=>{
     if(m.role==='user') return `<div class="msg user">${esc(m.text)}</div>`;
-    const ribbon=(m.recalled&&m.recalled.length)?`<div class="ribbon">${m.recalled.slice(0,5).map(r=>`<span class="recall" title="${escAttr(r)}"><span class="rg">◇</span> ${esc((r||'').replace(/\s+/g,' ').slice(0,54))}</span>`).join('')}</div>`:'';
+    const refs=(m.recalled_refs&&m.recalled_refs.length)?m.recalled_refs:null;
+    const ribbon = refs
+      ? `<div class="ribbon"><span class="rb-lbl">grounded on ${refs.length}</span>${refs.slice(0,6).map(r=>{const reg=BRAIN_REGIONS[r.region]||BRAIN_REGIONS.semantic; return `<span class="recall clk" style="--lc:${reg.color}" title="${escAttr(r.text)}" onclick="recallOpen(${r.id|0})"><span class="rg">◇</span> ${esc((r.text||'').replace(/\s+/g,' ').slice(0,48))}</span>`;}).join('')}</div>`
+      : (m.recalled&&m.recalled.length)?`<div class="ribbon">${m.recalled.slice(0,5).map(r=>`<span class="recall" title="${escAttr(r)}"><span class="rg">◇</span> ${esc((r||'').replace(/\s+/g,' ').slice(0,54))}</span>`).join('')}</div>`:'';
     const learned=(m.learned&&m.learned.length)?`<div class="learned">learned about you · ${m.learned.map(esc).join(' · ')}</div>`:'';
     const body = m.text ? (mdToHtml(m.text) + (m.streaming?'<span class="caret"></span>':'')) : (m.streaming?thinkingDots:'…');
     return `<div><div class="msg engram">${body}</div>${ribbon}${learned}</div>`;
@@ -1724,7 +1730,7 @@ async function chatSay(text, attachments){
         // is still on screen (so a mid-stream switch doesn't render into the wrong feed).
         const live = WS.activeSession===sid;
         if(ev==='token'){ msg.text+=data; if(live) paintFeed(); }
-        else if(ev==='done'){ try{const d=JSON.parse(data); if(d.reply) msg.text=d.reply; msg.recalled=d.recalled; msg.learned=d.learned;}catch(_){} if(live) paintFeed(); }
+        else if(ev==='done'){ try{const d=JSON.parse(data); if(d.reply) msg.text=d.reply; msg.recalled=d.recalled; msg.recalled_refs=d.recalled_refs; msg.learned=d.learned;}catch(_){} if(live) paintFeed(); }
         else if(ev==='error'){ msg.text='(couldn’t reach Engram - '+data+')'; if(live) paintFeed(); }
       }
     }
@@ -1994,6 +2000,12 @@ function mindFocus(memId){
   if(!node){ notify('That memory isn’t in the current graph view'); return; }
   brainShowDetail(node);
   const orig=node.r; node.r=orig*1.9; setTimeout(()=>{ if(node) node.r=orig; }, 900);
+}
+// A recall-ribbon chip under a chat answer: jump to the Memory view and focus the memory that
+// grounded the reply, so "what backed this answer" is one click from the answer itself.
+function recallOpen(id){
+  go('Memory');
+  setTimeout(()=>{ if(typeof mindFocus==='function') mindFocus(id); }, 680);
 }
 // ---- Teach modal ----
 function openTeach(){

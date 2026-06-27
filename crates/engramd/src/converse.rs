@@ -15,7 +15,19 @@ use engram_memory::{Memory, Region, WriteReq};
 pub struct Turn {
     pub reply: String,
     pub recalled: Vec<String>,
+    /// The recalled memories with their id/region/score, so the chat can show a "recall ribbon"
+    /// under each answer - exactly which memories grounded it, each clickable to its brain node.
+    pub recalled_refs: Vec<RecalledRef>,
     pub learned: Vec<String>,
+}
+
+/// One grounding memory surfaced to the UI: enough to render a tinted, click-through chip.
+#[derive(Clone, serde::Serialize)]
+pub struct RecalledRef {
+    pub id: i64,
+    pub region: String,
+    pub text: String,
+    pub score: f32,
 }
 
 pub async fn converse(
@@ -89,7 +101,7 @@ pub async fn converse_stream(
     on_delta: &mut (dyn FnMut(String) + Send),
 ) -> Result<Turn, String> {
     // 1. Record the user's message as a lived experience.
-    memory
+    let user_record = memory
         .remember(WriteReq::new(Region::Episodic, text).source("user").actor("user"))
         .map_err(|e| e.to_string())?;
 
@@ -98,7 +110,19 @@ pub async fn converse_stream(
     // Trusted context only: content the agent read from untrusted sources is stored with
     // its provenance but never re-surfaces here as trusted memory (memory-poisoning guard).
     let hits = memory.recall_trusted(text, &regions, 5).map_err(|e| e.to_string())?;
+    // Drop the user's own message we just stored - it would otherwise surface as its own
+    // "grounding" memory in the recall ribbon and the prompt context.
+    let hits: Vec<_> = hits.into_iter().filter(|h| h.record.id != user_record.id).collect();
     let recalled: Vec<String> = hits.iter().map(|h| h.record.text.clone()).collect();
+    let recalled_refs: Vec<RecalledRef> = hits
+        .iter()
+        .map(|h| RecalledRef {
+            id: h.record.id,
+            region: h.record.region.clone(),
+            text: h.record.text.clone(),
+            score: h.score,
+        })
+        .collect();
 
     // 3. Deepen the model of the user from what they just said. A changed *singular*
     //    attribute (name, where they live/work) supersedes the prior value - the old fact
@@ -163,7 +187,7 @@ pub async fn converse_stream(
         )
         .map_err(|e| e.to_string())?;
 
-    Ok(Turn { reply: completion.text, recalled, learned })
+    Ok(Turn { reply: completion.text, recalled, recalled_refs, learned })
 }
 
 /// An inferred identity fact, with the prefix it was derived from and whether it is a

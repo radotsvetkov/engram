@@ -1109,6 +1109,7 @@ async fn converse_handler(State(app): State<App>, Json(r): Json<ConverseReq>) ->
     Ok(Json(json!({
         "reply": turn.reply,
         "recalled": turn.recalled,
+        "recalled_refs": turn.recalled_refs,
         "learned": turn.learned,
     })))
 }
@@ -1137,7 +1138,7 @@ async fn converse_stream_handler(
                     app.workspace.append_turn(sid, &r.text, &turn.reply, turn.recalled.clone(), turn.learned.clone());
                 }
                 let _ = tx.send(Event::default().event("done").data(
-                    json!({ "reply": turn.reply, "recalled": turn.recalled, "learned": turn.learned })
+                    json!({ "reply": turn.reply, "recalled": turn.recalled, "recalled_refs": turn.recalled_refs, "learned": turn.learned })
                         .to_string(),
                 ));
             }

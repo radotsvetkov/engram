@@ -1229,7 +1229,8 @@ async function runTaskLive(id){
   const lrMeter=()=>{ const el=document.getElementById('lrMeter'); if(!el) return; const n=stepsEl?stepsEl.children.length:0;
     el.textContent = `${n?n+(n===1?' step':' steps')+' · ':''}${lrTokens?lrTokens+' tok · ':''}${lrCost?'$'+lrCost.toFixed(4)+' · ':''}${((Date.now()-t0)/1000).toFixed(1)}s`; };
   const tick=setInterval(lrMeter,250);
-  const finish=async()=>{ clearInterval(tick); lrMeter(); liveRunId=null; await loadTasks(); if(state.route==='Tasks') renderBoard(); };
+  let lrEnded=false;
+  const finish=async()=>{ if(lrEnded) return; lrEnded=true; clearInterval(tick); lrMeter(); liveRunId=null; await loadTasks(); if(state.route==='Tasks') renderBoard(); };
   try{
     const r=await fetch('/v1/tasks/'+encodeURIComponent(id)+'/run/stream',{method:'POST',headers:{...AUTH}});
     if(!r.ok||!r.body) throw new Error('HTTP '+r.status);
@@ -1261,6 +1262,7 @@ async function runTaskLive(id){
         else if(ev==='error'){ const st=document.getElementById('lrStatus'); if(st) st.textContent='Run failed'; await finish(); }
       }
     }
+    await finish();   // stream ended without a terminal event (close / partial final frame): still clear the timer and unstick liveRunId
   }catch(e){ const st=document.getElementById('lrStatus'); if(st) st.textContent='Couldn’t run — '+(e.message||'error'); document.querySelector('.lr-head .pulse')?.remove(); await finish(); }
 }
 // Dry-run preview: shows what the agent would do without executing any side-effecting tool.
@@ -2429,7 +2431,7 @@ function actPaint(){
     return `<div class="act-row"><span class="act-dot" style="background:${a.color};color:${a.color}"></span>
       <div class="act-main"><div class="act-kind">${esc(a.label)}</div>${a.summary?`<div class="act-summary">${esc(a.summary.slice(0,220))}</div>`:''}
         <div class="act-meta2"><span class="act-time">${esc(fmtAgo(e.ts_ms))}</span><span class="act-by">${esc(a.actor)}</span><span>#${esc(String(e.seq))}</span>
-          <span class="act-hash" title="signed hash — click to copy" onclick="navigator.clipboard&&navigator.clipboard.writeText('${esc(e.hash||'')}')">◇ ${esc((e.hash||'').slice(0,10))}</span></div></div></div>`;
+          <span class="act-hash" title="signed hash — click to copy" onclick="navigator.clipboard&&navigator.clipboard.writeText('${escAttr(e.hash||'')}')">◇ ${esc((e.hash||'').slice(0,10))}</span></div></div></div>`;
   }).join('') || '<div class="ses-empty" style="padding:24px 2px">No matching entries.</div>';
 }
 function renderView(){

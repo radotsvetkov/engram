@@ -853,7 +853,29 @@ pub(crate) async fn run_task_core(
             }));
         }
     });
-    let run = run_agent_task_cb(app, &prompt, 10, engram_core::Taint::Trusted, false, Some(on_step)).await?;
+    let run = match run_agent_task_cb(app, &prompt, 10, engram_core::Taint::Trusted, false, Some(on_step)).await {
+        Ok(r) => r,
+        Err(e) => {
+            // The agent errored (e.g. provider failure after retries). try_begin already
+            // marked the task "doing"; record a failed receipt so it isn't stuck "doing"
+            // forever (try_begin would reject every future run).
+            let m = app.gateway.meter();
+            let receipt = tasks::TaskRun {
+                answer: format!("(run failed: {e})"),
+                steps: Vec::new(),
+                stopped: "error".to_string(),
+                tokens_in: m.tokens_in.saturating_sub(before.tokens_in),
+                tokens_out: m.tokens_out.saturating_sub(before.tokens_out),
+                cost_usd: (m.cost_usd - before.cost_usd).max(0.0),
+                ledger_head_hash: app.ledger.head().1,
+                started_ms,
+                finished_ms: engram_core::now_ms() as i64,
+            };
+            app.tasks.finish(id, receipt, "failed");
+            app.bus.emit(Spike::new("task.done", Priority::Normal, json!({ "id": id, "status": "failed" })));
+            return Err(e);
+        }
+    };
     let finished_ms = engram_core::now_ms() as i64;
     let after = app.gateway.meter();
     let (_, head) = app.ledger.head();

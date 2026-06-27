@@ -41,6 +41,10 @@ pub struct Task {
     pub tool_tags: Vec<String>,
     #[serde(default)]
     pub schedule_id: Option<String>,
+    /// The durable agent (by id) assigned to run this card - the auditable team. None = the
+    /// default agent. When set, the run adopts the agent's role + model and signs as that actor.
+    #[serde(default)]
+    pub agent: Option<String>,
     pub created_ms: i64,
     pub updated_ms: i64,
     /// Live progress while running, e.g. "step 3 · web_search".
@@ -130,6 +134,7 @@ impl TaskStore {
             origin,
             tool_tags,
             schedule_id: None,
+            agent: None,
             created_ms: now,
             updated_ms: now,
             progress: None,
@@ -159,6 +164,17 @@ impl TaskStore {
         if let Some(d) = detail {
             task.detail = d;
         }
+        task.updated_ms = now_ms() as i64;
+        let out = task.clone();
+        self.save(&t);
+        Some(out)
+    }
+
+    /// Assign (or clear, with `None`) the durable agent that runs this card.
+    pub fn set_agent(&self, id: &str, agent: Option<String>) -> Option<Task> {
+        let mut t = self.tasks.lock().expect("tasks mutex");
+        let task = t.iter_mut().find(|x| x.id == id)?;
+        task.agent = agent;
         task.updated_ms = now_ms() as i64;
         let out = task.clone();
         self.save(&t);

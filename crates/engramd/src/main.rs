@@ -21,6 +21,7 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+mod agents;
 mod channels;
 mod config;
 mod conscious;
@@ -74,6 +75,8 @@ struct App {
     /// The always-loaded working memory distilled from the brain, prepended to every run. Signed,
     /// editable, revertible - the verifiable-memory layer.
     consciousness: Arc<conscious::Consciousness>,
+    /// Durable, named, role-scoped agents assignable to kanban cards - the auditable team.
+    agents: Arc<agents::AgentStore>,
 }
 
 impl App {
@@ -250,6 +253,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         home: home.clone(),
         telegram: Arc::new(std::sync::Mutex::new(None)),
         consciousness: Arc::new(conscious::Consciousness::open(&home)),
+        agents: Arc::new(agents::AgentStore::open(std::path::Path::new(&home))),
     };
     // Seed working memory once on first run, so the always-loaded block is never empty when the
     // brain already holds memories. Best-effort: a fresh brain just yields an empty block.
@@ -273,6 +277,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/consciousness/add", post(consciousness_add))
         .route("/v1/consciousness/remove", post(consciousness_remove))
         .route("/v1/consciousness/revert", post(consciousness_revert))
+        .route("/v1/agents", get(agents_list).post(agents_create))
+        .route("/v1/agents/{id}", post(agents_update).delete(agents_delete))
         .route("/v1/skills", get(skills))
         .route("/v1/skills/{id}/run", post(run_skill))
         .route("/v1/swarm", post(run_swarm))
@@ -291,6 +297,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/schedule/{id}/run", post(schedule_run))
         .route("/v1/tasks", get(tasks_list).post(tasks_create))
         .route("/v1/tasks/{id}", axum::routing::patch(tasks_update).delete(tasks_delete))
+        .route("/v1/tasks/{id}/agent", post(tasks_assign))
         .route("/v1/tasks/{id}/run", post(tasks_run))
         .route("/v1/tasks/{id}/run/stream", post(tasks_run_stream))
         .route("/v1/tasks/{id}/audit", get(task_audit))
@@ -527,6 +534,45 @@ async fn consciousness_revert(State(app): State<App>) -> ApiResult {
     Ok(Json(serde_json::to_value(st).map_err(err)?))
 }
 
+// ---- Durable named agents (the auditable team) ------------------------------------------------
+
+async fn agents_list(State(app): State<App>) -> ApiResult {
+    Ok(Json(serde_json::to_value(app.agents.list()).map_err(err)?))
+}
+
+async fn agents_create(State(app): State<App>, Json(p): Json<Value>) -> ApiResult {
+    let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
+    if name.is_empty() {
+        return Err(err("an agent needs a name"));
+    }
+    let role = p.get("role").and_then(|v| v.as_str()).unwrap_or("");
+    let model = p.get("model").and_then(|v| v.as_str()).unwrap_or("");
+    let def = app.agents.create(name, role, model);
+    app.ledger
+        .append("agent.create", "user", json!({ "id": def.id, "name": def.name, "model": def.model }))
+        .map_err(err)?;
+    Ok(Json(serde_json::to_value(def).map_err(err)?))
+}
+
+async fn agents_update(State(app): State<App>, Path(id): Path<String>, Json(p): Json<Value>) -> ApiResult {
+    let name = p.get("name").and_then(|v| v.as_str());
+    let role = p.get("role").and_then(|v| v.as_str());
+    let model = p.get("model").and_then(|v| v.as_str());
+    let def = app.agents.update(&id, name, role, model).ok_or_else(|| err("no such agent"))?;
+    app.ledger
+        .append("agent.update", "user", json!({ "id": def.id, "name": def.name, "model": def.model }))
+        .map_err(err)?;
+    Ok(Json(serde_json::to_value(def).map_err(err)?))
+}
+
+async fn agents_delete(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
+    if !app.agents.delete(&id) {
+        return Err(err("no such agent"));
+    }
+    app.ledger.append("agent.delete", "user", json!({ "id": id })).map_err(err)?;
+    Ok(Json(json!({ "ok": true })))
+}
+
 #[derive(Deserialize)]
 struct RememberReq {
     region: Option<String>,
@@ -610,7 +656,7 @@ pub(crate) async fn run_agent_task(
     task: &str,
     max_steps: usize,
 ) -> Result<engram_agent::AgentRun, String> {
-    run_agent_task_cb(app, task, max_steps, engram_core::Taint::Trusted, false, None).await
+    run_agent_task_cb(app, task, max_steps, engram_core::Taint::Trusted, false, None, None).await
 }
 
 /// Run the agent with an explicit initial taint. Untrusted-origin prompts (inbound
@@ -623,6 +669,7 @@ pub(crate) async fn run_agent_task_cb(
     taint: engram_core::Taint,
     dry_run: bool,
     on_step: Option<engram_agent::StepCallback>,
+    agent_def: Option<&agents::AgentDef>,
 ) -> Result<engram_agent::AgentRun, String> {
     let policy = engram_agent::Policy {
         allow_shell: app.allow_shell.load(std::sync::atomic::Ordering::Relaxed),
@@ -635,7 +682,12 @@ pub(crate) async fn run_agent_task_cb(
         },
         ..Default::default()
     };
-    let model = app.model();
+    // A named agent brings its own model (the right model per task); else the global default.
+    let model = agent_def
+        .map(|a| a.model.trim())
+        .filter(|m| !m.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| app.model());
     let ctx = engram_agent::ToolCtx {
         memory: app.memory.clone(),
         skills: app.registry.clone(),
@@ -660,16 +712,29 @@ pub(crate) async fn run_agent_task_cb(
         .reflect(true)
         .token_budget(budget)
         .halt(app.halt.clone());
-    // Working memory (consciousness) leads the standing context; the persona is now only a style
-    // overlay. Together they replace SOUL.md as the source of truth for what the agent always knows.
-    let persona = app.persona.read().expect("persona lock").clone();
-    let standing = match (app.consciousness.prompt_block(), persona) {
-        (Some(c), Some(p)) => Some(format!("{c}\n{p}")),
-        (Some(c), None) => Some(c),
-        (None, p) => p,
-    };
-    if let Some(p) = standing {
-        agent = agent.persona(p);
+    // A named agent signs its steps as itself, so a multi-agent run is auditable per actor.
+    if let Some(a) = agent_def {
+        agent = agent.actor(a.name.clone());
+    }
+    // Standing context, in order: the assigned agent's ROLE (its specialization) leads, then the
+    // consciousness working memory (facts about the user), then the global persona (style). Together
+    // they replace SOUL.md as the source of truth for what the agent always knows.
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(a) = agent_def {
+        if !a.role.trim().is_empty() {
+            parts.push(a.role.clone());
+        }
+    }
+    if let Some(c) = app.consciousness.prompt_block() {
+        parts.push(c);
+    }
+    if let Some(p) = app.persona.read().expect("persona lock").clone() {
+        if !p.trim().is_empty() {
+            parts.push(p);
+        }
+    }
+    if !parts.is_empty() {
+        agent = agent.persona(parts.join("\n\n"));
     }
     if let Some(cb) = on_step {
         agent = agent.on_step(cb);
@@ -684,6 +749,7 @@ async fn agent_handler(State(app): State<App>, Json(r): Json<AgentReq>) -> ApiRe
         r.max_steps.unwrap_or(8),
         engram_core::Taint::Trusted,
         r.dry_run,
+        None,
         None,
     )
     .await
@@ -865,6 +931,21 @@ async fn tasks_update(
     Ok(Json(serde_json::to_value(t).map_err(err)?))
 }
 
+/// Assign (or clear) the durable agent that runs a card. Signed as `task.assign` - assigning a
+/// teammate to a card is itself an auditable event.
+async fn tasks_assign(State(app): State<App>, Path(id): Path<String>, Json(p): Json<Value>) -> ApiResult {
+    let agent = p.get("agent").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(String::from);
+    let agent_name = match &agent {
+        Some(aid) => Some(app.agents.get(aid).ok_or_else(|| err("no such agent"))?.name),
+        None => None,
+    };
+    let t = app.tasks.set_agent(&id, agent.clone()).ok_or_else(|| err("task not found"))?;
+    app.ledger
+        .append("task.assign", "user", json!({ "task": id, "agent": agent, "agent_name": agent_name }))
+        .map_err(err)?;
+    Ok(Json(serde_json::to_value(t).map_err(err)?))
+}
+
 async fn tasks_delete(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
     Ok(Json(json!({ "removed": app.tasks.remove(&id) })))
 }
@@ -920,7 +1001,10 @@ pub(crate) async fn run_task_core(
             }));
         }
     });
-    let run = match run_agent_task_cb(app, &prompt, 10, engram_core::Taint::Trusted, false, Some(on_step)).await {
+    // If a durable agent is assigned to this card, it drives the run (its role + model) and signs
+    // every step as itself - the auditable team.
+    let agent_def = task.agent.as_ref().and_then(|aid| app.agents.get(aid));
+    let run = match run_agent_task_cb(app, &prompt, 10, engram_core::Taint::Trusted, false, Some(on_step), agent_def.as_ref()).await {
         Ok(r) => r,
         Err(e) => {
             // The agent errored (e.g. provider failure after retries). try_begin already

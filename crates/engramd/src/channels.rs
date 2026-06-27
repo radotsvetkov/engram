@@ -55,7 +55,7 @@ pub async fn channel_handler(
     let _ = app.ledger.append("channel.in", "user", json!({ "platform": platform }));
     // Inbound webhook content is untrusted: the run starts tainted, so it cannot run
     // shell or exfiltrate even though anyone can POST here.
-    match crate::run_agent_task_cb(&app, &text, 8, engram_core::Taint::Untrusted, false, None).await {
+    match crate::run_agent_task_cb(&app, &text, 8, engram_core::Taint::Untrusted, false, None, None).await {
         Ok(run) => Json(reply(&platform, &run.answer)).into_response(),
         Err(e) => ApiError(e).into_response(),
     }

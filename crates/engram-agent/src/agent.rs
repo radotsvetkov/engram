@@ -73,6 +73,10 @@ pub struct Agent {
     token_budget: Option<u32>,
     /// A shared kill switch: when set true, the run stops at the next step boundary.
     halt: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// The actor recorded for this run's signed ledger entries. Defaults to the generic "agent";
+    /// set to a named, role-scoped agent so a multi-agent run is auditable per actor (the team you
+    /// can audit). Distinct from `persona` (which shapes behaviour) - this is the signed identity.
+    actor: String,
 }
 
 impl Agent {
@@ -87,7 +91,17 @@ impl Agent {
             reflect: false,
             token_budget: None,
             halt: None,
+            actor: "agent".into(),
         }
+    }
+    /// Set the ledger actor for this run - a named agent's identity, so its signed steps are
+    /// attributable to it. Empty falls back to the default "agent".
+    pub fn actor(mut self, actor: impl Into<String>) -> Self {
+        let a = actor.into();
+        if !a.trim().is_empty() {
+            self.actor = a;
+        }
+        self
     }
     /// Stop the run once total tokens (in+out) reach this ceiling - a runaway-cost guard.
     pub fn token_budget(mut self, tokens: u32) -> Self {
@@ -149,12 +163,12 @@ impl Agent {
             let s = self.gateway.meter();
             s.tokens_in + s.tokens_out
         };
-        let _ = ctx.ledger.append("agent.start", "agent", json!({ "task": task }));
+        let _ = ctx.ledger.append("agent.start", self.actor.as_str(), json!({ "task": task }));
 
         for _ in 0..self.max_steps {
             // Kill switch: stop cleanly at the step boundary (keeps the partial receipt).
             if self.halt.as_ref().is_some_and(|h| h.load(std::sync::atomic::Ordering::Relaxed)) {
-                let _ = ctx.ledger.append("agent.halt", "agent", json!({ "steps": steps.len() }));
+                let _ = ctx.ledger.append("agent.halt", self.actor.as_str(), json!({ "steps": steps.len() }));
                 return Ok(AgentRun { answer: "(stopped by kill switch)".into(), steps, stopped: "halted" });
             }
             // Runaway-cost guard: stop once the run has spent its token budget.
@@ -166,7 +180,7 @@ impl Agent {
                 if spent >= budget as u64 {
                     let _ = ctx.ledger.append(
                         "agent.budget",
-                        "agent",
+                        self.actor.as_str(),
                         json!({ "spent_tokens": spent, "budget": budget }),
                     );
                     return Ok(AgentRun {
@@ -200,10 +214,10 @@ impl Agent {
                          If anything is missing, wrong, or unverified, call the tools needed to fix \
                          it. If it is complete and correct, restate the final answer with no tool call.",
                     ));
-                    let _ = ctx.ledger.append("agent.reflect", "agent", json!({}));
+                    let _ = ctx.ledger.append("agent.reflect", self.actor.as_str(), json!({}));
                     continue;
                 }
-                let _ = ctx.ledger.append("agent.finish", "agent", json!({ "steps": steps.len() }));
+                let _ = ctx.ledger.append("agent.finish", self.actor.as_str(), json!({ "steps": steps.len() }));
                 return Ok(AgentRun { answer: completion.text, steps, stopped: "final" });
             }
 
@@ -235,7 +249,7 @@ impl Agent {
                 let truncated = truncate(&observation, ctx.policy.max_obs_len);
                 let (ledger_seq, ledger_hash) = ctx
                     .ledger
-                    .append("agent.tool", "agent", json!({ "tool": call.name, "ok": ok }))
+                    .append("agent.tool", self.actor.as_str(), json!({ "tool": call.name, "ok": ok }))
                     .map(|e| (e.seq, e.hash))
                     .unwrap_or((0, String::new()));
                 messages.push(Message::tool_result(call.id.clone(), truncated.clone()));
@@ -272,7 +286,7 @@ impl Agent {
             if repeat >= REPEAT_LIMIT {
                 let _ = ctx.ledger.append(
                     "agent.loop",
-                    "agent",
+                    self.actor.as_str(),
                     json!({ "signature": last_sig, "repeats": repeat }),
                 );
                 return Ok(AgentRun {
@@ -284,7 +298,7 @@ impl Agent {
         }
         let _ = ctx
             .ledger
-            .append("agent.finish", "agent", json!({ "steps": steps.len(), "limit": true }));
+            .append("agent.finish", self.actor.as_str(), json!({ "steps": steps.len(), "limit": true }));
         Ok(AgentRun {
             answer: "(reached step limit without a final answer)".into(),
             steps,
@@ -403,7 +417,7 @@ impl Agent {
         rebuilt.extend_from_slice(&messages[tail_start..]);
         let _ = ctx.ledger.append(
             "agent.compact",
-            "agent",
+            self.actor.as_str(),
             json!({ "from_tokens": total, "kept_tail_msgs": messages.len() - tail_start }),
         );
         *messages = rebuilt;

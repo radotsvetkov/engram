@@ -178,6 +178,38 @@
   .lr-step.bad .lr-ok { color:var(--danger); }
   .lr-none { font-size:12px; color:var(--text-muted); padding:6px 0; }
   .lr-answer:not(:empty) { margin-top:6px; padding-top:12px; border-top:1px solid var(--border); font-size:14px; line-height:1.6; color:var(--text-primary); }
+  /* activity - the signed ledger */
+  .activity { max-width:840px; margin:0 auto; padding:22px 24px 60px; height:100%; overflow-y:auto; }
+  .act-title { font-size:19px; font-weight:600; }
+  .act-sub { color:var(--text-muted); font-size:13px; margin:3px 0 16px; max-width:600px; line-height:1.55; }
+  .act-sub code { background:var(--surface-2); padding:1px 5px; border-radius:4px; font:11px var(--mono); }
+  .act-verify { display:flex; align-items:center; gap:12px; background:var(--surface-1); border:1px solid var(--border); border-radius:12px; padding:13px 16px; margin-bottom:14px; }
+  .act-verify.ok .act-seal { color:var(--accent); }
+  .act-verify.bad { border-color:var(--danger); } .act-verify.bad .act-seal { color:var(--danger); }
+  .act-seal { flex:none; display:inline-flex; filter:drop-shadow(0 0 8px currentColor); }
+  .av-text { min-width:0; }
+  .av-status { font-weight:600; font-size:14px; }
+  .av-meta { font-size:12px; color:var(--text-muted); margin-top:1px; }
+  .av-key { font-family:var(--mono); cursor:pointer; } .av-key:hover { color:var(--text-secondary); }
+  .act-reverify { margin-left:auto; background:var(--surface-2); border:1px solid var(--border); color:var(--text-secondary); border-radius:8px; padding:7px 13px; font-size:12px; cursor:pointer; transition:.12s; }
+  .act-reverify:hover { border-color:var(--border-strong); color:var(--text-primary); }
+  .act-controls { display:flex; gap:10px; align-items:center; margin-bottom:8px; }
+  .act-search { flex:1; background:var(--surface-1); border:1px solid var(--border-strong); border-radius:9px; padding:8px 12px; outline:none; color:var(--text-primary); font-size:13px; }
+  .act-search:focus { border-color:var(--ring); box-shadow:0 0 0 3px var(--accent-soft); }
+  .act-filters { display:flex; gap:4px; }
+  .act-filters button { background:var(--surface-1); border:1px solid var(--border); color:var(--text-secondary); border-radius:7px; padding:7px 11px; font-size:12px; cursor:pointer; transition:.12s; }
+  .act-filters button.on { border-color:var(--ring); color:var(--accent); background:var(--accent-soft); }
+  .act-list { display:flex; flex-direction:column; }
+  .act-row { display:flex; gap:12px; padding:11px 2px; border-bottom:1px solid var(--border); }
+  .act-dot { width:9px; height:9px; border-radius:50%; flex:none; margin-top:5px; box-shadow:0 0 7px currentColor; }
+  .act-main { flex:1; min-width:0; }
+  .act-kind { font-size:13px; font-weight:500; color:var(--text-primary); }
+  .act-summary { font-size:12px; color:var(--text-secondary); margin-top:2px; white-space:pre-wrap; word-break:break-word; font-family:var(--mono); }
+  .act-meta2 { display:flex; gap:11px; align-items:center; margin-top:5px; }
+  .act-meta2 > span { font-size:11px; color:var(--text-muted); }
+  .act-by { text-transform:capitalize; }
+  .act-hash { font-family:var(--mono); cursor:pointer; }
+  .act-hash:hover { color:var(--accent); }
 
   /* Generic chat/list */
   .chat { max-width:720px; margin:0 auto; padding:24px 16px; display:flex; flex-direction:column; gap:14px; height:100%; }
@@ -945,7 +977,7 @@
 </div>
 <footer class="statusbar">
   <span class="sb-left"><span class="dot" id="sbDot"></span><span id="sbDaemon" class="mono">engramd</span></span>
-  <span class="sb-center" id="sbSpine"><span class="chip ok" id="ledgerChip" role="status" aria-live="polite" onclick="openReceipt()" title="every action is signed into a hash-chained ledger — click for the verifiable receipt"><span class="seal"></span>ledger …</span></span>
+  <span class="sb-center" id="sbSpine"><span class="chip ok" id="ledgerChip" role="status" aria-live="polite" onclick="go('Activity')" title="every action is signed into a hash-chained ledger — click to browse and verify it"><span class="seal"></span>ledger …</span></span>
   <span class="sb-right"><span id="sbTaint" title="taint policy — the agent can't send your context to the web unless you allow it">no egress</span><span class="chip" id="costChip" role="status" aria-live="polite" title="model spend today">$0.00</span></span>
 </footer>
 <div class="overlay palette" id="palette" hidden onclick="if(event.target===this)closePalette()">
@@ -1016,10 +1048,11 @@ const ICONS = {
   Memory: SVG('<path d="M14.5 4.2A2.6 2.6 0 0 0 12 6.1a2.6 2.6 0 0 0-2.5-1.9 2.6 2.6 0 0 0-2.6 2.6c0 .3 0 .5.1.8a2.8 2.8 0 0 0-1.5 2.5 2.8 2.8 0 0 0 .8 2 2.6 2.6 0 0 0 1.7 4.4 2.6 2.6 0 0 0 4 .6 2.6 2.6 0 0 0 4-.6 2.6 2.6 0 0 0 1.7-4.4 2.8 2.8 0 0 0 .8-2 2.8 2.8 0 0 0-1.5-2.5c.1-.3.1-.5.1-.8a2.6 2.6 0 0 0-2.6-2.6Z"/><path d="M12 6.1v12.5"/>'),
   Skills: SVG('<path d="M12 3.2l1.7 4.5 4.5 1.7-4.5 1.7L12 15.6l-1.7-4.5L5.8 9.4l4.5-1.7L12 3.2Z"/><path d="M18.4 14.2l.8 2.1 2.1.8-2.1.8-.8 2.1-.8-2.1-2.1-.8 2.1-.8.8-2.1Z"/>'),
   Terminal: SVG('<rect x="3" y="4.5" width="18" height="15" rx="2.6"/><path d="m7.5 9.5 2.6 2.5-2.6 2.5M13 14.5h3.6"/>'),
+  Activity: SVG('<path d="M12 3.2l6.5 2.6v5.2c0 4.3-2.8 7-6.5 8.4-3.7-1.4-6.5-4.1-6.5-8.4V5.8L12 3.2Z"/><path d="m9.2 11.8 2 2 3.6-3.8"/>'),
   Settings: SVG('<circle cx="12" cy="12" r="3"/><path d="M19.4 13a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1.08 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/>'),
 };
 const VIEWS = ['Chat','Tasks','Schedule','Memory','Skills'];
-const TOOLS = ['Terminal'];                  // power tools - pinned to the bottom of the rail
+const TOOLS = ['Activity','Terminal'];       // power tools - pinned to the bottom of the rail
 const ALL_VIEWS = [...VIEWS, ...TOOLS];
 let state = { route:'Tasks', tasks:[], offline:false };
 
@@ -2341,6 +2374,64 @@ async function enableShell(){
     if(typeof CFG!=='undefined' && CFG && CFG.security) CFG.security.allow_shell=true; renderTerminal(); }
   catch(e){ notify('Couldn’t enable shell — '+e.message); }
 }
+// ---- Activity: the full, browsable, verifiable signed ledger ----
+const ACT={ entries:[], filter:'all', verify:{}, pubkey:{} };
+const ACT_SEAL_OK='<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.4-3 7.4-7 8.9C8 17.4 5 14.4 5 10V6l7-3Z"/><path d="m9 11.7 2 2 4-4.2"/></svg>';
+const ACT_SEAL_BAD='<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.4-3 7.4-7 8.9C8 17.4 5 14.4 5 10V6l7-3Z"/><path d="M9.5 9.5l5 5M14.5 9.5l-5 5"/></svg>';
+function actShortJson(p){ try{ const s=JSON.stringify(p); return s==='{}'?'':s; }catch(_){ return ''; } }
+function fmtAgo(ms){ const d=Date.now()-ms; const s=Math.max(0,Math.floor(d/1000));
+  if(s<60) return s+'s ago'; const m=Math.floor(s/60); if(m<60) return m+'m ago';
+  const h=Math.floor(m/60); if(h<24) return h+'h ago'; const dy=Math.floor(h/24);
+  return dy<7 ? dy+'d ago' : new Date(ms).toLocaleDateString(); }
+function actEntry(e){
+  const k=e.kind||'', p=e.payload||{}; let label=k, summary='';
+  if(k==='core.boot'){ label='Daemon started'; summary='v'+(p.version||'')+(p.addr?(' · '+p.addr):''); }
+  else if(k==='core.sleep'){ label='Daemon slept to zero'; summary='idle - released to nothing'; }
+  else if(k==='llm.call'){ label='Model call'; summary=(p.model||'model')+' · '+((p.tokens_in||0)+(p.tokens_out||0))+' tok · $'+(+(p.cost_usd||0)).toFixed(4); }
+  else if(k==='policy.set'){ label='Policy changed'; summary='shell access '+(p.allow_shell?'enabled':'disabled'); }
+  else if(k==='terminal.exec'){ label='Terminal command'; summary='$ '+(p.command||''); }
+  else if(k.startsWith('agent.')){ label='Agent · '+(k.slice(6)||'step'); summary=p.command||p.tool||actShortJson(p); }
+  else if(k==='channel.in'){ label='Inbound message'; summary='via '+(p.platform||'a channel'); }
+  else if(k==='config.set'){ label='Settings updated'; summary=Object.keys(p).join(', ')||'config'; }
+  else if(k.startsWith('task.')){ label='Task '+(k.slice(5)); summary=(p.id||'')+(p.status?(' · '+p.status):''); }
+  else if(['memory','identity','episodic','semantic','procedural'].some(x=>k.startsWith(x))){ label='Memory'; summary=p.text||actShortJson(p); }
+  else { summary=actShortJson(p); }
+  const actor=e.actor||'core';
+  const color = actor==='agent'?'#45c8a8':(actor==='user'?'#85b7eb':'#b58cff');
+  return { label, summary, actor, color };
+}
+async function renderActivity(){
+  document.getElementById('viewname').textContent='Activity';
+  let tail=[], v={ok:true,entries:0}, pk={};
+  try{ [tail,v,pk]=await Promise.all([J('/v1/ledger/tail?n=200'),J('/v1/ledger/verify'),J('/v1/ledger/pubkey')]); }catch(_){}
+  ACT.entries=(tail||[]).slice().reverse(); ACT.verify=v; ACT.pubkey=pk;
+  document.getElementById('view').innerHTML=`<div class="activity">
+    <div class="act-title">Activity</div>
+    <div class="act-sub">Every action Engram and you take is appended to a hash-chained, Ed25519-signed ledger — tamper-evident, and verifiable offline by anyone, even someone who doesn't trust this machine (<code>engramd verify</code>).</div>
+    <div class="act-verify ${v.ok?'ok':'bad'}"><span class="act-seal">${v.ok?ACT_SEAL_OK:ACT_SEAL_BAD}</span>
+      <div class="av-text"><div class="av-status">${v.ok?'Chain verified':'Tamper detected'}</div>
+        <div class="av-meta">${v.entries||ACT.entries.length} signed entries · key <span class="av-key" title="${escAttr(pk.pubkey||'')}" onclick="navigator.clipboard&&navigator.clipboard.writeText('${esc(pk.pubkey||'')}')">${esc((pk.pubkey||'').slice(0,16))}…</span></div></div>
+      <button class="act-reverify" onclick="renderActivity()">Re-verify</button></div>
+    <div class="act-controls"><input class="act-search" id="actSearch" placeholder="Search the ledger…" oninput="actPaint()">
+      <div class="act-filters">${['all','agent','user','core'].map(f=>`<button class="${ACT.filter===f?'on':''}" data-f="${f}" onclick="actSetFilter('${f}')">${f==='all'?'All':(f==='user'?'You':f[0].toUpperCase()+f.slice(1))}</button>`).join('')}</div></div>
+    <div class="act-list" id="actList"></div></div>`;
+  actPaint();
+}
+function actSetFilter(f){ ACT.filter=f; document.querySelectorAll('.act-filters button').forEach(b=>b.classList.toggle('on', b.dataset.f===f)); actPaint(); }
+function actPaint(){
+  const list=document.getElementById('actList'); if(!list) return;
+  const q=(document.getElementById('actSearch')?.value||'').toLowerCase();
+  list.innerHTML = ACT.entries.filter(e=>{
+    if(ACT.filter!=='all' && (e.actor||'core')!==ACT.filter) return false;
+    if(q){ const hay=((e.kind||'')+' '+actShortJson(e.payload||{})).toLowerCase(); if(!hay.includes(q)) return false; }
+    return true;
+  }).map(e=>{ const a=actEntry(e);
+    return `<div class="act-row"><span class="act-dot" style="background:${a.color};color:${a.color}"></span>
+      <div class="act-main"><div class="act-kind">${esc(a.label)}</div>${a.summary?`<div class="act-summary">${esc(a.summary.slice(0,220))}</div>`:''}
+        <div class="act-meta2"><span class="act-time">${esc(fmtAgo(e.ts_ms))}</span><span class="act-by">${esc(a.actor)}</span><span>#${esc(String(e.seq))}</span>
+          <span class="act-hash" title="signed hash — click to copy" onclick="navigator.clipboard&&navigator.clipboard.writeText('${esc(e.hash||'')}')">◇ ${esc((e.hash||'').slice(0,10))}</span></div></div></div>`;
+  }).join('') || '<div class="ses-empty" style="padding:24px 2px">No matching entries.</div>';
+}
 function renderView(){
   if(state.route==='Tasks') renderBoard();
   else if(state.route==='Chat') renderChat();
@@ -2348,6 +2439,7 @@ function renderView(){
   else if(state.route==='Memory') renderMemory();
   else if(state.route==='Skills') renderSkills();
   else if(state.route==='Terminal') renderTerminal();
+  else if(state.route==='Activity') renderActivity();
   voiceMaybeMountHeaderBtn();
 }
 

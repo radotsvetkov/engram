@@ -46,3 +46,6 @@ tmp/
 
 # Tauri sidecar binaries (copied build artifacts)
 /desktop/src-tauri/binaries/
+
+# Local preview-server config (points at a session scratchpad path)
+.claude/launch.json

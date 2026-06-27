@@ -1908,11 +1908,13 @@ function brainInit(raw){
   const canvas=document.getElementById('brainCanvas'); if(!canvas) return;
   const B = BRAIN = { canvas, ctx:canvas.getContext('2d'), nodes:[], anchors:{}, hover:null, sel:null,
     mouse:{x:-1,y:-1}, dim:new Set(), matched:null, t:0, raf:0, w:0, h:0, cx:0, cy:0, dpr:Math.min(2,window.devicePixelRatio||1) };
-  B.nodes = raw.map(n=>{
+  B.nodes = raw.map((n,i)=>{
     const reg = BRAIN_REGIONS[n.region]?n.region:'semantic';
     const tierA = n.tier==='hot'?1 : n.tier==='warm'?0.72 : 0.5;
     const r = 3.2 + (n.importance||0.3)*4.5 + Math.min(6, Math.log2((n.access||0)+1)*1.4);
-    return { ...n, reg, r, tierA, x:0, y:0, vx:0, vy:0 };
+    // `born` ramps 0→1 to scale the node in; a negative start staggers the formation so the brain
+    // visibly assembles when you open Memory, rather than snapping in all at once.
+    return { ...n, reg, r, tierA, x:0, y:0, vx:0, vy:0, born:-i*0.016 };
   });
   brainResize();
   B.nodes.forEach(n=>{ const a=B.anchors[n.reg]; n.x=a.x+Math.cos(n.id*1.7)*60; n.y=a.y+Math.sin(n.id*2.3)*60; });
@@ -1920,7 +1922,38 @@ function brainInit(raw){
   canvas.onmouseleave = ()=>{ B.mouse.x=-1; B.mouse.y=-1; };
   canvas.onclick = ()=>{ B.hover?brainShowDetail(B.hover):brainCloseDetail(); };
   if(!window._brainResizeWired){ window._brainResizeWired=true; window.addEventListener('resize', ()=>brainResize()); }
+  if(!window._brainPollWired){ window._brainPollWired=true; setInterval(brainPoll, 3500); }
   brainLoop();
+}
+// Merge a fresh graph into the LIVE brain without resetting it: new memories are pushed in with
+// born:0 (so they animate in), and existing nodes' tier/size are refreshed - the brain grows in place.
+function brainMergeGraph(raw){
+  const B=BRAIN; if(!B) return 0;
+  const byId=new Map(B.nodes.map(n=>[n.id,n]));
+  const fresh=new Set();
+  let added=0;
+  for(const n of raw){ fresh.add(n.id);
+    const r = 3.2 + (n.importance||0.3)*4.5 + Math.min(6, Math.log2((n.access||0)+1)*1.4);
+    const tierA = n.tier==='hot'?1 : n.tier==='warm'?0.72 : 0.5;
+    const ex=byId.get(n.id);
+    if(ex){ ex.tier=n.tier; ex.access=n.access; ex.importance=n.importance; ex.tierA=tierA; ex.r=r; continue; }
+    const reg = BRAIN_REGIONS[n.region]?n.region:'semantic', a=B.anchors[reg]||{x:B.cx,y:B.cy};
+    B.nodes.push({ ...n, reg, r, tierA, x:a.x+Math.cos(n.id*1.7)*40, y:a.y+Math.sin(n.id*2.3)*40, vx:0, vy:0, born:0 });
+    added++;
+  }
+  // Drop nodes that were forgotten server-side (so the count stays honest).
+  if(raw.length) B.nodes = B.nodes.filter(n=>fresh.has(n.id));
+  return added;
+}
+// Poll the graph while Memory is open, so new memories appear (and grow in) as they form.
+async function brainPoll(){
+  if(state.route!=='Memory' || !BRAIN || document.hidden) return;
+  let data; try{ data=await J('/v1/memory/graph?n=80'); }catch(_){ return; }
+  brainMergeGraph(data.nodes||[]);
+  const stats=data.stats||{}, total=stats.total ?? (data.nodes||[]).length;
+  const cnt=document.querySelector('.brain-count');
+  if(cnt) cnt.textContent=`${total} ${total===1?'memory':'memories'} · ${(stats.by_tier?.warm||0)} warm · ${(stats.by_tier?.cold||0)} cold`;
+  document.querySelectorAll('.brain-legend .lg').forEach(el=>{ const b=el.querySelector('b'); if(b) b.textContent=stats.by_region?.[el.dataset.region]||0; });
 }
 function brainResize(){
   const B=BRAIN; if(!B) return; const c=B.canvas;
@@ -1938,6 +1971,7 @@ function brainLoop(){
 function brainStep(){
   const B=BRAIN, ns=B.nodes, breathe=1+Math.sin(B.t*0.006)*0.012;
   for(let i=0;i<ns.length;i++){ const n=ns[i]; let fx=0, fy=0; const a=B.anchors[n.reg];
+    if(n.born<1) n.born=Math.min(1, n.born+0.028);   // grow newly-born nodes in
     fx+=(a.x-n.x)*0.004*breathe; fy+=(a.y-n.y)*0.004*breathe;
     fx+=(B.cx-n.x)*0.0006; fy+=(B.cy-n.y)*0.0006;
     for(let j=0;j<ns.length;j++){ if(i===j) continue; const m=ns[j];
@@ -1963,11 +1997,13 @@ function brainDraw(){
     ctx.fillText(reg.label.toUpperCase(), a.x, a.y-12); }
   for(const n of ns){ const reg=BRAIN_REGIONS[n.reg];
     const dim=B.dim.has(n.reg)||(B.matched&&!B.matched.has(n.id)), hit=B.matched&&B.matched.has(n.id);
+    const b=Math.max(0,Math.min(1,n.born==null?1:n.born)), grow=1-Math.pow(1-b,3), rr=n.r*grow;
+    if(b<1){ ctx.beginPath(); ctx.arc(n.x,n.y, n.r+4+(1-b)*15, 0,7); ctx.strokeStyle=hexA(reg.color,0.55*(1-b)); ctx.lineWidth=1.5; ctx.stroke(); }
     if(hit||n===B.hover){ const pulse=hit?(0.55+0.45*Math.sin(B.t*0.12)):1;
-      ctx.beginPath(); ctx.arc(n.x,n.y,n.r+5+(hit?3*pulse:2),0,7); ctx.fillStyle=hexA(reg.color,0.16*(hit?pulse:1)); ctx.fill(); }
-    ctx.beginPath(); ctx.arc(n.x,n.y,n.r,0,7); ctx.fillStyle=hexA(reg.color, dim?0.12:n.tierA); ctx.fill();
+      ctx.beginPath(); ctx.arc(n.x,n.y,rr+5+(hit?3*pulse:2),0,7); ctx.fillStyle=hexA(reg.color,0.16*(hit?pulse:1)); ctx.fill(); }
+    ctx.beginPath(); ctx.arc(n.x,n.y,rr,0,7); ctx.fillStyle=hexA(reg.color, dim?0.12:n.tierA); ctx.fill();
     if(n.tier==='hot'&&!dim){ ctx.strokeStyle=hexA(reg.color,0.5); ctx.lineWidth=1; ctx.stroke(); }
-    if(n===B.hover||n===B.sel){ ctx.strokeStyle='#fff'; ctx.lineWidth=1.4; ctx.beginPath(); ctx.arc(n.x,n.y,n.r+2.5,0,7); ctx.stroke(); } }
+    if(n===B.hover||n===B.sel){ ctx.strokeStyle='#fff'; ctx.lineWidth=1.4; ctx.beginPath(); ctx.arc(n.x,n.y,rr+2.5,0,7); ctx.stroke(); } }
 }
 function brainTip(){
   const tip=document.getElementById('brainTip'); if(!tip) return; const B=BRAIN, n=B.hover;

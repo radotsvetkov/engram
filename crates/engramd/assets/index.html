@@ -349,6 +349,21 @@
   .teach-actions { display:flex; gap:8px; }
   .teach-actions .ghost { background:var(--surface-2); border:1px solid var(--border); color:var(--text-secondary); border-radius:9px; padding:8px 15px; cursor:pointer; }
   .teach-actions .primary { background:var(--accent); color:var(--accent-ink); border:none; border-radius:9px; padding:8px 17px; font-weight:600; cursor:pointer; }
+  /* in-app input / confirm dialogs (replace WKWebView-broken prompt/confirm) */
+  .overlay.ask { align-items:center; z-index:120; }
+  .ask-card { width:min(440px,92vw); background:var(--surface-1); border:1px solid var(--border-strong); border-radius:16px;
+    padding:22px 24px; box-shadow:0 24px 64px rgba(0,0,0,.55); }
+  .ask-title { font-size:16px; font-weight:600; }
+  .ask-msg { color:var(--text-muted); font-size:13px; line-height:1.5; margin-top:7px; }
+  .ask-input { width:100%; box-sizing:border-box; margin-top:14px; background:var(--surface-2); border:1px solid var(--border-strong);
+    border-radius:10px; padding:10px 13px; outline:none; color:var(--text-primary); font-size:14px; }
+  .ask-input:focus { border-color:var(--ring); box-shadow:0 0 0 3px var(--accent-soft); }
+  .ask-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:16px; }
+  .ask-ghost { background:var(--surface-2); border:1px solid var(--border); color:var(--text-secondary); border-radius:9px; padding:8px 15px; cursor:pointer; }
+  .ask-ghost:hover { border-color:var(--border-strong); color:var(--text-primary); }
+  .ask-ok { background:var(--accent); color:var(--accent-ink); border:none; border-radius:9px; padding:8px 17px; font-weight:600; cursor:pointer; }
+  .ask-ok:hover { filter:brightness(1.06); }
+  .ask-ok.danger { background:var(--danger); color:#fff; }
   /* settings */
   .settings { max-width:780px; margin:0 auto; padding:22px 24px 64px; overflow-y:auto; height:100%; }
   .settings h2 { font-size:17px; font-weight:600; margin:0 0 4px; }
@@ -1010,7 +1025,7 @@ const J = async (u,o={}) => {
   try { r = await fetch(u,{...o, headers:{...AUTH, ...(o.headers||{})}}); }
   catch(_){ throw new Error('network unreachable'); }
   if(r.status===401 && !TOKEN && !_askedToken){ _askedToken=true;
-    const t=prompt('This Engram requires an API token to continue:');
+    const t=await askInput({title:'API token required',label:'This Engram requires an API token to continue.',placeholder:'paste your token',ok:'Continue'});
     if(t&&t.trim()){ setClientToken(t.trim()); location.reload(); return new Promise(()=>{}); } }
   if(!r.ok){ let m='HTTP '+r.status; try{ const b=await r.json(); if(b&&b.error) m=b.error; }catch(_){} throw new Error(m); }
   return r.json();
@@ -1019,6 +1034,36 @@ const esc = s => String(s??'').replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'
 // For values placed inside a double-quoted HTML attribute, quotes must be escaped too, or a
 // stored config value (an MCP name, a model id) could break out of the attribute.
 const escAttr = s => String(s??'').replace(/[<>&"']/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]));
+// In-app input / confirm dialogs. The desktop shell is a WKWebView, where window.prompt() is
+// unsupported and returns null - which silently broke "new project", rename, the Telegram connect
+// flow, and more. These replace prompt()/confirm() with real, themed, awaitable modals.
+function askInput(o){ o=o||{};
+  return new Promise(resolve=>{
+    const ov=document.createElement('div'); ov.className='overlay ask';
+    ov.innerHTML=`<div class="ask-card"><div class="ask-title">${esc(o.title||'')}</div>${o.label?`<div class="ask-msg">${esc(o.label)}</div>`:''}
+      <input class="ask-input" id="askInput" placeholder="${escAttr(o.placeholder||'')}" value="${escAttr(o.value||'')}" autocomplete="off">
+      <div class="ask-actions"><button class="ask-ghost" data-act="x">Cancel</button><button class="ask-ok" data-act="ok">${esc(o.ok||'OK')}</button></div></div>`;
+    document.body.appendChild(ov);
+    const inp=ov.querySelector('#askInput'); setTimeout(()=>{ inp.focus(); inp.select(); },20);
+    const done=v=>{ ov.remove(); document.removeEventListener('keydown',key,true); resolve(v); };
+    const key=e=>{ if(e.key==='Escape'){ e.preventDefault(); done(null); } else if(e.key==='Enter'){ e.preventDefault(); done(inp.value); } };
+    document.addEventListener('keydown',key,true);
+    ov.addEventListener('click',e=>{ if(e.target===ov) return done(null); const a=e.target.closest('[data-act]'); if(a) done(a.dataset.act==='ok'?inp.value:null); });
+  });
+}
+function askConfirm(o){ o=o||{};
+  return new Promise(resolve=>{
+    const ov=document.createElement('div'); ov.className='overlay ask';
+    ov.innerHTML=`<div class="ask-card"><div class="ask-title">${esc(o.title||'Are you sure?')}</div>${o.message?`<div class="ask-msg">${esc(o.message)}</div>`:''}
+      <div class="ask-actions"><button class="ask-ghost" data-act="x">Cancel</button><button class="ask-ok ${o.danger?'danger':''}" data-act="ok">${esc(o.ok||'Confirm')}</button></div></div>`;
+    document.body.appendChild(ov);
+    setTimeout(()=>ov.querySelector('[data-act="ok"]').focus(),20);
+    const done=v=>{ ov.remove(); document.removeEventListener('keydown',key,true); resolve(v); };
+    const key=e=>{ if(e.key==='Escape'){ e.preventDefault(); done(false); } else if(e.key==='Enter'){ e.preventDefault(); done(true); } };
+    document.addEventListener('keydown',key,true);
+    ov.addEventListener('click',e=>{ if(e.target===ov) return done(false); const a=e.target.closest('[data-act]'); if(a) done(a.dataset.act==='ok'); });
+  });
+}
 // Non-clobbering toast for action failures (keeps the persistent tamper/offline banner).
 function notify(msg, kind){
   let t=document.getElementById('toast');
@@ -1450,7 +1495,7 @@ async function favSession(id,e){ if(e) e.stopPropagation(); const s=WS.sessions.
   s.fav=fav; if(WS.byId[id]) WS.byId[id].fav=fav; renderSidebar();
   try{ await J('/v1/sessions/'+id,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({fav})}); }catch(_){ s.fav=!fav; renderSidebar(); }
 }
-async function renameSession(id,e){ if(e) e.stopPropagation(); const s=WS.sessions.find(x=>x.id===id); if(!s) return; const n=prompt('Rename chat', s.title); if(n==null) return;
+async function renameSession(id,e){ if(e) e.stopPropagation(); const s=WS.sessions.find(x=>x.id===id); if(!s) return; const n=await askInput({title:'Rename chat',value:s.title,ok:'Rename'}); if(n==null) return;
   const title=n.trim()||s.title; s.title=title; if(WS.byId[id]) WS.byId[id].title=title; renderSidebar();
   try{ await J('/v1/sessions/'+id,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({title})}); }catch(_){}
 }
@@ -1464,7 +1509,7 @@ function toggleProjMenu(){ projMenuOpen=!projMenuOpen; renderSidebar(); }
 async function deleteProject(){
   projMenuOpen=false; const p=curProject();
   if(WS.projects.length<=1){ renderSidebar(); return; }
-  if(!confirm('Delete project “'+p.name+'” and all its chats? This cannot be undone.')){ renderSidebar(); return; }
+  if(!await askConfirm({title:'Delete project?',message:'Delete “'+p.name+'” and all its chats? This cannot be undone.',ok:'Delete',danger:true})){ renderSidebar(); return; }
   try{ await J('/v1/projects/'+encodeURIComponent(p.id),{method:'DELETE'});
     WS.projects=WS.projects.filter(x=>x.id!==p.id); WS.byId={};
     WS.activeProject=(WS.projects[0]||{id:'personal'}).id; WS.activeSession=null;
@@ -1474,7 +1519,7 @@ async function deleteProject(){
 }
 async function pickProject(id){ projMenuOpen=false; WS.activeProject=id; WS.activeSession=null; WS.byId={}; renderSidebar();
   await loadSessions(); WS.activeSession=(WS.sessions[0]||{}).id||null; renderSidebar(); if(state.route==='Chat') renderChat(); }
-async function addProject(){ projMenuOpen=false; const n=prompt('New project name'); if(!(n&&n.trim())){ renderSidebar(); return; }
+async function addProject(){ projMenuOpen=false; const n=await askInput({title:'New project',label:'Sessions, persona, and its own settings live inside a project.',placeholder:'e.g. Apex, Research, Personal',ok:'Create'}); if(!(n&&n.trim())){ renderSidebar(); return; }
   try{ const p=await J('/v1/projects',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name:n.trim()})}); WS.projects.push(p); pickProject(p.id); }
   catch(e){ notify('Couldn’t create project — '+e.message); }
 }
@@ -2154,7 +2199,7 @@ async function savePersona(){
 let _restarting=false;
 async function restartDaemon(){
   if(_restarting) return;
-  if(!confirm('Restart Engram now? This applies embeddings changes and leaves it unavailable for a few seconds. Any running task is interrupted.')) return;
+  if(!await askConfirm({title:'Restart Engram?',message:'This applies embeddings changes and leaves it unavailable for a few seconds. Any running task is interrupted.',ok:'Restart'})) return;
   _restarting=true; notify('Restarting…','ok');
   try{ await J('/v1/restart',{method:'POST',headers:{'content-type':'application/json'},body:'{}'}); }catch(_){/* the connection drops as it exits — expected */}
   let n=0; const iv=setInterval(async()=>{
@@ -2844,7 +2889,7 @@ async function runJobNow(id, e){
 // Delete: wired to the existing DELETE /v1/schedule/{id}.
 async function deleteJob(id, name, e){
   if(e) e.stopPropagation();
-  if(!confirm('Delete schedule “' + name + '”? Future runs will stop.')) return;
+  if(!await askConfirm({title:'Delete schedule?',message:'Delete “'+name+'”? Future runs will stop.',ok:'Delete',danger:true})) return;
   try {
     await J('/v1/schedule/' + encodeURIComponent(id), { method:'DELETE' });
     notify('Schedule deleted', 'ok');
@@ -3486,7 +3531,7 @@ function ccIntegrations2(c){
     <div class="scard"><div class="integ-grid">${tgCard}${whCard}${mcpCard}</div></div>`;
 }
 async function connectTelegram(){
-  const tok = prompt('Paste your Telegram bot token (from @BotFather). It is stored locally, masked, and never sent back to the browser.');
+  const tok = await askInput({title:'Connect Telegram',label:'Paste your bot token from @BotFather. Stored locally, masked, never sent back to the browser.',placeholder:'123456:ABC-DEF…',ok:'Connect'});
   if(tok===null) return;
   const t = tok.trim(); if(!t){ notify('No token entered'); return; }
   try{
@@ -3495,7 +3540,7 @@ async function connectTelegram(){
   }catch(e){ notify('Couldn’t save token — '+e.message); }
 }
 async function disconnectTelegram(){
-  if(!confirm('Disconnect Telegram? The stored bot token is wiped.')) return;
+  if(!await askConfirm({title:'Disconnect Telegram?',message:'The stored bot token is wiped.',ok:'Disconnect',danger:true})) return;
   try{
     await J('/v1/config',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({channels:{clear_telegram_token:true}})});
     notify('Telegram disconnected','ok'); await ccReload();
@@ -3674,9 +3719,9 @@ function uplFileToBase64(file){
   });
 }
 // ---- url ----
-function attachAddUrl(){
+async function attachAddUrl(){
   attachCloseMenu();
-  const u=(prompt('Add a URL as context:')||'').trim(); if(!u) return;
+  const u=((await askInput({title:'Add a URL as context',placeholder:'https://…',ok:'Add'}))||'').trim(); if(!u) return;
   let name=u; try{ const x=new URL(u); name=x.hostname + (x.pathname!=='/'?x.pathname:''); }catch(_){ }
   ATTACH.items.push({ kind:'url', name, text:'URL: '+u });
   attachRenderPills();

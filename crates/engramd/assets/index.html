@@ -417,6 +417,18 @@
   .ht-row:first-of-type { border-top:none; padding-top:0; }
   .ht-from { color:var(--text-muted); } .ht-to { color:var(--accent); font-weight:600; } .ht-arr { color:var(--text-muted); margin:0 6px; }
   .ht-note { color:var(--text-secondary); margin-top:3px; line-height:1.45; }
+  /* agent experience / track record */
+  .exp-kinds { display:flex; flex-wrap:wrap; gap:7px; margin:4px 0 16px; }
+  .exp-kind { font-size:12px; color:var(--text-secondary); background:var(--surface-2); border:1px solid var(--border); border-radius:999px; padding:3px 11px; }
+  .exp-kind b { color:var(--accent); font-variant-numeric:tabular-nums; }
+  .exp-lbl { font:600 10px var(--mono); text-transform:uppercase; letter-spacing:.06em; color:var(--text-muted); margin-bottom:8px; }
+  .exp-recent { max-height:280px; overflow-y:auto; display:flex; flex-direction:column; gap:2px; }
+  .exp-row { display:flex; align-items:center; gap:10px; padding:6px 2px; border-bottom:1px solid var(--border); font-size:12.5px; }
+  .exp-row:last-child { border-bottom:none; }
+  .exp-k { color:var(--text-primary); font-family:var(--mono); font-size:12px; }
+  .exp-seq { font:600 10px var(--mono); color:var(--accent); cursor:pointer; }
+  .exp-t { color:var(--text-muted); font-size:11px; min-width:62px; text-align:right; }
+  .exp-empty { color:var(--text-muted); font-size:12.5px; line-height:1.55; padding:14px 2px; }
   /* skills view — the honest expertise ladder */
   .skills-wrap { padding:26px 30px; max-width:920px; margin:0 auto; height:100%; overflow-y:auto; }
   .skills-head h2 { margin:0; font-size:20px; }
@@ -2494,9 +2506,27 @@ function agentsGridHtml(){
     return `<div class="integ-card">
       <div class="ih"><span class="it">${esc(a.name)}</span><span class="badge">${model}</span></div>
       <div class="id">${role?esc(role.slice(0,130)):'<span style="opacity:.6">No role set — runs with the default behaviour.</span>'}</div>
-      <div class="integ-act"><button class="sbtn" onclick="agentEdit('${escAttr(a.id)}')">Edit</button><span style="flex:1"></span><button class="sbtn ghost" onclick="agentDelete('${escAttr(a.id)}')">Delete</button></div>
+      <div class="integ-act"><button class="sbtn" onclick="agentEdit('${escAttr(a.id)}')">Edit</button><button class="sbtn ghost" onclick="agentActivity('${escAttr(a.id)}')">Experience</button><span style="flex:1"></span><button class="sbtn ghost" onclick="agentDelete('${escAttr(a.id)}')">Delete</button></div>
     </div>`;
   }).join('');
+}
+// An agent's auditable track record: every action it signed, by kind + most recent, growing as it works.
+async function agentActivity(id){
+  let a; try{ a=await J('/v1/agents/'+id+'/activity'); }catch(e){ notify('Couldn’t load — '+e.message); return; }
+  const kinds=Object.entries(a.by_kind||{}).sort((x,y)=>y[1]-x[1]);
+  const kindChips=kinds.length?kinds.map(([k,n])=>`<span class="exp-kind"><b>${n}</b> ${esc(k)}</span>`).join(''):'<span style="opacity:.6;font-size:12px">no signed actions yet</span>';
+  const recent=(a.recent||[]).map(r=>`<div class="exp-row"><span class="exp-k">${esc(r.kind)}</span><span class="grow" style="flex:1"></span><span class="exp-seq" title="copy the signed ledger hash" onclick="navigator.clipboard.writeText('${escAttr(r.hash||'')}')">◇ ${r.seq|0}</span><span class="exp-t">${typeof fmtAgo==='function'?fmtAgo(r.ts_ms):''}</span></div>`).join('')
+    || '<div class="exp-empty">This agent hasn’t acted yet. Assign it a card and run it — its experience accrues here, every step signed.</div>';
+  const ov=document.createElement('div'); ov.className='overlay ask';
+  ov.innerHTML=`<div class="ask-card" style="width:min(580px,94vw)">
+    <div class="ask-title">${esc(a.name)} · track record</div>
+    <div class="ask-msg">Every action this agent has taken, signed as itself — its auditable experience. <b>${a.total}</b> action${a.total===1?'':'s'} · <b>${a.tasks_assigned}</b> card${a.tasks_assigned===1?'':'s'} assigned.</div>
+    <div class="exp-kinds">${kindChips}</div>
+    <div class="exp-lbl">recent — newest first</div>
+    <div class="exp-recent">${recent}</div>
+    <div class="ask-actions"><button class="ask-ok" onclick="this.closest('.overlay').remove()">Close</button></div>
+  </div>`;
+  document.body.appendChild(ov);
 }
 function ccAgents(){
   // Render from cache; refresh async and repaint the grid in place (renderCCBody is sync).

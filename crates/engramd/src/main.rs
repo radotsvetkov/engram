@@ -280,6 +280,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/consciousness/revert", post(consciousness_revert))
         .route("/v1/agents", get(agents_list).post(agents_create))
         .route("/v1/agents/{id}", post(agents_update).delete(agents_delete))
+        .route("/v1/agents/{id}/activity", get(agent_activity))
         .route("/v1/skills", get(skills))
         .route("/v1/skills/{id}/run", post(run_skill))
         .route("/v1/swarm", post(run_swarm))
@@ -575,6 +576,35 @@ async fn agents_delete(State(app): State<App>, Path(id): Path<String>) -> ApiRes
     }
     app.ledger.append("agent.delete", "user", json!({ "id": id })).map_err(err)?;
     Ok(Json(json!({ "ok": true })))
+}
+
+/// An agent's accumulated track record: every signed action it has taken (ledger actor == its name),
+/// counted by kind, with its most recent actions and the cards assigned to it. The auditable
+/// experience of a teammate - it grows as the agent works, and every entry is verifiable.
+async fn agent_activity(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
+    let name = app.agents.get(&id).ok_or_else(|| err("no such agent"))?.name;
+    let entries = app.ledger.read_all().map_err(err)?;
+    let mut by_kind: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut total = 0usize;
+    let mut last_ms = 0u64;
+    for e in entries.iter().filter(|e| e.actor == name) {
+        *by_kind.entry(e.kind.clone()).or_default() += 1;
+        total += 1;
+        last_ms = e.ts_ms;
+    }
+    let recent: Vec<Value> = entries
+        .iter()
+        .rev()
+        .filter(|e| e.actor == name)
+        .take(25)
+        .map(|e| json!({ "seq": e.seq, "kind": e.kind, "ts_ms": e.ts_ms, "hash": e.hash }))
+        .collect();
+    let tasks_assigned =
+        app.tasks.list().iter().filter(|t| t.agent.as_deref() == Some(id.as_str())).count();
+    Ok(Json(json!({
+        "name": name, "total": total, "by_kind": by_kind, "recent": recent,
+        "last_ms": last_ms, "tasks_assigned": tasks_assigned,
+    })))
 }
 
 #[derive(Deserialize)]

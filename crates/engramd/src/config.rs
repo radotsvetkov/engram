@@ -27,8 +27,12 @@ pub struct Config {
 #[serde(default)]
 pub struct ChannelsCfg {
     /// Telegram bot token (from BotFather). Empty means the Telegram bot is off.
-    /// Read at boot by `telegram::spawn`; takes effect on the next restart.
+    /// Connecting from the desktop starts the poller live; also read at boot by `telegram::spawn`.
     pub telegram_token: String,
+    /// The connected bot's @username, cached from getMe for display. Public, so safe to store
+    /// (unlike the token). Empty when not connected.
+    #[serde(default)]
+    pub telegram_username: String,
 }
 
 /// Which model backend to call, and with what credentials.
@@ -225,7 +229,10 @@ impl Config {
                 "allow_shell": self.security.allow_shell,
             },
             "cost": { "task_token_budget": self.cost.task_token_budget },
-            "channels": { "telegram_set": !self.channels.telegram_token.is_empty() },
+            "channels": {
+                "telegram_set": !self.channels.telegram_token.is_empty(),
+                "telegram_username": self.channels.telegram_username,
+            },
             "mcp": self.mcp,
         })
     }

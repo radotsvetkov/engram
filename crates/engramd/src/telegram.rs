@@ -10,8 +10,42 @@ use std::time::Duration;
 
 use crate::App;
 
-/// Spawn the Telegram polling loop as a background task.
-pub fn spawn(app: App, token: String) {
+/// The bot's identity from getMe - proof the token is valid and which bot it names.
+pub struct Identity {
+    pub username: String,
+    pub name: String,
+}
+
+/// Validate a bot token against Telegram's getMe. Returns the bot identity, or a human-readable
+/// reason it failed (bad token, or Telegram unreachable - e.g. offline). This is the live check
+/// the desktop's Connect flow runs before it claims a connection, so the UI never bluffs.
+pub async fn validate(token: &str) -> Result<Identity, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let url = format!("https://api.telegram.org/bot{token}/getMe");
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|_| "couldn't reach Telegram - are you offline?".to_string())?;
+    let ok_status = resp.status().is_success();
+    let json: serde_json::Value =
+        resp.json().await.map_err(|_| "unexpected response from Telegram".to_string())?;
+    if !ok_status || !json["ok"].as_bool().unwrap_or(false) {
+        return Err(json["description"].as_str().unwrap_or("invalid bot token").to_string());
+    }
+    let r = &json["result"];
+    Ok(Identity {
+        username: r["username"].as_str().unwrap_or("").to_string(),
+        name: r["first_name"].as_str().unwrap_or("bot").to_string(),
+    })
+}
+
+/// Spawn the Telegram polling loop as a background task. Returns an [`AbortHandle`] so the
+/// desktop's Disconnect can stop it live, without a restart.
+pub fn spawn(app: App, token: String) -> tokio::task::AbortHandle {
     tokio::spawn(async move {
         let client = reqwest::Client::new();
         let base = format!("https://api.telegram.org/bot{token}");
@@ -54,5 +88,6 @@ pub fn spawn(app: App, token: String) {
                     .await;
             }
         }
-    });
+    })
+    .abort_handle()
 }

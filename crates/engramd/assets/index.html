@@ -3509,11 +3509,12 @@ function ccIntegrations2(c){
     <div class="ih"><span class="ic">${ic}</span><span class="it">${esc(title)}</span><span class="integ-dot ${dot}"></span></div>
     <div class="id">${desc}</div><div class="integ-act">${actions}</div></div>`;
 
+  const tgUser = ch.telegram_username ? '@'+esc(ch.telegram_username) : '';
   const tgActions = tgOn
     ? `<span class="badge set">connected</span><span class="grow" style="flex:1"></span><button class="sbtn ghost" onclick="disconnectTelegram()">Disconnect</button>`
     : `<button class="sbtn primary" onclick="connectTelegram()">Connect</button>`;
   const tgCard = card(TG_IC,'Telegram',
-    tgOn ? 'A bot token is stored. Engram answers Telegram messages on the next restart.' : 'Run Engram as a bot that answers your messages. Paste a BotFather token.',
+    tgOn ? ('Connected'+(tgUser?(' as '+tgUser):'')+'. Engram answers Telegram messages live.') : 'Run Engram as a bot that answers your messages. Paste a BotFather token.',
     tgOn?'on':'', tgActions);
 
   const whCard = card(WH_IC,'Inbound webhooks',
@@ -3534,15 +3535,16 @@ async function connectTelegram(){
   const tok = await askInput({title:'Connect Telegram',label:'Paste your bot token from @BotFather. Stored locally, masked, never sent back to the browser.',placeholder:'123456:ABC-DEF…',ok:'Connect'});
   if(tok===null) return;
   const t = tok.trim(); if(!t){ notify('No token entered'); return; }
+  notify('Validating with Telegram…');
   try{
-    await J('/v1/config',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({channels:{telegram_token:t}})});
-    notify('Telegram token saved — restart to activate the bot','ok'); await ccReload();
-  }catch(e){ notify('Couldn’t save token — '+e.message); }
+    const r = await J('/v1/channels/telegram/connect',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token:t})});
+    notify('Connected as @'+(r.username||'bot')+' — answering messages live','ok'); await ccReload();
+  }catch(e){ notify('Couldn’t connect — '+e.message); }
 }
 async function disconnectTelegram(){
-  if(!await askConfirm({title:'Disconnect Telegram?',message:'The stored bot token is wiped.',ok:'Disconnect',danger:true})) return;
+  if(!await askConfirm({title:'Disconnect Telegram?',message:'The poller stops and the stored bot token is wiped.',ok:'Disconnect',danger:true})) return;
   try{
-    await J('/v1/config',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({channels:{clear_telegram_token:true}})});
+    await J('/v1/channels/telegram/disconnect',{method:'POST'});
     notify('Telegram disconnected','ok'); await ccReload();
   }catch(e){ notify('Failed — '+e.message); }
 }

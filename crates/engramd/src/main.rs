@@ -67,6 +67,9 @@ struct App {
     config: Arc<std::sync::RwLock<config::Config>>,
     /// Where the daemon's state lives - needed to persist settings changes.
     home: String,
+    /// The running Telegram poller's abort handle + connected bot @username, so the desktop's
+    /// Connect/Disconnect can start and stop the bot live (no restart). None when not connected.
+    telegram: Arc<std::sync::Mutex<Option<(tokio::task::AbortHandle, String)>>>,
 }
 
 impl App {
@@ -241,6 +244,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         halt: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         config: Arc::new(std::sync::RwLock::new(cfg)),
         home: home.clone(),
+        telegram: Arc::new(std::sync::Mutex::new(None)),
     };
 
     let router = Router::new()
@@ -286,6 +290,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/config", get(config_get).post(config_set))
         .route("/v1/config/test", post(config_test))
         .route("/v1/config/mcp-test", post(config_mcp_test))
+        .route("/v1/channels", get(channels_status))
+        .route("/v1/channels/telegram/connect", post(telegram_connect))
+        .route("/v1/channels/telegram/disconnect", post(telegram_disconnect))
         .route("/v1/persona", get(persona_get).post(persona_set))
         .route("/v1/restart", post(restart_handler))
         .route("/v1/halt", post(halt_set))
@@ -302,7 +309,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     if let Some(token) = tg_token.filter(|t| !t.is_empty()) {
         tracing::info!("telegram channel active");
-        telegram::spawn(app.clone(), token);
+        let handle = telegram::spawn(app.clone(), token);
+        let uname = app.cfg().channels.telegram_username.clone();
+        *app.telegram.lock().expect("telegram lock") = Some((handle, uname));
     }
     // Fire scheduled jobs while the daemon is awake.
     spawn_scheduler_tick(app.clone());
@@ -1301,6 +1310,61 @@ async fn config_get(State(app): State<App>) -> ApiResult {
     v["http_enabled"] = json!(cfg!(feature = "http"));
     v["version"] = json!(VERSION);
     Ok(Json(v))
+}
+
+/// Live status of the messaging channels, for the Integrations gallery.
+async fn channels_status(State(app): State<App>) -> ApiResult {
+    let (connected, username) = match app.telegram.lock().expect("telegram lock").as_ref() {
+        Some((_, u)) => (true, u.clone()),
+        None => (false, String::new()),
+    };
+    Ok(Json(json!({ "telegram": { "connected": connected, "username": username } })))
+}
+
+/// Connect Telegram live: validate the token against getMe, (re)start the poller without a
+/// restart, persist the token, and sign the connection into the ledger. The token never returns
+/// to the browser; only the public bot @username does.
+async fn telegram_connect(State(app): State<App>, Json(p): Json<Value>) -> ApiResult {
+    let token = p.get("token").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    if token.is_empty() {
+        return Err(err("no token provided"));
+    }
+    // Live validation - the UI does not claim a connection until Telegram confirms the bot.
+    let id = telegram::validate(&token).await.map_err(err)?;
+    // Stop any existing poller, then start the new one - live, no restart.
+    if let Some((h, _)) = app.telegram.lock().expect("telegram lock").take() {
+        h.abort();
+    }
+    {
+        let mut cfg = app.config.write().expect("config lock");
+        cfg.channels.telegram_token = token.clone();
+        cfg.channels.telegram_username = id.username.clone();
+        cfg.save(&app.home).map_err(|e| err(format!("could not save settings: {e}")))?;
+    }
+    let handle = telegram::spawn(app.clone(), token);
+    *app.telegram.lock().expect("telegram lock") = Some((handle, id.username.clone()));
+    // Sign the connection - the bot identity only, NEVER the token.
+    app.ledger
+        .append("channel.connect", "user", json!({ "channel": "telegram", "bot": id.username }))
+        .map_err(err)?;
+    Ok(Json(json!({ "ok": true, "channel": "telegram", "username": id.username, "name": id.name })))
+}
+
+/// Disconnect Telegram live: stop the poller, wipe the token, and sign the disconnection.
+async fn telegram_disconnect(State(app): State<App>) -> ApiResult {
+    if let Some((h, _)) = app.telegram.lock().expect("telegram lock").take() {
+        h.abort();
+    }
+    {
+        let mut cfg = app.config.write().expect("config lock");
+        cfg.channels.telegram_token.clear();
+        cfg.channels.telegram_username.clear();
+        cfg.save(&app.home).map_err(|e| err(format!("could not save settings: {e}")))?;
+    }
+    app.ledger
+        .append("channel.disconnect", "user", json!({ "channel": "telegram" }))
+        .map_err(err)?;
+    Ok(Json(json!({ "ok": true })))
 }
 
 /// Save a settings change. Persists `config.json`, then applies what can change live -

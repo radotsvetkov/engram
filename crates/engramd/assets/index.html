@@ -450,6 +450,13 @@
   .dis-ground .rg { font-family:var(--mono); color:var(--lc,var(--accent)); margin-right:4px; }
   .dis-actions { display:flex; gap:8px; margin-top:14px; }
   .dis-foot { margin-top:11px; font-size:11px; color:var(--text-muted); line-height:1.5; }
+  /* workspace project manager */
+  .ws-projs { display:flex; flex-direction:column; gap:7px; }
+  .ws-proj { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px 12px; border:1px solid var(--border); border-radius:10px; background:var(--surface-2); }
+  .ws-proj.active { border-color:color-mix(in srgb,var(--accent) 35%,transparent); }
+  .ws-pinfo { display:flex; align-items:center; gap:8px; min-width:0; }
+  .ws-pname { font-weight:600; font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .ws-pacts { display:flex; gap:6px; flex-shrink:0; }
   /* settings */
   .settings { max-width:780px; margin:0 auto; padding:22px 24px 64px; overflow-y:auto; height:100%; }
   .settings h2 { font-size:17px; font-weight:600; margin:0 0 4px; }
@@ -2340,8 +2347,58 @@ function ccPersona(c){
       <div class="sactions"><span class="grow"></span><button class="sbtn primary" onclick="savePersona()">Save persona</button></div>
     </div>`;
 }
-function ccWorkspace(){ return ccHead('Workspace','Projects, working directory, and session retention.')+
-  `<div class="scard"><div class="ph"><b>Projects &amp; sessions</b> arrive in the next build — each project will carry its own working directory, persona, default model, keys, and taint policy, and switching projects swaps the whole context at once.<br><br>Today everything runs in one default workspace. The brain (memory + signed ledger) lives in <code>~/.engram</code>.</div></div>`; }
+function ccWorkspace(){
+  const projs=WS.projects||[];
+  const rows=projs.map(p=>{
+    const active=p.id===WS.activeProject, hasPersona=p.persona&&p.persona.trim();
+    return `<div class="ws-proj${active?' active':''}">
+      <div class="ws-pinfo"><span class="ws-pname">${esc(p.name)}</span>${active?'<span class="badge set">active</span>':''}${hasPersona?'<span class="badge" title="has its own standing instructions">persona</span>':''}</div>
+      <div class="ws-pacts">${active?'':`<button class="sbtn" onclick="wsPick('${escAttr(p.id)}')">Open</button>`}<button class="sbtn ghost" onclick="wsEditProject('${escAttr(p.id)}')">Edit</button>${projs.length>1?`<button class="sbtn ghost" onclick="wsDeleteProject('${escAttr(p.id)}')">Delete</button>`:''}</div>
+    </div>`;
+  }).join('');
+  return ccHead('Workspace','Projects — each groups its own sessions and standing instructions.')+`
+    <div class="scard"><div class="sactions" style="margin-bottom:11px;align-items:center"><h3 style="margin:0;flex:1">Projects <span class="badge set">${projs.length}</span></h3><button class="sbtn primary" onclick="wsNewProject()">+ New project</button></div>
+      <div class="ws-projs">${rows||'<div class="muted">No projects yet.</div>'}</div></div>
+    <div class="scard"><h3>Where it lives</h3>
+      <div class="desc">Your brain — every memory and the signed ledger — is stored locally at <code>~/.engram</code> and shared across projects. Switching a project swaps its active sessions and standing instructions. Nothing leaves the machine; the ledger spine at the bottom of every screen stays verifiable offline.</div></div>`;
+}
+async function wsNewProject(){
+  const n=await askInput({title:'New project',label:'Sessions and standing instructions live inside a project.',placeholder:'e.g. Apex, Research',ok:'Create'});
+  if(!(n&&n.trim())) return;
+  try{ const p=await J('/v1/projects',{method:'POST',headers:MIND_JSON,body:JSON.stringify({name:n.trim()})}); WS.projects.push(p); notify('Project created','ok'); if(ccActive==='workspace') renderCC(); renderSidebar(); }
+  catch(e){ notify('Couldn’t create — '+e.message); }
+}
+async function wsPick(id){ await pickProject(id); if(ccActive==='workspace') renderCC(); }
+function wsEditProject(id){
+  const p=(WS.projects||[]).find(x=>x.id===id)||{id,name:'',persona:''};
+  const ov=document.createElement('div'); ov.className='overlay ask';
+  ov.innerHTML=`<div class="ask-card" style="width:min(560px,93vw)">
+    <div class="ask-title">Edit project</div>
+    <div class="ask-msg">A project groups its sessions and gives them their own standing instructions.</div>
+    <input class="ask-input" id="wpName" placeholder="Project name" value="${escAttr(p.name)}" autocomplete="off">
+    <textarea class="ask-input" id="wpPersona" rows="5" placeholder="Standing instructions for this project — how Engram should behave here (optional)." style="resize:vertical;font:inherit;line-height:1.5">${esc(p.persona||'')}</textarea>
+    <div class="ask-actions"><button class="ask-ghost" onclick="this.closest('.overlay').remove()">Cancel</button><button class="ask-ok" onclick="wsSaveProject('${escAttr(id)}',this)">Save</button></div>
+  </div>`;
+  document.body.appendChild(ov); setTimeout(()=>{ const n=ov.querySelector('#wpName'); n.focus(); n.select(); },20);
+}
+async function wsSaveProject(id, btn){
+  const ov=btn.closest('.overlay'); const name=ov.querySelector('#wpName').value.trim(), persona=ov.querySelector('#wpPersona').value;
+  if(!name){ notify('A project needs a name'); return; }
+  try{ const p=await J('/v1/projects/'+encodeURIComponent(id),{method:'PATCH',headers:MIND_JSON,body:JSON.stringify({name,persona})});
+    const i=(WS.projects||[]).findIndex(x=>x.id===id); if(i>=0) WS.projects[i]=p;
+    ov.remove(); notify('Project saved','ok'); if(ccActive==='workspace') renderCC(); renderSidebar();
+  }catch(e){ notify('Couldn’t save — '+e.message); }
+}
+async function wsDeleteProject(id){
+  if((WS.projects||[]).length<=1){ notify('Keep at least one project'); return; }
+  const p=(WS.projects||[]).find(x=>x.id===id);
+  if(!await askConfirm({title:'Delete project?',message:'Delete “'+(p?p.name:'this project')+'” and all its chats? This cannot be undone.',ok:'Delete',danger:true})) return;
+  try{ await J('/v1/projects/'+encodeURIComponent(id),{method:'DELETE'});
+    WS.projects=WS.projects.filter(x=>x.id!==id);
+    if(WS.activeProject===id){ WS.activeProject=(WS.projects[0]||{id:'personal'}).id; WS.byId={}; WS.activeSession=null; await loadSessions(); WS.activeSession=(WS.sessions[0]||{}).id||null; }
+    notify('Project deleted','ok'); if(ccActive==='workspace') renderCC(); renderSidebar(); if(state.route==='Chat') renderChat();
+  }catch(e){ notify('Couldn’t delete — '+e.message); }
+}
 function ccAppearance(){ return ccHead('Appearance','Theme, accent, and density.')+
   `<div class="scard"><div class="ph"><b>Theme</b> · Graphite — active.<br><b>Density</b> · Comfortable — active.<br><b>Accent</b> · Teal #45c8a8 — the trust colour, used only where trust is real.<br><br>A light theme, accent picker, compact density, and zoom land with the appearance pass.</div></div>`; }
 function ccVoice(){

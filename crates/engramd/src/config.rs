@@ -297,3 +297,35 @@ fn restrict(path: &Path) {
     #[cfg(not(unix))]
     let _ = path;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmphome() -> String {
+        let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let d = std::env::temp_dir().join(format!("engram-config-test-{n}"));
+        std::fs::create_dir_all(&d).unwrap();
+        d.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn api_key_never_persists_to_disk() {
+        let home = tmphome();
+        let mut c = Config::default();
+        c.provider.kind = "anthropic".into();
+        c.provider.api_key = "sk-ant-SUPERSECRET".into();
+        c.save(&home).unwrap();
+        // The key must NOT be in config.json; non-secret fields must be.
+        let on_disk = std::fs::read_to_string(Config::path(&home)).unwrap();
+        assert!(!on_disk.contains("SUPERSECRET"), "api_key was written to config.json");
+        assert!(on_disk.contains("anthropic"), "non-secret fields should persist");
+        // Reloading must not resurrect the key from disk (only the environment may seed it).
+        let reloaded = Config::load(&home);
+        if env_api_key().is_none() {
+            assert!(reloaded.provider.api_key.is_empty(), "api_key came back from disk");
+        }
+        assert_eq!(reloaded.provider.kind, "anthropic");
+        std::fs::remove_dir_all(&home).ok();
+    }
+}

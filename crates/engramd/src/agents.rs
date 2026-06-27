@@ -132,3 +132,61 @@ impl AgentStore {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    fn tmpdir() -> std::path::PathBuf {
+        let n = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let d = std::env::temp_dir().join(format!("engram-agents-test-{n}"));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn create_get_update_delete() {
+        let d = tmpdir();
+        let s = AgentStore::open(&d);
+        let a = s.create("Scout", "research", "claude-haiku");
+        assert_eq!(a.name, "Scout");
+        assert_eq!(s.list().len(), 1);
+        assert_eq!(s.get(&a.id).unwrap().role, "research");
+        // each Some applies; None leaves the field
+        let u = s.update(&a.id, Some("Scout2"), None, Some("opus")).unwrap();
+        assert_eq!(u.name, "Scout2");
+        assert_eq!(u.model, "opus");
+        assert_eq!(u.role, "research");
+        assert!(s.delete(&a.id));
+        assert!(s.list().is_empty());
+        assert!(!s.delete(&a.id)); // already gone
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn ids_are_unique_in_a_tight_loop() {
+        // Guards the uid() fix: nanos alone could collide; the atomic counter must keep ids distinct.
+        let d = tmpdir();
+        let s = AgentStore::open(&d);
+        let mut ids = HashSet::new();
+        for i in 0..500 {
+            let a = s.create(&format!("a{i}"), "", "");
+            assert!(ids.insert(a.id), "duplicate agent id generated");
+        }
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn persists_and_reloads() {
+        let d = tmpdir();
+        {
+            let s = AgentStore::open(&d);
+            s.create("Persisted", "r", "m");
+        }
+        let s2 = AgentStore::open(&d);
+        assert_eq!(s2.list().len(), 1);
+        assert_eq!(s2.list()[0].name, "Persisted");
+        std::fs::remove_dir_all(&d).ok();
+    }
+}

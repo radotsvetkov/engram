@@ -288,8 +288,12 @@ mod tests {
     use super::*;
 
     fn tmpdir() -> std::path::PathBuf {
+        // Atomic counter (not just nanos) so parallel tests never share a dir under load.
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
         let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let d = std::env::temp_dir().join(format!("engram-tasks-test-{n}"));
+        let d = std::env::temp_dir()
+            .join(format!("engram-tasks-test-{n}-{}", SEQ.fetch_add(1, Ordering::Relaxed)));
         std::fs::create_dir_all(&d).unwrap();
         d
     }

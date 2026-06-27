@@ -139,8 +139,13 @@ mod tests {
     use std::collections::HashSet;
 
     fn tmpdir() -> std::path::PathBuf {
+        // An atomic counter (not just nanos) so parallel tests never share a dir even if the clock
+        // resolution is coarse under load - otherwise two tests cross-contaminate one tasks/agents file.
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
         let n = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-        let d = std::env::temp_dir().join(format!("engram-agents-test-{n}"));
+        let d = std::env::temp_dir()
+            .join(format!("engram-agents-test-{n}-{}", SEQ.fetch_add(1, Ordering::Relaxed)));
         std::fs::create_dir_all(&d).unwrap();
         d
     }

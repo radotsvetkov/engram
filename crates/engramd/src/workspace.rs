@@ -28,6 +28,10 @@ pub struct Msg {
     pub text: String,
     #[serde(default)]
     pub recalled: Vec<String>,
+    /// The recalled memories with id/region/text, so a reloaded answer keeps its clickable recall
+    /// ribbon (each chip links to its brain node). Stored as JSON to stay decoupled from converse.
+    #[serde(default)]
+    pub recalled_refs: Vec<serde_json::Value>,
     #[serde(default)]
     pub learned: Vec<String>,
     pub ts_ms: u64,
@@ -266,6 +270,7 @@ impl WorkspaceStore {
         user_text: &str,
         reply: &str,
         recalled: Vec<String>,
+        recalled_refs: Vec<serde_json::Value>,
         learned: Vec<String>,
     ) -> bool {
         let now = now_ms();
@@ -277,8 +282,8 @@ impl WorkspaceStore {
                         let t: String = user_text.trim().chars().take(42).collect();
                         s.title = if t.is_empty() { "New chat".into() } else { t };
                     }
-                    s.messages.push(Msg { role: "user".into(), text: user_text.into(), recalled: vec![], learned: vec![], ts_ms: now });
-                    s.messages.push(Msg { role: "engram".into(), text: reply.into(), recalled, learned, ts_ms: now });
+                    s.messages.push(Msg { role: "user".into(), text: user_text.into(), recalled: vec![], recalled_refs: vec![], learned: vec![], ts_ms: now });
+                    s.messages.push(Msg { role: "engram".into(), text: reply.into(), recalled, recalled_refs, learned, ts_ms: now });
                     s.updated_ms = now;
                     true
                 }

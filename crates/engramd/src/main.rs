@@ -1236,7 +1236,7 @@ async fn converse_handler(State(app): State<App>, Json(r): Json<ConverseReq>) ->
         .await
         .map_err(ApiError)?;
     if let Some(sid) = &r.session {
-        app.workspace.append_turn(sid, &r.text, &turn.reply, turn.recalled.clone(), turn.learned.clone());
+        app.workspace.append_turn(sid, &r.text, &turn.reply, turn.recalled.clone(), turn.recalled_refs.iter().map(|rf| serde_json::to_value(rf).unwrap_or_default()).collect(), turn.learned.clone());
     }
     Ok(Json(json!({
         "reply": turn.reply,
@@ -1267,7 +1267,7 @@ async fn converse_stream_handler(
         match converse::converse_stream(&app.memory, &app.gateway, &r.text, &model, persona.as_deref(), &r.attachments, &mut on_delta).await {
             Ok(turn) => {
                 if let Some(sid) = &r.session {
-                    app.workspace.append_turn(sid, &r.text, &turn.reply, turn.recalled.clone(), turn.learned.clone());
+                    app.workspace.append_turn(sid, &r.text, &turn.reply, turn.recalled.clone(), turn.recalled_refs.iter().map(|rf| serde_json::to_value(rf).unwrap_or_default()).collect(), turn.learned.clone());
                 }
                 let _ = tx.send(Event::default().event("done").data(
                     json!({ "reply": turn.reply, "recalled": turn.recalled, "recalled_refs": turn.recalled_refs, "learned": turn.learned })

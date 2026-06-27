@@ -43,6 +43,11 @@ pub struct ProviderCfg {
     pub kind: String,
     /// Override the backend host. Empty means "use the default for this kind".
     pub base_url: String,
+    /// The LLM API key. Policy: it lives in MEMORY ONLY - read from the environment at boot and
+    /// NEVER serialized to disk. `skip_serializing` keeps it out of config.json on every save, so
+    /// no settings change or channel connect can ever leak it to disk; [`Config::load`] re-seeds it
+    /// from the environment each boot.
+    #[serde(skip_serializing)]
     pub api_key: String,
     pub model: String,
 }
@@ -111,7 +116,7 @@ impl Config {
 
     /// Load from `config.json`, or seed from the environment when there is none yet.
     pub fn load(home: &str) -> Self {
-        match std::fs::read_to_string(Self::path(home)) {
+        let mut cfg = match std::fs::read_to_string(Self::path(home)) {
             Ok(text) => match serde_json::from_str::<Config>(&text) {
                 Ok(mut cfg) => {
                     // mcp.json is the file the agent connector reads at boot; keep the
@@ -127,7 +132,14 @@ impl Config {
                 }
             },
             Err(_) => Self::from_env(home),
+        };
+        // The API key is never persisted (skip_serializing), so a config.json saved after a key was
+        // set comes back without it. Re-seed from the environment each boot - the env is the source
+        // of truth when present; otherwise keep whatever loaded (back-compat), never wiping a key.
+        if let Some(k) = env_api_key() {
+            cfg.provider.api_key = k;
         }
+        cfg
     }
 
     /// Seed settings from `ENGRAM_*` so an env-configured daemon shows its real state and
@@ -236,6 +248,15 @@ impl Config {
             "mcp": self.mcp,
         })
     }
+}
+
+/// The LLM API key from the environment (Anthropic or generic), or `None`. Memory-only by policy:
+/// this is the single source of truth re-seeded on every boot, so the key is never read from disk.
+fn env_api_key() -> Option<String> {
+    std::env::var("ENGRAM_ANTHROPIC_API_KEY")
+        .or_else(|_| std::env::var("ENGRAM_LLM_API_KEY"))
+        .ok()
+        .filter(|k| !k.is_empty())
 }
 
 /// The default host for an OpenAI-compatible backend kind.

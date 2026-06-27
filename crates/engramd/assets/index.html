@@ -2399,8 +2399,6 @@ async function wsDeleteProject(id){
     notify('Project deleted','ok'); if(ccActive==='workspace') renderCC(); renderSidebar(); if(state.route==='Chat') renderChat();
   }catch(e){ notify('Couldn’t delete — '+e.message); }
 }
-function ccAppearance(){ return ccHead('Appearance','Theme, accent, and density.')+
-  `<div class="scard"><div class="ph"><b>Theme</b> · Graphite — active.<br><b>Density</b> · Comfortable — active.<br><b>Accent</b> · Teal #45c8a8 — the trust colour, used only where trust is real.<br><br>A light theme, accent picker, compact density, and zoom land with the appearance pass.</div></div>`; }
 function ccVoice(){
   const stt = (typeof VOICE!=='undefined' && VOICE.supported);
   const tts = ('speechSynthesis' in window);
@@ -2412,15 +2410,11 @@ function ccVoice(){
     <div class="ph" style="margin-top:12px">Dictate from the <b>mic</b> beside the composer. Start a hands-free <b>Voice</b> conversation from the Chat header — an animated orb listens, speaks, and supports tap-to-interrupt.</div>
     <div class="ph" style="margin-top:8px;color:var(--text-muted)">A premium server-side engine (POST <code class="ic">/v1/voice</code> and the <code class="ic">/v1/voice/stream</code> socket) provides STT/TTS where the browser can’t — configurable once a speech provider is connected.</div>
   </div>`; }
-function ccChat(){ return ccHead('Chat','Conversation rendering and defaults.')+
-  `<div class="scard"><div class="ph">A transparency view-mode (<b>Trace / Normal / Brief</b>), an in-composer model picker, streaming density, and code-block themes land with the chat rebuild.</div></div>`; }
 function ccKeyboard(){
   const rows=[['Command palette','⌘K'],['Settings','⌘,'],['Send / answer in chat','↵'],['Create a task','⌘↵'],['Create &amp; run a task','⇧⌘↵'],['Close palette / settings / panel','Esc']];
   return ccHead('Keyboard','Shortcuts. A full rebindable map with conflict detection is coming.')+
     `<div class="scard">${rows.map(r=>`<div class="kbd-row"><span>${r[0]}</span><kbd>${r[1]}</kbd></div>`).join('')}</div>`;
 }
-function ccIntegrations(){ return ccHead('Integrations','Outside channels and triggers.')+
-  `<div class="scard"><div class="ph"><b>Telegram</b> · set <code>ENGRAM_TELEGRAM_TOKEN</code> to run Engram as a bot that answers messages.<br><b>Webhooks</b> · inbound channels post to <code>/v1/channel/{platform}</code>, guarded by the channel secret (Keys).<br><br>A click-to-connect integrations gallery is on the roadmap.</div></div>`; }
 // A small, bounded starter set (deliberately NOT a marketplace) - enough to begin work
 // pre-shaped. Each starter is a real action: create a task, apply a persona, prefill the composer.
 const TEMPLATES = {
@@ -2556,8 +2550,6 @@ async function dissentResolve(choice){
   if(choice==='proceed'){ notify('Proceeding — decision signed','ok'); runTaskLive(p.id); }
   else { notify('Held back — decision signed','ok'); openTask(p.id,true); }
 }
-function ccMessaging(){ return ccHead('Messaging','Where Engram reaches you.')+
-  `<div class="scard"><div class="ph">Notification routing and scheduled-job delivery (for example a morning brief to Telegram) will be configured here.</div></div>`; }
 function ccAdvanced(){ return ccHead('Advanced','Daemon, ledger, and the danger zone.')+`
     <div class="scard"><h3>Audit ledger</h3>
       <div class="desc">Every state change is hash-chained and Ed25519-signed. Verify re-walks the whole chain and reports if anything was altered.</div>

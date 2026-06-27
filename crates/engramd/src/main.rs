@@ -23,6 +23,7 @@ use serde_json::{json, Value};
 
 mod channels;
 mod config;
+mod conscious;
 mod converse;
 mod embedder;
 mod seed;
@@ -70,6 +71,9 @@ struct App {
     /// The running Telegram poller's abort handle + connected bot @username, so the desktop's
     /// Connect/Disconnect can start and stop the bot live (no restart). None when not connected.
     telegram: Arc<std::sync::Mutex<Option<(tokio::task::AbortHandle, String)>>>,
+    /// The always-loaded working memory distilled from the brain, prepended to every run. Signed,
+    /// editable, revertible - the verifiable-memory layer.
+    consciousness: Arc<conscious::Consciousness>,
 }
 
 impl App {
@@ -245,7 +249,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         config: Arc::new(std::sync::RwLock::new(cfg)),
         home: home.clone(),
         telegram: Arc::new(std::sync::Mutex::new(None)),
+        consciousness: Arc::new(conscious::Consciousness::open(&home)),
     };
+    // Seed working memory once on first run, so the always-loaded block is never empty when the
+    // brain already holds memories. Best-effort: a fresh brain just yields an empty block.
+    if app.consciousness.snapshot().version == 0 {
+        let _ = app.consciousness.distill(&app.memory, &app.ledger);
+    }
 
     let router = Router::new()
         .route("/", get(dashboard))
@@ -257,6 +267,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/remember", post(remember))
         .route("/v1/recall", get(recall))
         .route("/v1/forget", post(forget))
+        .route("/v1/consciousness", get(consciousness_get))
+        .route("/v1/consciousness/distill", post(consciousness_distill))
+        .route("/v1/consciousness/edit", post(consciousness_edit))
+        .route("/v1/consciousness/add", post(consciousness_add))
+        .route("/v1/consciousness/remove", post(consciousness_remove))
+        .route("/v1/consciousness/revert", post(consciousness_revert))
         .route("/v1/skills", get(skills))
         .route("/v1/skills/{id}/run", post(run_skill))
         .route("/v1/swarm", post(run_swarm))
@@ -476,6 +492,41 @@ async fn memory_graph(State(app): State<App>, Query(q): Query<RecentQuery>) -> A
     Ok(Json(json!({ "nodes": nodes, "stats": stats })))
 }
 
+// ---- Consciousness: the always-loaded working memory ------------------------------------------
+
+async fn consciousness_get(State(app): State<App>) -> ApiResult {
+    Ok(Json(serde_json::to_value(app.consciousness.snapshot()).map_err(err)?))
+}
+
+async fn consciousness_distill(State(app): State<App>) -> ApiResult {
+    let st = app.consciousness.distill(&app.memory, &app.ledger).map_err(err)?;
+    Ok(Json(serde_json::to_value(st).map_err(err)?))
+}
+
+async fn consciousness_edit(State(app): State<App>, Json(p): Json<Value>) -> ApiResult {
+    let id = p.get("id").and_then(|v| v.as_str()).unwrap_or("");
+    let text = p.get("text").and_then(|v| v.as_str()).unwrap_or("");
+    let st = app.consciousness.edit(id, text, &app.ledger).map_err(err)?;
+    Ok(Json(serde_json::to_value(st).map_err(err)?))
+}
+
+async fn consciousness_add(State(app): State<App>, Json(p): Json<Value>) -> ApiResult {
+    let text = p.get("text").and_then(|v| v.as_str()).unwrap_or("");
+    let st = app.consciousness.add(text, &app.ledger).map_err(err)?;
+    Ok(Json(serde_json::to_value(st).map_err(err)?))
+}
+
+async fn consciousness_remove(State(app): State<App>, Json(p): Json<Value>) -> ApiResult {
+    let id = p.get("id").and_then(|v| v.as_str()).unwrap_or("");
+    let st = app.consciousness.remove(id, &app.ledger).map_err(err)?;
+    Ok(Json(serde_json::to_value(st).map_err(err)?))
+}
+
+async fn consciousness_revert(State(app): State<App>) -> ApiResult {
+    let st = app.consciousness.revert(&app.ledger).map_err(err)?;
+    Ok(Json(serde_json::to_value(st).map_err(err)?))
+}
+
 #[derive(Deserialize)]
 struct RememberReq {
     region: Option<String>,
@@ -609,8 +660,15 @@ pub(crate) async fn run_agent_task_cb(
         .reflect(true)
         .token_budget(budget)
         .halt(app.halt.clone());
+    // Working memory (consciousness) leads the standing context; the persona is now only a style
+    // overlay. Together they replace SOUL.md as the source of truth for what the agent always knows.
     let persona = app.persona.read().expect("persona lock").clone();
-    if let Some(p) = persona {
+    let standing = match (app.consciousness.prompt_block(), persona) {
+        (Some(c), Some(p)) => Some(format!("{c}\n{p}")),
+        (Some(c), None) => Some(c),
+        (None, p) => p,
+    };
+    if let Some(p) = standing {
         agent = agent.persona(p);
     }
     if let Some(cb) = on_step {

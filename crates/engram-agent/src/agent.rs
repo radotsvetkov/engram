@@ -315,7 +315,7 @@ impl Agent {
     ) -> Result<Completion, AgentError> {
         let mut attempt = 0u32;
         loop {
-            let call = Call::new(req.clone()).actor("agent").tainted(taint);
+            let call = Call::new(req.clone()).actor(self.actor.as_str()).tainted(taint);
             match self.gateway.complete(call).await {
                 Ok(c) => return Ok(c),
                 Err(e @ GatewayError::Ledger(_)) => return Err(e.into()),
@@ -439,7 +439,7 @@ impl Agent {
             ],
         )
         .max_tokens(600);
-        match self.gateway.complete(Call::new(req).actor("agent").tainted(taint)).await {
+        match self.gateway.complete(Call::new(req).actor(self.actor.as_str()).tainted(taint)).await {
             Ok(c) if !c.text.trim().is_empty() => c.text,
             _ => {
                 let chars: Vec<char> = transcript.chars().collect();

@@ -18,8 +18,13 @@ fn now_ms() -> i64 {
 }
 
 fn uid() -> String {
+    // nanos alone can collide if two creates land in the same clock tick (coarse SystemTime, or a
+    // double-submit). A process-global monotonic counter makes the id unique regardless of clock
+    // granularity; the nanos prefix keeps ids distinct across daemon restarts.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-    format!("ag{nanos:x}")
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("ag{nanos:x}{n:x}")
 }
 
 /// A durable agent definition.

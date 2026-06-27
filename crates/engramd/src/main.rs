@@ -272,6 +272,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/tasks", get(tasks_list).post(tasks_create))
         .route("/v1/tasks/{id}", axum::routing::patch(tasks_update).delete(tasks_delete))
         .route("/v1/tasks/{id}/run", post(tasks_run))
+        .route("/v1/tasks/{id}/run/stream", post(tasks_run_stream))
         .route("/v1/tasks/{id}/audit", get(task_audit))
         .route("/v1/tasks/{id}/receipt", get(task_receipt))
         .route("/v1/projects", get(projects_list).post(projects_create))
@@ -805,7 +806,12 @@ async fn tasks_delete(State(app): State<App>, Path(id): Path<String>) -> ApiResu
 /// spike so the board shows Running), run, capture the cost delta and the signed ledger
 /// head, then mark done - or failed if the agent hit its step limit. Shared by the HTTP
 /// endpoint and the in-process scheduler.
-pub(crate) async fn run_task_core(app: &App, id: &str) -> Result<tasks::Task, String> {
+pub(crate) async fn run_task_core(
+    app: &App,
+    id: &str,
+    // When set, each completed step is streamed here as JSON for the live "watch the agent" view.
+    step_tx: Option<tokio::sync::mpsc::UnboundedSender<serde_json::Value>>,
+) -> Result<tasks::Task, String> {
     let task = app.tasks.get(id).ok_or("task not found")?;
     // Atomically claim the task so two concurrent runs (double-click, HTTP + scheduler)
     // can't both execute and corrupt the receipt/cost delta.
@@ -825,9 +831,19 @@ pub(crate) async fn run_task_core(app: &App, id: &str) -> Result<tasks::Task, St
     let tasks = app.tasks.clone();
     let bus = app.bus.clone();
     let tid = id.to_string();
-    let on_step: engram_agent::StepCallback = Arc::new(move |i, tool, _ok| {
-        tasks.set_progress(&tid, format!("step {i} · {tool}"));
-        bus.emit(Spike::new("task.step", Priority::Low, json!({ "id": tid.as_str(), "step": i, "tool": tool })));
+    let step_tx2 = step_tx.clone();
+    let on_step: engram_agent::StepCallback = Arc::new(move |i, rec: &engram_agent::StepRecord| {
+        tasks.set_progress(&tid, format!("step {i} · {}", rec.tool));
+        bus.emit(Spike::new("task.step", Priority::Low, json!({ "id": tid.as_str(), "step": i, "tool": rec.tool })));
+        if let Some(tx) = &step_tx2 {
+            // Stream the step as it lands - tool, args, the (truncated) observation, and the
+            // step's own signed ledger seq+hash, so the UI can show the glass box filling in live.
+            let obs: String = rec.observation.chars().take(2000).collect();
+            let _ = tx.send(json!({
+                "index": i, "tool": rec.tool, "args": rec.args, "observation": obs,
+                "ok": rec.ok, "seq": rec.ledger_seq, "hash": rec.ledger_hash,
+            }));
+        }
     });
     let run = run_agent_task_cb(app, &prompt, 10, engram_core::Taint::Trusted, false, Some(on_step)).await?;
     let finished_ms = engram_core::now_ms() as i64;
@@ -854,8 +870,37 @@ pub(crate) async fn run_task_core(app: &App, id: &str) -> Result<tasks::Task, St
 }
 
 async fn tasks_run(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
-    let updated = run_task_core(&app, &id).await.map_err(ApiError)?;
+    let updated = run_task_core(&app, &id, None).await.map_err(ApiError)?;
     Ok(Json(serde_json::to_value(updated).map_err(err)?))
+}
+
+/// Run a task and STREAM each step as it happens (Server-Sent Events): a `step` event per tool
+/// call with its args/observation/receipt, then a final `done` event with the persisted task -
+/// the "watch the agent work" view. The agent runs in a spawned task feeding an mpsc channel.
+async fn tasks_run_stream(
+    State(app): State<App>,
+    Path(id): Path<String>,
+) -> axum::response::sse::Sse<impl futures_core::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>>
+{
+    use axum::response::sse::{Event, KeepAlive, Sse};
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel::<Result<tasks::Task, String>>();
+    let app2 = app.clone();
+    tokio::spawn(async move {
+        let result = run_task_core(&app2, &id, Some(tx)).await;
+        let _ = done_tx.send(result);
+    });
+    let stream = async_stream::stream! {
+        while let Some(step) = rx.recv().await {
+            yield Ok(Event::default().event("step").data(step.to_string()));
+        }
+        match done_rx.await {
+            Ok(Ok(task)) => yield Ok(Event::default().event("done").data(serde_json::to_string(&task).unwrap_or_default())),
+            Ok(Err(e)) => yield Ok(Event::default().event("error").data(json!({ "error": e }).to_string())),
+            Err(_) => yield Ok(Event::default().event("error").data(json!({ "error": "run dropped" }).to_string())),
+        }
+    };
+    Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
 /// In-process scheduler: while the daemon is awake, fire due jobs by spawning a task and
@@ -872,7 +917,7 @@ fn spawn_scheduler_tick(app: App) {
                 // Record the task on the job before running so a crash mid-run still leaves a
                 // pointer to the (failed) receipt for the UI's "last run" affordance.
                 let _ = app.sched.set_last_task(&job.id, &task.id);
-                let _ = run_task_core(&app, &task.id).await;
+                let _ = run_task_core(&app, &task.id, None).await;
                 let _ = app.sched.mark_fired(&job.id, now);
             }
         }
@@ -1173,7 +1218,7 @@ async fn schedule_run(State(app): State<App>, Path(id): Path<String>) -> ApiResu
     // Record the task on the job before running so a crash mid-run still leaves a pointer to
     // the (failed) receipt for the UI's "last run" affordance.
     let _ = app.sched.set_last_task(&job.id, &task.id);
-    let updated = run_task_core(&app, &task.id).await.map_err(ApiError)?;
+    let updated = run_task_core(&app, &task.id, None).await.map_err(ApiError)?;
     Ok(Json(json!({ "task_id": task.id, "status": updated.status })))
 }
 

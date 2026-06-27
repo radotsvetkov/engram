@@ -54,8 +54,9 @@ pub struct AgentRun {
     pub stopped: &'static str,
 }
 
-/// Called after each tool step with (step number, tool name, ok) - for live progress.
-pub type StepCallback = Arc<dyn Fn(usize, String, bool) + Send + Sync>;
+/// Called after each tool step with (step number, the full step record) - for live progress and
+/// a streaming "watch the agent work" view (tool, args, observation, and the step's signed receipt).
+pub type StepCallback = Arc<dyn Fn(usize, &StepRecord) + Send + Sync>;
 
 pub struct Agent {
     gateway: Arc<Gateway>,
@@ -247,7 +248,7 @@ impl Agent {
                     ledger_hash,
                 });
                 if let Some(cb) = &self.on_step {
-                    cb(steps.len(), call.name.clone(), ok);
+                    cb(steps.len(), steps.last().expect("just pushed"));
                 }
             }
 

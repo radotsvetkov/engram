@@ -356,7 +356,8 @@
   .mind-empty { padding:22px 16px; color:var(--text-muted); font-size:12.5px; line-height:1.55; text-align:center; }
   .mind-empty b { color:var(--text-secondary); }
   @media (max-width:880px){ .mind-panel { display:none; } }
-  .brain-hint { position:absolute; right:18px; bottom:16px; font:11px var(--mono); color:var(--text-muted); opacity:.5; pointer-events:none; letter-spacing:.01em; }
+  .brain-hint { position:absolute; right:18px; bottom:16px; font:11px var(--mono); color:var(--text-muted); opacity:.5; pointer-events:none; letter-spacing:.01em; transition:opacity .7s var(--ease-out,ease); }
+  .brain-hint.faded { opacity:0; }
   .brain-empty { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; flex-direction:column;
     gap:6px; color:var(--text-muted); text-align:center; pointer-events:none; }
   .brain-empty b { color:var(--text-secondary); font-size:15px; }
@@ -1938,6 +1939,8 @@ const BRAIN_ANCH = {            // unit tetrahedron - four well-separated region
   episodic:   [-0.46, -0.32, 0.80],
   procedural: [-0.46, -0.32, -0.80],
 };
+// Respect the OS "reduce motion" setting: skip the formation/birth animation (nodes appear at rest).
+const BRAIN_REDUCED = (()=>{ try{ return matchMedia('(prefers-reduced-motion: reduce)').matches; }catch(_){ return false; } })();
 function brainNode(n, born){
   const reg=BRAIN_REGIONS[n.region]?n.region:'semantic', a=BRAIN_ANCH[reg];
   const tierA=n.tier==='hot'?1:n.tier==='warm'?0.72:0.5;
@@ -1953,7 +1956,7 @@ function brainInit(raw){
   const B = BRAIN = { canvas, ctx:canvas.getContext('2d'), nodes:[], hover:null, sel:null,
     mouse:{x:-1,y:-1}, dim:new Set(), matched:null, t:0, raf:0, w:0,h:0,cx:0,cy:0, R:200,
     dpr:Math.min(2,window.devicePixelRatio||1), cam:{yaw:0.6, pitch:-0.30, zoom:1}, drag:null, alpha:1 };
-  B.nodes = raw.map((n,i)=>brainNode(n, -i*0.016));   // stagger the birth so the brain assembles
+  B.nodes = raw.map((n,i)=>brainNode(n, BRAIN_REDUCED?1:-i*0.016));   // stagger the birth so the brain assembles (unless reduce-motion)
   brainResize();
   brainWireInput(canvas);
   if(!window._brainResizeWired){ window._brainResizeWired=true; window.addEventListener('resize', ()=>brainResize()); }
@@ -1970,7 +1973,7 @@ function brainMergeGraph(raw){
     const r=3.2+(n.importance||0.3)*4.5+Math.min(6,Math.log2((n.access||0)+1)*1.4);
     const ex=byId.get(n.id);
     if(ex){ ex.tier=n.tier; ex.access=n.access; ex.importance=n.importance; ex.tierA=tierA; ex.r=r; continue; }
-    B.nodes.push(brainNode(n, 0)); added++;
+    B.nodes.push(brainNode(n, BRAIN_REDUCED?1:0)); added++;
   }
   if(raw.length) B.nodes=B.nodes.filter(n=>fresh.has(n.id));
   // Deliberately do NOT re-warm the settled layout: a new memory appears at its own anchor spot
@@ -2053,9 +2056,10 @@ function brainTip(){
 function brainWireInput(canvas){
   canvas.onmousemove=e=>{ const r=canvas.getBoundingClientRect(); BRAIN.mouse.x=e.clientX-r.left; BRAIN.mouse.y=e.clientY-r.top; };
   canvas.onmouseleave=()=>{ if(BRAIN && !BRAIN.drag){ BRAIN.mouse.x=-1; BRAIN.mouse.y=-1; } };
-  canvas.onmousedown=e=>{ if(BRAIN) BRAIN.drag={lx:e.clientX, ly:e.clientY, moved:0}; };
-  canvas.onwheel=e=>{ e.preventDefault(); if(!BRAIN) return; const z=BRAIN.cam.zoom*(1-e.deltaY*0.0014); BRAIN.cam.zoom=Math.max(0.45,Math.min(4,z)); };
+  canvas.onmousedown=e=>{ if(BRAIN) BRAIN.drag={lx:e.clientX, ly:e.clientY, moved:0}; brainFadeHint(); };
+  canvas.onwheel=e=>{ e.preventDefault(); if(!BRAIN) return; const z=BRAIN.cam.zoom*(1-e.deltaY*0.0014); BRAIN.cam.zoom=Math.max(0.45,Math.min(4,z)); brainFadeHint(); };
   canvas.style.cursor='grab';
+  function brainFadeHint(){ document.querySelector('.brain-hint')?.classList.add('faded'); }
   if(!window._brainDragWired){ window._brainDragWired=true;
     window.addEventListener('mousemove', e=>{ const B=BRAIN; if(!B||!B.drag) return;
       const dx=e.clientX-B.drag.lx, dy=e.clientY-B.drag.ly; B.drag.moved+=Math.abs(dx)+Math.abs(dy); B.drag.lx=e.clientX; B.drag.ly=e.clientY;

@@ -282,3 +282,61 @@ fn slug(s: &str) -> String {
         out
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmpdir() -> std::path::PathBuf {
+        let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let d = std::env::temp_dir().join(format!("engram-tasks-test-{n}"));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn set_agent_assigns_and_clears() {
+        let d = tmpdir();
+        let s = TaskStore::open(&d);
+        let t = s.create("do a thing".into(), String::new(), "test".into());
+        assert_eq!(s.set_agent(&t.id, Some("ag1".into())).unwrap().agent.as_deref(), Some("ag1"));
+        assert!(s.set_agent(&t.id, None).unwrap().agent.is_none());
+        assert!(s.set_agent("nope", Some("x".into())).is_none());
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn handoff_reassigns_and_appends_to_the_trail() {
+        let d = tmpdir();
+        let s = TaskStore::open(&d);
+        let t = s.create("investigate".into(), String::new(), "test".into());
+        s.set_agent(&t.id, Some("scout-id".into()));
+        let after = s.handoff(&t.id, Some("rev-id".into()), "Scout", "Reviewer", "found it, verify").unwrap();
+        assert_eq!(after.agent.as_deref(), Some("rev-id"));
+        assert_eq!(after.handoffs.len(), 1);
+        assert_eq!(after.handoffs[0].from, "Scout");
+        assert_eq!(after.handoffs[0].to, "Reviewer");
+        assert_eq!(after.handoffs[0].note, "found it, verify");
+        // a second hand-off appends rather than replacing, and can clear the agent
+        let after2 = s.handoff(&t.id, None, "Reviewer", "Default agent", "done").unwrap();
+        assert_eq!(after2.handoffs.len(), 2);
+        assert!(after2.agent.is_none());
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn handoff_trail_persists_across_reload() {
+        let d = tmpdir();
+        let id = {
+            let s = TaskStore::open(&d);
+            let t = s.create("x".into(), String::new(), "test".into());
+            s.handoff(&t.id, Some("a".into()), "", "A", "note");
+            t.id
+        };
+        let s2 = TaskStore::open(&d);
+        let t = s2.get(&id).unwrap();
+        assert_eq!(t.handoffs.len(), 1);
+        assert_eq!(t.handoffs[0].to, "A");
+        std::fs::remove_dir_all(&d).ok();
+    }
+}

@@ -30,8 +30,8 @@ things no competitor can follow without first building that ledger:
 | Model picker "is static" | **Already done** | Provider/model/key hot-swap + `/v1/config/test` shipped (b30cfab). Only fix: honest "offline mock" state vs a fake live list. |
 | "Consciousness" over SOUL/persona | **Refine** | Endorse the *mechanism* (distilled, signed, editable working memory). Ship the mechanism, **not the metaphysics** — no "conscious self" claims; they undercut verify-don't-trust. |
 | 3D / anatomical / orbitable brain (incl. 2.5D point-cloud) | **Cut** | Anatomical position is *invented* (recall-relevance has no lobe) — decorative dishonesty in an honesty product. Orbit needs WebGL/Three.js (breaks no-build/no-CDN) or fragile per-frame camera math. Animate the **2D** brain instead. |
-| Separate-mind subagents / assignable crew / per-agent subconscious | **Cut** | The scope bomb; the commodity 2026 quadrant (CrewAI/AutoGen). Duplicates context, kills zero-idle, *is* the black box we sell against. Keep only the existing bounded `delegate_task`. |
-| Specialists as **context-lens "hats"** over the one shared brain, assignable to kanban cards | **Refine** | The only on-wedge framing of "multi-agent." A hat = bias recall + prefer a skill-cluster + prepend a distilled lens; the card's ledger slice records which hat ran. **Attach a lens, never mint a named agent.** |
+| ~~Separate-mind subagents~~ / **fragile in-process swarms** | **Cut** | Founder ALSO rejects these ("without fragile in-process subagent swarms"). Ephemeral in-process orchestration duplicates context, fights zero-idle, and is the black box we sell against. |
+| **Durable, named, role-scoped agents collaborating via the kanban** (founder's clarified intent — the Hermes model) | **Endorse (revised)** | NOT swarms: *durable, configurable* agents — each a strict role + system prompt (narrow focus ⇒ less drift/hallucination) + its own model (right model per task) + optional skill-cluster — that collaborate on one mission via the **durable, signed** kanban board. Each agent's actions are signed (ledger actor = the agent), so the collaboration is **fully auditable** — glass-box multi-agent, the opposite of an opaque swarm. This is on-wedge: *a team you can audit.* |
 | Skills-as-growing-expertise as the visible centerpiece | **Refine** | The unique self-improving mechanic, currently *invisible*. But `learn.rs` scores by exact-byte match vs gold output — so honest growth exists only for deterministic/tool-shaped skills. Show the real promote/revert moment; show "unverified" where there's no scored signal. Don't oversell "harder variant reuses prior solution" yet. |
 | Auditable dissent (specialist objects; plan+objection+grounds+choice all signed) | **Refine → Phase 3** | Fuses both moats into "an adversary you can audit." But ungrounded prompt-dissent is "the base model in a costume." Fires **only** when grounded in real evidence (replay-win record + conflicting recalled memories). Gated on the expertise signal being real first. |
 | Friendly MCP UI + a few templates | **Endorse** | Raw `mcp.json` is a trust leak; a form over the existing `/v1/config/mcp-test` is high-ROI. Templates = a *small bounded* starter set, never a marketplace. |
@@ -59,11 +59,25 @@ live count on the existing 2D Canvas brain; ~30–40 lines of pointer-parallax +
 dimensional read (no camera matrix); a **recall ribbon** under each answer showing which memories
 were pulled in, each clickable to its node + ledger slice; searchable/filterable memories+skills.
 
-**Phase 2 — Expertise made visible (and honest).** A Skills view with each skill's version ladder;
-on a promotion, animate the *real* before/after replay score + ◇ ledger chip ("v3 beat v2:
-0.82→0.94 on 11 replays"); "unverified — N runs" where there's no gold signal; specialist **hats**
-on kanban cards as attachable context-lenses (bias recall + prefer cluster + prepend lens), ledger
-records which hat ran. No spawn-a-named-agent flow.
+**Phase 2 — The auditable team + visible expertise.** *(Revised per founder: durable named agents,
+the Hermes model.)*
+- **Agent configuration:** define durable, named agents — each with a strict **role + system
+  prompt** (narrow focus ⇒ less drift/hallucination), its **own model** (right model per task,
+  with an auto-route option), and an optional **skill-cluster**. Persisted, not ephemeral.
+- **Collaboration via the kanban:** assign an agent to a card (or let agents pick up / hand off
+  cards on a single mission); the durable board is the coordination surface — no in-process swarm.
+- **Auditable:** every agent action is signed with the agent as the ledger actor, so the team's
+  collaboration is fully visible in the live-run view + Activity. *A team you can audit.*
+- **Visible, honest expertise:** a Skills view with each skill's version ladder; on a promotion,
+  animate the *real* before/after replay score + ◇ ledger chip ("v3 beat v2: 0.82→0.94 on 11
+  replays"); "unverified — N runs" where there's no gold signal.
+
+**Cross-cutting theme — Anti-hallucination (the hard focus).** The reason for narrow roles, and a
+first-class goal throughout: (1) **role-scoping** — narrow agents drift far less than one broad
+prompt; (2) **grounding** — every factual claim traceable to a recalled memory or a tool result,
+shown in the recall ribbon; (3) **verification** — the reflect/adversarial-check pass before a run
+finishes; (4) the **glass-box** surfacing unsupported claims. Rides the existing recall + signed-step
+machinery; no new trust surface to bluff.
 
 **Phase 3 — Auditable dissent (gated on real expertise signal).** When an assigned lens has high
 replay-confidence and the instruction conflicts with what that expertise predicts, surface a single

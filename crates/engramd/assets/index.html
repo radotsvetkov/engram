@@ -1495,6 +1495,7 @@ async function openTask(id, fromPoll){
   // If the task vanished (deleted out-of-band), close the panel instead of leaving it stale.
   const t=state.tasks.find(x=>x.id===id); if(!t){ if(panelId===id) closePanel(); return; }
   if(fromPoll && liveRunId===id) return;   // a live run is streaming into this panel - don't clobber it
+  if(fromPoll && _pendingDissent && _pendingDissent.id===id) return;   // a specialist note is awaiting the user's signed choice - never let a poll wipe it
   // A background refresh must not destroy what the user is typing in the panel (the schedule
   // field, a dry-run preview) or yank focus. Skip the rebuild while a panel field has focus.
   if(fromPoll && panelId===id && document.getElementById('panel').contains(document.activeElement)
@@ -2165,7 +2166,13 @@ function mindFocus(memId){
 // grounded the reply, so "what backed this answer" is one click from the answer itself.
 function recallOpen(id){
   go('Memory');
-  setTimeout(()=>{ if(typeof mindFocus==='function') mindFocus(id); }, 680);
+  // Poll until the brain has loaded (the graph fetch can be slower than any fixed delay), then focus.
+  let tries=0;
+  const tick=()=>{ tries++;
+    if(BRAIN && BRAIN.nodes && BRAIN.nodes.length){ if(typeof mindFocus==='function') mindFocus(id); return; }
+    if(tries<25) setTimeout(tick, 120);
+  };
+  setTimeout(tick, 200);
 }
 // ---- Teach modal ----
 function openTeach(){
@@ -2529,7 +2536,7 @@ async function agentSave(id, btn){
 async function agentDelete(id){
   const a=AGENTS.find(x=>x.id===id);
   if(!await askConfirm({title:'Delete agent?',message:'“'+(a?a.name:'this agent')+'” will be removed. Cards assigned to it fall back to the default agent.',ok:'Delete',danger:true})) return;
-  try{ await J('/v1/agents/'+id,{method:'DELETE'}); notify('Agent deleted','ok'); if(ccActive==='agents') renderCC(); }
+  try{ await J('/v1/agents/'+id,{method:'DELETE'}); AGENTS=AGENTS.filter(x=>x.id!==id); notify('Agent deleted','ok'); if(ccActive==='agents') renderCC(); }
   catch(e){ notify('Couldn’t delete — '+e.message); }
 }
 // Assign (or clear) the agent that runs a kanban card - a signed, auditable event.

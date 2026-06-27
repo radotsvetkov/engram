@@ -54,7 +54,7 @@ pub struct ProviderCfg {
 
 impl Default for ProviderCfg {
     fn default() -> Self {
-        Self { kind: "mock".into(), base_url: String::new(), api_key: String::new(), model: "claude-haiku".into() }
+        Self { kind: "mock".into(), base_url: String::new(), api_key: String::new(), model: "claude-haiku-4-5".into() }
     }
 }
 
@@ -138,6 +138,21 @@ impl Config {
         // of truth when present; otherwise keep whatever loaded (back-compat), never wiping a key.
         if let Some(k) = env_api_key() {
             cfg.provider.api_key = k;
+        } else if cfg.provider.kind == "anthropic" {
+            // Also honor the standard ANTHROPIC_API_KEY (the SDK convention) for the Anthropic
+            // provider, so an exported key Just Works and survives restarts under the memory-only
+            // key policy. Scoped to kind == "anthropic" so it can never pollute an OpenAI/Ollama
+            // config that legitimately has a different (unpersisted) key.
+            if let Some(k) = std::env::var("ANTHROPIC_API_KEY").ok().filter(|s| !s.is_empty()) {
+                cfg.provider.api_key = k;
+            }
+        }
+        // Heal the dead mock-era placeholder model id. "claude-haiku" was never a valid
+        // Anthropic API model - it 404s on the live endpoint ("model: claude-haiku not_found").
+        // An install that saved it before this fix would keep re-sending it; remap the stored
+        // copy to the real Haiku alias so the live key works without the user re-picking a model.
+        if cfg.provider.model == "claude-haiku" {
+            cfg.provider.model = "claude-haiku-4-5".into();
         }
         cfg
     }
@@ -155,6 +170,15 @@ impl Config {
         {
             c.provider.kind = detect_kind(&base);
             c.provider.base_url = base;
+            c.provider.api_key = key;
+        } else if let Some(key) = std::env::var("ANTHROPIC_API_KEY").ok().filter(|k| !k.is_empty()) {
+            // Standard Anthropic env var: an exported key brings up the real provider on a fresh
+            // install (no config.json yet) with no UI step. base_url is left empty so the provider
+            // uses its built-in https://api.anthropic.com/v1 default - matching the UI's anthropic
+            // preset (which also sends an empty base). We deliberately do NOT adopt ANTHROPIC_BASE_URL:
+            // it is a host root (no /v1), but our provider posts to "{base}/messages", so a raw host
+            // would 404. Custom endpoints go through the UI or ENGRAM_LLM_BASE_URL (Engram convention).
+            c.provider.kind = "anthropic".into();
             c.provider.api_key = key;
         }
         if let Ok(m) = std::env::var("ENGRAM_MODEL") {
@@ -192,7 +216,7 @@ impl Config {
     /// The model id to send with requests, with a sane default.
     pub fn model(&self) -> String {
         if self.provider.model.is_empty() {
-            "claude-haiku".into()
+            "claude-haiku-4-5".into()
         } else {
             self.provider.model.clone()
         }
@@ -313,8 +337,39 @@ mod tests {
         d.to_string_lossy().into_owned()
     }
 
+    // Tests that mutate process-global env vars serialize on this lock so they never race.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// RAII: set/unset an env var for the duration of a test, restoring the prior value on drop
+    /// so we don't clobber a real key the dev shell has exported.
+    struct EnvVarGuard {
+        key: &'static str,
+        prev: Option<String>,
+    }
+    impl EnvVarGuard {
+        fn set(key: &'static str, val: &str) -> Self {
+            let prev = std::env::var(key).ok();
+            std::env::set_var(key, val);
+            Self { key, prev }
+        }
+        fn unset(key: &'static str) -> Self {
+            let prev = std::env::var(key).ok();
+            std::env::remove_var(key);
+            Self { key, prev }
+        }
+    }
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.prev {
+                Some(v) => std::env::set_var(self.key, v),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
     #[test]
     fn api_key_never_persists_to_disk() {
+        let _lock = ENV_LOCK.lock().unwrap();
         let home = tmphome();
         let mut c = Config::default();
         c.provider.kind = "anthropic".into();
@@ -324,12 +379,60 @@ mod tests {
         let on_disk = std::fs::read_to_string(Config::path(&home)).unwrap();
         assert!(!on_disk.contains("SUPERSECRET"), "api_key was written to config.json");
         assert!(on_disk.contains("anthropic"), "non-secret fields should persist");
-        // Reloading must not resurrect the key from disk (only the environment may seed it).
+        // Reloading must not resurrect the on-disk secret. The key may be re-seeded from the
+        // environment (ENGRAM_* or, for an anthropic provider, the standard ANTHROPIC_API_KEY) -
+        // that is the intended memory-only-via-env policy - but never from config.json.
         let reloaded = Config::load(&home);
-        if env_api_key().is_none() {
-            assert!(reloaded.provider.api_key.is_empty(), "api_key came back from disk");
-        }
+        assert_ne!(reloaded.provider.api_key, "sk-ant-SUPERSECRET", "api_key came back from disk");
         assert_eq!(reloaded.provider.kind, "anthropic");
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    #[test]
+    fn heals_dead_haiku_placeholder_model() {
+        // kind="mock" so the env-key adoption branch is skipped: the heal is the only effect,
+        // making this independent of whatever ANTHROPIC_API_KEY the dev env happens to have set.
+        let home = tmphome();
+        let mut c = Config::default();
+        c.provider.kind = "mock".into();
+        c.provider.model = "claude-haiku".into(); // the dead mock-era placeholder (404s live)
+        c.save(&home).unwrap();
+        assert_eq!(
+            Config::load(&home).provider.model,
+            "claude-haiku-4-5",
+            "dead placeholder must heal to the real Haiku alias"
+        );
+        // A real, already-valid model id must be left untouched.
+        let home2 = tmphome();
+        let mut c2 = Config::default();
+        c2.provider.kind = "mock".into();
+        c2.provider.model = "claude-opus-4-8".into();
+        c2.save(&home2).unwrap();
+        assert_eq!(
+            Config::load(&home2).provider.model,
+            "claude-opus-4-8",
+            "a valid model id must not be rewritten"
+        );
+        std::fs::remove_dir_all(&home).ok();
+        std::fs::remove_dir_all(&home2).ok();
+    }
+
+    #[test]
+    fn adopts_standard_anthropic_api_key_when_no_engram_var() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        // The ENGRAM_-prefixed vars take precedence, so clear them; set only the standard one.
+        let _g1 = EnvVarGuard::unset("ENGRAM_ANTHROPIC_API_KEY");
+        let _g2 = EnvVarGuard::unset("ENGRAM_LLM_API_KEY");
+        let _g3 = EnvVarGuard::unset("ENGRAM_LLM_BASE_URL");
+        let _g4 = EnvVarGuard::set("ANTHROPIC_API_KEY", "sk-ant-env-adopt-test");
+        // No config.json in `home` -> from_env runs and should bring up the real provider.
+        let home = tmphome();
+        let c = Config::load(&home);
+        assert_eq!(c.provider.kind, "anthropic", "standard key must select the anthropic provider");
+        assert_eq!(c.provider.api_key, "sk-ant-env-adopt-test", "standard key must be adopted");
+        // base_url stays empty so the provider uses its correct https://api.anthropic.com/v1 default.
+        assert!(c.provider.base_url.is_empty(), "must not adopt the raw host ANTHROPIC_BASE_URL");
+        assert_eq!(c.model(), "claude-haiku-4-5", "default model must be a real Anthropic id");
         std::fs::remove_dir_all(&home).ok();
     }
 }

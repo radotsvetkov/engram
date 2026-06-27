@@ -212,8 +212,14 @@
   .act-hash:hover { color:var(--accent); }
 
   /* Generic chat/list */
-  .chat { max-width:720px; margin:0 auto; padding:24px 16px; display:flex; flex-direction:column; gap:14px; height:100%; }
-  .feed { flex:1; overflow:auto; display:flex; flex-direction:column; gap:14px; }
+  .chat { max-width:720px; margin:0 auto; padding:24px 16px; display:flex; flex-direction:column; gap:14px; height:100%; min-height:0; }
+  /* The feed is the ONLY scroll region in chat: flex:1 + min-height:0 lets it shrink below its
+     content (a flex child defaults to min-height:auto, which floors it at content height and makes
+     the whole .chat overflow -> .view scrolls feed+composer together, the "everything scrolls" bug).
+     overscroll-behavior:contain stops a feed scroll from chaining out to the page. */
+  .feed { flex:1 1 0; min-height:0; overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain; display:flex; flex-direction:column; gap:14px; }
+  /* Pin the composer: never let it shrink or scroll away when the feed fills. */
+  .chat > .composer { flex:0 0 auto; }
   .msg.user { align-self:flex-end; background:var(--surface-2); border:1px solid var(--border); border-radius:16px 16px 5px 16px; padding:10px 14px; max-width:78%; line-height:1.5; white-space:pre-wrap; }
   .msg.engram { font-family:var(--sans); font-size:14.5px; line-height:1.65; max-width:72ch; color:var(--text-primary); }
   /* rendered markdown in replies */
@@ -1792,10 +1798,29 @@ function paintFeed(){
       : (m.recalled&&m.recalled.length)?`<div class="ribbon">${m.recalled.slice(0,5).map(r=>`<span class="recall" title="${escAttr(r)}"><span class="rg">◇</span> ${esc((r||'').replace(/\s+/g,' ').slice(0,54))}</span>`).join('')}</div>`:'';
     const learned=(m.learned&&m.learned.length)?`<div class="learned">learned about you · ${m.learned.map(esc).join(' · ')}</div>`:'';
     const body = m.text ? (mdToHtml(m.text) + (m.streaming?'<span class="caret"></span>':'')) : (m.streaming?thinkingDots:'…');
-    return `<div><div class="msg engram">${body}</div>${ribbon}${learned}</div>`;
+    return `<div><div class="msg engram"${m.streaming?' id="streamMsg"':''}>${body}</div>${ribbon}${learned}</div>`;
   }).join('') || chatWelcome();
   artsAfterPaint();   // detect substantial code/doc blocks, inject "Open in canvas" chips, sync the pane
   f.scrollTop=f.scrollHeight;
+}
+// During streaming we update ONLY the in-flight message node (not the whole feed) and coalesce
+// token bursts into one paint per animation frame. Rebuilding the entire feed per token - re-running
+// markdown on every prior message plus the code-block scan - was the source of the flicker, the
+// lost text selection, and the scroll thrash.
+let _streamRAF=0;
+function streamTick(msg){
+  if(_streamRAF) return;                       // coalesce: at most one DOM write per frame
+  _streamRAF=requestAnimationFrame(()=>{
+    _streamRAF=0;
+    if(!msg.streaming) return;                 // the final full paint already ran
+    const el=document.getElementById('streamMsg'), f=document.getElementById('feed');
+    if(!el){ paintFeed(); return; }            // structure changed (e.g. session switch) -> full paint
+    // Sticky bottom: only auto-scroll when the reader is already near the end, so a long reply
+    // doesn't yank them back down while they've scrolled up to read.
+    const stick = !f || (f.scrollHeight - f.scrollTop - f.clientHeight) < 160;
+    el.innerHTML = mdToHtml(msg.text||'') + '<span class="caret"></span>';
+    if(stick && f) f.scrollTop=f.scrollHeight;
+  });
 }
 async function chatSay(text, attachments){
   attachments = Array.isArray(attachments) ? attachments : [];
@@ -1826,7 +1851,7 @@ async function chatSay(text, attachments){
         // The reply text always lands in its own session's object; only repaint if that session
         // is still on screen (so a mid-stream switch doesn't render into the wrong feed).
         const live = WS.activeSession===sid;
-        if(ev==='token'){ msg.text+=data; if(live) paintFeed(); }
+        if(ev==='token'){ msg.text+=data; if(live) streamTick(msg); }
         else if(ev==='done'){ try{const d=JSON.parse(data); if(d.reply) msg.text=d.reply; msg.recalled=d.recalled; msg.recalled_refs=d.recalled_refs; msg.learned=d.learned;}catch(_){} if(live) paintFeed(); }
         else if(ev==='error'){ msg.text='(couldn’t reach Engram - '+data+')'; if(live) paintFeed(); }
       }
@@ -1841,7 +1866,7 @@ async function chatSay(text, attachments){
 // ---- model picker (searchable, provider-grouped popover) ----
 let modelMenuOpen=false, mmFilter='', mmSel=0, mmSelList=[];
 const MODEL_META = {
-  'claude-haiku':'fast · cheap', 'claude-sonnet-4-6':'balanced', 'claude-opus-4-8':'most capable', 'claude-fable-5':'frontier',
+  'claude-haiku-4-5':'fast · cheap', 'claude-sonnet-4-6':'balanced', 'claude-opus-4-8':'most capable', 'claude-fable-5':'frontier',
   'gpt-4o-mini':'fast · cheap', 'gpt-4o':'capable', 'o4-mini':'reasoning',
   'anthropic/claude-3.5-sonnet':'balanced', 'openai/gpt-4o-mini':'fast · cheap', 'meta-llama/llama-3.1-70b-instruct':'open', 'google/gemini-flash-1.5':'fast',
   'llama3.1':'local', 'qwen2.5':'local', 'mistral':'local', 'phi3':'local',
@@ -2248,11 +2273,11 @@ async function runSkill(id){ const input=document.getElementById('in_'+id).value
 
 // ---- Settings ----
 const PROVIDERS = {
-  anthropic:  { label:'Anthropic — Claude', base:'', needsKey:true,  keyHint:'sk-ant-…', models:['claude-haiku','claude-sonnet-4-6','claude-opus-4-8','claude-fable-5'] },
+  anthropic:  { label:'Anthropic — Claude', base:'', needsKey:true,  keyHint:'sk-ant-…', models:['claude-haiku-4-5','claude-sonnet-4-6','claude-opus-4-8','claude-fable-5'] },
   openai:     { label:'OpenAI-compatible',  base:'https://api.openai.com/v1', needsKey:true, keyHint:'sk-…', models:['gpt-4o-mini','gpt-4o','o4-mini'] },
   openrouter: { label:'OpenRouter',         base:'https://openrouter.ai/api/v1', needsKey:true, keyHint:'sk-or-…', models:['anthropic/claude-3.5-sonnet','openai/gpt-4o-mini','meta-llama/llama-3.1-70b-instruct','google/gemini-flash-1.5'] },
   ollama:     { label:'Ollama — local',     base:'http://localhost:11434/v1', needsKey:false, keyHint:'no key needed', models:['llama3.1','qwen2.5','mistral','phi3'] },
-  mock:       { label:'Mock — offline demo',base:'', needsKey:false, keyHint:'no key', models:['claude-haiku'] },
+  mock:       { label:'Mock — offline demo',base:'', needsKey:false, keyHint:'no key', models:['claude-haiku-4-5'] },
 };
 let CFG = null;
 const gv = id => (document.getElementById(id)?.value ?? '').toString().trim();

@@ -98,6 +98,27 @@ pub struct SecurityCfg {
     pub channel_secret: String,
     /// Whether the agent may run shell commands.
     pub allow_shell: bool,
+    /// How shell commands are isolated: "" / "local" (host), "docker", or "ssh". Anything other
+    /// than docker/ssh runs on the host.
+    #[serde(default)]
+    pub shell_backend: String,
+    /// The target for the chosen backend: the Docker image (docker) or the user@host (ssh).
+    #[serde(default)]
+    pub shell_target: String,
+}
+
+/// Resolve a (backend, target) pair into the policy's shell-backend string the agent expects:
+/// `None` = run on the host, `Some("<image>")` = a Docker sandbox, `Some("ssh:<host>")` = SSH.
+pub fn resolve_shell_backend(backend: &str, target: &str) -> Option<String> {
+    match backend.trim() {
+        "docker" => Some(if target.trim().is_empty() {
+            "alpine".to_string()
+        } else {
+            target.trim().to_string()
+        }),
+        "ssh" if !target.trim().is_empty() => Some(format!("ssh:{}", target.trim())),
+        _ => None,
+    }
 }
 
 /// Runaway-cost guard.
@@ -306,6 +327,8 @@ impl Config {
                 "api_token_set": !self.security.api_token.is_empty(),
                 "channel_secret_set": !self.security.channel_secret.is_empty(),
                 "allow_shell": self.security.allow_shell,
+                "shell_backend": self.security.shell_backend,
+                "shell_target": self.security.shell_target,
             },
             "cost": { "task_token_budget": self.cost.task_token_budget },
             "channels": {
@@ -524,6 +547,30 @@ fn write_owner_only(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shell_backend_resolves_to_the_policy_string() {
+        // Host (empty / anything not docker|ssh) => no isolation.
+        assert_eq!(resolve_shell_backend("", ""), None);
+        assert_eq!(resolve_shell_backend("local", "whatever"), None);
+        // Docker => the image (default alpine when blank).
+        assert_eq!(resolve_shell_backend("docker", ""), Some("alpine".into()));
+        assert_eq!(
+            resolve_shell_backend("docker", "ubuntu:24.04"),
+            Some("ubuntu:24.04".into())
+        );
+        // SSH => ssh:<host>, but only when a host is given (a blank target can't be a sandbox).
+        assert_eq!(
+            resolve_shell_backend("ssh", "deploy@10.0.0.5"),
+            Some("ssh:deploy@10.0.0.5".into())
+        );
+        assert_eq!(resolve_shell_backend("ssh", ""), None);
+        // Whitespace is trimmed so a stray space doesn't change the meaning.
+        assert_eq!(
+            resolve_shell_backend("  docker ", "  alpine "),
+            Some("alpine".into())
+        );
+    }
 
     fn tmphome() -> String {
         // Atomic counter (not just nanos) so parallel tests never share a dir under load.

@@ -2771,6 +2771,9 @@ function ccMemory(c){
 }
 function ccTools(c){
   const s=c.security||{};
+  const bk=(s.shell_backend||''); const tgt=escAttr(s.shell_target||'');
+  const tlbl=bk==='ssh'?'SSH host':'Docker image';
+  const tph=bk==='ssh'?'user@host':'alpine';
   return ccHead('Tools','External tool servers and the safety gates around them.')+`
     <div class="scard">
       <h3>MCP servers <span class="badge set">live</span></h3>
@@ -2784,6 +2787,20 @@ function ccTools(c){
       <h3>Shell &amp; egress</h3>
       <div class="desc">The agent is read-only by default. Shell access lets it run commands; the taint policy keeps your context from leaving the machine.</div>
       <label class="toggle"><input type="checkbox" id="sshell" ${s.allow_shell?'checked':''}><span class="track"></span> Allow the agent to run shell commands</label>
+      <div class="row2" style="margin-top:13px">
+        <div class="field"><label>Sandbox</label>
+          <select id="sbackend" onchange="shellBackendChanged()">
+            <option value=""${bk===''?' selected':''}>Host - no isolation</option>
+            <option value="docker"${bk==='docker'?' selected':''}>Docker container</option>
+            <option value="ssh"${bk==='ssh'?' selected':''}>Remote SSH host</option>
+          </select>
+          <div class="hint">Where shell commands run. Docker isolates each run in a throwaway container; SSH runs them on another machine. Both need that backend on the daemon's host.</div>
+        </div>
+        <div class="field" id="stargetwrap" style="${bk?'':'display:none'}"><label id="stargetlbl">${tlbl}</label>
+          <input type="text" id="starget" value="${tgt}" placeholder="${tph}" autocomplete="off">
+          <div class="hint" id="stargethint">${bk==='ssh'?'e.g. deploy@10.0.0.5 (key auth, must be set up)':'e.g. alpine, ubuntu:24.04, or your own image'}</div>
+        </div>
+      </div>
       <div class="ph" style="margin-top:11px"><b>No egress</b> - on by default. Once a run reads untrusted content, tools that would send data to the web are blocked. (A visual allowlist editor lands in Phase 2.)</div>
       <div class="sactions"><span class="grow"></span><button class="sbtn primary" onclick="saveSettings()">Save</button></div>
     </div>`;
@@ -3145,11 +3162,21 @@ function collectSettings(){
   const has=id=>!!document.getElementById(id), patch={};
   if(has('pkind')){ patch.provider={ kind:gv('pkind'), model:gv('pmodel'), base_url:gv('pbase') }; const k=gv('pkey'); if(k) patch.provider.api_key=k; }
   if(has('ekind')) patch.embed={ kind:gv('ekind'), model_dir:gv('edir') };
-  if(has('sshell')||has('stok')||has('ssec')){ patch.security={}; if(has('sshell')) patch.security.allow_shell=document.getElementById('sshell').checked;
-    const t=gv('stok'); if(t) patch.security.api_token=t; const s=gv('ssec'); if(s) patch.security.channel_secret=s; }
+  if(has('sshell')||has('stok')||has('ssec')||has('sbackend')){ patch.security={}; if(has('sshell')) patch.security.allow_shell=document.getElementById('sshell').checked;
+    const t=gv('stok'); if(t) patch.security.api_token=t; const s=gv('ssec'); if(s) patch.security.channel_secret=s;
+    if(has('sbackend')){ patch.security.shell_backend=gv('sbackend'); patch.security.shell_target=gv('starget'); } }
   if(has('cbudget')) patch.cost={ task_token_budget: Math.max(1000, parseInt(gv('cbudget'),10)||250000) };
   if(has('mcplist')) patch.mcp=collectMcpV2();
   return patch;
+}
+
+// Show the right target field (Docker image vs SSH host) for the chosen shell sandbox.
+function shellBackendChanged(){
+  const bk=gv('sbackend'); const wrap=document.getElementById('stargetwrap'); if(!wrap) return;
+  wrap.style.display = bk? '' : 'none';
+  const lbl=document.getElementById('stargetlbl'), inp=document.getElementById('starget'), hint=document.getElementById('stargethint');
+  if(bk==='ssh'){ lbl.textContent='SSH host'; inp.placeholder='user@host'; hint.textContent='e.g. deploy@10.0.0.5 (key auth, must be set up)'; }
+  else { lbl.textContent='Docker image'; inp.placeholder='alpine'; hint.textContent='e.g. alpine, ubuntu:24.04, or your own image'; }
 }
 
 async function saveSettings(){

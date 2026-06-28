@@ -1444,17 +1444,25 @@ pub(crate) async fn run_agent_task_cb(
     let policy = engram_agent::Policy {
         allow_shell: app.allow_shell.load(std::sync::atomic::Ordering::Relaxed),
         dry_run,
-        shell_backend: match std::env::var("ENGRAM_SHELL_BACKEND").as_deref() {
-            Ok("docker") => {
-                Some(std::env::var("ENGRAM_DOCKER_IMAGE").unwrap_or_else(|_| "alpine".into()))
-            }
-            Ok("ssh") => std::env::var("ENGRAM_SSH_HOST")
-                .ok()
-                .map(|h| format!("ssh:{h}")),
-            Ok("singularity") => std::env::var("ENGRAM_SINGULARITY_IMAGE")
-                .ok()
-                .map(|i| format!("singularity:{i}")),
-            _ => None,
+        // Shell isolation comes from the live settings (configurable in the desktop's Tools
+        // panel); fall back to the ENGRAM_SHELL_BACKEND env vars for headless/server installs.
+        shell_backend: {
+            let resolved = {
+                let c = app.cfg();
+                config::resolve_shell_backend(&c.security.shell_backend, &c.security.shell_target)
+            };
+            resolved.or_else(|| match std::env::var("ENGRAM_SHELL_BACKEND").as_deref() {
+                Ok("docker") => {
+                    Some(std::env::var("ENGRAM_DOCKER_IMAGE").unwrap_or_else(|_| "alpine".into()))
+                }
+                Ok("ssh") => std::env::var("ENGRAM_SSH_HOST")
+                    .ok()
+                    .map(|h| format!("ssh:{h}")),
+                Ok("singularity") => std::env::var("ENGRAM_SINGULARITY_IMAGE")
+                    .ok()
+                    .map(|i| format!("singularity:{i}")),
+                _ => None,
+            })
         },
         ..Default::default()
     };
@@ -3389,6 +3397,16 @@ fn apply_config_patch(cfg: &mut config::Config, p: &Value) {
         }
         if let Some(b) = sec.get("allow_shell").and_then(|v| v.as_bool()) {
             cfg.security.allow_shell = b;
+        }
+        if let Some(x) = s(sec, "shell_backend") {
+            // Only "docker" / "ssh" change behaviour; anything else means run on the host.
+            cfg.security.shell_backend = match x.trim() {
+                "docker" | "ssh" => x.trim().to_string(),
+                _ => String::new(),
+            };
+        }
+        if let Some(x) = s(sec, "shell_target") {
+            cfg.security.shell_target = x.trim().to_string();
         }
         if flag(sec, "clear_api_token") {
             cfg.security.api_token.clear();

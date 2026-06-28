@@ -75,10 +75,22 @@ pub struct Attachment {
 /// the same memory grounding the conversational path shows. Best-effort (empty on error).
 pub(crate) fn recall_ribbon(memory: &Memory, text: &str) -> (Vec<String>, Vec<RecalledRef>) {
     let regions = [Region::Identity, Region::Episodic, Region::Semantic];
-    let hits = memory.recall_trusted(text, &regions, 5).unwrap_or_default();
-    let recalled = hits.iter().map(|h| h.record.text.clone()).collect();
-    let refs = hits
+    // Pull a few extra so we can drop noise and still have something to show.
+    let hits = memory.recall_trusted(text, &regions, 8).unwrap_or_default();
+    // The "grounding" ribbon must show MEANINGFUL grounding, not the flywheel's internal bookkeeping.
+    // Two filters: (1) drop the auto-captured task log ("Task: … Outcome: …") — that's continuity
+    // state for the agent, not a fact the answer rests on, and showing it reads as broken noise;
+    // (2) require genuine relevance, so an unrelated message doesn't surface a "grounded on 5" of
+    // loose matches — keep only hits within a band of the best score. Then cap at 4.
+    let best = hits.first().map(|h| h.score).unwrap_or(0.0);
+    let kept: Vec<RecalledRef> = hits
         .iter()
+        .filter(|h| {
+            let t = h.record.text.trim_start();
+            !(t.starts_with("Task:") && h.record.text.contains("Outcome:"))
+        })
+        .filter(|h| best <= 0.0 || h.score >= best * 0.6)
+        .take(4)
         .map(|h| RecalledRef {
             id: h.record.id,
             region: h.record.region.clone(),
@@ -86,7 +98,8 @@ pub(crate) fn recall_ribbon(memory: &Memory, text: &str) -> (Vec<String>, Vec<Re
             score: h.score,
         })
         .collect();
-    (recalled, refs)
+    let recalled = kept.iter().map(|r| r.text.clone()).collect();
+    (recalled, kept)
 }
 
 /// Deepen the model of the user from what they just said - extract + store identity facts the same

@@ -780,6 +780,7 @@ async fn run(mode: RunMode) -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/agents/{id}", post(agents_update).delete(agents_delete))
         .route("/v1/agents/{id}/activity", get(agent_activity))
         .route("/v1/skills", get(skills))
+        .route("/v1/open", post(open_url))
         .route("/v1/tools", get(tools_list))
         .route("/v1/skills/{id}/run", post(run_skill))
         .route("/v1/skills/{id}/improve", post(skill_improve))
@@ -1981,9 +1982,22 @@ pub(crate) async fn run_agent_task_cb(
     if let Ok(run) = &result {
         if !dry_run && !taint.is_untrusted() && run.stopped == "final" {
             let answer = run.answer.trim();
-            if !answer.is_empty() {
+            // Capture only SUBSTANTIVE runs — ones that actually used tools or produced a real
+            // result. A tool-less, short conversational reply ("try again" → "I'd be happy to
+            // help!") is filler: capturing it bloated the brain and polluted the recall ribbon.
+            let substantive = !run.steps.is_empty() || answer.chars().count() > 200;
+            if !answer.is_empty() && substantive {
+                // Record the user's ACTUAL request, not the full constructed prompt (which carries
+                // the chat-mode directive + history + a "User's latest message:" prefix). Capturing
+                // the whole prompt made huge, everything-matching episodic memories.
+                let clean_task = task
+                    .rsplit("User's latest message:")
+                    .next()
+                    .unwrap_or(task)
+                    .trim();
+                let label: String = clean_task.chars().take(160).collect();
                 let snippet: String = answer.chars().take(280).collect();
-                let text = format!("Task: {}\nOutcome: {}", task.trim(), snippet);
+                let text = format!("Task: {label}\nOutcome: {snippet}");
                 let _ = app.memory.remember(
                     engram_memory::WriteReq::new(engram_memory::Region::Episodic, text)
                         .taint(taint)
@@ -3273,6 +3287,37 @@ async fn tools_list(State(app): State<App>) -> ApiResult {
         })
         .collect();
     Ok(Json(json!({ "tools": tools, "disable_skill_author": app.cfg().security.disable_skill_author })))
+}
+
+#[derive(Deserialize)]
+struct OpenUrlReq {
+    url: String,
+}
+
+/// Open a URL in the user's default browser. The desktop webview (WKWebView served from the daemon
+/// origin) can't follow `target="_blank"` links itself, so the dashboard routes external link clicks
+/// here and the daemon hands the URL to the OS opener. Restricted to http(s) and passed as a single
+/// argv (no shell) so it can't launch other handlers or smuggle extra arguments.
+async fn open_url(State(app): State<App>, Json(r): Json<OpenUrlReq>) -> ApiResult {
+    let url = r.url.trim().to_string();
+    if !(url.starts_with("http://") || url.starts_with("https://"))
+        || url.chars().any(|c| c.is_control())
+    {
+        return Err(ApiError("only plain http(s) URLs can be opened".into()));
+    }
+    let _ = app.ledger.append("open.url", "user", json!({ "url": url }));
+    #[cfg(target_os = "macos")]
+    let spawned = std::process::Command::new("open").arg(&url).spawn();
+    #[cfg(target_os = "linux")]
+    let spawned = std::process::Command::new("xdg-open").arg(&url).spawn();
+    #[cfg(target_os = "windows")]
+    let spawned = std::process::Command::new("cmd")
+        .args(["/C", "start", "", &url])
+        .spawn();
+    match spawned {
+        Ok(_) => Ok(Json(json!({ "ok": true }))),
+        Err(e) => Err(ApiError(format!("couldn't open the link: {e}"))),
+    }
 }
 
 #[derive(Deserialize)]

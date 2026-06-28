@@ -3807,7 +3807,28 @@ async function waitForDaemon(maxMs){
   }
   return false;
 }
+// Open an external link in the user's real browser. The desktop WKWebView (served from the daemon
+// origin) silently swallows target="_blank" navigations, so links in answers/tables went nowhere.
+// Route them through the daemon's OS opener; fall back to window.open in a plain browser.
+function openExternal(url){
+  fetch('/v1/open',{method:'POST',headers:{...AUTH,'content-type':'application/json'},body:JSON.stringify({url})})
+    .then(r=>{ if(!r.ok) throw new Error('open failed'); })
+    .catch(()=>{ try{ window.open(url,'_blank','noopener'); }catch(_){} });
+}
+// Delegated, capture-phase: any click on an http(s) link is opened externally. Internal links
+// (href="#", hash routes) and onclick handlers are untouched.
+let _extLinksWired=false;
+function wireExternalLinks(){
+  if(_extLinksWired) return; _extLinksWired=true;
+  document.addEventListener('click', e=>{
+    const a = e.target && e.target.closest && e.target.closest('a[href]');
+    if(!a) return;
+    const href = a.getAttribute('href')||'';
+    if(/^https?:\/\//i.test(href)){ e.preventDefault(); openExternal(a.href); }
+  }, true);
+}
 async function boot(){
+  wireExternalLinks();
   applyEngramAppearance();
   renderNav();
   await waitForDaemon();                          // wait out the daemon's startup before first fetches

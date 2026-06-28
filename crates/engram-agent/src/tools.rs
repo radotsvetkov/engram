@@ -178,22 +178,30 @@ pub(crate) fn absolutize(base: &str, loc: &str) -> String {
 }
 
 /// Strip HTML to roughly readable text (drops script/style, collapses whitespace).
+///
+/// Iterates by CHARACTER, not raw bytes. The old version sliced a separately-lowercased copy at a
+/// byte index and did `bytes[i] as char`; on real web content a byte index lands inside a multibyte
+/// char (e.g. the curly apostrophe '’', 3 bytes) and the slice PANICKED — which, with panic=abort,
+/// took the whole daemon down and surfaced as "Couldn't reach Engram / Load failed". `char_indices`
+/// gives valid boundaries, and pushing the real `char` also stops multibyte text being mangled.
 pub(crate) fn html_to_text(html: &str) -> String {
     let mut s = String::with_capacity(html.len() / 2);
     let mut in_tag = false;
     let mut skip_depth = 0i32;
-    let lower = html.to_lowercase();
-    let bytes = html.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if lower[i..].starts_with("<script") || lower[i..].starts_with("<style") {
-            skip_depth += 1;
-        }
-        if lower[i..].starts_with("</script") || lower[i..].starts_with("</style") {
-            skip_depth = (skip_depth - 1).max(0);
-        }
-        let c = bytes[i] as char;
+    for (i, c) in html.char_indices() {
         if c == '<' {
+            // `html[i..]` is always a valid boundary here; lowercase a tiny ASCII lookahead (tag
+            // names are ASCII, so this never shifts byte positions) for case-insensitive detection.
+            let look = html[i..]
+                .chars()
+                .take(8)
+                .collect::<String>()
+                .to_ascii_lowercase();
+            if look.starts_with("<script") || look.starts_with("<style") {
+                skip_depth += 1;
+            } else if look.starts_with("</script") || look.starts_with("</style") {
+                skip_depth = (skip_depth - 1).max(0);
+            }
             in_tag = true;
         } else if c == '>' {
             in_tag = false;
@@ -201,7 +209,6 @@ pub(crate) fn html_to_text(html: &str) -> String {
         } else if !in_tag && skip_depth == 0 {
             s.push(c);
         }
-        i += 1;
     }
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -343,6 +350,29 @@ mod ssrf_guard_tests {
         );
         assert_eq!(absolutize("https://a.com/x/y", "/z"), "https://a.com/z");
         assert_eq!(absolutize("https://a.com/x/y", "z"), "https://a.com/x/z");
+    }
+}
+
+#[cfg(test)]
+mod html_text_tests {
+    use super::html_to_text;
+    #[test]
+    fn multibyte_content_does_not_panic_and_is_preserved() {
+        // The exact crash class that aborted the daemon ("Couldn't reach Engram"): a multibyte char
+        // ('’', emoji) in a long page, where a byte index lands inside the codepoint.
+        let big = format!(
+            "<html><body><p>{}it’s a test 🌍 with — dashes</p></body></html>",
+            "word ".repeat(40000)
+        );
+        let out = html_to_text(&big); // must not panic
+        assert!(out.contains("it’s"), "multibyte preserved, not mangled");
+        assert!(out.contains("🌍"));
+        assert!(!out.contains('<'));
+    }
+    #[test]
+    fn drops_script_and_style_keeps_text() {
+        let h = "<style>body{color:red}</style><p>Hello</p><script>alert(1)</script>";
+        assert_eq!(html_to_text(h), "Hello");
     }
 }
 

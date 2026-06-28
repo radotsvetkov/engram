@@ -664,6 +664,7 @@ async fn run(mode: RunMode) -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/memory/graph", get(memory_graph))
         .route("/v1/screenshot", get(screenshot_get))
         .route("/v1/artifact", get(artifact_get))
+        .route("/v1/artifacts", get(artifacts_list))
         .route("/v1/remember", post(remember))
         .route("/v1/recall", get(recall))
         .route("/v1/forget", post(forget))
@@ -1135,6 +1136,82 @@ async fn artifact_get(State(app): State<App>, Query(q): Query<ArtifactQuery>) ->
             .into_response(),
         Err(_) => (StatusCode::NOT_FOUND, "not found").into_response(),
     }
+}
+
+/// Coarse category for an artifact, by extension - drives the gallery's filter chips.
+fn artifact_kind(name_lower: &str) -> &'static str {
+    let ext = name_lower.rsplit('.').next().unwrap_or("");
+    match ext {
+        "png" | "jpg" | "jpeg" | "webp" | "gif" | "svg" | "bmp" => "image",
+        "csv" | "tsv" | "json" | "xlsx" | "xls" | "parquet" => "data",
+        "pdf" | "md" | "txt" | "log" | "html" | "htm" | "docx" | "rtf" => "doc",
+        "mp3" | "wav" | "ogg" | "m4a" | "flac" => "audio",
+        _ => "other",
+    }
+}
+
+/// List every artifact across all task runs - the gallery overview. Walks <home>/artifacts/<task>/,
+/// tagging each file with its task title + kind + size + mtime (newest first). Bounded so a huge
+/// history can't stall the response. Individual files are fetched/downloaded via GET /v1/artifact.
+async fn artifacts_list(State(app): State<App>) -> ApiResult {
+    let root = std::path::Path::new(&app.home).join("artifacts");
+    let mut items: Vec<Value> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&root) {
+        for task_dir in rd.flatten() {
+            if !task_dir.file_type().map(|f| f.is_dir()).unwrap_or(false) {
+                continue;
+            }
+            let task_id = task_dir.file_name().to_string_lossy().to_string();
+            let title = app.tasks.get(&task_id).map(|t| t.title).unwrap_or_default();
+            let base = task_dir.path();
+            let mut stack = vec![base.clone()];
+            while let Some(dir) = stack.pop() {
+                let Ok(entries) = std::fs::read_dir(&dir) else {
+                    continue;
+                };
+                for ent in entries.flatten() {
+                    if items.len() >= 2000 {
+                        break;
+                    }
+                    let p = ent.path();
+                    if ent.file_type().map(|f| f.is_dir()).unwrap_or(false) {
+                        stack.push(p);
+                        continue;
+                    }
+                    let rel = p
+                        .strip_prefix(&base)
+                        .ok()
+                        .map(|r| r.to_string_lossy().replace('\\', "/"))
+                        .unwrap_or_default();
+                    let name = p
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let meta = std::fs::metadata(&p).ok();
+                    let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+                    let mtime = meta
+                        .as_ref()
+                        .and_then(|m| m.modified().ok())
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_millis() as i64)
+                        .unwrap_or(0);
+                    items.push(json!({
+                        "task": task_id, "title": title, "path": rel, "name": name,
+                        "kind": artifact_kind(&name.to_lowercase()), "size": size, "mtime": mtime,
+                    }));
+                }
+            }
+        }
+    }
+    items.sort_by(|a, b| {
+        b["mtime"]
+            .as_i64()
+            .unwrap_or(0)
+            .cmp(&a["mtime"].as_i64().unwrap_or(0))
+    });
+    let total = items.len();
+    Ok(Json(json!({ "items": items, "total": total })))
 }
 
 /// Nodes for the brain-graph visualization: recent memories across every region, trimmed to the

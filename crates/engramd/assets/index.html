@@ -207,6 +207,29 @@
   .lr-answer:not(:empty) { margin-top:6px; padding-top:12px; border-top:1px solid var(--border); font-size:14px; line-height:1.6; color:var(--text-primary); }
   /* activity - the signed ledger */
   .activity { max-width:840px; margin:0 auto; padding:22px 24px 60px; height:100%; overflow-y:auto; }
+  .artifacts-view { max-width:980px; margin:0 auto; padding:22px 24px 60px; height:100%; overflow-y:auto; }
+  .af-bar { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin:4px 0 18px; }
+  .af-search { flex:1; min-width:200px; height:36px; padding:0 13px; border-radius:9px; border:1px solid var(--border-strong);
+    background:var(--surface-2); color:var(--text); font-size:13px; outline:none; }
+  .af-search:focus { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
+  .af-chips { display:flex; gap:6px; flex-wrap:wrap; }
+  .afchip { height:30px; padding:0 11px; border-radius:8px; border:1px solid var(--border-strong); background:var(--surface-2);
+    color:var(--text-secondary); font-size:12px; cursor:pointer; display:inline-flex; align-items:center; gap:6px; transition:all .12s; }
+  .afchip:hover { color:var(--text); border-color:var(--accent-soft); }
+  .afchip.active { background:var(--accent); border-color:var(--accent); color:#0b0d10; font-weight:600; }
+  .afchip .afn { font-size:10.5px; opacity:.7; }
+  .afchip.active .afn { opacity:.85; }
+  .af-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(150px,1fr)); gap:13px; }
+  .af-card { display:flex; flex-direction:column; gap:7px; text-decoration:none; color:var(--text-secondary); cursor:pointer;
+    border:1px solid var(--border-strong); border-radius:12px; padding:9px; background:var(--surface-2); transition:border-color .12s, background .12s, transform .12s; }
+  .af-card:hover { border-color:var(--accent-soft); background:var(--surface-3); color:var(--text); transform:translateY(-1px); }
+  .af-thumb { width:100%; aspect-ratio:4/3; border-radius:8px; overflow:hidden; background:var(--surface); display:flex; align-items:center; justify-content:center; }
+  .af-thumb img { width:100%; height:100%; object-fit:cover; display:block; }
+  .af-thumb.fileic { font-size:34px; opacity:.78; }
+  .af-thumb.broken::after { content:'⚠'; font-size:22px; opacity:.5; }
+  .af-thumb.broken img { display:none; }
+  .af-name { font-size:12px; font-weight:550; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .af-sub { font-size:10.5px; color:var(--text-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .act-title { font-size:19px; font-weight:600; }
   .act-sub { color:var(--text-muted); font-size:13px; margin:3px 0 16px; max-width:600px; line-height:1.55; }
   .act-sub code { background:var(--surface-2); padding:1px 5px; border-radius:4px; font:11px var(--mono); }
@@ -1395,11 +1418,12 @@ const ICONS = {
   Schedule: SVG('<rect x="3" y="4.5" width="18" height="16" rx="2.4"/><path d="M3 9h18M8 3v3M16 3v3"/><circle cx="12" cy="14.5" r="2.8"/><path d="M12 13.2v1.5l1 .7"/>'),
   Memory: SVG('<path d="M12 5.5a3 3 0 0 0-5.6 1.5A2.8 2.8 0 0 0 5 12a2.7 2.7 0 0 0 1.4 4.6A2.6 2.6 0 0 0 9 19a3 3 0 0 0 3-1.2"/><path d="M12 5.5a3 3 0 0 1 5.6 1.5A2.8 2.8 0 0 1 19 12a2.7 2.7 0 0 1-1.4 4.6A2.6 2.6 0 0 1 15 19a3 3 0 0 1-3-1.2"/><path d="M12 5.5v12.3"/><path d="M8.2 9.5h1.4M8.2 13h1.4M14.4 9.5h1.4M14.4 13h1.4"/>'),
   Skills: SVG('<path d="M12 3.2l1.7 4.5 4.5 1.7-4.5 1.7L12 15.6l-1.7-4.5L5.8 9.4l4.5-1.7L12 3.2Z"/><path d="M18.4 14.2l.8 2.1 2.1.8-2.1.8-.8 2.1-.8-2.1-2.1-.8 2.1-.8.8-2.1Z"/>'),
+  Artifacts: SVG('<rect x="3" y="3.5" width="18" height="17" rx="2.6"/><circle cx="8.4" cy="9" r="1.7"/><path d="m4 18 5-5 4 4 3-3 4 4"/>'),
   Terminal: SVG('<rect x="3" y="4.5" width="18" height="15" rx="2.6"/><path d="m7.5 9.5 2.6 2.5-2.6 2.5M13 14.5h3.6"/>'),
   Activity: SVG('<path d="M12 3.2l6.5 2.6v5.2c0 4.3-2.8 7-6.5 8.4-3.7-1.4-6.5-4.1-6.5-8.4V5.8L12 3.2Z"/><path d="m9.2 11.8 2 2 3.6-3.8"/>'),
   Settings: SVG('<path d="M21 5H10M6 5H3M21 12h-7M10 12H3M21 19h-4M13 19H3"/><circle cx="8" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="15" cy="19" r="2"/>'),
 };
-const VIEWS = ['Chat','Tasks','Schedule','Memory','Skills'];
+const VIEWS = ['Chat','Tasks','Schedule','Memory','Skills','Artifacts'];
 const TOOLS = ['Activity','Terminal'];       // power tools - pinned to the bottom of the rail
 const ALL_VIEWS = [...VIEWS, ...TOOLS];
 let state = { route:'Tasks', tasks:[], offline:false };
@@ -3523,6 +3547,47 @@ function actEntry(e){
   const color = actor==='agent'?'#45c8a8':(actor==='user'?'#85b7eb':'#b58cff');
   return { label, summary, actor, color };
 }
+// ---- Artifacts gallery: every file the agent has produced, across all tasks ----
+let _artifacts = { items:null, filter:'all', q:'' };
+const AF_KINDS = [['all','All'],['image','Images'],['doc','Docs'],['data','Data'],['audio','Audio'],['other','Other']];
+const AF_ICON = { doc:'📄', data:'📊', audio:'🔊', other:'📎' };
+function afSize(b){ return b<1024?b+' B':b<1048576?(b/1024).toFixed(0)+' KB':(b/1048576).toFixed(1)+' MB'; }
+function afAge(ms){ const s=(Date.now()-ms)/1000; if(s<60)return 'just now'; if(s<3600)return Math.floor(s/60)+'m ago'; if(s<86400)return Math.floor(s/3600)+'h ago'; return Math.floor(s/86400)+'d ago'; }
+async function renderArtifacts(force){
+  document.getElementById('viewname').textContent='Artifacts';
+  const view=document.getElementById('view');
+  if(_artifacts.items===null || force){
+    if(_artifacts.items===null) view.innerHTML='<div class="artifacts-view"><div class="muted" style="padding:48px;text-align:center">Loading artifacts…</div></div>';
+    try{ const r=await J('/v1/artifacts'); _artifacts.items=r.items||[]; }catch(e){ _artifacts.items=[]; }
+  }
+  const items=_artifacts.items, q=_artifacts.q.trim().toLowerCase();
+  const counts={}; items.forEach(i=>{ counts[i.kind]=(counts[i.kind]||0)+1; });
+  const chips=AF_KINDS.map(([k,lbl])=>{ const n=k==='all'?items.length:(counts[k]||0); return `<button class="afchip${_artifacts.filter===k?' active':''}" onclick="afFilter('${k}')">${lbl}${n?` <span class="afn">${n}</span>`:''}</button>`; }).join('');
+  let shown=items.filter(i=>(_artifacts.filter==='all'||i.kind===_artifacts.filter) && (!q || (i.name+' '+(i.title||'')).toLowerCase().includes(q)));
+  const truncated = shown.length>400; if(truncated) shown=shown.slice(0,400);
+  const cards=shown.map(i=>{
+    const url=`/v1/artifact?task=${encodeURIComponent(i.task)}&path=${encodeURIComponent(i.path)}`;
+    const meta=`<div class="af-name" title="${escAttr(i.name)}">${esc(i.name)}</div><div class="af-sub">${esc(i.title||'task')} · ${afSize(i.size)} · ${afAge(i.mtime)}</div>`;
+    if(i.kind==='image') return `<div class="af-card" onclick="imgLightbox('${escAttr(url)}')" title="${escAttr(i.name)}"><div class="af-thumb"><img loading="lazy" src="${escAttr(url)}" alt="" onerror="this.closest('.af-thumb').classList.add('broken')"></div>${meta}</div>`;
+    return `<a class="af-card" href="${escAttr(url)}" download title="Download ${escAttr(i.name)}"><div class="af-thumb fileic">${AF_ICON[i.kind]||'📎'}</div>${meta}</a>`;
+  }).join('');
+  const body = shown.length
+    ? `<div class="af-grid">${cards}</div>${truncated?'<div class="muted" style="text-align:center;padding:14px">Showing the first 400. Narrow with a filter or search.</div>':''}`
+    : `<div class="muted" style="padding:52px;text-align:center">${items.length?'No artifacts match that filter or search.':'No artifacts yet. When a task creates a file - a chart, a report, data - it collects here.'}</div>`;
+  view.innerHTML=`<div class="artifacts-view">
+    <div class="act-title">Artifacts</div>
+    <div class="act-sub">Everything your tasks have produced, newest first. Click an image to preview it; click a file to download. Each is kept under the task that made it.</div>
+    <div class="af-bar"><input class="af-search" placeholder="Search by name or task…" value="${escAttr(_artifacts.q)}" oninput="afSearch(this.value)"><div class="af-chips">${chips}</div></div>
+    ${body}
+  </div>`;
+}
+function afFilter(k){ _artifacts.filter=k; renderArtifacts(); }
+function afSearch(v){
+  _artifacts.q=v;
+  const focused=document.activeElement===document.querySelector('.af-search');
+  renderArtifacts();
+  if(focused){ const s=document.querySelector('.af-search'); if(s){ s.focus(); s.setSelectionRange(s.value.length,s.value.length); } }
+}
 async function renderActivity(){
   document.getElementById('viewname').textContent='Activity';
   let tail=[], v={ok:true,entries:0}, pk={};
@@ -3561,6 +3626,7 @@ function renderView(){
   else if(state.route==='Schedule') renderScheduleView();
   else if(state.route==='Memory') renderMemory();
   else if(state.route==='Skills') renderSkills();
+  else if(state.route==='Artifacts') renderArtifacts();
   else if(state.route==='Terminal') renderTerminal();
   else if(state.route==='Activity') renderActivity();
   voiceMaybeMountHeaderBtn();

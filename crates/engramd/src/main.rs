@@ -582,6 +582,52 @@ fn acquire_home_lock(home: &str) -> Result<std::fs::File, Box<dyn std::error::Er
 
 async fn run(mode: RunMode) -> Result<(), Box<dyn std::error::Error>> {
     let home = std::env::var("ENGRAM_HOME").unwrap_or_else(|_| "./brain".into());
+    // Make panics VISIBLE. With `panic = "abort"`, any panic (in any thread/task) takes the whole
+    // daemon down with SIGABRT — and the desktop shell swallows the daemon's stderr, so it surfaces
+    // only as "Couldn't reach Engram / Load failed" with no cause. Append each panic's location +
+    // message + backtrace to `<home>/panic.log`, then chain to the default hook (stderr) so nothing
+    // is lost. This is what turns the next abort from a mystery into a one-line fix.
+    {
+        let log_path = std::path::Path::new(&home).join("panic.log");
+        let default_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            use std::io::Write;
+            let loc = info
+                .location()
+                .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+                .unwrap_or_else(|| "<unknown>".into());
+            let msg = info
+                .payload()
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| info.payload().downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "<non-string panic payload>".into());
+            let thread = std::thread::current()
+                .name()
+                .unwrap_or("unnamed")
+                .to_string();
+            let bt = std::backtrace::Backtrace::force_capture();
+            if let Some(parent) = log_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_path)
+            {
+                let _ = writeln!(
+                    f,
+                    "[{}] thread '{}' panicked at {}: {}\n{}\n---",
+                    engram_core::now_ms(),
+                    thread,
+                    loc,
+                    msg,
+                    bt
+                );
+            }
+            default_hook(info);
+        }));
+    }
     // CRITICAL: hold an exclusive lock on the home for this daemon's whole life. Two daemons on one
     // ENGRAM_HOME interleave appends into the signed ledger and break the hash chain (the source of
     // the "ledger broken / verify fails" corruption). This makes a second instance refuse to start -

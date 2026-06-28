@@ -65,7 +65,11 @@ impl Scheduler {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
             Err(e) => return Err(e.into()),
         };
-        Ok(Scheduler { path, ledger, jobs: Mutex::new(jobs) })
+        Ok(Scheduler {
+            path,
+            ledger,
+            jobs: Mutex::new(jobs),
+        })
     }
 
     /// Schedule a new job. Errors if the recurrence has no future fire.
@@ -108,7 +112,10 @@ impl Scheduler {
     pub fn due(&self, now: DateTime<Utc>) -> Vec<Job> {
         let now_ms = now.timestamp_millis();
         let jobs = self.jobs.lock().expect("sched mutex poisoned");
-        jobs.iter().filter(|j| j.next_fire_ms <= now_ms).cloned().collect()
+        jobs.iter()
+            .filter(|j| j.next_fire_ms <= now_ms)
+            .cloned()
+            .collect()
     }
 
     /// Record that a job fired and reschedule it (or remove a spent one-off). Returns
@@ -170,7 +177,8 @@ impl Scheduler {
             changed
         };
         if removed {
-            self.ledger.append("schedule.remove", "user", json!({ "id": id }))?;
+            self.ledger
+                .append("schedule.remove", "user", json!({ "id": id }))?;
         }
         Ok(removed)
     }
@@ -229,7 +237,8 @@ mod tests {
     fn adds_and_finds_due() {
         let (s, _d) = scheduler();
         // Fires in 1 second; not due now, due a minute later.
-        s.add("ping", json!({}), Recurrence::Interval { secs: 1 }, now()).unwrap();
+        s.add("ping", json!({}), Recurrence::Interval { secs: 1 }, now())
+            .unwrap();
         assert!(s.due(now()).is_empty());
         let later = now() + chrono::Duration::seconds(2);
         assert_eq!(s.due(later).len(), 1);
@@ -239,7 +248,9 @@ mod tests {
     fn one_off_completes_and_is_removed() {
         let (s, _d) = scheduler();
         let at = (now() + chrono::Duration::minutes(5)).timestamp_millis();
-        let job = s.add("reminder", json!({}), Recurrence::Once { at_ms: at }, now()).unwrap();
+        let job = s
+            .add("reminder", json!({}), Recurrence::Once { at_ms: at }, now())
+            .unwrap();
         let after = now() + chrono::Duration::minutes(6);
         let res = s.mark_fired(&job.id, after).unwrap();
         assert!(res.is_none(), "spent one-off should be removed");
@@ -249,7 +260,14 @@ mod tests {
     #[test]
     fn recurring_reschedules_forward_skipping_missed() {
         let (s, _d) = scheduler();
-        let job = s.add("hourly", json!({}), Recurrence::Interval { secs: 3600 }, now()).unwrap();
+        let job = s
+            .add(
+                "hourly",
+                json!({}),
+                Recurrence::Interval { secs: 3600 },
+                now(),
+            )
+            .unwrap();
         // Machine was asleep for ~5 hours; one catch-up, next fire is in the future.
         let woke = now() + chrono::Duration::hours(5);
         let res = s.mark_fired(&job.id, woke).unwrap().unwrap();
@@ -263,7 +281,13 @@ mod tests {
         let ledger = Arc::new(Ledger::open(dir.path()).unwrap());
         {
             let s = Scheduler::open(dir.path(), ledger.clone()).unwrap();
-            s.add("daily", json!({}), Recurrence::Daily { hour: 9, min: 0 }, now()).unwrap();
+            s.add(
+                "daily",
+                json!({}),
+                Recurrence::Daily { hour: 9, min: 0 },
+                now(),
+            )
+            .unwrap();
         }
         let s = Scheduler::open(dir.path(), ledger).unwrap();
         assert_eq!(s.list().len(), 1);

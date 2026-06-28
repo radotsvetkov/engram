@@ -34,6 +34,14 @@ base64 = "0.22"
 # Server-Sent Events stream for live board updates.
 async-stream = "0.3"
 futures-core = "0.3"
+# OS secret store for the API key (desktop builds). Optional so the static musl VPS build,
+# which has no Secret Service, stays dependency-free and uses the 0600 file fallback instead.
+keyring = { version = "3", optional = true, default-features = false, features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
+# Document text extraction for rich chat uploads (PDF / DOCX / XLSX / CSV). Optional + pure-Rust
+# so it stays out of the tiny default/musl build; enabled by the desktop + Docker builds.
+calamine = { version = "0.26", optional = true }
+zip = { version = "2", optional = true, default-features = false, features = ["deflate"] }
+pdf-extract = { version = "0.7", optional = true }
 
 [features]
 default = []
@@ -41,3 +49,9 @@ default = []
 http = ["engram-gateway/http"]
 # Enable interactive browser automation (Chrome DevTools Protocol).
 browser-cdp = ["engram-agent/browser-cdp"]
+# Persist the API key in the OS secret store (Keychain / libsecret / Credential Manager) instead
+# of the 0600 file fallback. Enabled by the desktop build; off for the headless musl VPS build.
+keyring = ["dep:keyring"]
+# Extract text from uploaded PDF/DOCX/XLSX/CSV so the agent can read documents, not just images
+# and plain text. Off by default to keep the tiny build small.
+docs = ["dep:calamine", "dep:zip", "dep:pdf-extract"]

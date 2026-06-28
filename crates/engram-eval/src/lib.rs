@@ -68,11 +68,17 @@ pub async fn run_case(case: &Case) -> Result<Outcome, String> {
     let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
     let ledger = Arc::new(Ledger::open(dir.path()).map_err(|e| e.to_string())?);
     let memory = Arc::new(
-        Memory::open(dir.path().join("b.db"), Arc::new(TrigramHashEmbedder::default()), ledger.clone())
-            .map_err(|e| e.to_string())?,
+        Memory::open(
+            dir.path().join("b.db"),
+            Arc::new(TrigramHashEmbedder::default()),
+            ledger.clone(),
+        )
+        .map_err(|e| e.to_string())?,
     );
-    let signer = Arc::new(SkillSigner::load_or_create(dir.path().join("k")).map_err(|e| e.to_string())?);
-    let skills = Arc::new(Registry::open(dir.path(), signer, ledger.clone()).map_err(|e| e.to_string())?);
+    let signer =
+        Arc::new(SkillSigner::load_or_create(dir.path().join("k")).map_err(|e| e.to_string())?);
+    let skills =
+        Arc::new(Registry::open(dir.path(), signer, ledger.clone()).map_err(|e| e.to_string())?);
     let gateway = Arc::new(Gateway::new(
         Box::new(ScriptedProvider::new(case.completions.clone())),
         ledger.clone(),
@@ -83,6 +89,7 @@ pub async fn run_case(case: &Case) -> Result<Outcome, String> {
         gateway: gateway.clone(),
         ledger,
         taint: Taint::Trusted,
+        sensitive: false,
         policy: Policy::default(),
         workdir: dir.path().to_path_buf(),
         model: "eval".into(),
@@ -95,7 +102,10 @@ pub async fn run_case(case: &Case) -> Result<Outcome, String> {
     if let Some(b) = case.token_budget {
         agent = agent.token_budget(b);
     }
-    let run = agent.run(&case.task, ctx).await.map_err(|e| e.to_string())?;
+    let run = agent
+        .run(&case.task, ctx)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(Outcome {
         tools: run.steps.iter().map(|s| s.tool.clone()).collect(),
         answer: run.answer,
@@ -108,7 +118,10 @@ pub async fn run_case(case: &Case) -> Result<Outcome, String> {
 pub fn check(case: &Case, out: &Outcome) -> Vec<String> {
     let mut fails = Vec::new();
     if !case.expect.tools.is_empty() && out.tools != case.expect.tools {
-        fails.push(format!("tool sequence: expected {:?}, got {:?}", case.expect.tools, out.tools));
+        fails.push(format!(
+            "tool sequence: expected {:?}, got {:?}",
+            case.expect.tools, out.tools
+        ));
     }
     if let Some(s) = &case.expect.answer_contains {
         if !out.answer.contains(s) {
@@ -153,12 +166,22 @@ fn call(id: &str, name: &str, args: serde_json::Value) -> Completion {
         model: "eval".into(),
         tokens_in: 10,
         tokens_out: 0,
-        tool_calls: vec![ToolCall { id: id.into(), name: name.into(), arguments: args }],
+        tool_calls: vec![ToolCall {
+            id: id.into(),
+            name: name.into(),
+            arguments: args,
+        }],
     }
 }
 
 fn answer(text: &str) -> Completion {
-    Completion { text: text.into(), model: "eval".into(), tokens_in: 5, tokens_out: 5, tool_calls: vec![] }
+    Completion {
+        text: text.into(),
+        model: "eval".into(),
+        tokens_in: 5,
+        tokens_out: 5,
+        tool_calls: vec![],
+    }
 }
 
 /// The built-in regression suite - exercises core harness behaviors using only
@@ -171,8 +194,16 @@ pub fn builtin_cases() -> Vec<Case> {
             name: "remembers-then-recalls-then-answers".into(),
             task: "Remember that I love Rust, then recall it and tell me.".into(),
             completions: vec![
-                call("1", "memory_remember", json!({ "text": "User loves Rust", "region": "identity" })),
-                call("2", "memory_recall", json!({ "query": "what does the user love" })),
+                call(
+                    "1",
+                    "memory_remember",
+                    json!({ "text": "User loves Rust", "region": "identity" }),
+                ),
+                call(
+                    "2",
+                    "memory_recall",
+                    json!({ "query": "what does the user love" }),
+                ),
                 answer("You love Rust."),
             ],
             max_steps: None,
@@ -210,16 +241,39 @@ pub fn builtin_cases() -> Vec<Case> {
             name: "stops-on-token-budget".into(),
             task: "Do an expensive thing.".into(),
             completions: vec![
-                Completion { text: String::new(), model: "eval".into(), tokens_in: 600, tokens_out: 0,
-                    tool_calls: vec![ToolCall { id: "1".into(), name: "memory_recall".into(), arguments: json!({ "query": "a" }) }] },
-                Completion { text: String::new(), model: "eval".into(), tokens_in: 600, tokens_out: 0,
-                    tool_calls: vec![ToolCall { id: "2".into(), name: "memory_recall".into(), arguments: json!({ "query": "b" }) }] },
+                Completion {
+                    text: String::new(),
+                    model: "eval".into(),
+                    tokens_in: 600,
+                    tokens_out: 0,
+                    tool_calls: vec![ToolCall {
+                        id: "1".into(),
+                        name: "memory_recall".into(),
+                        arguments: json!({ "query": "a" }),
+                    }],
+                },
+                Completion {
+                    text: String::new(),
+                    model: "eval".into(),
+                    tokens_in: 600,
+                    tokens_out: 0,
+                    tool_calls: vec![ToolCall {
+                        id: "2".into(),
+                        name: "memory_recall".into(),
+                        arguments: json!({ "query": "b" }),
+                    }],
+                },
                 answer("done"),
             ],
             max_steps: Some(10),
             token_budget: Some(1000),
             reflect: false,
-            expect: Expect { tools: vec![], answer_contains: None, stopped: Some("budget".into()), min_steps: None },
+            expect: Expect {
+                tools: vec![],
+                answer_contains: None,
+                stopped: Some("budget".into()),
+                min_steps: None,
+            },
         },
         Case {
             name: "stops-on-a-repeating-loop".into(),
@@ -233,7 +287,12 @@ pub fn builtin_cases() -> Vec<Case> {
             max_steps: Some(10),
             token_budget: None,
             reflect: false,
-            expect: Expect { tools: vec![], answer_contains: None, stopped: Some("loop".into()), min_steps: None },
+            expect: Expect {
+                tools: vec![],
+                answer_contains: None,
+                stopped: Some("loop".into()),
+                min_steps: None,
+            },
         },
     ]
 }
@@ -245,9 +304,17 @@ mod tests {
     #[tokio::test]
     async fn builtin_suite_all_pass() {
         for case in builtin_cases() {
-            let out = run_case(&case).await.unwrap_or_else(|e| panic!("{}: {e}", case.name));
+            let out = run_case(&case)
+                .await
+                .unwrap_or_else(|e| panic!("{}: {e}", case.name));
             let fails = check(&case, &out);
-            assert!(fails.is_empty(), "{} failed: {:?} (outcome: {:?})", case.name, fails, out);
+            assert!(
+                fails.is_empty(),
+                "{} failed: {:?} (outcome: {:?})",
+                case.name,
+                fails,
+                out
+            );
         }
     }
 
@@ -257,7 +324,10 @@ mod tests {
         let mut case = builtin_cases().into_iter().next().unwrap();
         case.expect.stopped = Some("limit".into()); // wrong on purpose
         let out = run_case(&case).await.unwrap();
-        assert!(!check(&case, &out).is_empty(), "a wrong expectation must fail");
+        assert!(
+            !check(&case, &out).is_empty(),
+            "a wrong expectation must fail"
+        );
     }
 
     #[test]
@@ -279,7 +349,11 @@ mod tests {
     }
     impl<'a> From<&'a Case> for CaseWire<'a> {
         fn from(c: &'a Case) -> Self {
-            CaseWire { name: &c.name, task: &c.task, completions: &c.completions }
+            CaseWire {
+                name: &c.name,
+                task: &c.task,
+                completions: &c.completions,
+            }
         }
     }
 }

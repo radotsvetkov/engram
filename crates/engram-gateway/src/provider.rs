@@ -37,15 +37,21 @@ pub trait Provider: Send + Sync {
     async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, GatewayError>;
     /// Generate an image from a prompt, returning PNG bytes. Default: unsupported.
     async fn generate_image(&self, _prompt: &str) -> Result<Vec<u8>, GatewayError> {
-        Err(GatewayError::Provider("image generation not supported by this provider".into()))
+        Err(GatewayError::Provider(
+            "image generation not supported by this provider".into(),
+        ))
     }
     /// Synthesize speech from text, returning audio bytes (mp3). Default: unsupported.
     async fn tts(&self, _text: &str, _voice: &str) -> Result<Vec<u8>, GatewayError> {
-        Err(GatewayError::Provider("text-to-speech not supported by this provider".into()))
+        Err(GatewayError::Provider(
+            "text-to-speech not supported by this provider".into(),
+        ))
     }
     /// Transcribe audio bytes (of the given format, e.g. "mp3"/"wav") to text. Default: unsupported.
     async fn transcribe(&self, _audio: &[u8], _format: &str) -> Result<String, GatewayError> {
-        Err(GatewayError::Provider("speech-to-text not supported by this provider".into()))
+        Err(GatewayError::Provider(
+            "speech-to-text not supported by this provider".into(),
+        ))
     }
     /// Short stable id for the audit trail, e.g. "mock", "anthropic", "openai".
     fn id(&self) -> &str;
@@ -74,7 +80,13 @@ impl Provider for MockProvider {
             .unwrap_or("");
         let text = format!("[mock:{}] ack: {}", req.model, first_words(last_user, 12));
         let tokens_out = approx_tokens(&text);
-        Ok(Completion { text, model: req.model.clone(), tokens_in, tokens_out, tool_calls: Vec::new() })
+        Ok(Completion {
+            text,
+            model: req.model.clone(),
+            tokens_in,
+            tokens_out,
+            tool_calls: Vec::new(),
+        })
     }
 
     async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, GatewayError> {
@@ -95,14 +107,20 @@ pub struct ScriptedProvider {
 
 impl ScriptedProvider {
     pub fn new(script: Vec<Completion>) -> Self {
-        Self { queue: std::sync::Mutex::new(script.into()) }
+        Self {
+            queue: std::sync::Mutex::new(script.into()),
+        }
     }
 }
 
 #[async_trait]
 impl Provider for ScriptedProvider {
     async fn complete(&self, req: &CompletionRequest) -> Result<Completion, GatewayError> {
-        let next = self.queue.lock().expect("scripted provider mutex").pop_front();
+        let next = self
+            .queue
+            .lock()
+            .expect("scripted provider mutex")
+            .pop_front();
         Ok(next.unwrap_or(Completion {
             text: "done".into(),
             model: req.model.clone(),
@@ -169,7 +187,11 @@ mod anthropic {
             } else {
                 base.trim_end_matches('/').to_string()
             };
-            Self { client: reqwest::Client::new(), base_url: base, api_key: api_key.into() }
+            Self {
+                client: reqwest::Client::new(),
+                base_url: base,
+                api_key: api_key.into(),
+            }
         }
     }
 
@@ -188,6 +210,62 @@ mod anthropic {
         msgs.push(serde_json::json!({ "role": role, "content": [block] }));
     }
 
+    /// Apply the request's reasoning effort onto an already-built request body, MODEL-AWARELY.
+    /// Strictly additive: does nothing unless effort is low/medium/high AND the model is known to
+    /// accept the matching parameter, so a model that does not support it is never sent a bad field.
+    pub(crate) fn apply_effort(
+        body: &mut serde_json::Value,
+        model: &str,
+        effort: Option<&str>,
+        anthropic: bool,
+    ) {
+        let eff = match effort {
+            Some(e) if matches!(e, "low" | "medium" | "high") => e,
+            _ => return,
+        };
+        let m = model.to_lowercase();
+        if anthropic {
+            // Extended thinking: Claude models only; it requires temperature=1 and max_tokens above
+            // the thinking budget, so bump both. Budget scales with effort.
+            if !m.contains("claude") {
+                return;
+            }
+            let budget: u32 = match eff {
+                "low" => 2048,
+                "medium" => 6144,
+                _ => 12288,
+            };
+            let mt = body
+                .get("max_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(1024) as u32;
+            body["max_tokens"] = serde_json::json!(mt.max(budget + 2048));
+            body["temperature"] = serde_json::json!(1);
+            body["thinking"] = serde_json::json!({ "type": "enabled", "budget_tokens": budget });
+        } else {
+            // OpenAI-compatible `reasoning_effort`: only the o-series / gpt-5 reasoning models accept
+            // it (gpt-4o etc. error on it), and those models also reject a custom temperature.
+            let reasoning = m.starts_with("o1")
+                || m.starts_with("o3")
+                || m.starts_with("o4")
+                || m.starts_with("o5")
+                || m.contains("gpt-5")
+                || m.contains("reason");
+            if !reasoning {
+                return;
+            }
+            body["reasoning_effort"] = serde_json::json!(eff);
+            if let Some(obj) = body.as_object_mut() {
+                // Reasoning models reject a custom temperature and require max_completion_tokens
+                // instead of max_tokens.
+                obj.remove("temperature");
+                if let Some(mt) = obj.remove("max_tokens") {
+                    obj.insert("max_completion_tokens".into(), mt);
+                }
+            }
+        }
+    }
+
     /// Convert a provider-agnostic request into an Anthropic Messages body. Pure and
     /// unit-tested: system is lifted out and marked cacheable; assistant tool calls become
     /// `tool_use` blocks; tool results become `tool_result` blocks on a user message.
@@ -203,7 +281,11 @@ mod anthropic {
                     system_text.push_str(&m.content);
                 }
                 Role::User => {
-                    push_block(&mut msgs, "user", serde_json::json!({ "type": "text", "text": m.content }));
+                    push_block(
+                        &mut msgs,
+                        "user",
+                        serde_json::json!({ "type": "text", "text": m.content }),
+                    );
                     for img in &m.images {
                         push_block(
                             &mut msgs,
@@ -217,7 +299,11 @@ mod anthropic {
                 }
                 Role::Assistant => {
                     if !m.content.is_empty() {
-                        push_block(&mut msgs, "assistant", serde_json::json!({ "type": "text", "text": m.content }));
+                        push_block(
+                            &mut msgs,
+                            "assistant",
+                            serde_json::json!({ "type": "text", "text": m.content }),
+                        );
                     }
                     for tc in &m.tool_calls {
                         push_block(
@@ -274,6 +360,7 @@ mod anthropic {
                     .collect(),
             );
         }
+        apply_effort(&mut body, &req.model, req.effort.as_deref(), true);
         body
     }
 
@@ -310,8 +397,10 @@ mod anthropic {
                 .await
                 .map_err(|e| GatewayError::Provider(e.to_string()))?;
             let status = resp.status();
-            let json: serde_json::Value =
-                resp.json().await.map_err(|e| GatewayError::Provider(e.to_string()))?;
+            let json: serde_json::Value = resp
+                .json()
+                .await
+                .map_err(|e| GatewayError::Provider(e.to_string()))?;
             if !status.is_success() {
                 return Err(GatewayError::Provider(format!("{status}: {json}")));
             }
@@ -344,7 +433,13 @@ mod anthropic {
             let tokens_in =
                 (u["input_tokens"].as_u64().unwrap_or(0) + cache_read + cache_create) as u32;
             let tokens_out = u["output_tokens"].as_u64().unwrap_or(0) as u32;
-            Ok(Completion { text, model: req.model.clone(), tokens_in, tokens_out, tool_calls })
+            Ok(Completion {
+                text,
+                model: req.model.clone(),
+                tokens_in,
+                tokens_out,
+                tool_calls,
+            })
         }
 
         async fn complete_stream(
@@ -422,6 +517,35 @@ mod anthropic {
         use crate::types::{Message, ToolCall, ToolDef};
 
         #[test]
+        fn apply_effort_is_additive_and_model_aware() {
+            let base = || serde_json::json!({ "max_tokens": 1024, "temperature": 0.7 });
+            // None / unknown effort -> no change at all.
+            let mut b = base();
+            apply_effort(&mut b, "claude-opus-4-8", None, true);
+            assert!(b.get("thinking").is_none() && b["temperature"] == 0.7);
+            // Claude + medium -> extended thinking, temp forced to 1, max_tokens bumped past budget.
+            let mut b = base();
+            apply_effort(&mut b, "claude-opus-4-8", Some("medium"), true);
+            assert_eq!(b["thinking"]["type"], "enabled");
+            assert_eq!(b["temperature"], 1);
+            assert!(b["max_tokens"].as_u64().unwrap() > 6144);
+            // Anthropic path but a non-claude model -> untouched.
+            let mut b = base();
+            apply_effort(&mut b, "some-other-model", Some("high"), true);
+            assert!(b.get("thinking").is_none());
+            // OpenAI reasoning model -> reasoning_effort, temperature dropped, max_tokens renamed.
+            let mut b = base();
+            apply_effort(&mut b, "o3-mini", Some("high"), false);
+            assert_eq!(b["reasoning_effort"], "high");
+            assert!(b.get("temperature").is_none());
+            assert!(b.get("max_tokens").is_none() && b.get("max_completion_tokens").is_some());
+            // OpenAI NON-reasoning model -> untouched (sending reasoning_effort would error).
+            let mut b = base();
+            apply_effort(&mut b, "gpt-4o", Some("high"), false);
+            assert!(b.get("reasoning_effort").is_none() && b["temperature"] == 0.7);
+        }
+
+        #[test]
         fn lifts_system_marks_it_cacheable_and_shapes_tools_and_blocks() {
             let req = CompletionRequest::new(
                 "claude-haiku-4-5",
@@ -430,7 +554,11 @@ mod anthropic {
                     Message::user("hi"),
                     Message::assistant_tool_calls(
                         "",
-                        vec![ToolCall { id: "t1".into(), name: "echo".into(), arguments: serde_json::json!({ "x": 1 }) }],
+                        vec![ToolCall {
+                            id: "t1".into(),
+                            name: "echo".into(),
+                            arguments: serde_json::json!({ "x": 1 }),
+                        }],
                     ),
                     Message::tool_result("t1", "echoed"),
                 ],
@@ -459,7 +587,11 @@ mod anthropic {
             assert_eq!(msgs[2]["content"][0]["tool_use_id"], "t1");
             // A second cache breakpoint sits at the end of the conversation so the whole
             // growing prefix is cached and re-read on the next turn (incremental caching).
-            let last = msgs.last().unwrap()["content"].as_array().unwrap().last().unwrap();
+            let last = msgs.last().unwrap()["content"]
+                .as_array()
+                .unwrap()
+                .last()
+                .unwrap();
             assert_eq!(last["cache_control"]["type"], "ephemeral");
         }
 
@@ -472,8 +604,16 @@ mod anthropic {
                     Message::assistant_tool_calls(
                         "",
                         vec![
-                            ToolCall { id: "a".into(), name: "x".into(), arguments: serde_json::json!({}) },
-                            ToolCall { id: "b".into(), name: "y".into(), arguments: serde_json::json!({}) },
+                            ToolCall {
+                                id: "a".into(),
+                                name: "x".into(),
+                                arguments: serde_json::json!({}),
+                            },
+                            ToolCall {
+                                id: "b".into(),
+                                name: "y".into(),
+                                arguments: serde_json::json!({}),
+                            },
                         ],
                     ),
                     Message::tool_result("a", "ra"),
@@ -522,6 +662,7 @@ mod http {
     //! Compiled only with `--features http` so offline builds stay small.
 
     use super::*;
+    use crate::provider::anthropic::apply_effort;
     use crate::types::{Message, ToolCall};
 
     pub struct HttpProvider {
@@ -532,7 +673,11 @@ mod http {
     }
 
     impl HttpProvider {
-        pub fn new(id: impl Into<String>, base_url: impl Into<String>, api_key: impl Into<String>) -> Self {
+        pub fn new(
+            id: impl Into<String>,
+            base_url: impl Into<String>,
+            api_key: impl Into<String>,
+        ) -> Self {
             Self {
                 client: reqwest::Client::new(),
                 base_url: base_url.into().trim_end_matches('/').to_string(),
@@ -606,6 +751,7 @@ mod http {
                         .collect(),
                 );
             }
+            apply_effort(&mut body, &req.model, req.effort.as_deref(), false);
             let resp = self
                 .client
                 .post(format!("{}/chat/completions", self.base_url))
@@ -615,8 +761,10 @@ mod http {
                 .await
                 .map_err(|e| GatewayError::Provider(e.to_string()))?;
             let status = resp.status();
-            let json: serde_json::Value =
-                resp.json().await.map_err(|e| GatewayError::Provider(e.to_string()))?;
+            let json: serde_json::Value = resp
+                .json()
+                .await
+                .map_err(|e| GatewayError::Provider(e.to_string()))?;
             if !status.is_success() {
                 return Err(GatewayError::Provider(format!("{status}: {json}")));
             }
@@ -632,7 +780,8 @@ mod http {
                             Some(ToolCall {
                                 id: c["id"].as_str().unwrap_or("").to_string(),
                                 name: f["name"].as_str()?.to_string(),
-                                arguments: serde_json::from_str(args).unwrap_or(serde_json::json!({})),
+                                arguments: serde_json::from_str(args)
+                                    .unwrap_or(serde_json::json!({})),
                             })
                         })
                         .collect()
@@ -640,12 +789,19 @@ mod http {
                 .unwrap_or_default();
             let tokens_in = json["usage"]["prompt_tokens"].as_u64().unwrap_or(0) as u32;
             let tokens_out = json["usage"]["completion_tokens"].as_u64().unwrap_or(0) as u32;
-            Ok(Completion { text, model: req.model.clone(), tokens_in, tokens_out, tool_calls })
+            Ok(Completion {
+                text,
+                model: req.model.clone(),
+                tokens_in,
+                tokens_out,
+                tool_calls,
+            })
         }
 
         async fn generate_image(&self, prompt: &str) -> Result<Vec<u8>, GatewayError> {
             use base64::Engine;
-            let model = std::env::var("ENGRAM_IMAGE_MODEL").unwrap_or_else(|_| "gpt-image-1".into());
+            let model =
+                std::env::var("ENGRAM_IMAGE_MODEL").unwrap_or_else(|_| "gpt-image-1".into());
             let body = serde_json::json!({
                 "model": model, "prompt": prompt, "n": 1, "size": "1024x1024", "response_format": "b64_json"
             });
@@ -657,8 +813,10 @@ mod http {
                 .send()
                 .await
                 .map_err(|e| GatewayError::Provider(e.to_string()))?;
-            let json: serde_json::Value =
-                resp.json().await.map_err(|e| GatewayError::Provider(e.to_string()))?;
+            let json: serde_json::Value = resp
+                .json()
+                .await
+                .map_err(|e| GatewayError::Provider(e.to_string()))?;
             let b64 = json["data"][0]["b64_json"]
                 .as_str()
                 .ok_or_else(|| GatewayError::Provider(format!("no image in response: {json}")))?;
@@ -678,7 +836,10 @@ mod http {
                 .send()
                 .await
                 .map_err(|e| GatewayError::Provider(e.to_string()))?;
-            let bytes = resp.bytes().await.map_err(|e| GatewayError::Provider(e.to_string()))?;
+            let bytes = resp
+                .bytes()
+                .await
+                .map_err(|e| GatewayError::Provider(e.to_string()))?;
             Ok(bytes.to_vec())
         }
 
@@ -707,8 +868,10 @@ mod http {
                 .send()
                 .await
                 .map_err(|e| GatewayError::Provider(e.to_string()))?;
-            let json: serde_json::Value =
-                resp.json().await.map_err(|e| GatewayError::Provider(e.to_string()))?;
+            let json: serde_json::Value = resp
+                .json()
+                .await
+                .map_err(|e| GatewayError::Provider(e.to_string()))?;
             Ok(json["text"].as_str().unwrap_or("").to_string())
         }
 
@@ -722,8 +885,10 @@ mod http {
                 .send()
                 .await
                 .map_err(|e| GatewayError::Provider(e.to_string()))?;
-            let json: serde_json::Value =
-                resp.json().await.map_err(|e| GatewayError::Provider(e.to_string()))?;
+            let json: serde_json::Value = resp
+                .json()
+                .await
+                .map_err(|e| GatewayError::Provider(e.to_string()))?;
             let out = json["data"]
                 .as_array()
                 .map(|arr| {
@@ -731,7 +896,11 @@ mod http {
                         .map(|d| {
                             d["embedding"]
                                 .as_array()
-                                .map(|v| v.iter().filter_map(|x| x.as_f64().map(|f| f as f32)).collect())
+                                .map(|v| {
+                                    v.iter()
+                                        .filter_map(|x| x.as_f64().map(|f| f as f32))
+                                        .collect()
+                                })
                                 .unwrap_or_default()
                         })
                         .collect()

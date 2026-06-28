@@ -40,7 +40,16 @@ pub async fn converse(
 ) -> Result<Turn, String> {
     // The non-streaming path is the streaming one with a sink that discards fragments.
     let mut sink = |_: String| {};
-    converse_stream(memory, gateway, text, model, persona, attachments, &mut sink).await
+    converse_stream(
+        memory,
+        gateway,
+        text,
+        model,
+        persona,
+        attachments,
+        &mut sink,
+    )
+    .await
 }
 
 /// Context the user pinned to a turn from the composer: an uploaded/attached file (text
@@ -74,7 +83,11 @@ fn attachments_context(attachments: &[Attachment]) -> Option<String> {
             "memory" => "Pinned memory",
             _ => "File",
         };
-        let name = if a.name.is_empty() { "(unnamed)" } else { a.name.as_str() };
+        let name = if a.name.is_empty() {
+            "(unnamed)"
+        } else {
+            a.name.as_str()
+        };
         out.push_str(&format!("\n\n[{label}] {name}"));
         if let Some(sz) = a.size {
             out.push_str(&format!(" ({sz} bytes)"));
@@ -102,17 +115,26 @@ pub async fn converse_stream(
 ) -> Result<Turn, String> {
     // 1. Record the user's message as a lived experience.
     let user_record = memory
-        .remember(WriteReq::new(Region::Episodic, text).source("user").actor("user"))
+        .remember(
+            WriteReq::new(Region::Episodic, text)
+                .source("user")
+                .actor("user"),
+        )
         .map_err(|e| e.to_string())?;
 
     // 2. Recall what we already know that bears on this message.
     let regions = [Region::Identity, Region::Episodic, Region::Semantic];
     // Trusted context only: content the agent read from untrusted sources is stored with
     // its provenance but never re-surfaces here as trusted memory (memory-poisoning guard).
-    let hits = memory.recall_trusted(text, &regions, 5).map_err(|e| e.to_string())?;
+    let hits = memory
+        .recall_trusted(text, &regions, 5)
+        .map_err(|e| e.to_string())?;
     // Drop the user's own message we just stored - it would otherwise surface as its own
     // "grounding" memory in the recall ribbon and the prompt context.
-    let hits: Vec<_> = hits.into_iter().filter(|h| h.record.id != user_record.id).collect();
+    let hits: Vec<_> = hits
+        .into_iter()
+        .filter(|h| h.record.id != user_record.id)
+        .collect();
     let recalled: Vec<String> = hits.iter().map(|h| h.record.text.clone()).collect();
     let recalled_refs: Vec<RecalledRef> = hits
         .iter()
@@ -139,8 +161,9 @@ pub async fn converse_stream(
             )
             .map_err(|e| e.to_string())?;
         if l.supersede {
-            for old in
-                memory.current_with_prefix(Region::Identity, &l.prefix).map_err(|e| e.to_string())?
+            for old in memory
+                .current_with_prefix(Region::Identity, &l.prefix)
+                .map_err(|e| e.to_string())?
             {
                 if old != rec.id {
                     let _ = memory.supersede(old, rec.id);
@@ -174,20 +197,31 @@ pub async fn converse_stream(
     messages.push(Message::user(text));
     let req = CompletionRequest::new(model.to_string(), messages);
     let completion = gateway
-        .complete_stream(Call::new(req).actor("converse").tainted(Taint::Trusted), on_delta)
+        .complete_stream(
+            Call::new(req).actor("converse").tainted(Taint::Trusted),
+            on_delta,
+        )
         .await
         .map_err(|e| e.to_string())?;
 
     // 5. Remember our own reply, so the conversation is searchable later.
     memory
         .remember(
-            WriteReq::new(Region::Episodic, format!("assistant said: {}", completion.text))
-                .source("assistant")
-                .actor("core"),
+            WriteReq::new(
+                Region::Episodic,
+                format!("assistant said: {}", completion.text),
+            )
+            .source("assistant")
+            .actor("core"),
         )
         .map_err(|e| e.to_string())?;
 
-    Ok(Turn { reply: completion.text, recalled, recalled_refs, learned })
+    Ok(Turn {
+        reply: completion.text,
+        recalled,
+        recalled_refs,
+        learned,
+    })
 }
 
 /// An inferred identity fact, with the prefix it was derived from and whether it is a
@@ -235,7 +269,11 @@ fn extract_identity(text: &str) -> Vec<Learned> {
             if !frag.is_empty() && frag.len() < 120 {
                 let fact = format!("{prefix}{frag}");
                 if !out.iter().any(|l| l.fact == fact) {
-                    out.push(Learned { prefix: prefix.to_string(), fact, supersede: *supersede });
+                    out.push(Learned {
+                        prefix: prefix.to_string(),
+                        fact,
+                        supersede: *supersede,
+                    });
                 }
             }
         }
@@ -251,7 +289,11 @@ mod tests {
     fn extracts_identity_facts() {
         let f = extract_identity("Hi, I like Rust and I prefer minimal dependencies.");
         assert!(f.iter().any(|l| l.fact == "User likes Rust"), "got {f:?}");
-        assert!(f.iter().any(|l| l.fact == "User prefers minimal dependencies"), "got {f:?}");
+        assert!(
+            f.iter()
+                .any(|l| l.fact == "User prefers minimal dependencies"),
+            "got {f:?}"
+        );
         // Preferences are additive, not superseding.
         assert!(f.iter().all(|l| !l.supersede));
     }
@@ -261,7 +303,10 @@ mod tests {
         let f = extract_identity("my name is Radoslav");
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].fact, "User's name is Radoslav");
-        assert!(f[0].supersede, "name is a singular attribute that supersedes the prior value");
+        assert!(
+            f[0].supersede,
+            "name is a singular attribute that supersedes the prior value"
+        );
         assert_eq!(f[0].prefix, "User's name is ");
     }
 

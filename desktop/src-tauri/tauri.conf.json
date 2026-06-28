@@ -12,16 +12,34 @@
       "csp": null
     }
   },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["engram"]
+      }
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",
     "externalBin": ["binaries/engramd"],
+    "category": "Productivity",
+    "shortDescription": "Your local AI agent with a brain you can watch grow.",
+    "longDescription": "Engram is a personal AI agent built loosely on how a brain works: it keeps what matters, forgets the rest, and gets better the more you use it. Every memory write, skill change, and autonomous action is signed, append-only, and reversible. It runs as a single small local daemon that sleeps to near-zero when idle.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "linux": {
+      "deb": {
+        "depends": []
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    }
   }
 }

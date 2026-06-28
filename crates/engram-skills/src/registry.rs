@@ -68,10 +68,18 @@ pub struct Registry {
 }
 
 impl Registry {
-    pub fn open(dir: impl AsRef<Path>, signer: Arc<SkillSigner>, ledger: Arc<Ledger>) -> Result<Self> {
+    pub fn open(
+        dir: impl AsRef<Path>,
+        signer: Arc<SkillSigner>,
+        ledger: Arc<Ledger>,
+    ) -> Result<Self> {
         let dir = dir.as_ref().to_path_buf();
         fs::create_dir_all(dir.join("skills"))?;
-        Ok(Registry { dir, signer, ledger })
+        Ok(Registry {
+            dir,
+            signer,
+            ledger,
+        })
     }
 
     pub fn ledger(&self) -> &Ledger {
@@ -203,7 +211,14 @@ impl Registry {
     }
 
     /// Record an execution for later replay.
-    pub fn record_run(&self, id: &str, version: u32, input: &[u8], gold: &[u8], reward: f32) -> Result<()> {
+    pub fn record_run(
+        &self,
+        id: &str,
+        version: u32,
+        input: &[u8],
+        gold: &[u8],
+        reward: f32,
+    ) -> Result<()> {
         use std::io::Write;
         let run = RecordedRun {
             version,

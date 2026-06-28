@@ -10,10 +10,10 @@
     /* surfaces - cooled graphite, monotonic luminance steps; the rail is the darkest, so the
        three columns separate without relying on a hairline. */
     --rail:#08090b; --surface-0:#0c0d10; --surface-1:#111316; --surface-2:#181b1f; --surface-3:#21242a;
-    --border:rgba(255,255,255,.06); --border-strong:rgba(255,255,255,.10);
+    --border:rgba(255,255,255,.10); --border-strong:rgba(255,255,255,.15);
     --border-hi:inset 0 1px 0 rgba(255,255,255,.05);
-    --text-primary:#e8e9ec; --text-secondary:#a3a7af; --text-muted:#6c7078;
-    --accent:#45c8a8; --accent-ink:#04342c; --accent-soft:rgba(69,200,168,.12); --ring:rgba(69,200,168,.5);
+    --text-primary:#e8e9ec; --text-secondary:#b6bac4; --text-muted:#888d97;
+    --accent:#45c8a8; --accent-ink:#04342c; --accent-soft:rgba(69,200,168,.16); --ring:rgba(69,200,168,.5);
     --glow:drop-shadow(0 0 6px rgba(69,200,168,.45));
     --hover:rgba(255,255,255,.045); --active:rgba(255,255,255,.075);
     --warning:#e0a23c; --danger:#e2675f;
@@ -130,6 +130,22 @@
   .tag { font-size:11px; padding:1px 6px; border-radius:6px; }
   .tag.web { color:var(--web); background:var(--web-bg); } .tag.files { color:var(--files); background:var(--files-bg); }
   .tag.browser { color:var(--web); background:var(--web-bg); } .tag.shell { color:var(--files); background:var(--files-bg); }
+  /* Kanban polish: defined lanes, count-pill headers, a column-keyed status rail on each card, and a
+     dashed empty-state placeholder so a 0-card column reads as "drop here", not dead space. */
+  .board { padding:18px; gap:14px; }
+  .col { border-radius:14px; padding:12px 11px; }
+  .col h3 { margin:2px 4px 11px; font-size:11px; letter-spacing:.05em; align-items:center; gap:8px; }
+  .col h3 span { color:var(--text-secondary); background:var(--surface-3); border:1px solid var(--border); border-radius:20px; padding:1px 8px; font-size:10.5px; font-weight:600; min-width:20px; text-align:center; line-height:1.5; }
+  .cards { gap:9px; }
+  .cards:empty::after { content:'Drop a card here'; display:flex; align-items:center; justify-content:center; min-height:74px; color:var(--text-muted); opacity:.55; font-size:12px; border:1.5px dashed var(--border); border-radius:11px; margin-top:2px; }
+  .card { border-radius:12px; padding:12px 13px 12px 16px; position:relative;
+    transition:transform var(--dur-1) var(--ease-out), box-shadow var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out), background var(--dur-1) var(--ease-out); }
+  .card:hover { transform:translateY(-1px); border-color:var(--border-strong); }
+  body.dragging-active .card { transition:none; }            /* don't fight the drag ghost */
+  .card .t { font-size:13.5px; font-weight:500; }
+  .col[data-col] .card::before { content:''; position:absolute; left:0; top:11px; bottom:11px; width:2.5px; border-radius:2px; background:var(--border-strong); }
+  .col[data-col="doing"] .card::before { background:var(--accent); }
+  .col[data-col="done"] .card::before { background:var(--text-muted); opacity:.5; }
   .pulse { width:7px; height:7px; border-radius:50%; background:var(--accent); animation:pulse 1.2s ease-in-out infinite; }
   @keyframes pulse { 0%,100%{opacity:.4} 50%{opacity:1} }
   .bar { height:3px; border-radius:3px; background:linear-gradient(90deg,transparent,var(--accent),transparent);
@@ -220,7 +236,7 @@
   .feed { flex:1 1 0; min-height:0; overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain; display:flex; flex-direction:column; gap:14px; }
   /* Pin the composer: never let it shrink or scroll away when the feed fills. */
   .chat > .composer { flex:0 0 auto; }
-  .msg.user { align-self:flex-end; background:var(--surface-2); border:1px solid var(--border); border-radius:16px 16px 5px 16px; padding:10px 14px; max-width:78%; line-height:1.5; white-space:pre-wrap; }
+  .msg.user { align-self:flex-end; background:var(--surface-2); border:1px solid var(--border); border-radius:13px 13px 4px 13px; padding:10px 14px; max-width:78%; line-height:1.5; white-space:pre-wrap; }
   .msg.engram { font-family:var(--sans); font-size:14.5px; line-height:1.65; max-width:72ch; color:var(--text-primary); }
   /* rendered markdown in replies */
   .msg.engram > :first-child { margin-top:0; } .msg.engram > :last-child { margin-bottom:0; }
@@ -234,6 +250,13 @@
   .msg.engram a:hover { border-bottom-color:var(--web); }
   .msg.engram code.ic { font:12.5px var(--mono); background:var(--surface-2); border:1px solid var(--border); border-radius:5px; padding:1px 5px; }
   .msg.engram strong { font-weight:650; } .msg.engram em { font-style:italic; }
+  /* GFM tables: a clean, bordered, rounded data table - column alignment from the md separator. */
+  .msg.engram .md-table-wrap { margin:2px 0 13px; overflow-x:auto; border:1px solid var(--border); border-radius:10px; box-shadow:var(--e1); }
+  .msg.engram table.md-table { border-collapse:collapse; width:100%; font-size:13px; }
+  .msg.engram table.md-table th { font-weight:600; color:var(--text-secondary); background:var(--surface-1); padding:9px 14px; border-bottom:1px solid var(--border-strong); white-space:nowrap; }
+  .msg.engram table.md-table td { padding:8px 14px; border-bottom:1px solid var(--border); vertical-align:top; }
+  .msg.engram table.md-table tr:last-child td { border-bottom:none; }
+  .msg.engram table.md-table tbody tr:hover { background:var(--hover); }
   .cb { background:var(--surface-3); border:1px solid var(--border-strong); border-radius:var(--r-card); margin:0 0 12px; overflow:hidden; }
   .cb-head { display:flex; align-items:center; justify-content:space-between; padding:6px 10px 6px 12px; border-bottom:1px solid var(--border);
     font:11px var(--mono); color:var(--text-muted); text-transform:lowercase; }
@@ -332,7 +355,7 @@
   .brain-detail .bd-x:hover { color:var(--text-primary); }
   .brain-detail .bd-t { margin:9px 0 12px; line-height:1.55; }
   .brain-detail .bd-meta { display:flex; gap:14px; font-size:11px; color:var(--text-muted); border-top:1px solid var(--border); padding-top:10px; }
-  /* consciousness panel — the always-loaded working memory, docked as a glass card over the brain */
+  /* consciousness panel - the always-loaded working memory, docked as a glass card over the brain */
   .mind-panel { position:absolute; left:20px; top:62px; bottom:84px; width:332px; z-index:24; display:flex; flex-direction:column;
     background:var(--surface-1); border:1px solid var(--border-strong); border-radius:14px; box-shadow:var(--e4); overflow:hidden; }
   .mind-h { padding:13px 15px 11px; border-bottom:1px solid var(--border); }
@@ -390,17 +413,20 @@
   /* in-app input / confirm dialogs (replace WKWebView-broken prompt/confirm) */
   .overlay.ask { align-items:center; z-index:120; }
   .ask-card { width:min(440px,92vw); background:var(--surface-1); border:1px solid var(--border-strong); border-radius:16px;
-    padding:22px 24px; box-shadow:0 24px 64px rgba(0,0,0,.55); }
-  .ask-title { font-size:16px; font-weight:600; }
+    padding:22px 24px; box-shadow:0 1px 0 rgba(255,255,255,.04) inset, 0 30px 80px -12px rgba(0,0,0,.6), 0 8px 24px rgba(0,0,0,.35);
+    animation:askIn .22s var(--ease-out); }
+  @keyframes askIn { from { opacity:0; transform:translateY(10px) scale(.985); } to { opacity:1; transform:none; } }
+  @media (prefers-reduced-motion: reduce) { .ask-card { animation:none; } }
+  .ask-title { font-size:16px; font-weight:600; letter-spacing:-.01em; }
   .ask-msg { color:var(--text-muted); font-size:13px; line-height:1.5; margin-top:7px; }
   .ask-input { width:100%; box-sizing:border-box; margin-top:14px; background:var(--surface-2); border:1px solid var(--border-strong);
     border-radius:10px; padding:10px 13px; outline:none; color:var(--text-primary); font-size:14px; }
   .ask-input:focus { border-color:var(--ring); box-shadow:0 0 0 3px var(--accent-soft); }
   .ask-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:16px; }
-  .ask-ghost { background:var(--surface-2); border:1px solid var(--border); color:var(--text-secondary); border-radius:9px; padding:8px 15px; cursor:pointer; }
-  .ask-ghost:hover { border-color:var(--border-strong); color:var(--text-primary); }
-  .ask-ok { background:var(--accent); color:var(--accent-ink); border:none; border-radius:9px; padding:8px 17px; font-weight:600; cursor:pointer; }
-  .ask-ok:hover { filter:brightness(1.06); }
+  .ask-ghost { background:var(--surface-2); border:1px solid var(--border); color:var(--text-secondary); border-radius:9px; padding:9px 16px; cursor:pointer; transition:border-color var(--dur-1) var(--ease-out), color var(--dur-1), background var(--dur-1); }
+  .ask-ghost:hover { border-color:var(--border-strong); color:var(--text-primary); background:var(--surface-3); }
+  .ask-ok { background:var(--accent); color:var(--accent-ink); border:none; border-radius:9px; padding:9px 18px; font-weight:600; cursor:pointer; transition:filter var(--dur-1) var(--ease-out), box-shadow var(--dur-1); box-shadow:0 1px 2px rgba(0,0,0,.2); }
+  .ask-ok:hover { filter:brightness(1.06); box-shadow:0 2px 10px -2px var(--accent-soft); }
   .ask-ok.danger { background:var(--danger); color:#fff; }
   /* templates */
   .tmpl-chips { display:flex; flex-wrap:wrap; gap:8px; margin-top:11px; }
@@ -435,7 +461,7 @@
   .exp-seq { font:600 10px var(--mono); color:var(--accent); cursor:pointer; }
   .exp-t { color:var(--text-muted); font-size:11px; min-width:62px; text-align:right; }
   .exp-empty { color:var(--text-muted); font-size:12.5px; line-height:1.55; padding:14px 2px; }
-  /* skills view — the honest expertise ladder */
+  /* skills view - the honest expertise ladder */
   .skills-wrap { padding:26px 30px; max-width:920px; margin:0 auto; height:100%; overflow-y:auto; }
   .skills-head h2 { margin:0; font-size:20px; }
   .skills-head .sub { margin:5px 0 18px; color:var(--text-muted); font-size:13px; line-height:1.5; max-width:700px; }
@@ -464,7 +490,7 @@
   .sk-empty { text-align:center; color:var(--text-muted); padding:60px 20px; display:flex; flex-direction:column; gap:8px; }
   .sk-empty b { color:var(--text-secondary); font-size:16px; }
   .sk-empty span { max-width:460px; margin:0 auto; line-height:1.55; font-size:13px; }
-  /* auditable dissent — the grounded specialist note */
+  /* auditable dissent - the grounded specialist note */
   .dissent { border:1px solid color-mix(in srgb,var(--warning) 36%,var(--border-strong)); background:color-mix(in srgb,var(--warning) 7%,var(--surface-1)); border-radius:12px; padding:14px 15px; }
   .dis-head { display:flex; align-items:center; gap:8px; font:600 12px var(--mono); text-transform:uppercase; letter-spacing:.06em; color:var(--warning); }
   .dis-ic { font-size:14px; }
@@ -495,15 +521,17 @@
   .field > label { display:block; font-size:12px; color:var(--text-secondary); margin-bottom:5px; }
   .field input[type=text],.field input[type=password],.field input[type=number],.field select {
     width:100%; background-color:var(--surface-0); color:var(--text-primary); border:1px solid var(--border-strong);
-    border-radius:8px; padding:8px 10px; outline:none; transition:border-color .15s; }
+    border-radius:8px; padding:9px 11px; outline:none; transition:border-color var(--dur-1,.15s) var(--ease-out), box-shadow var(--dur-1,.15s); }
+  .field input:hover,.field select:hover,.field textarea:hover { border-color:var(--text-muted); }
   .field select { appearance:none; -webkit-appearance:none; padding-right:30px; cursor:pointer;
     background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a3a7af' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
     background-repeat:no-repeat; background-position:right 10px center; }
   .field select option { background:var(--surface-1); color:var(--text-primary); }
-  .field input:focus,.field select:focus { border-color:var(--accent); }
-  .field textarea { width:100%; background-color:var(--surface-0); color:var(--text-primary); border:1px solid var(--border-strong);
-    border-radius:8px; padding:9px 11px; outline:none; resize:vertical; font:13px/1.55 var(--sans); transition:border-color .15s; }
-  .field textarea:focus { border-color:var(--accent); }
+  .field input::placeholder,.field textarea::placeholder { color:var(--text-muted); opacity:.65; }
+  .field input:focus,.field select:focus { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
+  .field textarea { width:100%; box-sizing:border-box; background-color:var(--surface-0); color:var(--text-primary); border:1px solid var(--border-strong);
+    border-radius:8px; padding:9px 11px; outline:none; resize:vertical; font:13px/1.55 var(--sans); transition:border-color var(--dur-1,.15s) var(--ease-out), box-shadow var(--dur-1,.15s); }
+  .field textarea:focus { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
   .field .hint { font-size:11px; color:var(--text-muted); margin-top:5px; }
   .field .hint a { color:var(--text-secondary); }
   .row2 { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
@@ -524,9 +552,18 @@
   .toggle .track::after { content:''; position:absolute; top:2px; left:2px; width:16px; height:16px; border-radius:50%; background:var(--text-secondary); transition:.15s; }
   .toggle input:checked + .track { background:var(--accent); border-color:var(--accent); }
   .toggle input:checked + .track::after { transform:translateX(16px); background:var(--accent-ink); }
-  .mcprow { display:grid; grid-template-columns:1fr 1.2fr 1.4fr auto; gap:8px; margin-bottom:8px; align-items:center; }
-  .mcprow input { background:var(--surface-0); border:1px solid var(--border-strong); border-radius:7px; padding:7px 9px; outline:none; }
-  .mcprow input:focus { border-color:var(--accent); }
+  .mcprow { display:block; margin-bottom:10px; }
+  .mcprow-main { display:grid; grid-template-columns:1fr 1.1fr 1.3fr auto auto; gap:8px; align-items:center; }
+  .mcprow input { background:var(--surface-0); border:1px solid var(--border-strong); border-radius:7px; padding:7px 9px; outline:none; color:var(--text-primary); font:inherit; }
+  .mcprow input:hover, .mcp-adv textarea:hover, .mcp-adv .mcp-cwd:hover { border-color:var(--text-muted); }
+  .mcprow input:focus, .mcp-adv textarea:focus, .mcp-adv .mcp-cwd:focus { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
+  .mcp-adv { margin-top:6px; }
+  .mcp-adv > summary { cursor:pointer; font-size:11px; color:var(--text-muted); list-style:none; padding:2px 0; user-select:none; }
+  .mcp-adv > summary::before { content:'+ '; }
+  .mcp-adv[open] > summary::before { content:'- '; }
+  .mcp-adv > summary:hover { color:var(--text-secondary); }
+  .mcp-adv textarea, .mcp-adv .mcp-cwd { width:100%; box-sizing:border-box; margin-top:6px; background:var(--surface-0); border:1px solid var(--border-strong); border-radius:7px; padding:7px 9px; color:var(--text-primary); font:12px var(--mono); resize:vertical; }
+  .mcp-trust { display:flex; align-items:center; gap:7px; font-size:12px; color:var(--text-secondary); margin-top:7px; }
   .xbtn { background:none; border:none; color:var(--text-muted); cursor:pointer; font-size:18px; line-height:1; padding:2px 8px; }
   .xbtn:hover { color:var(--danger); }
   .testline { font-size:12px; margin-top:10px; min-height:16px; }
@@ -560,8 +597,8 @@
   .railgear svg { width:16px; height:16px; opacity:.65; }
   .railgear:hover svg { opacity:.9; }
   /* overlays: command palette + settings command-center */
-  .overlay { position:fixed; inset:0; background:rgba(6,7,9,.5); backdrop-filter:blur(3px); z-index:80;
-    display:flex; align-items:flex-start; justify-content:center; animation:fade .12s ease-out; }
+  .overlay { position:fixed; inset:0; background:rgba(6,7,9,.55); backdrop-filter:blur(8px) saturate(1.1); -webkit-backdrop-filter:blur(8px) saturate(1.1); z-index:80;
+    display:flex; align-items:flex-start; justify-content:center; animation:fade .14s ease-out; }
   .overlay[hidden] { display:none; }
   @keyframes fade { from{ opacity:0; } to{ opacity:1; } }
   .palette .pal-box { width:min(640px,92vw); margin-top:13vh; background:var(--surface-1);
@@ -653,45 +690,58 @@
   .chat-welcome .cw-chips button:hover { border-color:var(--ring); color:var(--text-primary); background:var(--surface-2); }
   /* chat: composer model picker + recall ribbon */
   .composer-top { display:flex; align-items:center; gap:8px; margin-bottom:7px; }
-  .modelpick { display:inline-flex; align-items:center; gap:6px; background:var(--surface-2); border:1px solid var(--border);
-    color:var(--text-secondary); border-radius:20px; padding:3px 11px; font-size:12px; cursor:pointer; transition:.15s; }
-  .modelpick:hover { border-color:var(--border-strong); color:var(--text-primary); }
-  .modelpick .mp-dot { width:6px; height:6px; border-radius:50%; background:var(--accent); }
+  .modelpick { display:inline-flex; align-items:center; gap:7px; background:var(--surface-2); border:1px solid var(--border);
+    color:var(--text-secondary); border-radius:9px; padding:5px 9px 5px 10px; font-size:12px; font-weight:500; cursor:pointer; line-height:1;
+    transition:border-color var(--dur-1) var(--ease-out), color var(--dur-1), background var(--dur-1); }
+  .modelpick:hover { border-color:var(--border-strong); color:var(--text-primary); background:var(--surface-3); }
+  .modelpick .mp-dot { width:6px; height:6px; border-radius:50%; background:var(--accent); flex:none; box-shadow:0 0 0 3px var(--accent-soft); }
+  .modelpick .mp-name { font-variant-numeric:tabular-nums; }
+  .modelpick .mp-chev { width:12px; height:12px; flex:none; color:var(--text-muted); transition:transform var(--dur-1) var(--ease-out); }
+  .mp-wrap:has(.model-menu) .modelpick { border-color:var(--ring); color:var(--text-primary); background:var(--surface-3); }
+  .mp-wrap:has(.model-menu) .modelpick .mp-chev { transform:rotate(180deg); color:var(--accent); }
   .model-menu { position:absolute; bottom:100%; left:0; margin-bottom:8px; background:var(--surface-2); border:1px solid var(--border-strong);
     border-radius:12px; width:312px; z-index:30; box-shadow:0 18px 48px rgba(0,0,0,.55); overflow:hidden; }
   .mm-search { width:100%; box-sizing:border-box; background:none; border:none; border-bottom:1px solid var(--border); outline:none;
     color:var(--text-primary); font-size:13px; padding:11px 13px; }
-  .mm-list { max-height:320px; overflow:auto; padding:5px; }
-  .model-menu .mm-g { font:10px var(--mono); text-transform:uppercase; letter-spacing:.06em; color:var(--text-muted); padding:8px 9px 3px; position:sticky; top:0; background:var(--surface-2); }
+  .mm-list { max-height:320px; overflow:auto; padding:0 5px 5px; }
+  /* Sticky section header: opaque bg + a hairline + z-index so rows scroll cleanly UNDER it (was
+     transparent-ish and overlapped the rows on scroll). */
+  .model-menu .mm-g { font:600 9.5px var(--mono); text-transform:uppercase; letter-spacing:.07em; color:var(--text-muted); padding:9px 9px 5px; position:sticky; top:0; z-index:2;
+    background:var(--surface-2); box-shadow:0 1px 0 var(--border); }
   .model-menu div.mm-i { padding:7px 9px; border-radius:7px; font-size:13px; color:var(--text-secondary); cursor:pointer; display:flex; align-items:center; gap:9px; }
   .model-menu div.mm-i.sel { background:var(--surface-1); color:var(--text-primary); }
   .model-menu .mm-dot { width:7px; height:7px; border-radius:50%; flex:none; box-shadow:0 0 6px currentColor; }
-  .model-menu .mm-name { font-family:var(--mono); font-size:12px; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .model-menu .mm-name { font-family:var(--sans); font-weight:500; font-size:12.5px; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .model-menu .mm-meta { font-size:11px; color:var(--text-muted); flex:none; }
   .model-menu .mm-chk { color:var(--accent); flex:none; }
   .model-menu div.mm-i.on .mm-name { color:var(--accent); }
   .mm-empty { padding:14px; text-align:center; color:var(--text-muted); font-size:12px; }
+  .mm-effort { display:flex; flex-direction:column; align-items:stretch; gap:6px; padding:9px 12px; border-top:1px solid var(--border); }
+  .mm-eff-lbl { font:600 9.5px var(--mono); text-transform:uppercase; letter-spacing:.07em; color:var(--text-muted); }
+  .mm-seg { display:flex; background:var(--surface-0); border:1px solid var(--border-strong); border-radius:8px; padding:2px; gap:2px; }
+  .mm-seg button { flex:1; border:none; background:none; color:var(--text-secondary); font:500 11.5px var(--sans); padding:4px 0; border-radius:6px; cursor:pointer; text-align:center; transition:background var(--dur-1) var(--ease-out), color var(--dur-1); }
+  .mm-seg button:hover { color:var(--text-primary); }
+  .mm-seg button.on { background:var(--accent-soft); color:var(--accent); }
   .mm-foot { padding:9px 12px; border-top:1px solid var(--border); font-size:12px; color:var(--text-muted); cursor:pointer; }
   .mm-foot:hover { color:var(--text-primary); }
   /* the recall ribbon - a row of small physical "memory tokens" that assemble under an answer */
-  .ribbon { display:flex; flex-wrap:wrap; gap:7px; margin:9px 0 3px; }
-  .recall { display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--text-secondary);
-    background:linear-gradient(var(--surface-2), var(--surface-1)); border:1px solid var(--border-strong);
-    border-radius:var(--r-chip); box-shadow:var(--e1); padding:3px 10px 3px 7px; position:relative; cursor:default;
-    transition:border-color var(--dur-1) var(--ease-out), transform var(--dur-1) var(--ease-out);
+  /* Memory provenance recedes: quiet grey footnotes under a reply, not boxed chips. The region
+     colour and the click-through stay, but they sit in the background until the reader looks. */
+  .ribbon { display:flex; flex-wrap:wrap; align-items:center; gap:4px 11px; margin:9px 0 2px; }
+  .recall { display:inline-flex; align-items:center; gap:5px; font-size:11.5px; color:var(--text-muted);
+    background:none; border:none; box-shadow:none; padding:0; position:relative; cursor:default;
     animation:recall-in var(--dur-3) var(--ease-out) backwards; }
-  .recall::before { content:''; width:2px; align-self:stretch; margin:-3px 6px -3px 0; background:var(--lc,var(--accent)); opacity:.7; border-radius:2px; }
-  .recall:hover { border-color:var(--ring); transform:translateY(-1px); }
+  .recall::before { display:none; }
+  .recall:hover { color:var(--text-secondary); }
   .recall.clk { cursor:pointer; }
-  .recall.clk:hover { border-color:var(--lc,var(--ring)); }
-  .recall .rg { font-family:var(--mono); color:var(--lc,var(--accent)); font-size:10px; font-variant-numeric:tabular-nums;
-    filter:drop-shadow(0 0 4px rgba(69,200,168,.4)); }
-  .rb-lbl { align-self:center; font:600 9.5px var(--mono); text-transform:uppercase; letter-spacing:.07em; color:var(--text-muted); margin-right:2px; }
+  .recall.clk:hover { color:var(--text-secondary); text-decoration:underline; text-underline-offset:2px; text-decoration-color:var(--lc,var(--border-strong)); }
+  .recall .rg { font-family:var(--mono); color:var(--lc,var(--accent)); opacity:.6; font-size:9px; font-variant-numeric:tabular-nums; }
+  .rb-lbl { align-self:center; font:600 9px var(--mono); text-transform:uppercase; letter-spacing:.07em; color:var(--text-muted); opacity:.85; margin-right:1px; }
   .recall:nth-child(2){ animation-delay:55ms } .recall:nth-child(3){ animation-delay:110ms }
   .recall:nth-child(4){ animation-delay:165ms } .recall:nth-child(5){ animation-delay:220ms }
-  @keyframes recall-in { from{ opacity:0; transform:translateY(6px); } to{ opacity:1; transform:none; } }
-  .learned { font-size:12px; color:var(--text-secondary); margin:8px 0 2px; display:flex; align-items:center; gap:7px; }
-  .learned::before { content:''; width:5px; height:5px; border-radius:50%; background:var(--accent); opacity:.7; flex:none; }
+  @keyframes recall-in { from{ opacity:0; transform:translateY(4px); } to{ opacity:1; transform:none; } }
+  .learned { font-size:11px; color:var(--text-muted); margin:5px 0 2px; display:flex; align-items:center; gap:6px; }
+  .learned::before { content:''; width:4px; height:4px; border-radius:50%; background:var(--text-muted); opacity:.6; flex:none; }
   /* finishing touches: calm focus rings, refined hovers, softer depth */
   * { -webkit-tap-highlight-color:transparent; }
   :focus { outline:none; }
@@ -788,7 +838,7 @@
   .art-dot { flex:none; width:6px; height:6px; border-radius:50%; background:var(--text-muted); }
   .art-tab.on .art-dot { background:var(--accent); }
 
-  /* Pane body — re-scope the highlighter token classes (existing rules are scoped to .cb) */
+  /* Pane body - re-scope the highlighter token classes (existing rules are scoped to .cb) */
   .art-body { flex:1; min-height:0; overflow:auto; padding:14px 16px; background:var(--surface-0); }
   .art-body pre { margin:0; }
   .art-body code { font:12.5px/1.6 var(--mono); color:var(--text-primary); white-space:pre; }
@@ -848,7 +898,7 @@
 .sched-empty .se-hint code { background:var(--surface-2); border:1px solid var(--border); border-radius:5px; padding:1px 5px; font-family:var(--mono); font-size:11px; color:var(--text-secondary); }
 /* ===================== VOICE: dictation mic + conversation overlay ===================== */
 
-/* (1) composer dictation mic — matches the .send-icon 34px circle, secondary weight */
+/* (1) composer dictation mic - matches the .send-icon 34px circle, secondary weight */
 .composer .voice-mic {
   display:inline-flex; align-items:center; justify-content:center;
   width:34px; height:34px; padding:0; border-radius:50%;
@@ -999,7 +1049,6 @@
   .integ-act .sbtn { padding:6px 12px; font-size:12px; }
   .mcptest { font-size:11px; margin-top:-3px; margin-bottom:8px; min-height:14px; padding-left:2px; }
   .mcptest.ok { color:var(--accent); } .mcptest.bad { color:var(--danger); } .mcptest.run { color:var(--text-muted); }
-  .mcprow.v2 { grid-template-columns:1fr 1.1fr 1.3fr auto auto; }
   .mcprow .tbtn { background:var(--surface-2); border:1px solid var(--border-strong); color:var(--text-secondary); border-radius:7px; padding:7px 10px; cursor:pointer; font-size:12px; }
   .mcprow .tbtn:hover { border-color:var(--accent); color:var(--text-primary); }
   .slash-tbl { width:100%; border-collapse:collapse; }
@@ -1014,13 +1063,33 @@
   .cost-slider::-webkit-slider-thumb { -webkit-appearance:none; width:16px; height:16px; border-radius:50%; background:var(--accent); cursor:pointer; border:2px solid var(--accent-ink); }
   .cost-est { font-size:12px; color:var(--text-muted); }
   .cost-est b { color:var(--text-secondary); }
-  /* light theme — opt-in via data-engram-theme; reuses existing token names so every screen follows */
+  /* light theme - opt-in via data-engram-theme; reuses existing token names so every screen follows */
   html[data-engram-theme="light"] {
     --rail:#e9eaed; --surface-0:#fbfbfc; --surface-1:#f3f4f6; --surface-2:#e9eaed; --surface-3:#dfe1e5;
     --border:rgba(0,0,0,.08); --border-strong:rgba(0,0,0,.14);
+    --border-hi:inset 0 1px 0 rgba(255,255,255,.6);
     --text-primary:#1a1c1f; --text-secondary:#4a4e56; --text-muted:#80858e;
     --hover:rgba(0,0,0,.04); --active:rgba(0,0,0,.07);
     --web-bg:#eaf2fb; --files-bg:#fdf4e3;
+    --accent-soft:rgba(35,150,120,.12); --accent-ink:#0a3f34;
+    /* Lighter elevation so cards don't carry heavy dark shadows on a light surface. */
+    --e1:0 1px 2px rgba(0,0,0,.08), inset 0 1px 0 rgba(255,255,255,.6);
+    --e2:0 2px 8px rgba(0,0,0,.08), inset 0 1px 0 rgba(255,255,255,.6);
+    --e3:0 8px 28px rgba(0,0,0,.12), inset 0 1px 0 rgba(255,255,255,.6);
+    --e4:0 24px 70px rgba(0,0,0,.18), 0 2px 8px rgba(0,0,0,.10);
+    --glow:drop-shadow(0 0 5px rgba(35,150,120,.35));
+  }
+  /* The status bar paints a hardcoded dark gradient (not a var), so override it for light mode -
+     otherwise the bottom strip stays black while the rest of the app is light. */
+  html[data-engram-theme="light"] .statusbar { background:linear-gradient(#f4f5f7, #e7e9ec); }
+  /* Responsive: below 860px collapse the project sidebar so the work surface isn't crushed (the
+     rail nav stays). A drawer toggle is a follow-up; this keeps the app usable on a narrow window. */
+  @media (max-width: 860px) {
+    .app { grid-template-columns: 56px 1fr; }
+    .sidebar { display: none; }
+  }
+  @media (max-width: 620px) {
+    .board { grid-template-columns: 1fr; }
   }
   html[data-engram-density="compact"] .scard { padding:11px 13px; margin-bottom:9px; }
   html[data-engram-density="compact"] .field { margin-bottom:9px; }
@@ -1047,7 +1116,13 @@
   background:var(--surface-3); border:1px solid var(--border); border-radius:var(--r-chip);
   font-size:12px; color:var(--text-secondary); }
 .attach-pill .ap-ic{ display:inline-flex; flex:0 0 auto; color:var(--accent); }
-.attach-pill .ap-ic svg{ width:13px; height:13px; }
+.attach-pill .ap-ic svg{ width:14px; height:14px; }
+.attach-pill .ap-ic.ap-img{ width:22px; height:22px; border-radius:5px; overflow:hidden; margin:-1px 1px -1px -2px; border:1px solid var(--border-strong); }
+.attach-pill .ap-ic.ap-img img{ width:100%; height:100%; object-fit:cover; display:block; }
+/* per-type accent so the icon reads at a glance */
+.attach-pill.ft-pdf .ap-ic{ color:#e5484d; } .attach-pill.ft-doc .ap-ic{ color:var(--web); }
+.attach-pill.ft-sheet .ap-ic{ color:var(--accent); } .attach-pill.ft-code .ap-ic{ color:var(--accent); }
+.attach-pill.ft-image .ap-ic{ color:var(--files); } .attach-pill.ft-text .ap-ic{ color:var(--text-secondary); }
 .attach-pill .ap-name{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text-primary); }
 .attach-pill .ap-meta{ flex:0 0 auto; color:var(--text-muted); font-size:11px; }
 .attach-pill .ap-x{ flex:0 0 auto; display:inline-flex; align-items:center; justify-content:center; width:16px; height:16px;
@@ -1087,6 +1162,40 @@
   .slash-item.sel .slash-t { color:var(--text-primary); }
   .slash-empty { padding:9px 12px; color:var(--text-muted); font-size:12px; }
   @media (prefers-reduced-motion: reduce){ .slash-menu { animation:none; } }
+/* First-run onboarding overlay */
+#onboard[hidden]{display:none}
+.ob-back{position:fixed;inset:0;z-index:200;background:rgba(4,5,7,.62);backdrop-filter:blur(6px);display:flex;align-items:center;justify-content:center;padding:24px;animation:obFade var(--dur-2) var(--ease-out)}
+@keyframes obFade{from{opacity:0}to{opacity:1}}
+.ob-card{width:100%;max-width:520px;background:var(--surface-1);border:1px solid var(--border-strong);border-radius:var(--r-modal);box-shadow:var(--e4);padding:26px 26px 20px;animation:obRise var(--dur-3) var(--ease-spring)}
+@keyframes obRise{from{transform:translateY(10px) scale(.98);opacity:0}to{transform:none;opacity:1}}
+.ob-brand{display:flex;align-items:center;gap:8px;font-weight:600;font-size:13px;color:var(--text-secondary);margin-bottom:14px}
+.ob-dot{width:9px;height:9px;border-radius:50%;background:var(--accent);box-shadow:0 0 8px var(--ring)}
+.ob-h{font-size:19px;font-weight:650;color:var(--text-primary);margin:0 0 6px}
+.ob-sub{font-size:13px;line-height:1.55;color:var(--text-secondary);margin:0 0 16px}
+.ob-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+.ob-prov{display:flex;flex-wrap:wrap;align-items:center;gap:8px;text-align:left;padding:12px 13px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--r-card);cursor:pointer;transition:border-color var(--dur-1),background var(--dur-1);color:var(--text-primary);font:inherit}
+.ob-prov:hover{border-color:var(--ring);background:var(--surface-3)}
+.ob-pdot{width:8px;height:8px;border-radius:50%;flex:none}
+.ob-pname{font-weight:550;font-size:13px;flex:1 1 auto;min-width:0}
+.ob-psub{font-size:11px;color:var(--text-muted);flex-basis:100%;margin-left:16px}
+.ob-foot{margin-top:16px;text-align:center}
+.ob-foot a,.ob-back-link{color:var(--text-muted);font-size:12.5px;text-decoration:none}
+.ob-foot a:hover,.ob-back-link:hover{color:var(--text-secondary);text-decoration:underline}
+.ob-field{margin-bottom:12px}
+.ob-field label{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--text-muted);margin-bottom:5px}
+.ob-field input{width:100%;background:var(--surface-2);border:1px solid var(--border-strong);border-radius:var(--radius);padding:9px 11px;color:var(--text-primary);font:13px var(--sans);box-sizing:border-box}
+.ob-field input:focus{outline:none;border-color:var(--ring);box-shadow:0 0 0 3px var(--accent-soft)}
+.ob-hint{font-size:11.5px;color:var(--text-muted);margin-top:5px}
+.ob-test{font-size:12.5px;min-height:18px;margin:4px 0 12px;color:var(--text-secondary)}
+.ob-test.ok{color:var(--accent)} .ob-test.err{color:var(--danger)}
+.ob-actions{display:flex;align-items:center;gap:9px;margin-top:6px}
+.ob-grow{flex:1}
+/* MCP quick-add templates */
+.mcp-tpl{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:4px 0 6px}
+.mcp-tpl-lbl{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--text-muted);margin-right:3px}
+.sbtn.mini{padding:4px 9px;font-size:12px;line-height:1.2}
+.mcp-tpl-note{font-size:11.5px;color:var(--text-muted);margin:0 0 10px}
+.mcp-tpl-note code{background:var(--surface-2);padding:1px 5px;border-radius:4px;font:11px var(--mono)}
 </style>
 </head>
 <body>
@@ -1097,7 +1206,7 @@
     <div class="spacer"></div>
     <div class="nav tools" id="navTools"></div>
     <button class="railgear" onclick="openCC()" title="Settings (⌘,)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 13a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1.08 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg><span class="lbl">Settings</span></button>
-    <div class="status" id="status">waking…</div>
+    <div class="status" id="status">waking...</div>
   </nav>
   <aside class="sidebar" id="sidebar"></aside>
   <div class="main">
@@ -1114,15 +1223,15 @@
 </div>
 <footer class="statusbar">
   <span class="sb-left"><span class="dot" id="sbDot"></span><span id="sbDaemon" class="mono">engramd</span></span>
-  <span class="sb-center" id="sbSpine"><span class="chip ok" id="ledgerChip" role="status" aria-live="polite" onclick="go('Activity')" title="every action is signed into a hash-chained ledger — click to browse and verify it"><span class="seal"></span>ledger …</span></span>
-  <span class="sb-right"><span id="sbTaint" title="taint policy — the agent can't send your context to the web unless you allow it">no egress</span><span class="chip" id="costChip" role="status" aria-live="polite" title="model spend today">$0.00</span></span>
+  <span class="sb-center" id="sbSpine"><span class="chip ok" id="ledgerChip" role="status" aria-live="polite" onclick="go('Activity')" title="every action is signed into a hash-chained ledger - click to browse and verify it"><span class="seal"></span>ledger ...</span></span>
+  <span class="sb-right"><span id="sbTaint" title="taint policy - the agent can't send your context to the web unless you allow it">no egress</span><span class="chip" id="costChip" role="status" aria-live="polite" title="model spend today">$0.00</span></span>
 </footer>
 <div class="overlay palette" id="palette" hidden onclick="if(event.target===this)closePalette()">
-  <div class="pal-box"><input class="pal-input" id="palInput" placeholder="Search actions, views, settings…" autocomplete="off" spellcheck="false"><div class="pal-list" id="palList"></div></div>
+  <div class="pal-box"><input class="pal-input" id="palInput" placeholder="Search actions, views, settings..." autocomplete="off" spellcheck="false"><div class="pal-list" id="palList"></div></div>
 </div>
 <div class="overlay cc" id="cc" hidden onclick="if(event.target===this)closeCC()">
   <div class="cc-box">
-    <div class="cc-side"><div class="cc-h">Settings</div><input class="cc-search" id="ccSearch" placeholder="Search settings…" autocomplete="off" spellcheck="false" oninput="ccFilter(this.value)"><div class="cc-cats" id="ccCats"></div></div>
+    <div class="cc-side"><div class="cc-h">Settings</div><input class="cc-search" id="ccSearch" placeholder="Search settings..." autocomplete="off" spellcheck="false" oninput="ccFilter(this.value)"><div class="cc-cats" id="ccCats"></div></div>
     <div class="cc-main" id="ccMain"><button class="cc-x" onclick="closeCC()" title="Close (Esc)">✕</button><div id="ccBody"></div></div>
   </div>
 </div>
@@ -1196,13 +1305,13 @@ function notify(msg, kind){
   t.textContent=msg; t.style.opacity='1';
   clearTimeout(t._h); t._h=setTimeout(()=>{ t.style.opacity='0'; }, 4000);
 }
-window.addEventListener('unhandledrejection', e=>{ notify('Couldn’t reach Engram - '+((e.reason&&e.reason.message)||'try again')); });
+window.addEventListener('unhandledrejection', e=>{ notify('Couldn\'t reach Engram - '+((e.reason&&e.reason.message)||'try again')); });
 // Emergency stop: halts every running task at its next step boundary; toggles to Resume.
 let halted=false;
 async function toggleHalt(){
   const next=!halted;
   try{ await J('/v1/halt',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({on:next})}); halted=next; }
-  catch(_){ notify('Couldn’t reach Engram'); return; }
+  catch(_){ notify('Couldn\'t reach Engram'); return; }
   const lbl=document.getElementById('haltLabel'); if(lbl) lbl.textContent = halted?'Resume':'Stop';
   notify(halted?'Emergency stop engaged - running tasks will halt':'Resumed');
 }
@@ -1246,7 +1355,7 @@ async function poll(){
       if(_lastLedgerN!==null && v.entries!==_lastLedgerN && spine){ spine.classList.remove('flash'); void spine.offsetWidth; spine.classList.add('flash'); }
       _lastLedgerN=v.entries;
     } else { lc.className='chip bad'; lc.textContent='⚠ tamper detected';
-      document.getElementById('banner').innerHTML='<div class="banner" role="alert">Tamper detected - the audit chain doesn’t verify. Showing the last good state.</div>'; }
+      document.getElementById('banner').innerHTML='<div class="banner" role="alert">Tamper detected - the audit chain doesn\'t verify. Showing the last good state.</div>'; }
     document.getElementById('costChip').textContent='$'+(m.cost_usd||0).toFixed(4);
     const wasOffline=state.offline; state.offline = !!h.offline;
     // The offline banner is baked into a view at render time, so re-render when it flips - but
@@ -1265,7 +1374,7 @@ async function poll(){
 // ---- Tasks board ----
 async function loadTasks(){ state.tasks = await J('/v1/tasks'); }
 const STATUS_COLS = { todo:'todo', doing:'doing', failed:'done', done:'done', scheduled:'todo' };
-function offlineNotice(){ return state.offline ? '<div class="offline" role="status">Running in offline demo mode - add a model key to think for real.</div>' : ''; }
+function offlineNotice(){ return state.offline ? '<div class="offline" role="status">Running in offline demo mode - <a href="#" onclick="engramOnboard();return false" style="color:inherit;font-weight:600;text-decoration:underline">connect a model</a> to think for real.</div>' : ''; }
 
 function card(t){
   const running = t.status==='doing';
@@ -1273,7 +1382,7 @@ function card(t){
   // every finished run carries a glass-box receipt chip - its signed ledger slice.
   const rcpt = t.run ? `<span class="rcpt-chip" title="open the signed receipt for this run" onclick="openTaskReceipt('${t.id}',event)">◇ receipt</span>` : '';
   let foot='';
-  if(running) foot=`<div class="meta"><span class="pulse"></span> ${esc(t.progress||'thinking…')}</div><div class="bar"></div>`;
+  if(running) foot=`<div class="meta"><span class="pulse"></span> ${esc(t.progress||'thinking...')}</div><div class="bar"></div>`;
   else if(t.status==='done' && t.run) foot=`<div class="meta"><span class="check">✓</span> ${(t.run.tokens_in+t.run.tokens_out)} tok · $${(t.run.cost_usd||0).toFixed(4)}${t.schedule_id?' · ⟳':''}${rcpt}</div>`;
   else if(t.status==='failed') foot=`<div class="meta"><span class="xmark">✕</span> stopped${rcpt}</div>`;
   else foot=`<div class="meta">${tags||'<span class="muted">queued</span>'}</div>`;
@@ -1290,7 +1399,7 @@ function renderBoard(){
   if(!window._agentsLoaded){ window._agentsLoaded=true; J('/v1/agents').then(a=>{ AGENTS=a||[]; if(state.route==='Tasks') renderBoard(); }).catch(()=>{}); }
   const comp = document.getElementById('composer');
   const cv = comp?.value || '';                         // preserve in-progress typing
-  const wasFocused = document.activeElement === comp;   // …and focus + caret
+  const wasFocused = document.activeElement === comp;   // ...and focus + caret
   const selStart = comp?.selectionStart, selEnd = comp?.selectionEnd;
   const cols={todo:[],doing:[],done:[]};
   state.tasks.forEach(t=>cols[STATUS_COLS[t.status]||'todo'].push(t));
@@ -1336,7 +1445,7 @@ function composerHtml(ctx){
   return `<div class="composer">
     <div id="slashMenu" class="slash-menu" hidden></div>
     <div class="composer-top">${modelpickHtml()}</div>
-    ${pills}<textarea id="composer" data-ctx="${ctx}" rows="1" placeholder="${ctx==='chat'?'Message Engram…':'Tell Engram what to do…'}"></textarea>
+    ${pills}<textarea id="composer" data-ctx="${ctx}" rows="1" placeholder="${ctx==='chat'?'Message Engram...':'Tell Engram what to do...'}"></textarea>
     <div class="hint">${hint}<div class="comp-actions">${attachCtl}<button id="voiceMic" class="voice-mic" type="button" aria-pressed="false" aria-label="Dictate" title="Dictate (push to talk)" onclick="voiceToggleDictation(this)">${voiceMicSvg()}</button>${sendBtn}</div></div></div>`;
 }
 function prefill(t){ const c=document.getElementById('composer'); if(c){ c.value=t; c.focus(); } }
@@ -1391,7 +1500,7 @@ async function runTaskLive(id){
   liveRunId=id;
   const body=document.getElementById('pBody'); if(!body){ liveRunId=null; return; }
   body.innerHTML = `<div class="liverun">
-    <div class="lr-head"><span class="pulse"></span><span id="lrStatus">Engram is working…</span><span id="lrMeter" class="lr-meter"></span></div>
+    <div class="lr-head"><span class="pulse"></span><span id="lrStatus">Engram is working...</span><span id="lrMeter" class="lr-meter"></span></div>
     <div id="lrSteps" class="lr-steps"></div>
     <div id="lrAnswer" class="lr-answer"></div></div>`;
   const stepsEl=document.getElementById('lrSteps');
@@ -1424,7 +1533,7 @@ async function runTaskLive(id){
           document.querySelector('.lr-head .pulse')?.remove();
           const st=document.getElementById('lrStatus'); if(st) st.textContent=(t&&t.status==='done')?'Done':'Stopped';
           if(t&&t.run){ lrTokens=(t.run.tokens_in||0)+(t.run.tokens_out||0); if(typeof t.run.cost_usd==='number') lrCost=t.run.cost_usd; }
-          if(stepsEl && !stepsEl.children.length) stepsEl.innerHTML='<div class="lr-none">No tools were needed — Engram answered directly.</div>';
+          if(stepsEl && !stepsEl.children.length) stepsEl.innerHTML='<div class="lr-none">No tools were needed - Engram answered directly.</div>';
           if(t&&t.run&&t.run.answer){ const a=document.getElementById('lrAnswer'); if(a) a.innerHTML=mdToHtml(t.run.answer); }
           await finish();
           setTimeout(()=>{ if(panelId===id) openTask(id, false); }, 2200);   // settle into the full receipt
@@ -1433,12 +1542,12 @@ async function runTaskLive(id){
       }
     }
     await finish();   // stream ended without a terminal event (close / partial final frame): still clear the timer and unstick liveRunId
-  }catch(e){ const st=document.getElementById('lrStatus'); if(st) st.textContent='Couldn’t run — '+(e.message||'error'); document.querySelector('.lr-head .pulse')?.remove(); await finish(); }
+  }catch(e){ const st=document.getElementById('lrStatus'); if(st) st.textContent='Couldn\'t run - '+(e.message||'error'); document.querySelector('.lr-head .pulse')?.remove(); await finish(); }
 }
 // Dry-run preview: shows what the agent would do without executing any side-effecting tool.
 async function previewTask(id){
   const t=state.tasks.find(x=>x.id===id); if(!t) return;
-  const out=document.getElementById('previewOut'); if(out) out.textContent='Previewing…';
+  const out=document.getElementById('previewOut'); if(out) out.textContent='Previewing...';
   const prompt=(t.detail&&t.detail.trim())?(t.title+'\n\n'+t.detail):t.title;
   try{
     const run=await J('/v1/agent',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({task:prompt,dry_run:true})});
@@ -1566,7 +1675,7 @@ async function openTask(id, fromPoll){
     }).join('');
     html+=`<div class="muted" style="font-size:11px;margin-bottom:6px">audit trail - signed</div>${stepRows||'<div class="muted">no tools used</div>'}`;
     html+=`<div class="muted" style="font-size:11px;margin-top:12px;font-family:var(--mono)">head ${t.run.ledger_head_hash.slice(0,12)}</div>`;
-  } else if(t.status==='doing'){ html+=`<div class="muted">${esc(t.progress||'running…')}</div>`; }
+  } else if(t.status==='doing'){ html+=`<div class="muted">${esc(t.progress||'running...')}</div>`; }
   html+=`<div id="schedbox" style="margin-top:14px"><div class="muted" style="font-size:11px;margin-bottom:4px">repeat this task</div>
     <div class="row"><input id="pwhen" placeholder="every weekday at 9am" oninput="schedPreview('pwhen','pwhenprev')"><button onclick="scheduleTask('${id}')">Schedule</button></div>
     <div id="pwhenprev" class="sub"></div></div>`;
@@ -1619,7 +1728,7 @@ async function newSession(open){
     WS.byId[s.id]=s; WS.sessions.unshift({id:s.id,project_id:s.project_id,title:s.title,fav:s.fav,updated_ms:s.updated_ms,messages:0}); WS.activeSession=s.id; renderSidebar();
     if(open!==false) go('Chat');   // when open===false the caller (renderChat) renders, so don't re-enter
     return s;
-  }catch(e){ notify('Couldn’t start a chat — '+e.message); return null; }
+  }catch(e){ notify('Couldn\'t start a chat - '+e.message); return null; }
 }
 async function openSession(id){
   WS.activeSession=id;
@@ -1644,19 +1753,19 @@ function toggleProjMenu(){ projMenuOpen=!projMenuOpen; renderSidebar(); }
 async function deleteProject(){
   projMenuOpen=false; const p=curProject();
   if(WS.projects.length<=1){ renderSidebar(); return; }
-  if(!await askConfirm({title:'Delete project?',message:'Delete “'+p.name+'” and all its chats? This cannot be undone.',ok:'Delete',danger:true})){ renderSidebar(); return; }
+  if(!await askConfirm({title:'Delete project?',message:'Delete "'+p.name+'" and all its chats? This cannot be undone.',ok:'Delete',danger:true})){ renderSidebar(); return; }
   try{ await J('/v1/projects/'+encodeURIComponent(p.id),{method:'DELETE'});
     WS.projects=WS.projects.filter(x=>x.id!==p.id); WS.byId={};
     WS.activeProject=(WS.projects[0]||{id:'personal'}).id; WS.activeSession=null;
     await loadSessions(); WS.activeSession=(WS.sessions[0]||{}).id||null;
     renderSidebar(); if(state.route==='Chat') renderChat(); notify('Project deleted','ok');
-  }catch(e){ notify('Couldn’t delete — '+e.message); }
+  }catch(e){ notify('Couldn\'t delete - '+e.message); }
 }
 async function pickProject(id){ projMenuOpen=false; WS.activeProject=id; WS.activeSession=null; WS.byId={}; renderSidebar();
   await loadSessions(); WS.activeSession=(WS.sessions[0]||{}).id||null; renderSidebar(); if(state.route==='Chat') renderChat(); }
 async function addProject(){ projMenuOpen=false; const n=await askInput({title:'New project',label:'Sessions, persona, and its own settings live inside a project.',placeholder:'e.g. Apex, Research, Personal',ok:'Create'}); if(!(n&&n.trim())){ renderSidebar(); return; }
   try{ const p=await J('/v1/projects',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name:n.trim()})}); WS.projects.push(p); pickProject(p.id); }
-  catch(e){ notify('Couldn’t create project — '+e.message); }
+  catch(e){ notify('Couldn\'t create project - '+e.message); }
 }
 function openProjPersona(){
   projMenuOpen=false; renderSidebar();
@@ -1664,8 +1773,8 @@ function openProjPersona(){
   document.getElementById('projModal').hidden=false;
   document.getElementById('projModalBody').innerHTML=`
     <h2>${esc(p.name)} · persona</h2>
-    <div class="sub">Standing instructions for this project's chats — they give the project its own voice. Formal and compliance-aware for a client; casual for personal. Applies to the very next message; other projects are unaffected.</div>
-    <div class="field"><textarea id="projPersona" rows="8" placeholder="e.g. You are formal and precise. Cite sources. Never speculate about regulated data — say when you're unsure.">${esc(p.persona||'')}</textarea></div>
+    <div class="sub">Standing instructions for this project's chats - they give the project its own voice. Formal and compliance-aware for a client; casual for personal. Applies to the very next message; other projects are unaffected.</div>
+    <div class="field"><textarea id="projPersona" rows="8" placeholder="e.g. You are formal and precise. Cite sources. Never speculate about regulated data - say when you're unsure.">${esc(p.persona||'')}</textarea></div>
     <div class="sactions"><button class="sbtn" onclick="closeProjModal()">Cancel</button><span class="grow"></span><button class="sbtn primary" onclick="saveProjPersona()">Save</button></div>`;
   setTimeout(()=>document.getElementById('projPersona')?.focus(),30);
 }
@@ -1674,8 +1783,8 @@ async function saveProjPersona(){
   const p=curProject(), persona=document.getElementById('projPersona').value;
   try{ const up=await J('/v1/projects/'+encodeURIComponent(p.id),{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({persona})});
     const i=WS.projects.findIndex(x=>x.id===p.id); if(i>=0) WS.projects[i]=up;
-    closeProjModal(); renderSidebar(); notify('Project persona saved — it shapes the next message','ok'); }
-  catch(e){ notify('Save failed — '+e.message); }
+    closeProjModal(); renderSidebar(); notify('Project persona saved - it shapes the next message','ok'); }
+  catch(e){ notify('Save failed - '+e.message); }
 }
 function renderSidebar(){
   const el=document.getElementById('sidebar'); if(!el) return;
@@ -1685,14 +1794,14 @@ function renderSidebar(){
       <button class="${s.fav?'star':''}" title="${s.fav?'Unfavorite':'Favorite'}" onclick="favSession('${s.id}',event)">${s.fav?'★':'☆'}</button>
       <button title="Rename" onclick="renameSession('${s.id}',event)">✎</button>
       <button title="Delete" onclick="deleteSession('${s.id}',event)">✕</button></span></div>`;
-  const menu = projMenuOpen ? `<div class="proj-menu">${WS.projects.map(p=>`<div onclick="pickProject('${p.id}')"><span class="proj-dot"></span>${esc(p.name)}${(p.persona&&p.persona.trim())?'<span style="margin-left:auto;color:var(--text-muted);font:10px var(--mono)">persona</span>':''}</div>`).join('')}<div class="add" onclick="openProjPersona()">✎ Edit “${esc(curProject().name)}” persona</div>${WS.projects.length>1?`<div class="add" onclick="deleteProject()" style="color:var(--danger)">🗑 Delete “${esc(curProject().name)}”</div>`:''}<div class="add" onclick="addProject()">+ New project</div></div>` : '';
+  const menu = projMenuOpen ? `<div class="proj-menu">${WS.projects.map(p=>`<div onclick="pickProject('${p.id}')"><span class="proj-dot"></span>${esc(p.name)}${(p.persona&&p.persona.trim())?'<span style="margin-left:auto;color:var(--text-muted);font:10px var(--mono)">persona</span>':''}</div>`).join('')}<div class="add" onclick="openProjPersona()">✎ Edit "${esc(curProject().name)}" persona</div>${WS.projects.length>1?`<div class="add" onclick="deleteProject()" style="color:var(--danger)">🗑 Delete "${esc(curProject().name)}"</div>`:''}<div class="add" onclick="addProject()">+ New project</div></div>` : '';
   el.innerHTML = `
     <button class="newchat" onclick="newSession()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg> New chat</button>
     <div class="proj"><button class="proj-btn" onclick="toggleProjMenu()"><span class="proj-dot"></span><span class="proj-name">${esc(proj.name)}</span><span class="proj-caret">⌄</span></button>${menu}</div>
     <div class="ses-scroll">
       ${favs.length?`<div class="ses-group">★ Favorites</div>${favs.map(row).join('')}`:''}
       <div class="ses-group">Chats</div>
-      ${rest.length?rest.map(row).join(''):'<div class="ses-empty">No chats yet — start one above. Engram remembers across all of them.</div>'}
+      ${rest.length?rest.map(row).join(''):'<div class="ses-empty">No chats yet - start one above. Engram remembers across all of them.</div>'}
     </div>`;
 }
 
@@ -1708,7 +1817,7 @@ async function renderChat(){
   ARTS.open=false; ARTS.current=null; ARTS._sig='';
   document.getElementById('view').innerHTML = `<div class="chat-shell"><div class="chat">${offlineNotice()}
     <div class="feed" id="feed"></div>${composerHtml('chat')}</div><div class="art-pane" id="artPane"></div></div>`;
-  document.getElementById('composer').placeholder='Ask Engram anything…';
+  document.getElementById('composer').placeholder='Ask Engram anything...';
   wireComposer(); paintFeed();
 }
 // ---- markdown + code rendering for replies ----
@@ -1760,11 +1869,25 @@ function mdToHtml(raw){
   const blocks=[];
   const text=String(raw).replace(/```([\w+#-]*)\n?([\s\S]*?)```/g,(m,lang,code)=>{ blocks.push(codeBlock(code.replace(/\n$/,''),lang)); return ` B${blocks.length-1} `; });
   const lines=text.split('\n'); const out=[]; let i=0;
-  const isBlock=l=>/^\s*$/.test(l)||/^ B\d+ $/.test(l)||/^#{1,4}\s/.test(l)||/^\s*([-*]|\d+\.)\s+/.test(l)||/^\s*>\s?/.test(l)||/^---+\s*$/.test(l);
+  // GFM table helpers: a header row, a |---|:--:|---| separator, then body rows.
+  const tIsSep=l=>/^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$/.test(l);
+  const tIsRow=l=>/\|/.test(l)&&/\S/.test(l);
+  const tCells=l=>l.replace(/^\s*\|/,'').replace(/\|\s*$/,'').split('|').map(c=>c.trim());
+  const isBlock=l=>/^\s*$/.test(l)||/^ B\d+ $/.test(l)||/^#{1,4}\s/.test(l)||/^\s*([-*]|\d+\.)\s+/.test(l)||/^\s*>\s?/.test(l)||/^---+\s*$/.test(l)||tIsRow(l);
   while(i<lines.length){
     const ln=lines[i];
     const bm=ln.match(/^ B(\d+) $/); if(bm){ out.push(blocks[+bm[1]]); i++; continue; }
     if(/^\s*$/.test(ln)){ i++; continue; }
+    if(tIsRow(ln)&&i+1<lines.length&&tIsSep(lines[i+1])){
+      const head=tCells(ln), sep=tCells(lines[i+1]);
+      const al=sep.map(s=>{const l=s.startsWith(':'),r=s.endsWith(':');return l&&r?'center':r?'right':'left';});
+      i+=2; const body=[];
+      while(i<lines.length&&tIsRow(lines[i])&&!tIsSep(lines[i])){ body.push(tCells(lines[i])); i++; }
+      const th=head.map((h,c)=>`<th style="text-align:${al[c]||'left'}">${mdInline(esc(h))}</th>`).join('');
+      const tb=body.map(r=>`<tr>${head.map((_,c)=>`<td style="text-align:${al[c]||'left'}">${mdInline(esc(r[c]||''))}</td>`).join('')}</tr>`).join('');
+      out.push(`<div class="md-table-wrap"><table class="md-table"><thead><tr>${th}</tr></thead><tbody>${tb}</tbody></table></div>`);
+      continue;
+    }
     const hm=ln.match(/^(#{1,4})\s+(.*)$/); if(hm){ out.push(`<div class="md-h md-h${hm[1].length}">${mdInline(esc(hm[2]))}</div>`); i++; continue; }
     if(/^---+\s*$/.test(ln)){ out.push('<hr>'); i++; continue; }
     if(/^\s*>\s?/.test(ln)){ const buf=[]; while(i<lines.length&&/^\s*>\s?/.test(lines[i])){ buf.push(mdInline(esc(lines[i].replace(/^\s*>\s?/,'')))); i++; } out.push(`<blockquote>${buf.join('<br>')}</blockquote>`); continue; }
@@ -1797,7 +1920,7 @@ function paintFeed(){
       ? `<div class="ribbon"><span class="rb-lbl">grounded on ${refs.length}</span>${refs.slice(0,6).map(r=>{const reg=BRAIN_REGIONS[r.region]||BRAIN_REGIONS.semantic; return `<span class="recall clk" style="--lc:${reg.color}" title="${escAttr(r.text)}" onclick="recallOpen(${r.id|0})"><span class="rg">◇</span> ${esc((r.text||'').replace(/\s+/g,' ').slice(0,48))}</span>`;}).join('')}</div>`
       : (m.recalled&&m.recalled.length)?`<div class="ribbon">${m.recalled.slice(0,5).map(r=>`<span class="recall" title="${escAttr(r)}"><span class="rg">◇</span> ${esc((r||'').replace(/\s+/g,' ').slice(0,54))}</span>`).join('')}</div>`:'';
     const learned=(m.learned&&m.learned.length)?`<div class="learned">learned about you · ${m.learned.map(esc).join(' · ')}</div>`:'';
-    const body = m.text ? (mdToHtml(m.text) + (m.streaming?'<span class="caret"></span>':'')) : (m.streaming?thinkingDots:'…');
+    const body = m.text ? (mdToHtml(m.text) + (m.streaming?'<span class="caret"></span>':'')) : (m.streaming?thinkingDots:'...');
     return `<div><div class="msg engram"${m.streaming?' id="streamMsg"':''}>${body}</div>${ribbon}${learned}</div>`;
   }).join('') || chatWelcome();
   artsAfterPaint();   // detect substantial code/doc blocks, inject "Open in canvas" chips, sync the pane
@@ -1853,13 +1976,13 @@ async function chatSay(text, attachments){
         const live = WS.activeSession===sid;
         if(ev==='token'){ msg.text+=data; if(live) streamTick(msg); }
         else if(ev==='done'){ try{const d=JSON.parse(data); if(d.reply) msg.text=d.reply; msg.recalled=d.recalled; msg.recalled_refs=d.recalled_refs; msg.learned=d.learned;}catch(_){} if(live) paintFeed(); }
-        else if(ev==='error'){ msg.text='(couldn’t reach Engram - '+data+')'; if(live) paintFeed(); }
+        else if(ev==='error'){ msg.text='(couldn\'t reach Engram - '+data+')'; if(live) paintFeed(); }
       }
     }
     if(!msg.text) msg.text='(no reply)';
     msg.streaming=false; if(WS.activeSession===sid) paintFeed();
   } catch(e){
-    msg.text=msg.text||'(couldn’t reach Engram - '+(e.message||'try again')+')'; msg.streaming=false; if(WS.activeSession===sid) paintFeed();
+    msg.text=msg.text||'(couldn\'t reach Engram - '+(e.message||'try again')+')'; msg.streaming=false; if(WS.activeSession===sid) paintFeed();
   }
 }
 
@@ -1870,11 +1993,15 @@ const MODEL_META = {
   'gpt-4o-mini':'fast · cheap', 'gpt-4o':'capable', 'o4-mini':'reasoning',
   'anthropic/claude-3.5-sonnet':'balanced', 'openai/gpt-4o-mini':'fast · cheap', 'meta-llama/llama-3.1-70b-instruct':'open', 'google/gemini-flash-1.5':'fast',
   'llama3.1':'local', 'qwen2.5':'local', 'mistral':'local', 'phi3':'local',
+  'llama-3.3-70b-versatile':'fast · capable', 'llama-3.1-8b-instant':'fast · cheap', 'deepseek-r1-distill-llama-70b':'reasoning',
+  'deepseek-chat':'capable', 'deepseek-reasoner':'reasoning', 'mistral-large-latest':'capable', 'codestral-latest':'code',
+  'grok-2-latest':'capable', 'gemini-2.0-flash':'fast', 'gemini-1.5-pro':'capable',
+  'llama-3.1-sonar-large-128k-online':'web-grounded',
 };
-const PROVIDER_COLOR = { anthropic:'#45c8a8', openai:'#85b7eb', openrouter:'#b58cff', ollama:'#e0a23c', mock:'#8a9099' };
+const PROVIDER_COLOR = { anthropic:'#45c8a8', openai:'#85b7eb', openrouter:'#b58cff', groq:'#f55036', deepseek:'#6b8afe', mistral:'#fa813b', together:'#4d8bff', xai:'#9aa0a6', perplexity:'#34b3c4', gemini:'#5a92f4', ollama:'#e0a23c', lmstudio:'#a98cff', vllm:'#ffb000', llamacpp:'#9aa0a6', mock:'#8a9099' };
 function modelpickHtml(){
   const m=(CFG&&CFG.model_in_use)||'choose model';
-  return `<span class="mp-wrap" style="position:relative"><button class="modelpick" type="button" onclick="toggleModelMenu(event)" title="Switch model (⌘M)"><span class="mp-dot"></span>${esc(m)} ⌄</button><span id="modelMenu"></span></span>`;
+  return `<span class="mp-wrap" style="position:relative"><button class="modelpick" type="button" onclick="toggleModelMenu(event)" title="Switch model (⌘M)"><span class="mp-dot"></span><span class="mp-name">${esc(m)}</span><svg class="mp-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></button><span id="modelMenu"></span></span>`;
 }
 function toggleModelMenu(e){ if(e) e.stopPropagation(); modelMenuOpen=!modelMenuOpen; mmFilter=''; mmSel=0; renderModelMenu(); }
 function closeModelMenu(){ modelMenuOpen=false; const el=document.getElementById('modelMenu'); if(el) el.innerHTML=''; }
@@ -1893,10 +2020,15 @@ function renderModelMenu(){
     }
   }
   mmSelList=sel; if(mmSel>=sel.length) mmSel=Math.max(0,sel.length-1);
+  const eff=(CFG&&CFG.provider&&CFG.provider.effort)||'';
+  const effSeg=[['','Auto'],['low','Low'],['medium','Medium'],['high','High']].map(([v,l])=>
+    `<button class="${eff===v?'on':''}" type="button" onclick="setModelEffort('${v}')">${l}</button>`).join('');
   el.innerHTML=`<div class="model-menu">
-    <input class="mm-search" id="mmSearch" placeholder="Search models…" value="${escAttr(mmFilter)}" oninput="mmFilterInput(this.value)" onkeydown="mmKey(event)">
+    <input class="mm-search" id="mmSearch" placeholder="Search models..." value="${escAttr(mmFilter)}" oninput="mmFilterInput(this.value)" onkeydown="mmKey(event)">
     <div class="mm-list">${rows||'<div class="mm-empty">no models match</div>'}</div>
-    <div class="mm-foot" onclick="closeModelMenu();openCC('gateways')">Configure providers &amp; keys…</div></div>`;
+    <div class="mm-effort" title="How hard the model thinks before answering. Applied only to models that support it (OpenAI reasoning models, Claude extended thinking).">
+      <span class="mm-eff-lbl">Reasoning effort</span><div class="mm-seg">${effSeg}</div></div>
+    <div class="mm-foot" onclick="closeModelMenu();openCC('gateways')">Configure providers &amp; keys...</div></div>`;
   setTimeout(()=>{ const s=document.getElementById('mmSearch'); if(s&&document.activeElement!==s) s.focus(); },0);
 }
 function mmSetSel(i){ mmSel=i; document.querySelectorAll('#modelMenu .mm-i').forEach(el=>el.classList.toggle('sel', +el.dataset.i===i)); }
@@ -1908,13 +2040,22 @@ function mmKey(e){
   else if(e.key==='Escape'){ e.preventDefault(); closeModelMenu(); }
 }
 function mmScrollSel(){ const el=document.querySelector(`#modelMenu .mm-i[data-i="${mmSel}"]`); if(el) el.scrollIntoView({block:'nearest'}); }
+// Set the reasoning effort applied to model calls. The daemon maps it model-awarely (OpenAI
+// reasoning_effort / Claude extended thinking) and ignores it on models that do not support it.
+async function setModelEffort(v){
+  try{
+    const res=await J('/v1/config',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({provider:{effort:v}})});
+    CFG=res; renderModelMenu();
+    notify(v?('Reasoning effort: '+v):'Reasoning effort: model default','ok');
+  }catch(e){ notify('Couldn\'t set effort - '+((e&&e.message)||'error')); }
+}
 async function pickModel(m){
   closeModelMenu();
   try{ const res=await J('/v1/config',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({provider:{model:m}})}); CFG=res;
     // patch the pill in place - a full renderChat() would lose scroll position and the feed
-    document.querySelectorAll('.modelpick').forEach(b=>{ b.innerHTML=`<span class="mp-dot"></span>${esc(m)} ⌄`; });
+    document.querySelectorAll('.modelpick').forEach(b=>{ b.innerHTML=`<span class="mp-dot"></span><span class="mp-name">${esc(m)}</span><svg class="mp-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>`; });
     notify('Model · '+m,'ok');
-  }catch(e){ notify('Couldn’t switch model — '+e.message); }
+  }catch(e){ notify('Couldn\'t switch model - '+e.message); }
 }
 document.addEventListener('click', e=>{ if(modelMenuOpen && !e.target.closest('.mp-wrap')) closeModelMenu(); });
 
@@ -1944,14 +2085,14 @@ async function renderMemory(){
         <div class="brain-legend">${legend}<button class="brain-teach" onclick="openTeach()">+ Teach</button></div>
       </div>
       <div class="brain-foot"><div class="brain-recall">
-        <input id="brainQ" placeholder="Recall a memory — try a paraphrase…" onkeydown="if(event.key==='Enter')brainRecall()">
+        <input id="brainQ" placeholder="Recall a memory - try a paraphrase..." onkeydown="if(event.key==='Enter')brainRecall()">
         <button onclick="brainRecall()">Recall</button><span id="brainNote" class="brain-note"></span>
       </div></div>
     </div>
     <div class="mind-panel" id="mindPanel">
       <div class="mind-h">
         <div class="mt"><span>◉ Consciousness <b id="mindVer"></b></span><button class="mind-toggle" onclick="mindToggle()" title="Show / hide" aria-label="Toggle consciousness panel">▾</button></div>
-        <div class="ms">The working memory loaded into every answer — distilled from your brain, editable, signed.</div>
+        <div class="ms">The working memory loaded into every answer - distilled from your brain, editable, signed.</div>
       </div>
       <div class="mind-lines" id="mindLines"></div>
       <div class="mind-foot">
@@ -1962,7 +2103,7 @@ async function renderMemory(){
     </div>
     <div class="brain-tip" id="brainTip" hidden></div>
     <div class="brain-hint">drag to orbit · scroll to zoom · click a memory to open it</div>
-    ${(data.nodes||[]).length?'':'<div class="brain-empty"><b>The brain is empty.</b><span>Engram grows this graph as you talk — or teach it a fact now.</span></div>'}
+    ${(data.nodes||[]).length?'':'<div class="brain-empty"><b>The brain is empty.</b><span>Engram grows this graph as you talk - or teach it a fact now.</span></div>'}
   </div>`;
   brainInit(data.nodes||[]);
   renderMind();
@@ -2059,6 +2200,14 @@ function brainDraw(){
     return [B.cx+x1*B.R*persp*c.zoom, B.cy+y2*B.R*persp*c.zoom, z2, persp*c.zoom]; };
   for(const n of B.nodes){ const p=pr(n.x,n.y,n.z); n.sx=p[0]; n.sy=p[1]; n.depth=p[2]; n.ps=p[3]; }
   const ap={}; for(const k in BRAIN_ANCH){ const a=BRAIN_ANCH[k]; ap[k]=pr(a[0],a[1],a[2]); }
+  // Soft region lobes: a faint, region-coloured field behind each cluster with a very light boundary
+  // ring, so the memories sit inside glowing brain-like zones rather than empty black space.
+  for(const k in BRAIN_REGIONS){ const a=ap[k], reg=BRAIN_REGIONS[k]; if(B.dim.has(k)) continue;
+    const rad=Math.max(46, B.R*0.58*a[3]);
+    const g=ctx.createRadialGradient(a[0],a[1],rad*0.12,a[0],a[1],rad);
+    g.addColorStop(0, hexA(reg.color,0.13)); g.addColorStop(0.55, hexA(reg.color,0.05)); g.addColorStop(1, hexA(reg.color,0));
+    ctx.fillStyle=g; ctx.beginPath(); ctx.arc(a[0],a[1],rad,0,7); ctx.fill();
+    ctx.strokeStyle=hexA(reg.color,0.09); ctx.lineWidth=1; ctx.beginPath(); ctx.arc(a[0],a[1],rad*0.9,0,7); ctx.stroke(); }
   // hover: nearest projected node to the cursor (reliable now that nodes are settled)
   if(B.mouse.x>=0 && !(B.drag&&B.drag.moved>4)){ let best=1e9, hv=null;
     for(const n of B.nodes){ const dx=n.sx-B.mouse.x, dy=n.sy-B.mouse.y, d2=dx*dx+dy*dy, rr=(n.r*n.ps+7);
@@ -2066,8 +2215,21 @@ function brainDraw(){
     B.hover=hv;
   } else B.hover=null;
   const order=[...B.nodes].sort((a,b)=>a.depth-b.depth);   // back-to-front (painter's)
+  // Synapses: faint connections from each node to its nearest same-region neighbours, computed once
+  // and cached, so the cloud reads as a connected neural network rather than loose dots. A light
+  // tether to the region anchor keeps each cluster legible.
+  if(!B.edges){ B.edges=[]; const N=B.nodes;
+    for(let i=0;i<N.length;i++){ const ni=N[i]; const near=[];
+      for(let j=0;j<N.length;j++){ if(j===i||N[j].reg!==ni.reg) continue; const dx=ni.x-N[j].x,dy=ni.y-N[j].y,dz=ni.z-N[j].z; near.push([dx*dx+dy*dy+dz*dz,j]); }
+      near.sort((p,q)=>p[0]-q[0]); for(let k=0;k<Math.min(2,near.length);k++){ const j=near[k][1]; if(j>i) B.edges.push([i,j,ni.reg]); } }
+  }
+  for(const [i,j,rk] of B.edges){ const na=B.nodes[i], nb=B.nodes[j], reg=BRAIN_REGIONS[rk];
+    const dim=B.dim.has(rk)||(B.matched&&!(B.matched.has(na.id)&&B.matched.has(nb.id)));
+    const dep=(na.depth+nb.depth)/2, da=0.55+0.45*((dep+1.2)/2.4);
+    ctx.strokeStyle=hexA(reg.color, dim?0.03:0.18*da); ctx.lineWidth=Math.max(0.5, 0.85*Math.min(na.ps,nb.ps));
+    ctx.beginPath(); ctx.moveTo(na.sx,na.sy); ctx.lineTo(nb.sx,nb.sy); ctx.stroke(); }
   for(const n of order){ const a=ap[n.reg], reg=BRAIN_REGIONS[n.reg], dim=B.dim.has(n.reg)||(B.matched&&!B.matched.has(n.id));
-    ctx.strokeStyle=hexA(reg.color, dim?0.02:0.05); ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(n.sx,n.sy); ctx.lineTo(a[0],a[1]); ctx.stroke(); }
+    ctx.strokeStyle=hexA(reg.color, dim?0.015:0.04); ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(n.sx,n.sy); ctx.lineTo(a[0],a[1]); ctx.stroke(); }
   for(const k in BRAIN_REGIONS){ const a=ap[k], reg=BRAIN_REGIONS[k], dim=B.dim.has(k);
     ctx.beginPath(); ctx.arc(a[0],a[1],5*a[3],0,7); ctx.fillStyle=hexA(reg.color,dim?0.3:0.9); ctx.fill();
     ctx.fillStyle=hexA(reg.color,dim?0.3:0.72); ctx.font='600 11px ui-sans-serif,system-ui'; ctx.textAlign='center'; ctx.fillText(reg.label.toUpperCase(), a[0], a[1]-13); }
@@ -2076,7 +2238,11 @@ function brainDraw(){
     const da=0.42+0.58*((n.depth+1.2)/2.4), rr=Math.max(1.3, n.r*grow*Math.min(2,n.ps)*0.82);
     if(b<1){ ctx.beginPath(); ctx.arc(n.sx,n.sy, rr+4+(1-b)*16,0,7); ctx.strokeStyle=hexA(reg.color,0.5*(1-b)); ctx.lineWidth=1.5; ctx.stroke(); }
     if(hit||n===B.hover){ const pulse=hit?(0.55+0.45*Math.sin(B.t*0.12)):1; ctx.beginPath(); ctx.arc(n.sx,n.sy,rr+5+(hit?3*pulse:2),0,7); ctx.fillStyle=hexA(reg.color,0.16*(hit?pulse:1)); ctx.fill(); }
+    // Neural glow: each node casts a soft halo in its region colour, brighter for hot/active and
+    // matched nodes, so the cloud reads as luminous synapses rather than flat dots.
+    if(!dim){ ctx.shadowColor=reg.color; ctx.shadowBlur=(hit?15:(n.tier==='hot'?10:5))*Math.min(1.6,n.ps); } else { ctx.shadowBlur=0; }
     ctx.beginPath(); ctx.arc(n.sx,n.sy,rr,0,7); ctx.fillStyle=hexA(reg.color,(dim?0.1:n.tierA)*da); ctx.fill();
+    ctx.shadowBlur=0;
     if(n.tier==='hot'&&!dim){ ctx.strokeStyle=hexA(reg.color,0.5*da); ctx.lineWidth=1; ctx.stroke(); }
     if(n===B.hover||n===B.sel){ ctx.strokeStyle='#fff'; ctx.lineWidth=1.4; ctx.beginPath(); ctx.arc(n.sx,n.sy,rr+2.5,0,7); ctx.stroke(); } }
   brainTip();
@@ -2156,7 +2322,7 @@ async function renderMind(){
     const src = isMem
       ? `<span class="ml-src mem" onclick="mindFocus(${(l.source.id|0)})" title="Open the source memory in the brain">◇ #${l.source.id}</span>`
       : `<span class="ml-src">✎ yours</span>`;
-    const pin = l.pinned ? `<span class="ml-pin" title="Pinned — kept when you re-distill">📌</span>` : '';
+    const pin = l.pinned ? `<span class="ml-pin" title="Pinned - kept when you re-distill">📌</span>` : '';
     return `<div class="mind-line" style="--lc:${reg.color}">
       <div class="ml-act"><button onclick="mindEdit('${escAttr(l.id)}')" title="Edit">✎</button><button onclick="mindRemove('${escAttr(l.id)}')" title="Remove">×</button></div>
       <div class="ml-t">${esc(l.text)}</div>
@@ -2168,7 +2334,7 @@ function mindApply(st){ MIND=st; renderMind(); }
 const MIND_JSON={'content-type':'application/json'};
 async function mindDistill(){
   try{ mindApply(await J('/v1/consciousness/distill',{method:'POST'})); notify('Re-distilled from your brain · signed','ok'); }
-  catch(e){ notify('Couldn’t distill — '+e.message); }
+  catch(e){ notify('Couldn\'t distill - '+e.message); }
 }
 async function mindRevert(){
   try{ mindApply(await J('/v1/consciousness/revert',{method:'POST'})); notify('Reverted to the previous version · signed','ok'); }
@@ -2178,24 +2344,24 @@ async function mindAdd(){
   const v=await askInput({title:'Add to working memory',label:'A durable fact you want loaded into every answer. Saved as yours, and signed.',placeholder:'e.g. I work in Europe/Sofia time',ok:'Add'});
   if(v===null) return; const t=v.trim(); if(!t) return;
   try{ mindApply(await J('/v1/consciousness/add',{method:'POST',headers:MIND_JSON,body:JSON.stringify({text:t})})); notify('Added to working memory · signed','ok'); }
-  catch(e){ notify('Couldn’t add — '+e.message); }
+  catch(e){ notify('Couldn\'t add - '+e.message); }
 }
 async function mindEdit(id){
   const l=(MIND.lines||[]).find(x=>x.id===id); if(!l) return;
   const v=await askInput({title:'Edit working memory',label:'Always loaded into every answer. Editing pins this line, so re-distilling keeps it.',value:l.text,ok:'Save'});
   if(v===null) return; const t=v.trim(); if(!t) return;
   try{ mindApply(await J('/v1/consciousness/edit',{method:'POST',headers:MIND_JSON,body:JSON.stringify({id,text:t})})); notify('Updated · pinned · signed','ok'); }
-  catch(e){ notify('Couldn’t edit — '+e.message); }
+  catch(e){ notify('Couldn\'t edit - '+e.message); }
 }
 async function mindRemove(id){
   if(!await askConfirm({title:'Remove this line?',message:'It stops loading into answers. You can Revert to undo.',ok:'Remove',danger:true})) return;
   try{ mindApply(await J('/v1/consciousness/remove',{method:'POST',headers:MIND_JSON,body:JSON.stringify({id})})); notify('Removed · signed (Revert to undo)','ok'); }
-  catch(e){ notify('Couldn’t remove — '+e.message); }
+  catch(e){ notify('Couldn\'t remove - '+e.message); }
 }
 function mindFocus(memId){
   const B=BRAIN; if(!B) return;
   const node=B.nodes.find(n=>n.id===memId);
-  if(!node){ notify('That memory isn’t in the current graph view'); return; }
+  if(!node){ notify('That memory isn\'t in the current graph view'); return; }
   brainShowDetail(node);
   const orig=node.r; node.r=orig*1.9; setTimeout(()=>{ if(node) node.r=orig; }, 900);
 }
@@ -2234,7 +2400,7 @@ async function saveTeach(){
   const m=document.getElementById('teachOverlay'), text=(document.getElementById('teachText').value||'').trim(); if(!text) return;
   const region=m._region||'identity', importance=parseFloat(document.getElementById('teachImp').value);
   try{ await J('/v1/remember',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({region,text,importance})}); }
-  catch(e){ notify('Couldn’t save — '+e.message); return; }
+  catch(e){ notify('Couldn\'t save - '+e.message); return; }
   closeTeach(); notify('Remembered','ok'); renderMemory();
 }
 
@@ -2248,23 +2414,23 @@ async function renderSkills(){
     const ladder=(s.versions||[]).map(v=>`<span class="vchip${v===active?' active':''}">v${v}</span>`).join('<span class="varr">→</span>');
     const statusPill = verified
       ? `<span class="sk-pill ok" title="Improvements are scored by exact match against ${runs} recorded (input, accepted-output) pair${runs===1?'':'s'}.">verified · ${runs} scored run${runs===1?'':'s'}</span>`
-      : `<span class="sk-pill warn" title="No recorded (input, accepted-output) pairs to score against yet — so an improvement can't be measured. Honest signal, not a guess.">unverified — no scored runs yet</span>`;
+      : `<span class="sk-pill warn" title="No recorded (input, accepted-output) pairs to score against yet - so an improvement can't be measured. Honest signal, not a guess.">unverified - no scored runs yet</span>`;
     const events=(s.learn||[]).slice().reverse().map(e=>{
       const inc=(+e.incumbent_score||0), cand=(+e.candidate_score||0), reps=e.replays||0;
       const seq=e.seq?`<span class="sk-seq" title="copy the signed ledger hash" onclick="navigator.clipboard.writeText('${escAttr(e.hash||'')}')">◇ ${e.seq|0}</span>`:'';
       if(e.promoted) return `<div class="sk-ev promoted">✓ <b>v${e.from|0} → v${e.to|0}</b> beat the incumbent · <b>${inc.toFixed(2)} → ${cand.toFixed(2)}</b> on ${reps} replay${reps===1?'':'s'} ${seq}</div>`;
-      return `<div class="sk-ev rejected">↺ <b>v${e.candidate|0} rejected</b> · ${cand.toFixed(2)} ≤ ${inc.toFixed(2)} on ${reps} replay${reps===1?'':'s'} — kept v${e.active|0} ${seq}</div>`;
+      return `<div class="sk-ev rejected">↺ <b>v${e.candidate|0} rejected</b> · ${cand.toFixed(2)} ≤ ${inc.toFixed(2)} on ${reps} replay${reps===1?'':'s'} - kept v${e.active|0} ${seq}</div>`;
     }).join('');
     const evBlock = events ? `<div class="sk-events">${events}</div>`
-      : (verified ? `<div class="sk-muted">No promotions yet — v${active} is the best on ${runs} run${runs===1?'':'s'}.</div>` : '');
+      : (verified ? `<div class="sk-muted">No promotions yet - v${active} is the best on ${runs} run${runs===1?'':'s'}.</div>` : '');
     return `<div class="sk-card">
       <div class="sk-head"><span class="sk-name">${esc(s.id)}</span><span class="vladder">${ladder}</span><span class="grow"></span>${statusPill}</div>
       ${evBlock}
-      <div class="sk-run"><input id="in_${esc(s.id)}" placeholder="try an input…" onkeydown="if(event.key==='Enter')runSkill('${esc(s.id)}')"><button class="sbtn" onclick="runSkill('${esc(s.id)}')">Run</button><span id="out_${esc(s.id)}" class="sk-out"></span></div>
+      <div class="sk-run"><input id="in_${esc(s.id)}" placeholder="try an input..." onkeydown="if(event.key==='Enter')runSkill('${esc(s.id)}')"><button class="sbtn" onclick="runSkill('${esc(s.id)}')">Run</button><span id="out_${esc(s.id)}" class="sk-out"></span></div>
     </div>`;
-  }).join('') : `<div class="sk-empty"><b>No skills yet.</b><span>Skills are small, signed programs Engram grows. Each improvement is replayed against past runs and promoted only when it measurably wins — and you can verify it.</span></div>`;
+  }).join('') : `<div class="sk-empty"><b>No skills yet.</b><span>Skills are small, signed programs Engram grows. Each improvement is replayed against past runs and promoted only when it measurably wins - and you can verify it.</span></div>`;
   document.getElementById('view').innerHTML = `<div class="skills-wrap">
-    <div class="skills-head"><h2>Skills</h2><div class="sub">Procedural memory — expertise that improves only when it measurably wins on replay, with the before/after signed. Where there's no scored signal yet, it says so.</div></div>
+    <div class="skills-head"><h2>Skills</h2><div class="sub">Procedural memory - expertise that improves only when it measurably wins on replay, with the before/after signed. Where there's no scored signal yet, it says so.</div></div>
     <div class="skills-list">${cards}</div></div>`;
 }
 async function runSkill(id){ const input=document.getElementById('in_'+id).value;
@@ -2272,12 +2438,25 @@ async function runSkill(id){ const input=document.getElementById('in_'+id).value
   document.getElementById('out_'+id).textContent = r.error?('error: '+r.error):('→ '+r.output); }
 
 // ---- Settings ----
+// Every non-Anthropic, non-mock backend is OpenAI-compatible and routes through the same
+// HttpProvider on the daemon; the `base` here mirrors the daemon's built-in default for that
+// kind, so picking a provider Just Works once you add a key. Cloud first, then local (no key).
 const PROVIDERS = {
-  anthropic:  { label:'Anthropic — Claude', base:'', needsKey:true,  keyHint:'sk-ant-…', models:['claude-haiku-4-5','claude-sonnet-4-6','claude-opus-4-8','claude-fable-5'] },
-  openai:     { label:'OpenAI-compatible',  base:'https://api.openai.com/v1', needsKey:true, keyHint:'sk-…', models:['gpt-4o-mini','gpt-4o','o4-mini'] },
-  openrouter: { label:'OpenRouter',         base:'https://openrouter.ai/api/v1', needsKey:true, keyHint:'sk-or-…', models:['anthropic/claude-3.5-sonnet','openai/gpt-4o-mini','meta-llama/llama-3.1-70b-instruct','google/gemini-flash-1.5'] },
-  ollama:     { label:'Ollama — local',     base:'http://localhost:11434/v1', needsKey:false, keyHint:'no key needed', models:['llama3.1','qwen2.5','mistral','phi3'] },
-  mock:       { label:'Mock — offline demo',base:'', needsKey:false, keyHint:'no key', models:['claude-haiku-4-5'] },
+  anthropic:  { label:'Anthropic - Claude', base:'', needsKey:true,  keyHint:'sk-ant-...', models:['claude-haiku-4-5','claude-sonnet-4-6','claude-opus-4-8','claude-fable-5'] },
+  openai:     { label:'OpenAI',  base:'https://api.openai.com/v1', needsKey:true, keyHint:'sk-...', models:['gpt-4o-mini','gpt-4o','o4-mini'] },
+  openrouter: { label:'OpenRouter - 200+ models', base:'https://openrouter.ai/api/v1', needsKey:true, keyHint:'sk-or-...', models:['anthropic/claude-3.5-sonnet','openai/gpt-4o-mini','meta-llama/llama-3.1-70b-instruct','google/gemini-flash-1.5'] },
+  groq:       { label:'Groq - fast inference', base:'https://api.groq.com/openai/v1', needsKey:true, keyHint:'gsk_...', models:['llama-3.3-70b-versatile','llama-3.1-8b-instant','deepseek-r1-distill-llama-70b'] },
+  deepseek:   { label:'DeepSeek', base:'https://api.deepseek.com', needsKey:true, keyHint:'sk-...', models:['deepseek-chat','deepseek-reasoner'] },
+  mistral:    { label:'Mistral', base:'https://api.mistral.ai/v1', needsKey:true, keyHint:'...', models:['mistral-large-latest','mistral-small-latest','codestral-latest'] },
+  together:   { label:'Together AI', base:'https://api.together.xyz/v1', needsKey:true, keyHint:'...', models:['meta-llama/Llama-3.3-70B-Instruct-Turbo','Qwen/Qwen2.5-72B-Instruct-Turbo'] },
+  xai:        { label:'xAI - Grok', base:'https://api.x.ai/v1', needsKey:true, keyHint:'xai-...', models:['grok-2-latest','grok-2-mini'] },
+  perplexity: { label:'Perplexity - online', base:'https://api.perplexity.ai', needsKey:true, keyHint:'pplx-...', models:['llama-3.1-sonar-large-128k-online','llama-3.1-sonar-small-128k-online'] },
+  gemini:     { label:'Google Gemini', base:'https://generativelanguage.googleapis.com/v1beta/openai', needsKey:true, keyHint:'AIza...', models:['gemini-2.0-flash','gemini-1.5-pro','gemini-1.5-flash'] },
+  ollama:     { label:'Ollama - local', base:'http://localhost:11434/v1', needsKey:false, keyHint:'no key needed', models:['llama3.1','qwen2.5','mistral','phi3'] },
+  lmstudio:   { label:'LM Studio - local', base:'http://localhost:1234/v1', needsKey:false, keyHint:'no key needed', models:['local-model'] },
+  vllm:       { label:'vLLM - local/self-host', base:'http://localhost:8000/v1', needsKey:false, keyHint:'no key needed', models:['served-model'] },
+  llamacpp:   { label:'llama.cpp - local', base:'http://localhost:8080/v1', needsKey:false, keyHint:'no key needed', models:['loaded-model'] },
+  mock:       { label:'Mock - offline demo',base:'', needsKey:false, keyHint:'no key', models:['claude-haiku-4-5'] },
 };
 let CFG = null;
 const gv = id => (document.getElementById(id)?.value ?? '').toString().trim();
@@ -2307,7 +2486,7 @@ async function openCC(cat){
   if(!document.getElementById('palette').hidden) closePalette();   // don't stack over the palette
   if(cat) ccActive=cat;
   document.getElementById('cc').hidden=false;
-  if(!CFG){ document.getElementById('ccBody').innerHTML='<div class="empty">Loading…</div>'; renderCatList(); await ccLoad(); }
+  if(!CFG){ document.getElementById('ccBody').innerHTML='<div class="empty">Loading...</div>'; renderCatList(); await ccLoad(); }
   renderCC();
   setTimeout(()=>document.getElementById('ccSearch')?.focus(),30);
 }
@@ -2327,7 +2506,7 @@ function renderCatList(){
 function renderCCBody(){
   const cat=CC_CATS.find(c=>c.key===ccActive)||CC_CATS[0];
   const body=document.getElementById('ccBody');
-  if(CFG&&CFG._err){ body.innerHTML='<div class="offline">Couldn’t load settings — '+esc(CFG._err)+'</div>'; return; }
+  if(CFG&&CFG._err){ body.innerHTML='<div class="offline">Couldn\'t load settings - '+esc(CFG._err)+'</div>'; return; }
   body.innerHTML = cat.render(CFG||{});
   if(ccActive==='gateways') wireProviderKind();
   if(ccActive==='tools') renderMcpRowsV2((CFG&&CFG.mcp)||[]);
@@ -2339,8 +2518,8 @@ const ccHead=(t,s)=>`<h2>${t}</h2><div class="sub">${s}</div>`;
 function ccGateways(c){
   const p=c.provider||{kind:'mock',model:'',base_url:'',api_key_set:false}, kinds=Object.keys(PROVIDERS);
   const opt=(val,sel,label)=>`<option value="${escAttr(val)}"${val===sel?' selected':''}>${esc(label)}</option>`;
-  const noteHttp = c.http_enabled===false ? '<div class="offline">This build has no network providers compiled in — only the offline mock works. Rebuild with <code>--features http</code> for real models.</div>' : '';
-  return ccHead('Gateways','Which model backend Engram thinks with. Hot-swaps live — no restart.')+noteHttp+`
+  const noteHttp = c.http_enabled===false ? '<div class="offline">This build has no network providers compiled in - only the offline mock works. Rebuild with <code>--features http</code> for real models.</div>' : '';
+  return ccHead('Gateways','Which model backend Engram thinks with. Hot-swaps live - no restart.')+noteHttp+`
     <div class="scard">
       <h3>Model &amp; provider <span class="badge set">active: ${esc(c.provider_id||'mock')} · ${esc(c.model_in_use||'')}</span></h3>
       <div class="field"><label>Backend</label><select id="pkind">${kinds.map(k=>opt(k,p.kind,PROVIDERS[k].label)).join('')}</select></div>
@@ -2349,7 +2528,7 @@ function ccGateways(c){
         <div class="field"><label>Base URL</label><input type="text" id="pbase" value="${escAttr(p.base_url)}" placeholder="default" autocomplete="off"></div>
       </div>
       <div class="field" id="keyField"><label>API key ${p.api_key_set?'<span class="badge set">saved</span>':''}</label>
-        <input type="password" id="pkey" placeholder="${p.api_key_set?'•••••••• — blank keeps the saved key':''}" autocomplete="off"><div class="hint" id="keyHint"></div></div>
+        <input type="password" id="pkey" placeholder="${p.api_key_set?'•••••••• - blank keeps the saved key':''}" autocomplete="off"><div class="hint" id="keyHint"></div></div>
       <div class="sactions"><button class="sbtn" onclick="testProvider()">Test connection</button>${p.api_key_set?'<button class="sbtn ghost" onclick="clearSecret(\'provider\',\'clear_api_key\')">Clear key</button>':''}<span class="grow"></span><button class="sbtn primary" onclick="saveSettings()">Save</button></div>
       <div class="testline" id="testline"></div>
     </div>`;
@@ -2360,10 +2539,10 @@ function ccKeys(c){
     <div class="scard">
       <div class="row2">
         <div class="field"><label>API token ${s.api_token_set?'<span class="badge set">saved</span>':''}</label>
-          <input type="password" id="stok" placeholder="${s.api_token_set?'•••••••• — blank keeps it':'none'}" autocomplete="off">
+          <input type="password" id="stok" placeholder="${s.api_token_set?'•••••••• - blank keeps it':'none'}" autocomplete="off">
           ${s.api_token_set?'<div class="hint"><a href="#" onclick="clearSecret(\'security\',\'clear_api_token\');return false">remove token</a></div>':''}</div>
         <div class="field"><label>Channel secret ${s.channel_secret_set?'<span class="badge set">saved</span>':''}</label>
-          <input type="password" id="ssec" placeholder="${s.channel_secret_set?'•••••••• — blank keeps it':'none'}" autocomplete="off">
+          <input type="password" id="ssec" placeholder="${s.channel_secret_set?'•••••••• - blank keeps it':'none'}" autocomplete="off">
           ${s.channel_secret_set?'<div class="hint"><a href="#" onclick="clearSecret(\'security\',\'clear_channel_secret\');return false">remove secret</a></div>':''}</div>
       </div>
       <div class="sactions"><span class="grow"></span><button class="sbtn primary" onclick="saveSettings()">Save</button></div>
@@ -2372,7 +2551,7 @@ function ccKeys(c){
 function ccMemory(c){
   const e=c.embed||{kind:'trigram',model_dir:''};
   const opt=(v,sel)=>`<option value="${v}"${v===sel?' selected':''}>${v}</option>`;
-  return ccHead('Memory &amp; context','How memories are indexed for recall. Trigram is offline and dependency-free; static loads a model2vec model; gateway uses the provider’s embeddings.')+`
+  return ccHead('Memory &amp; context','How memories are indexed for recall. Trigram is offline and dependency-free; static loads a model2vec model; gateway uses the provider\'s embeddings.')+`
     <div class="scard">
       <h3>Embeddings <span class="badge restart">restart to apply</span></h3>
       <div class="row2">
@@ -2388,6 +2567,8 @@ function ccTools(c){
     <div class="scard">
       <h3>MCP servers <span class="badge set">live</span></h3>
       <div class="desc">Each server is launched as a subprocess; its tools become available to the agent. Saving reconnects them immediately.</div>
+      <div class="mcp-tpl"><span class="mcp-tpl-lbl">Quick add</span>${MCP_TEMPLATES.map((t,i)=>`<button class="sbtn mini" title="${escAttr(t.command+' '+t.args.join(' '))}" onclick="addMcpTemplate(${i})">+ ${esc(t.label)}</button>`).join('')}</div>
+      <div class="mcp-tpl-note">Templates fill in a row you can edit; they need <code>npx</code> (Node) or <code>uvx</code> (uv) on PATH, then Save to connect.</div>
       <div id="mcplist"></div>
       <div class="sactions"><button class="sbtn" onclick="addMcpRowV2()">+ Add server</button><span class="grow"></span><button class="sbtn primary" onclick="saveSettings()">Save</button></div>
     </div>
@@ -2395,15 +2576,15 @@ function ccTools(c){
       <h3>Shell &amp; egress</h3>
       <div class="desc">The agent is read-only by default. Shell access lets it run commands; the taint policy keeps your context from leaving the machine.</div>
       <label class="toggle"><input type="checkbox" id="sshell" ${s.allow_shell?'checked':''}><span class="track"></span> Allow the agent to run shell commands</label>
-      <div class="ph" style="margin-top:11px"><b>No egress</b> — on by default. Once a run reads untrusted content, tools that would send data to the web are blocked. (A visual allowlist editor lands in Phase 2.)</div>
+      <div class="ph" style="margin-top:11px"><b>No egress</b> - on by default. Once a run reads untrusted content, tools that would send data to the web are blocked. (A visual allowlist editor lands in Phase 2.)</div>
       <div class="sactions"><span class="grow"></span><button class="sbtn primary" onclick="saveSettings()">Save</button></div>
     </div>`;
 }
 // (The old ccCost was superseded by ccCost2 and removed.)
 function ccPersona(c){
-  return ccHead('Persona','Standing instructions prepended to every agent run — your <code>SOUL.md</code>. Saved changes shape the very next run.')+`
+  return ccHead('Persona','Standing instructions prepended to every agent run - your <code>SOUL.md</code>. Saved changes shape the very next run.')+`
     <div class="scard">
-      <div class="field"><textarea id="persona" rows="9" placeholder="e.g. You are concise and precise. Prefer primary sources. Never guess — say so when you’re unsure.">${esc(c._persona||'')}</textarea></div>
+      <div class="field"><textarea id="persona" rows="9" placeholder="e.g. You are concise and precise. Prefer primary sources. Never guess - say so when you\'re unsure.">${esc(c._persona||'')}</textarea></div>
       <div class="sactions"><span class="grow"></span><button class="sbtn primary" onclick="savePersona()">Save persona</button></div>
     </div>`;
 }
@@ -2416,17 +2597,17 @@ function ccWorkspace(){
       <div class="ws-pacts">${active?'':`<button class="sbtn" onclick="wsPick('${escAttr(p.id)}')">Open</button>`}<button class="sbtn ghost" onclick="wsEditProject('${escAttr(p.id)}')">Edit</button>${projs.length>1?`<button class="sbtn ghost" onclick="wsDeleteProject('${escAttr(p.id)}')">Delete</button>`:''}</div>
     </div>`;
   }).join('');
-  return ccHead('Workspace','Projects — each groups its own sessions and standing instructions.')+`
+  return ccHead('Workspace','Projects - each groups its own sessions and standing instructions.')+`
     <div class="scard"><div class="sactions" style="margin-bottom:11px;align-items:center"><h3 style="margin:0;flex:1">Projects <span class="badge set">${projs.length}</span></h3><button class="sbtn primary" onclick="wsNewProject()">+ New project</button></div>
       <div class="ws-projs">${rows||'<div class="muted">No projects yet.</div>'}</div></div>
     <div class="scard"><h3>Where it lives</h3>
-      <div class="desc">Your brain — every memory and the signed ledger — is stored locally at <code>~/.engram</code> and shared across projects. Switching a project swaps its active sessions and standing instructions. Nothing leaves the machine; the ledger spine at the bottom of every screen stays verifiable offline.</div></div>`;
+      <div class="desc">Your brain - every memory and the signed ledger - is stored locally at <code>~/.engram</code> and shared across projects. Switching a project swaps its active sessions and standing instructions. Nothing leaves the machine; the ledger spine at the bottom of every screen stays verifiable offline.</div></div>`;
 }
 async function wsNewProject(){
   const n=await askInput({title:'New project',label:'Sessions and standing instructions live inside a project.',placeholder:'e.g. Apex, Research',ok:'Create'});
   if(!(n&&n.trim())) return;
   try{ const p=await J('/v1/projects',{method:'POST',headers:MIND_JSON,body:JSON.stringify({name:n.trim()})}); WS.projects.push(p); notify('Project created','ok'); if(ccActive==='workspace') renderCC(); renderSidebar(); }
-  catch(e){ notify('Couldn’t create — '+e.message); }
+  catch(e){ notify('Couldn\'t create - '+e.message); }
 }
 async function wsPick(id){ await pickProject(id); if(ccActive==='workspace') renderCC(); }
 function wsEditProject(id){
@@ -2436,7 +2617,7 @@ function wsEditProject(id){
     <div class="ask-title">Edit project</div>
     <div class="ask-msg">A project groups its sessions and gives them their own standing instructions.</div>
     <input class="ask-input" id="wpName" placeholder="Project name" value="${escAttr(p.name)}" autocomplete="off">
-    <textarea class="ask-input" id="wpPersona" rows="5" placeholder="Standing instructions for this project — how Engram should behave here (optional)." style="resize:vertical;font:inherit;line-height:1.5">${esc(p.persona||'')}</textarea>
+    <textarea class="ask-input" id="wpPersona" rows="5" placeholder="Standing instructions for this project - how Engram should behave here (optional)." style="resize:vertical;font:inherit;line-height:1.5">${esc(p.persona||'')}</textarea>
     <div class="ask-actions"><button class="ask-ghost" onclick="this.closest('.overlay').remove()">Cancel</button><button class="ask-ok" onclick="wsSaveProject('${escAttr(id)}',this)">Save</button></div>
   </div>`;
   document.body.appendChild(ov); setTimeout(()=>{ const n=ov.querySelector('#wpName'); n.focus(); n.select(); },20);
@@ -2447,28 +2628,28 @@ async function wsSaveProject(id, btn){
   try{ const p=await J('/v1/projects/'+encodeURIComponent(id),{method:'PATCH',headers:MIND_JSON,body:JSON.stringify({name,persona})});
     const i=(WS.projects||[]).findIndex(x=>x.id===id); if(i>=0) WS.projects[i]=p;
     ov.remove(); notify('Project saved','ok'); if(ccActive==='workspace') renderCC(); renderSidebar();
-  }catch(e){ notify('Couldn’t save — '+e.message); }
+  }catch(e){ notify('Couldn\'t save - '+e.message); }
 }
 async function wsDeleteProject(id){
   if((WS.projects||[]).length<=1){ notify('Keep at least one project'); return; }
   const p=(WS.projects||[]).find(x=>x.id===id);
-  if(!await askConfirm({title:'Delete project?',message:'Delete “'+(p?p.name:'this project')+'” and all its chats? This cannot be undone.',ok:'Delete',danger:true})) return;
+  if(!await askConfirm({title:'Delete project?',message:'Delete "'+(p?p.name:'this project')+'" and all its chats? This cannot be undone.',ok:'Delete',danger:true})) return;
   try{ await J('/v1/projects/'+encodeURIComponent(id),{method:'DELETE'});
     WS.projects=WS.projects.filter(x=>x.id!==id);
     if(WS.activeProject===id){ WS.activeProject=(WS.projects[0]||{id:'personal'}).id; WS.byId={}; WS.activeSession=null; await loadSessions(); WS.activeSession=(WS.sessions[0]||{}).id||null; }
     notify('Project deleted','ok'); if(ccActive==='workspace') renderCC(); renderSidebar(); if(state.route==='Chat') renderChat();
-  }catch(e){ notify('Couldn’t delete — '+e.message); }
+  }catch(e){ notify('Couldn\'t delete - '+e.message); }
 }
 function ccVoice(){
   const stt = (typeof VOICE!=='undefined' && VOICE.supported);
   const tts = ('speechSynthesis' in window);
   const row=(ok,label,detail)=>`<div class="kbd-row"><span>${label}<div class="sub" style="font-size:11px;color:var(--text-muted)">${detail}</div></span><span class="badge" style="${ok?'color:var(--accent);border-color:rgba(69,200,168,.32)':''}">${ok?'available':'unavailable'}</span></div>`;
-  return ccHead('Voice','Speech in and out — browser-native, fully offline.')+
+  return ccHead('Voice','Speech in and out - browser-native, fully offline.')+
   `<div class="scard">
     ${row(stt,'Speech-to-text (dictation &amp; conversation)','webkitSpeechRecognition. May be absent in this window; when so, voice replies still work and a typed fallback keeps conversation usable.')}
-    ${row(tts,'Spoken replies','speechSynthesis reads Engram’s replies aloud, sentence by sentence.')}
-    <div class="ph" style="margin-top:12px">Dictate from the <b>mic</b> beside the composer. Start a hands-free <b>Voice</b> conversation from the Chat header — an animated orb listens, speaks, and supports tap-to-interrupt.</div>
-    <div class="ph" style="margin-top:8px;color:var(--text-muted)">A premium server-side engine (POST <code class="ic">/v1/voice</code> and the <code class="ic">/v1/voice/stream</code> socket) provides STT/TTS where the browser can’t — configurable once a speech provider is connected.</div>
+    ${row(tts,'Spoken replies','speechSynthesis reads Engram\'s replies aloud, sentence by sentence.')}
+    <div class="ph" style="margin-top:12px">Dictate from the <b>mic</b> beside the composer. Start a hands-free <b>Voice</b> conversation from the Chat header - an animated orb listens, speaks, and supports tap-to-interrupt.</div>
+    <div class="ph" style="margin-top:8px;color:var(--text-muted)">A premium server-side engine (POST <code class="ic">/v1/voice</code> and the <code class="ic">/v1/voice/stream</code> socket) provides STT/TTS where the browser can\'t - configurable once a speech provider is connected.</div>
   </div>`; }
 function ccKeyboard(){
   const rows=[['Command palette','⌘K'],['Settings','⌘,'],['Send / answer in chat','↵'],['Create a task','⌘↵'],['Create &amp; run a task','⇧⌘↵'],['Close palette / settings / panel','Esc']];
@@ -2498,7 +2679,7 @@ function ccTemplates(){
   const tasks = TEMPLATES.tasks.map(t=>tcard(t.name,t.desc,'Create task',`templateTask(${attrJson(t.title)})`)).join('');
   const personas = TEMPLATES.personas.map(p=>tcard(p.name,p.desc,'Use persona',`templatePersona(${attrJson(p.name)},${attrJson(p.text)})`)).join('');
   const prompts = TEMPLATES.prompts.map(p=>`<button class="tmpl-chip" onclick="templatePrompt(${attrJson(p)})">${esc(p)}</button>`).join('');
-  return ccHead('Templates','Reusable starters — begin work pre-shaped, not from a blank page.')+`
+  return ccHead('Templates','Reusable starters - begin work pre-shaped, not from a blank page.')+`
     <div class="scard"><h3>Task starters</h3><div class="desc">One click drops a pre-shaped task on the board, ready to run.</div>
       <div class="integ-grid">${tasks}</div></div>
     <div class="scard"><h3>Personas</h3><div class="desc">Apply a standing style to how Engram answers. (Edit it any time under Persona.)</div>
@@ -2508,13 +2689,13 @@ function ccTemplates(){
 }
 async function templateTask(title){
   try{ const t=await J('/v1/tasks',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({title,origin:'template'})});
-    closeCC(); await loadTasks(); go('Tasks'); if(typeof openTask==='function') openTask(t.id); notify('Task created — press Run to start','ok');
-  }catch(e){ notify('Couldn’t create task — '+e.message); }
+    closeCC(); await loadTasks(); go('Tasks'); if(typeof openTask==='function') openTask(t.id); notify('Task created - press Run to start','ok');
+  }catch(e){ notify('Couldn\'t create task - '+e.message); }
 }
 async function templatePersona(name,text){
   try{ await J('/v1/persona',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({persona:text})});
     if(typeof CFG==='object'&&CFG) CFG._persona=text; notify('Persona applied: '+name,'ok'); ccGo('persona');
-  }catch(e){ notify('Couldn’t apply persona — '+e.message); }
+  }catch(e){ notify('Couldn\'t apply persona - '+e.message); }
 }
 function templatePrompt(text){
   closeCC(); go('Chat');
@@ -2524,30 +2705,30 @@ function templatePrompt(text){
 // ---- Agents: the auditable team (durable, named, role-scoped) -----------------------------------
 let AGENTS=[];
 function agentsGridHtml(){
-  if(!AGENTS.length) return `<div class="mind-empty"><b>No agents yet.</b><br>Create a specialist — a role and its own model — then assign it to a kanban card. Every step it runs is signed as that agent.</div>`;
+  if(!AGENTS.length) return `<div class="mind-empty"><b>No agents yet.</b><br>Create a specialist - a role and its own model - then assign it to a kanban card. Every step it runs is signed as that agent.</div>`;
   return AGENTS.map(a=>{
     const model = a.model ? esc(a.model) : '<span style="opacity:.65">default model</span>';
     const role = (a.role||'').replace(/\s+/g,' ').trim();
     return `<div class="integ-card">
       <div class="ih"><span class="it">${esc(a.name)}</span><span class="badge">${model}</span></div>
-      <div class="id">${role?esc(role.slice(0,130)):'<span style="opacity:.6">No role set — runs with the default behaviour.</span>'}</div>
+      <div class="id">${role?esc(role.slice(0,130)):'<span style="opacity:.6">No role set - runs with the default behaviour.</span>'}</div>
       <div class="integ-act"><button class="sbtn" onclick="agentEdit('${escAttr(a.id)}')">Edit</button><button class="sbtn ghost" onclick="agentActivity('${escAttr(a.id)}')">Experience</button><span style="flex:1"></span><button class="sbtn ghost" onclick="agentDelete('${escAttr(a.id)}')">Delete</button></div>
     </div>`;
   }).join('');
 }
 // An agent's auditable track record: every action it signed, by kind + most recent, growing as it works.
 async function agentActivity(id){
-  let a; try{ a=await J('/v1/agents/'+id+'/activity'); }catch(e){ notify('Couldn’t load — '+e.message); return; }
+  let a; try{ a=await J('/v1/agents/'+id+'/activity'); }catch(e){ notify('Couldn\'t load - '+e.message); return; }
   const kinds=Object.entries(a.by_kind||{}).sort((x,y)=>y[1]-x[1]);
   const kindChips=kinds.length?kinds.map(([k,n])=>`<span class="exp-kind"><b>${n}</b> ${esc(k)}</span>`).join(''):'<span style="opacity:.6;font-size:12px">no signed actions yet</span>';
   const recent=(a.recent||[]).map(r=>`<div class="exp-row"><span class="exp-k">${esc(r.kind)}</span><span class="grow" style="flex:1"></span><span class="exp-seq" title="copy the signed ledger hash" onclick="navigator.clipboard.writeText('${escAttr(r.hash||'')}')">◇ ${r.seq|0}</span><span class="exp-t">${typeof fmtAgo==='function'?fmtAgo(r.ts_ms):''}</span></div>`).join('')
-    || '<div class="exp-empty">This agent hasn’t acted yet. Assign it a card and run it — its experience accrues here, every step signed.</div>';
+    || '<div class="exp-empty">This agent hasn\'t acted yet. Assign it a card and run it - its experience accrues here, every step signed.</div>';
   const ov=document.createElement('div'); ov.className='overlay ask';
   ov.innerHTML=`<div class="ask-card" style="width:min(580px,94vw)">
     <div class="ask-title">${esc(a.name)} · track record</div>
-    <div class="ask-msg">Every action this agent has taken, signed as itself — its auditable experience. <b>${a.total}</b> action${a.total===1?'':'s'} · <b>${a.tasks_assigned}</b> card${a.tasks_assigned===1?'':'s'} assigned.</div>
+    <div class="ask-msg">Every action this agent has taken, signed as itself - its auditable experience. <b>${a.total}</b> action${a.total===1?'':'s'} · <b>${a.tasks_assigned}</b> card${a.tasks_assigned===1?'':'s'} assigned.</div>
     <div class="exp-kinds">${kindChips}</div>
-    <div class="exp-lbl">recent — newest first</div>
+    <div class="exp-lbl">recent - newest first</div>
     <div class="exp-recent">${recent}</div>
     <div class="ask-actions"><button class="ask-ok" onclick="this.closest('.overlay').remove()">Close</button></div>
   </div>`;
@@ -2556,20 +2737,25 @@ async function agentActivity(id){
 function ccAgents(){
   // Render from cache; refresh async and repaint the grid in place (renderCCBody is sync).
   J('/v1/agents').then(a=>{ AGENTS=a||[]; if(ccActive==='agents'){ const el=document.getElementById('agentsGrid'); if(el) el.innerHTML=agentsGridHtml(); } }).catch(()=>{});
-  return ccHead('Agents','Your auditable team. Each agent runs with its own role and model; assign one to a kanban card and every step it takes is signed as that agent — a team you can audit, not an opaque swarm.')+`
+  return ccHead('Agents','Your auditable team. Each agent runs with its own role and model; assign one to a kanban card and every step it takes is signed as that agent - a team you can audit, not an opaque swarm.')+`
     <div class="scard"><div class="sactions" style="margin-bottom:12px"><button class="sbtn primary" onclick="agentEdit('')">+ New agent</button><span class="grow"></span></div>
       <div class="integ-grid" id="agentsGrid">${agentsGridHtml()}</div></div>`;
 }
 function agentEdit(id){
-  const a = AGENTS.find(x=>x.id===id) || {id:'',name:'',role:'',model:''};
+  const a = AGENTS.find(x=>x.id===id) || {id:'',name:'',role:'',model:'',provider:'',base_url:'',api_key_set:false};
   const models = Object.keys(MODEL_META).map(m=>`<option value="${escAttr(m)}">`).join('');
+  const provOpts = ['<option value="">Global provider (just override the model)</option>']
+    .concat(Object.keys(PROVIDERS).filter(k=>k!=='mock').map(k=>`<option value="${k}"${a.provider===k?' selected':''}>${esc(PROVIDERS[k].label)}</option>`)).join('');
   const ov=document.createElement('div'); ov.className='overlay ask';
   ov.innerHTML=`<div class="ask-card" style="width:min(560px,93vw)">
     <div class="ask-title">${a.id?'Edit agent':'New agent'}</div>
-    <div class="ask-msg">A specialist with a narrow role drifts less and hallucinates less. It signs every step it runs as itself.</div>
-    <input class="ask-input" id="agName" placeholder="Name — e.g. Scout, Reviewer, Researcher" value="${escAttr(a.name)}" autocomplete="off">
-    <textarea class="ask-input" id="agRole" rows="4" placeholder="Role / system prompt — what this agent specializes in and how it behaves." style="resize:vertical;font:inherit;line-height:1.5">${esc(a.role)}</textarea>
-    <input class="ask-input" id="agModel" list="agModels" placeholder="Model (optional) — blank uses the default" value="${escAttr(a.model)}" autocomplete="off"><datalist id="agModels">${models}</datalist>
+    <div class="ask-msg">A specialist with a narrow role drifts less and hallucinates less. It signs every step it runs as itself. Give it its own model (and provider) to match the model to the task: a cheap one for triage, a frontier one for hard reasoning.</div>
+    <input class="ask-input" id="agName" placeholder="Name - e.g. Scout, Reviewer, Researcher" value="${escAttr(a.name)}" autocomplete="off">
+    <textarea class="ask-input" id="agRole" rows="4" placeholder="Role / system prompt - what this agent specializes in and how it behaves." style="resize:vertical;font:inherit;line-height:1.5">${esc(a.role)}</textarea>
+    <input class="ask-input" id="agModel" list="agModels" placeholder="Model (optional) - blank uses the default" value="${escAttr(a.model)}" autocomplete="off"><datalist id="agModels">${models}</datalist>
+    <select class="ask-input" id="agProvider">${provOpts}</select>
+    <input class="ask-input" id="agBase" placeholder="Base URL (optional - blank uses the provider default)" value="${escAttr(a.base_url||'')}" autocomplete="off">
+    <input class="ask-input" type="password" id="agKey" placeholder="${a.api_key_set?'•••• - blank keeps the saved key':'API key for this agent (only if it uses its own provider)'}" autocomplete="off">
     <div class="ask-actions"><button class="ask-ghost" onclick="this.closest('.overlay').remove()">Cancel</button><button class="ask-ok" onclick="agentSave('${escAttr(a.id)}',this)">Save</button></div>
   </div>`;
   document.body.appendChild(ov);
@@ -2580,28 +2766,31 @@ async function agentSave(id, btn){
   const name=ov.querySelector('#agName').value.trim();
   const role=ov.querySelector('#agRole').value.trim();
   const model=ov.querySelector('#agModel').value.trim();
+  const provider=ov.querySelector('#agProvider').value.trim();
+  const base_url=ov.querySelector('#agBase').value.trim();
+  const api_key=ov.querySelector('#agKey').value.trim();
   if(!name){ notify('An agent needs a name'); return; }
   try{
-    const body=JSON.stringify({name,role,model});
+    const body=JSON.stringify({name,role,model,provider,base_url,api_key});
     if(id) await J('/v1/agents/'+id,{method:'POST',headers:MIND_JSON,body});
     else await J('/v1/agents',{method:'POST',headers:MIND_JSON,body});
     ov.remove(); notify('Agent saved · signed','ok'); if(ccActive==='agents') renderCC();
-  }catch(e){ notify('Couldn’t save — '+e.message); }
+  }catch(e){ notify('Couldn\'t save - '+e.message); }
 }
 async function agentDelete(id){
   const a=AGENTS.find(x=>x.id===id);
-  if(!await askConfirm({title:'Delete agent?',message:'“'+(a?a.name:'this agent')+'” will be removed. Cards assigned to it fall back to the default agent.',ok:'Delete',danger:true})) return;
+  if(!await askConfirm({title:'Delete agent?',message:'"'+(a?a.name:'this agent')+'" will be removed. Cards assigned to it fall back to the default agent.',ok:'Delete',danger:true})) return;
   try{ await J('/v1/agents/'+id,{method:'DELETE'}); AGENTS=AGENTS.filter(x=>x.id!==id); notify('Agent deleted','ok'); if(ccActive==='agents') renderCC(); }
-  catch(e){ notify('Couldn’t delete — '+e.message); }
+  catch(e){ notify('Couldn\'t delete - '+e.message); }
 }
 // Assign (or clear) the agent that runs a kanban card - a signed, auditable event.
 async function assignAgent(id, agentId){
   try{ await J('/v1/tasks/'+id+'/agent',{method:'POST',headers:MIND_JSON,body:JSON.stringify({agent:agentId})});
     await loadTasks(); if(state.route==='Tasks') renderBoard(); openTask(id,true);
     notify(agentId?'Agent assigned · signed':'Reset to the default agent','ok');
-  }catch(e){ notify('Couldn’t assign — '+e.message); }
+  }catch(e){ notify('Couldn\'t assign - '+e.message); }
 }
-// Hand a card to another agent with a signed note — the auditable team collaborating on one mission.
+// Hand a card to another agent with a signed note - the auditable team collaborating on one mission.
 function handoffModal(id){
   const opts=['<option value="">Default agent</option>'].concat((AGENTS||[]).map(a=>`<option value="${escAttr(a.id)}">${esc(a.name)}</option>`)).join('');
   const ov=document.createElement('div'); ov.className='overlay ask';
@@ -2609,7 +2798,7 @@ function handoffModal(id){
     <div class="ask-title">Hand off this card</div>
     <div class="ask-msg">Pass it to another agent with a note. The hand-off is signed and added to the card's trail.</div>
     <select class="ask-input" id="hoTo">${opts}</select>
-    <textarea class="ask-input" id="hoNote" rows="3" placeholder="What's done, what's next, why hand it over…" style="resize:vertical;font:inherit;line-height:1.5"></textarea>
+    <textarea class="ask-input" id="hoNote" rows="3" placeholder="What's done, what's next, why hand it over..." style="resize:vertical;font:inherit;line-height:1.5"></textarea>
     <div class="ask-actions"><button class="ask-ghost" onclick="this.closest('.overlay').remove()">Cancel</button><button class="ask-ok" onclick="handoffDo('${escAttr(id)}',this)">Hand off</button></div>
   </div>`;
   document.body.appendChild(ov); setTimeout(()=>ov.querySelector('#hoTo').focus(),20);
@@ -2618,7 +2807,7 @@ async function handoffDo(id, btn){
   const ov=btn.closest('.overlay'); const to=ov.querySelector('#hoTo').value, note=ov.querySelector('#hoNote').value.trim();
   try{ await J('/v1/tasks/'+id+'/handoff',{method:'POST',headers:MIND_JSON,body:JSON.stringify({to,note})});
     ov.remove(); await loadTasks(); if(state.route==='Tasks') renderBoard(); openTask(id); notify('Handed off · signed','ok');
-  }catch(e){ notify('Couldn’t hand off — '+e.message); }
+  }catch(e){ notify('Couldn\'t hand off - '+e.message); }
 }
 // ---- Auditable dissent: a grounded pre-run objection, or silence (never theatre) ----------------
 let _pendingDissent=null;
@@ -2626,7 +2815,7 @@ async function runWithReview(id){
   let d=null;
   try{ const r=await J('/v1/tasks/'+id+'/review',{method:'POST'}); d=r&&r.dissent; }catch(_){}
   if(d && d.grounds && d.grounds.length){ _pendingDissent={id,d}; showDissent(d); return; }
-  runTaskLive(id);   // nothing grounded conflicts (or no model to assess) — just run
+  runTaskLive(id);   // nothing grounded conflicts (or no model to assess) - just run
 }
 function showDissent(d){
   const body=document.getElementById('pBody'); if(!body) return;
@@ -2635,7 +2824,7 @@ function showDissent(d){
   body.innerHTML=`<div class="dissent">
     <div class="dis-head"><span class="dis-ic">⚑</span> Specialist note</div>
     <div class="dis-obj">${esc(d.objection)}</div>
-    <div class="dis-lbl">grounded on ${d.grounds.length} memor${d.grounds.length===1?'y':'ies'} — click any to verify</div>
+    <div class="dis-lbl">grounded on ${d.grounds.length} memor${d.grounds.length===1?'y':'ies'} - click any to verify</div>
     <div class="dis-grounds">${grounds}</div>
     <div class="dis-actions"><button class="sbtn primary" onclick="dissentResolve('proceed')">Proceed anyway</button><button class="sbtn ghost" onclick="dissentResolve('revise')">Cancel &amp; revise</button></div>
     <div class="dis-foot">Your choice and these grounds are signed into the ledger together.</div>
@@ -2644,8 +2833,8 @@ function showDissent(d){
 async function dissentResolve(choice){
   const p=_pendingDissent; if(!p) return; _pendingDissent=null;
   try{ await J('/v1/tasks/'+p.id+'/dissent',{method:'POST',headers:MIND_JSON,body:JSON.stringify({objection:p.d.objection,grounds:(p.d.grounds||[]).map(g=>g.id),choice})}); }catch(_){}
-  if(choice==='proceed'){ notify('Proceeding — decision signed','ok'); runTaskLive(p.id); }
-  else { notify('Held back — decision signed','ok'); openTask(p.id,true); }
+  if(choice==='proceed'){ notify('Proceeding - decision signed','ok'); runTaskLive(p.id); }
+  else { notify('Held back - decision signed','ok'); openTask(p.id,true); }
 }
 function ccAdvanced(){ return ccHead('Advanced','Daemon, ledger, and the danger zone.')+`
     <div class="scard"><h3>Audit ledger</h3>
@@ -2653,11 +2842,53 @@ function ccAdvanced(){ return ccHead('Advanced','Daemon, ledger, and the danger 
       <div class="sactions"><button class="sbtn" onclick="verifyLedgerNow()">Verify ledger now</button><span class="grow"></span></div></div>
     <div class="scard"><h3>Daemon</h3>
       <div class="desc">Engram sleeps to zero when idle and wakes on the next request. Restart applies boot-time settings (the embedder).</div>
-      <div class="sactions"><button class="sbtn" onclick="restartDaemon()">Restart daemon</button><span class="grow"></span></div></div>`;
+      <div class="sactions"><button class="sbtn" onclick="restartDaemon()">Restart daemon</button><span class="grow"></span></div></div>
+    <div class="scard"><h3>Settings backup</h3>
+      <div class="desc">Export your configuration (provider choice, model, embedder, cost cap, MCP servers) to a file, or import it on another machine. API keys and secrets are <b>never</b> included - re-enter them after importing.</div>
+      <div class="sactions"><button class="sbtn" onclick="exportSettings()">Export settings...</button><button class="sbtn" onclick="document.getElementById('importSettingsFile').click()">Import settings...</button><span class="grow"></span></div>
+      <input type="file" id="importSettingsFile" accept="application/json,.json" style="display:none" onchange="importSettings(this)"></div>`;
+}
+// Export the non-secret settings as a portable JSON file. The /v1/config view is already
+// redacted (no keys), so a backup can never leak a secret; restoring re-enters keys by hand.
+async function exportSettings(){
+  try{
+    const c = await J('/v1/config');
+    const out = {
+      _engram_settings: 1,
+      provider: { kind:c.provider?.kind, base_url:c.provider?.base_url, model:c.provider?.model },
+      embed: c.embed, cost: c.cost, mcp: c.mcp || [],
+    };
+    const blob = new Blob([JSON.stringify(out,null,2)], {type:'application/json'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = 'engram-settings.json';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+    notify('Settings exported (no secrets)','ok');
+  }catch(e){ notify('Export failed: '+e.message); }
+}
+async function importSettings(input){
+  const file = input.files && input.files[0]; input.value='';
+  if(!file) return;
+  try{
+    const text = await file.text();
+    const data = JSON.parse(text);
+    // Only ever apply the known non-secret fields - never trust arbitrary keys from a file.
+    const patch = {};
+    if(data.provider && typeof data.provider==='object'){
+      patch.provider = { kind:data.provider.kind||'mock', base_url:data.provider.base_url||'', model:data.provider.model||'' };
+    }
+    if(data.embed && typeof data.embed==='object') patch.embed = { kind:data.embed.kind||'trigram', model_dir:data.embed.model_dir||'' };
+    if(data.cost && typeof data.cost==='object' && data.cost.task_token_budget) patch.cost = { task_token_budget: parseInt(data.cost.task_token_budget,10)||250000 };
+    if(Array.isArray(data.mcp)) patch.mcp = data.mcp.filter(s=>s&&s.name&&s.command).map(s=>({name:String(s.name),command:String(s.command),args:Array.isArray(s.args)?s.args.map(String):[]}));
+    if(!Object.keys(patch).length){ notify('No recognizable settings in that file'); return; }
+    await J('/v1/config',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(patch)});
+    await ccReload();
+    notify('Settings imported - re-enter any API keys','ok');
+  }catch(e){ notify('Import failed: '+e.message); }
 }
 function ccAbout(c){ return ccHead('About &amp; FAQ','What Engram is.')+`
-    <div class="scard"><div class="ph"><b>Engram</b> — a local AI workspace that proves what it did, remembers who you are, and costs nothing at rest.<br><br>
-    <b>Why it’s different</b> · every action is signed into a hash-chained ledger you can verify offline — a glass-box receipt no black box can reproduce. The brain grows a model of you across sessions. It sleeps to zero when idle. Tools can’t send your context to the web unless you allow it.<br><br>
+    <div class="scard"><div class="ph"><b>Engram</b> - a local AI workspace that proves what it did, remembers who you are, and costs nothing at rest.<br><br>
+    <b>Why it\'s different</b> · every action is signed into a hash-chained ledger you can verify offline - a glass-box receipt no black box can reproduce. The brain grows a model of you across sessions. It sleeps to zero when idle. Tools can\'t send your context to the web unless you allow it.<br><br>
     <b>Verify offline</b> · run <code>engramd verify ~/.engram</code> to re-walk the signed chain without trusting the running daemon.<br><br>
     Version ${esc((c&&c.version)||'0.1.0')}. The ledger spine sits at the bottom of every screen.</div></div>`;
 }
@@ -2682,14 +2913,18 @@ function collectMcp(){
 
 function wireProviderKind(){
   const sel=document.getElementById('pkind'); if(!sel) return;
-  const apply=()=>{
+  // `setVal` true only on an explicit backend switch: fill the canonical base URL + first model
+  // so the user isn't left guessing the endpoint. On initial mount we keep the saved values.
+  const apply=(setVal)=>{
     const P=PROVIDERS[sel.value]||PROVIDERS.mock;
-    document.getElementById('pbase').placeholder = P.base || 'default';
+    const base=document.getElementById('pbase'), model=document.getElementById('pmodel');
+    base.placeholder = P.base || 'default';
+    if(setVal){ base.value = P.base || ''; if(model && (!model.value || true)) model.value = P.models[0]||''; }
     document.getElementById('keyHint').textContent = P.needsKey ? ('key format: '+P.keyHint) : 'no API key needed for this backend';
     document.getElementById('keyField').style.opacity = P.needsKey ? '1' : '.55';
     const dl=document.getElementById('modellist'); if(dl) dl.innerHTML=P.models.map(m=>`<option value="${escAttr(m)}"></option>`).join('');
   };
-  sel.addEventListener('change', apply); apply();
+  sel.addEventListener('change', ()=>apply(true)); apply(false);
 }
 
 // Only one settings category is mounted at a time, so collect just the fields that exist -
@@ -2713,16 +2948,16 @@ async function saveSettings(){
     if(patch.security && patch.security.api_token) setClientToken(patch.security.api_token);
     const mcpShort = typeof res.mcp_requested==='number' && res.mcp_connected<res.mcp_requested;
     let msg='Saved';
-    if(mcpShort) msg='Saved — only '+res.mcp_connected+' of '+res.mcp_requested+' MCP servers connected';
-    else if(res.restart_needed) msg='Saved — the embeddings change needs a restart';
+    if(mcpShort) msg='Saved - only '+res.mcp_connected+' of '+res.mcp_requested+' MCP servers connected';
+    else if(res.restart_needed) msg='Saved - the embeddings change needs a restart';
     notify(msg, mcpShort?'bad':'ok');
     await ccReload();
     poll();
-  }catch(e){ notify('Save failed — '+e.message); }
+  }catch(e){ notify('Save failed - '+e.message); }
 }
 
 async function testProvider(){
-  const line=document.getElementById('testline'); line.className='testline'; line.textContent='Testing…';
+  const line=document.getElementById('testline'); line.className='testline'; line.textContent='Testing...';
   const patch={ provider:{ kind:gv('pkind'), model:gv('pmodel'), base_url:gv('pbase') } };
   const k=gv('pkey'); if(k) patch.provider.api_key=k;
   try{
@@ -2737,39 +2972,39 @@ async function clearSecret(section,flag){
   try{ await J('/v1/config',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
     if(flag==='clear_api_token') setClientToken('');   // the gate is now open again
     notify('Removed','ok'); await ccReload(); poll(); }
-  catch(e){ notify('Failed — '+e.message); }
+  catch(e){ notify('Failed - '+e.message); }
 }
 
 async function savePersona(){
   const el=document.getElementById('persona'); if(!el) return;
   try{ await J('/v1/persona',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({persona:el.value})});
-    notify('Persona saved — it shapes the next run','ok'); }
-  catch(e){ notify('Save failed — '+e.message); }
+    notify('Persona saved - it shapes the next run','ok'); }
+  catch(e){ notify('Save failed - '+e.message); }
 }
 
 let _restarting=false;
 async function restartDaemon(){
   if(_restarting) return;
   if(!await askConfirm({title:'Restart Engram?',message:'This applies embeddings changes and leaves it unavailable for a few seconds. Any running task is interrupted.',ok:'Restart'})) return;
-  _restarting=true; notify('Restarting…','ok');
-  try{ await J('/v1/restart',{method:'POST',headers:{'content-type':'application/json'},body:'{}'}); }catch(_){/* the connection drops as it exits — expected */}
+  _restarting=true; notify('Restarting...','ok');
+  try{ await J('/v1/restart',{method:'POST',headers:{'content-type':'application/json'},body:'{}'}); }catch(_){/* the connection drops as it exits - expected */}
   let n=0; const iv=setInterval(async()=>{
     n++;
     try{ const h=await fetch('/health'); if(h.ok){ clearInterval(iv); _restarting=false; notify('Engram is back','ok'); ccReload(); poll(); return; } }catch(_){}
-    if(n>40){ clearInterval(iv); _restarting=false; notify('Engram didn’t come back on its own — relaunch the app or start the daemon.'); }
+    if(n>40){ clearInterval(iv); _restarting=false; notify('Engram didn\'t come back on its own - relaunch the app or start the daemon.'); }
   }, 500);
 }
 
 // ---- command palette (⌘K): one searchable place for navigation, actions, and settings ----
 async function verifyLedgerNow(){
   try{ const v=await J('/v1/ledger/verify'); notify(v.ok?('Ledger verified · '+v.entries+' entries · intact'):'⚠ Tamper detected', v.ok?'ok':'bad'); poll(); }
-  catch(e){ notify('Couldn’t verify — '+e.message); }
+  catch(e){ notify('Couldn\'t verify - '+e.message); }
 }
 
 // ---- the glass-box receipt: the signed proof behind the spine's claim ----
 async function openReceipt(){
   const el=document.getElementById('receipt'); el.hidden=false;
-  el.innerHTML='<div class="r-head"><span class="r-seal"></span><span class="r-title">Ledger receipt</span><span class="r-sub">reading…</span><button class="r-x" onclick="closeReceipt()">✕</button></div><div class="r-body"><div class="r-row"><span></span><span class="r-kind">walking the signed chain…</span><span></span></div></div>';
+  el.innerHTML='<div class="r-head"><span class="r-seal"></span><span class="r-title">Ledger receipt</span><span class="r-sub">reading...</span><button class="r-x" onclick="closeReceipt()">✕</button></div><div class="r-body"><div class="r-row"><span></span><span class="r-kind">walking the signed chain...</span><span></span></div></div>';
   try{ const [tail,pk,v]=await Promise.all([J('/v1/ledger/tail?n=8'),J('/v1/ledger/pubkey'),J('/v1/ledger/verify')]); renderReceipt(tail,pk,v); }
   catch(e){ const s=el.querySelector('.r-sub'); if(s){ s.textContent='unreachable'; s.style.color='var(--danger)'; } }
 }
@@ -2779,25 +3014,25 @@ function renderReceipt(tail,pk,v){
   const rows=(tail||[]).slice().reverse().map(e=>{
     const act=e.actor?`<small>· ${esc(e.actor)}</small>`:'';
     return `<div class="r-row"><span class="r-seq">${e.seq}</span><span class="r-kind">${esc(e.kind||'')} ${act}</span>`+
-      `<span class="r-hash" title="copy ${esc(e.hash||'')}" onclick="copyHash('${esc(e.hash||'')}')">${esc((e.hash||'').slice(0,10))}…</span></div>`;
+      `<span class="r-hash" title="copy ${esc(e.hash||'')}" onclick="copyHash('${esc(e.hash||'')}')">${esc((e.hash||'').slice(0,10))}...</span></div>`;
   }).join('');
   el.innerHTML=`
     <div class="r-head"><span class="r-seal"></span><span class="r-title">Ledger receipt</span>
       <span class="r-sub" style="color:${v&&v.ok?'var(--accent)':'var(--danger)'}">${v&&v.ok?('✓ verified · '+v.entries):'⚠ tamper'}</span>
       <button class="r-x" onclick="closeReceipt()" title="Close (Esc)">✕</button></div>
     <div class="r-body">${rows||'<div class="r-row"><span></span><span class="r-kind">no entries yet</span><span></span></div>'}</div>
-    <div class="r-meta"><span>head&nbsp; <b>${esc(head.slice(0,18))}…</b></span><span>key&nbsp;&nbsp; <b>${esc((pk&&pk.pubkey||'').slice(0,18))}…</b> · ${esc((pk&&pk.alg)||'ed25519')}</span></div>
+    <div class="r-meta"><span>head&nbsp; <b>${esc(head.slice(0,18))}...</b></span><span>key&nbsp;&nbsp; <b>${esc((pk&&pk.pubkey||'').slice(0,18))}...</b> · ${esc((pk&&pk.alg)||'ed25519')}</span></div>
     <div class="r-foot"><button class="sbtn" onclick="reverify()">Re-verify offline</button><span class="hint">engramd verify ~/.engram</span></div>`;
 }
 function closeReceipt(){ const el=document.getElementById('receipt'); if(el) el.hidden=true; }
 async function reverify(){
   const el=document.getElementById('receipt'), sub=el.querySelector('.r-sub'), seal=el.querySelector('.r-seal');
-  if(sub){ sub.textContent='re-walking…'; sub.style.color='var(--text-muted)'; }
+  if(sub){ sub.textContent='re-walking...'; sub.style.color='var(--text-muted)'; }
   try{ const v=await J('/v1/ledger/verify');
     if(sub){ sub.textContent=v.ok?('✓ verified · '+v.entries):'⚠ tamper detected'; sub.style.color=v.ok?'var(--accent)':'var(--danger)'; }
     if(v.ok&&seal){ seal.style.animation='none'; void seal.offsetWidth; seal.style.animation='breath var(--dur-4) var(--ease-inout)'; }
     notify(v.ok?('Re-verified offline · '+v.entries+' entries, the chain is intact'):'Tamper detected', v.ok?'ok':'bad'); poll();
-  }catch(e){ notify('Couldn’t verify — '+e.message); }
+  }catch(e){ notify('Couldn\'t verify - '+e.message); }
 }
 function copyHash(h){ try{ navigator.clipboard.writeText(h); notify('Hash copied','ok'); }catch(_){ } }
 document.addEventListener('click', e=>{ const r=document.getElementById('receipt'); if(r&&!r.hidden && !e.target.closest('#receipt') && !e.target.closest('#ledgerChip') && !e.target.closest('.rcpt-chip')) closeReceipt(); });
@@ -2807,7 +3042,7 @@ let _rcptTask=null;
 async function openTaskReceipt(id,e){
   if(e) e.stopPropagation(); _rcptTask=id;
   const el=document.getElementById('receipt'); el.hidden=false;
-  el.innerHTML='<div class="r-head"><span class="r-seal"></span><span class="r-title">Task receipt</span><span class="r-sub">reading…</span><button class="r-x" onclick="closeReceipt()">✕</button></div><div class="r-body"><div class="r-row"><span></span><span class="r-kind">loading the signed run…</span><span></span></div></div>';
+  el.innerHTML='<div class="r-head"><span class="r-seal"></span><span class="r-title">Task receipt</span><span class="r-sub">reading...</span><button class="r-x" onclick="closeReceipt()">✕</button></div><div class="r-body"><div class="r-row"><span></span><span class="r-kind">loading the signed run...</span><span></span></div></div>';
   try{ const r=await J('/v1/tasks/'+encodeURIComponent(id)+'/receipt'); renderTaskReceipt(r); }
   catch(e2){ const s=el.querySelector('.r-sub'); if(s){ s.textContent=esc(e2.message); s.style.color='var(--danger)'; } }
 }
@@ -2816,7 +3051,7 @@ function renderTaskReceipt(r){
   const rows = steps.length ? steps.map((s,i)=>{
     const h=(s.ledger_hash||'').slice(0,10), ok=s.ok?'<span style="color:var(--accent)">✓</span>':'<span style="color:var(--danger)">✕</span>';
     return `<div class="r-row"><span class="r-seq">${s.ledger_seq||(i+1)}</span><span class="r-kind">${ok} ${esc(s.tool||'')}</span>`+
-      `<span class="r-hash" title="copy ${esc(s.ledger_hash||'')}" onclick="copyHash('${esc(s.ledger_hash||'')}')">${h?esc(h)+'…':'—'}</span></div>`;
+      `<span class="r-hash" title="copy ${esc(s.ledger_hash||'')}" onclick="copyHash('${esc(s.ledger_hash||'')}')">${h?esc(h)+'...':'-'}</span></div>`;
   }).join('') : '<div class="r-row"><span></span><span class="r-kind">no tools used · the answer is signed at the head</span><span></span></div>';
   const ok=r.steps_match_ledger;
   el.innerHTML=`
@@ -2824,7 +3059,7 @@ function renderTaskReceipt(r){
       <span class="r-sub" style="color:${ok?'var(--accent)':'var(--danger)'}">${ok?'✓ steps match ledger':'⚠ inconsistent'}</span>
       <button class="r-x" onclick="closeReceipt()" title="Close (Esc)">✕</button></div>
     <div class="r-body">${rows}</div>
-    <div class="r-meta"><span>head&nbsp; <b>${esc((r.ledger_head||'').slice(0,18))}…</b></span><span>key&nbsp;&nbsp; <b>${esc((r.pubkey||'').slice(0,18))}…</b> · ${esc(r.alg||'ed25519')}</span></div>
+    <div class="r-meta"><span>head&nbsp; <b>${esc((r.ledger_head||'').slice(0,18))}...</b></span><span>key&nbsp;&nbsp; <b>${esc((r.pubkey||'').slice(0,18))}...</b> · ${esc(r.alg||'ed25519')}</span></div>
     <div class="r-foot"><button class="sbtn" onclick="recheckReceipt()">Re-check</button><span class="hint">${esc(r.verify||'engramd verify ~/.engram')}</span></div>`;
 }
 function recheckReceipt(){ if(_rcptTask) openTaskReceipt(_rcptTask); }
@@ -2881,7 +3116,7 @@ window.addEventListener('keydown', e=>{
 
 // ---- Terminal - the glass-box shell (your commands signed into the ledger, like the agent's) ----
 let TERM = { cwd:null, parent:null, tree:[], log:[], hist:[], hi:-1, busy:false };
-function termShort(p){ if(!p) return ''; const s=p.split('/').filter(Boolean); return (s.length>2?'…/':'/')+s.slice(-2).join('/'); }
+function termShort(p){ if(!p) return ''; const s=p.split('/').filter(Boolean); return (s.length>2?'.../':'/')+s.slice(-2).join('/'); }
 const attrJson = x => escAttr(JSON.stringify(x));
 async function loadTree(path){
   try{ return await J(tok('/v1/fs'+(path?('?path='+encodeURIComponent(path)):''))); }catch(_){ return null; }
@@ -2894,19 +3129,19 @@ async function renderTerminal(){
     v.innerHTML=`<div class="term-gate"><div class="tg-card">
       <div class="tg-ic">${ICONS.Terminal}</div>
       <h2>A terminal that keeps no secrets</h2>
-      <p>Engram signs every command — the agent's and your own — into one tamper-evident ledger, so even the lines you type by hand stay auditable. No human-shaped hole in the glass box.</p>
+      <p>Engram signs every command - the agent's and your own - into one tamper-evident ledger, so even the lines you type by hand stay auditable. No human-shaped hole in the glass box.</p>
       <button class="primary" onclick="enableShell()">Enable shell access</button>
       <div class="tg-fine">You can turn this off any time in Settings › Security.</div>
     </div></div>`;
     return;
   }
   TERM.cwd=fs.path; TERM.parent=fs.parent; TERM.tree=fs.entries||[];
-  if(!TERM.log.length) TERM.log=[{k:'sys',t:'Engram terminal — every command you run is signed into the ledger. Try ls, git status, pwd. Type clear to reset.'}];
+  if(!TERM.log.length) TERM.log=[{k:'sys',t:'Engram terminal - every command you run is signed into the ledger. Try ls, git status, pwd. Type clear to reset.'}];
   v.innerHTML=`<div class="term-wrap">
     <aside class="ftree" id="ftree"></aside>
     <div class="term" id="term">
       <div class="term-out" id="termOut"></div>
-      <div class="term-in"><span class="term-prompt" id="termPrompt">${esc(termShort(TERM.cwd))} $</span><input id="termCmd" class="term-cmd" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="run a command…"></div>
+      <div class="term-in"><span class="term-prompt" id="termPrompt">${esc(termShort(TERM.cwd))} $</span><input id="termCmd" class="term-cmd" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="run a command..."></div>
     </div></div>`;
   renderTree(); paintTerm();
   const inp=document.getElementById('termCmd'); inp.onkeydown=termKey; inp.focus();
@@ -2955,7 +3190,7 @@ async function runTermCmd(cmd){
     const pr=document.getElementById('termPrompt'); if(pr) pr.textContent=termShort(TERM.cwd)+' $';
     const fs=await loadTree(TERM.cwd); if(fs && !fs.denied){ TERM.parent=fs.parent; TERM.tree=fs.entries||[]; renderTree(); }
     paintTerm();
-  }catch(e){ TERM.log.push({k:'err',t:'(could not run — '+(e.message||'error')+')'}); paintTerm(); }
+  }catch(e){ TERM.log.push({k:'err',t:'(could not run - '+(e.message||'error')+')'}); paintTerm(); }
   finally{ TERM.busy=false; const i2=document.getElementById('termCmd'); if(i2){ i2.classList.remove('term-busy'); i2.focus(); } }
 }
 async function termCd(path){
@@ -2970,7 +3205,7 @@ function termInsert(name){ const inp=document.getElementById('termCmd'); if(!inp
 async function enableShell(){
   try{ await J('/v1/policy',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({allow_shell:true})});
     if(typeof CFG!=='undefined' && CFG && CFG.security) CFG.security.allow_shell=true; renderTerminal(); }
-  catch(e){ notify('Couldn’t enable shell — '+e.message); }
+  catch(e){ notify('Couldn\'t enable shell - '+e.message); }
 }
 // ---- Activity: the full, browsable, verifiable signed ledger ----
 const ACT={ entries:[], filter:'all', verify:{}, pubkey:{} };
@@ -3005,12 +3240,12 @@ async function renderActivity(){
   ACT.entries=(tail||[]).slice().reverse(); ACT.verify=v; ACT.pubkey=pk;
   document.getElementById('view').innerHTML=`<div class="activity">
     <div class="act-title">Activity</div>
-    <div class="act-sub">Every action Engram and you take is appended to a hash-chained, Ed25519-signed ledger — tamper-evident, and verifiable offline by anyone, even someone who doesn't trust this machine (<code>engramd verify</code>).</div>
+    <div class="act-sub">Every action Engram and you take is appended to a hash-chained, Ed25519-signed ledger - tamper-evident, and verifiable offline by anyone, even someone who doesn't trust this machine (<code>engramd verify</code>).</div>
     <div class="act-verify ${v.ok?'ok':'bad'}"><span class="act-seal">${v.ok?ACT_SEAL_OK:ACT_SEAL_BAD}</span>
       <div class="av-text"><div class="av-status">${v.ok?'Chain verified':'Tamper detected'}</div>
-        <div class="av-meta">${v.entries||ACT.entries.length} signed entries · key <span class="av-key" title="${escAttr(pk.pubkey||'')}" onclick="navigator.clipboard&&navigator.clipboard.writeText('${esc(pk.pubkey||'')}')">${esc((pk.pubkey||'').slice(0,16))}…</span></div></div>
+        <div class="av-meta">${v.entries||ACT.entries.length} signed entries · key <span class="av-key" title="${escAttr(pk.pubkey||'')}" onclick="navigator.clipboard&&navigator.clipboard.writeText('${esc(pk.pubkey||'')}')">${esc((pk.pubkey||'').slice(0,16))}...</span></div></div>
       <button class="act-reverify" onclick="renderActivity()">Re-verify</button></div>
-    <div class="act-controls"><input class="act-search" id="actSearch" placeholder="Search the ledger…" oninput="actPaint()">
+    <div class="act-controls"><input class="act-search" id="actSearch" placeholder="Search the ledger..." oninput="actPaint()">
       <div class="act-filters">${['all','agent','user','core'].map(f=>`<button class="${ACT.filter===f?'on':''}" data-f="${f}" onclick="actSetFilter('${f}')">${f==='all'?'All':(f==='user'?'You':f[0].toUpperCase()+f.slice(1))}</button>`).join('')}</div></div>
     <div class="act-list" id="actList"></div></div>`;
   actPaint();
@@ -3027,7 +3262,7 @@ function actPaint(){
     return `<div class="act-row"><span class="act-dot" style="background:${a.color};color:${a.color}"></span>
       <div class="act-main"><div class="act-kind">${esc(a.label)}</div>${a.summary?`<div class="act-summary">${esc(a.summary.slice(0,220))}</div>`:''}
         <div class="act-meta2"><span class="act-time">${esc(fmtAgo(e.ts_ms))}</span><span class="act-by">${esc(a.actor)}</span><span>#${esc(String(e.seq))}</span>
-          <span class="act-hash" title="signed hash — click to copy" onclick="navigator.clipboard&&navigator.clipboard.writeText('${escAttr(e.hash||'')}')">◇ ${esc((e.hash||'').slice(0,10))}</span></div></div></div>`;
+          <span class="act-hash" title="signed hash - click to copy" onclick="navigator.clipboard&&navigator.clipboard.writeText('${escAttr(e.hash||'')}')">◇ ${esc((e.hash||'').slice(0,10))}</span></div></div></div>`;
   }).join('') || '<div class="ses-empty" style="padding:24px 2px">No matching entries.</div>';
 }
 function renderView(){
@@ -3079,6 +3314,8 @@ async function boot(){
   poll(); connectEvents();
   // Chips poll + a slow board fallback if SSE is unavailable.
   setInterval(async()=>{ await poll(); await refreshTasks(); }, 3000);
+  // First run with no live model: offer a one-screen setup wizard (once).
+  engramMaybeOnboard();
 }
 // boot() is invoked at the very END of the script (after every appended feature module below),
 // so it can safely reference consts those modules declare. Calling it here would hit a
@@ -3094,7 +3331,7 @@ const ARTS = { open:false, current:null, byKey:{}, order:[], _sig:'' };
 // Stable identity for an artifact across streaming repaints: short FNV-1a hash of lang+content.
 
 // codeBlock() renders an *unlabeled* fence's header as the literal word "code" (esc(lang||'code')),
-// so when we read it back from .cb-head span we must fold "code"/"text" to '' — otherwise a
+// so when we read it back from .cb-head span we must fold "code"/"text" to '' - otherwise a
 // heading-only markdown block (lang reported as "code") would never qualify and the language tag
 // would read a bogus "CODE".
 function artNormLang(l){ l=(l||'').toLowerCase().trim(); return (l==='code'||l==='text')?'':l; }
@@ -3225,7 +3462,7 @@ function artRenderPane(){
     const btn=e.currentTarget;
     (navigator.clipboard?navigator.clipboard.writeText(a.code):Promise.reject())
       .then(()=>{ btn.textContent='Copied'; btn.classList.add('ok'); setTimeout(()=>{ btn.textContent='Copy'; btn.classList.remove('ok'); },1200); })
-      .catch(()=>notify('Couldn’t copy to clipboard'));
+      .catch(()=>notify('Couldn\'t copy to clipboard'));
   });
   pane.querySelector('#artDl').addEventListener('click', ()=>artDownload(a));
   pane.querySelectorAll('.art-tab').forEach(t=> t.addEventListener('click',()=>artOpen(t.dataset.k)) );
@@ -3252,7 +3489,7 @@ const CAD_GLYPH = {
   weekdays: SVG('<rect x="3" y="5" width="18" height="16" rx="2.4"/><path d="M3 9.5h18M8 3v3.5M16 3v3.5"/><path d="M8.5 14h7"/>'),
   weekly:   SVG('<rect x="3" y="5" width="18" height="16" rx="2.4"/><path d="M3 9.5h18M8 3v3.5M16 3v3.5"/><circle cx="12" cy="15" r="1.7"/>'),
 };
-const CAD_DOW = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];   // recur.rs: 0=Mon … 6=Sun
+const CAD_DOW = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];   // recur.rs: 0=Mon ... 6=Sun
 function cadHM(h, m){
   h = (h|0); m = (m|0);
   // hour/min are the user's local wall-clock now (recur.rs schedules in local time), so the
@@ -3271,7 +3508,7 @@ function cadDur(secs){
 // Turn a Recurrence (serde tag "kind", snake_case) into { label, glyph, kind }.
 // Field names verified against crates/engram-sched/src/recur.rs.
 function cadenceSchedule(rec){
-  if(!rec || !rec.kind) return { kind:'once', label:'—', glyph:CAD_GLYPH.once };
+  if(!rec || !rec.kind) return { kind:'once', label:'-', glyph:CAD_GLYPH.once };
   switch(rec.kind){
     case 'once': {
       const d = new Date(rec.at_ms);
@@ -3284,7 +3521,7 @@ function cadenceSchedule(rec){
     case 'daily':
       return { kind:'daily', label:'Daily ' + cadHM(rec.hour, rec.min), glyph:CAD_GLYPH.daily };
     case 'weekdays':
-      return { kind:'weekdays', label:'Mon–Fri ' + cadHM(rec.hour, rec.min), glyph:CAD_GLYPH.weekdays };
+      return { kind:'weekdays', label:'Mon-Fri ' + cadHM(rec.hour, rec.min), glyph:CAD_GLYPH.weekdays };
     case 'weekly':
       return { kind:'weekly', label:(CAD_DOW[(rec.weekday|0)%7]) + ' ' + cadHM(rec.hour, rec.min), glyph:CAD_GLYPH.weekly };
     default:
@@ -3355,7 +3592,7 @@ function schedCardHtml(job){
 async function renderScheduleView(){
   let jobs = [];
   try { jobs = await J('/v1/schedule') || []; }
-  catch(e){ notify('Couldn’t load schedules — ' + e.message); jobs = []; }
+  catch(e){ notify('Couldn\'t load schedules - ' + e.message); jobs = []; }
   jobs.sort((a,b)=> (a.next_fire_ms||0) - (b.next_fire_ms||0));   // soonest first
   const n = jobs.length;
   const list = n
@@ -3363,7 +3600,7 @@ async function renderScheduleView(){
     : `<div class="sched-empty">
         <span class="se-glyph">${ICONS.Schedule}</span>
         <div class="se-title">Nothing scheduled yet</div>
-        <div class="se-hint">Engram can run a task on a cadence and wake itself to do it — even from sleep. Try <code>every Monday at 9am</code> or <code>every 30 minutes</code>.</div>
+        <div class="se-hint">Engram can run a task on a cadence and wake itself to do it - even from sleep. Try <code>every Monday at 9am</code> or <code>every 30 minutes</code>.</div>
       </div>`;
   document.getElementById('view').innerHTML = `<div class="panes"><div class="pane">
     <div class="sched-head"><h2>Schedule a recurring run</h2><span class="sched-count">${n} ${n===1?'job':'jobs'}</span></div>
@@ -3404,7 +3641,7 @@ function schedPreviewCadence(){
         + (next ? `<span style="color:var(--text-muted)">first run in ${esc(next)}</span>` : '');
     } else {
       out.className = 'sched-preview';
-      out.innerHTML = `<span style="color:var(--text-muted)">${esc(when)} — not a cadence I understand</span>`;
+      out.innerHTML = `<span style="color:var(--text-muted)">${esc(when)} - not a cadence I understand</span>`;
     }
   }, 200);
 }
@@ -3419,7 +3656,7 @@ async function addJobPro(){
       body: JSON.stringify({ name, when, payload:{ title:name } }) });
     notify('Scheduled · ' + name, 'ok');
     renderScheduleView();
-  } catch(e){ notify('Couldn’t schedule — ' + e.message); }
+  } catch(e){ notify('Couldn\'t schedule - ' + e.message); }
 }
 
 // Run-now: create+run a task from the job payload via the new endpoint; opens its receipt.
@@ -3433,19 +3670,19 @@ async function runJobNow(id, e){
     const r = await J('/v1/schedule/' + encodeURIComponent(id) + '/run', { method:'POST' });
     notify('Running now', 'ok');
     if(r && r.task_id) setTimeout(()=>openTaskReceipt(r.task_id), 250);
-  } catch(err){ notify('Couldn’t run job — ' + err.message); }
+  } catch(err){ notify('Couldn\'t run job - ' + err.message); }
   finally { SCHED_RUNNING.delete(id); if(state.route === 'Schedule') renderScheduleView(); }
 }
 
 // Delete: wired to the existing DELETE /v1/schedule/{id}.
 async function deleteJob(id, name, e){
   if(e) e.stopPropagation();
-  if(!await askConfirm({title:'Delete schedule?',message:'Delete “'+name+'”? Future runs will stop.',ok:'Delete',danger:true})) return;
+  if(!await askConfirm({title:'Delete schedule?',message:'Delete "'+name+'"? Future runs will stop.',ok:'Delete',danger:true})) return;
   try {
     await J('/v1/schedule/' + encodeURIComponent(id), { method:'DELETE' });
     notify('Schedule deleted', 'ok');
     renderScheduleView();
-  } catch(err){ notify('Couldn’t delete — ' + err.message); }
+  } catch(err){ notify('Couldn\'t delete - ' + err.message); }
 }
 
 // ===================== VOICE: dictation + hands-free conversation =====================
@@ -3492,7 +3729,7 @@ function voiceToggleDictation(btn){
   if(!c){ return; }
   if(VOICE.mode==='dictate'){ voiceStopRecog(); return; }
   if(!VOICE.supported){
-    notify('Voice input isn’t available in this window. You can still hear replies in voice chat.');
+    notify('Voice input isn\'t available in this window. You can still hear replies in voice chat.');
     return;
   }
   voiceStopRecog(); // ensure clean slate (e.g. a conversation session)
@@ -3522,7 +3759,7 @@ function voiceToggleDictation(btn){
   let started=true;
   try{ r.start(); }catch(_){ VOICE.mode=null; VOICE.recog=null; started=false; }
   voiceSyncDictateUI();
-  if(started) notify('Listening… speak, then tap the mic to stop.', 'ok');
+  if(started) notify('Listening... speak, then tap the mic to stop.', 'ok');
 }
 
 function voiceStopRecog(){
@@ -3560,16 +3797,16 @@ function voiceOpenConversation(){
     <button class="voice-close" onclick="voiceCloseConversation()" aria-label="Close voice (Esc)">✕</button>
     <div class="voice-stage">
       <canvas id="voiceOrb" width="320" height="320" aria-hidden="true"></canvas>
-      <div class="voice-status" id="voiceStatus">Connecting…</div>
+      <div class="voice-status" id="voiceStatus">Connecting...</div>
       <div class="voice-transcript" id="voiceTranscript" aria-live="polite"></div>
-      ${noStt ? `<div class="voice-fallnote">Speech input isn’t available in this window — Engram will still <b>speak its replies</b>. Type below to talk.</div>` : ''}
+      ${noStt ? `<div class="voice-fallnote">Speech input isn\'t available in this window - Engram will still <b>speak its replies</b>. Type below to talk.</div>` : ''}
       <div class="voice-controls">
         <button class="voice-mute" id="voiceMute" onclick="voiceToggleSpeak()" title="Mute replies" aria-label="Mute replies">${voiceSpeakerSvg(true)}</button>
         <button class="voice-orb-btn" id="voiceBarge" onclick="voiceBargeIn()" aria-label="${noStt?'Restart':'Tap to interrupt and talk'}" title="${noStt?'Restart':'Tap to interrupt / talk'}">${voiceMicSvg()}</button>
         <button class="voice-end" onclick="voiceCloseConversation()">End</button>
       </div>
       <form class="voice-typed" id="voiceTypedRow" onsubmit="voiceTypedSubmit(event)">
-        <input id="voiceTypedInput" placeholder="${noStt?'Type your message…':'…or type instead'}" autocomplete="off" spellcheck="false">
+        <input id="voiceTypedInput" placeholder="${noStt?'Type your message...':'...or type instead'}" autocomplete="off" spellcheck="false">
         <button type="submit" aria-label="Send">↵</button>
       </form>
     </div>`;
@@ -3579,7 +3816,7 @@ function voiceOpenConversation(){
   voiceOrbLoop();
   voiceSetPhase('idle');
   if(noStt){
-    voiceSetStatus('Voice replies ready — type to begin.');
+    voiceSetStatus('Voice replies ready - type to begin.');
     const ti=document.getElementById('voiceTypedInput'); if(ti) ti.focus();
   } else {
     voiceStartListening();
@@ -3615,7 +3852,7 @@ function voiceBargeIn(){
   clearInterval(_voiceEndTimer); _voiceEndTimer=0;
   if(!VOICE.supported){
     const ti=document.getElementById('voiceTypedInput'); if(ti) ti.focus();
-    voiceSetStatus('Type your message…');
+    voiceSetStatus('Type your message...');
     return;
   }
   voiceStartListening();
@@ -3639,8 +3876,8 @@ function voiceStartListening(){
   };
   r.onerror=(e)=>{
     if(e.error==='not-allowed'||e.error==='service-not-allowed'){
-      notify('Microphone permission denied — switch to typing.');
-      voiceSetPhase('idle'); voiceSetStatus('Mic blocked — type below.');
+      notify('Microphone permission denied - switch to typing.');
+      voiceSetPhase('idle'); voiceSetStatus('Mic blocked - type below.');
       const ti=document.getElementById('voiceTypedInput'); if(ti) ti.focus();
     } else if(e.error==='no-speech'){
       if(VOICE.open && VOICE.phase==='listening') voiceStartListening();
@@ -3656,14 +3893,14 @@ function voiceStartListening(){
     }
   };
   VOICE.recog=r; VOICE.mode='converse';
-  try{ r.start(); voiceSetPhase('listening'); voiceSetStatus('Listening…'); }
+  try{ r.start(); voiceSetPhase('listening'); voiceSetStatus('Listening...'); }
   catch(_){ /* a start() race; ignore */ }
 }
 
 // Push a finished utterance through the existing streaming chat path, then speak the reply.
 async function voiceSendTurn(text){
   voiceStopRecog();
-  voiceSetPhase('thinking'); voiceSetStatus('Thinking…');
+  voiceSetPhase('thinking'); voiceSetStatus('Thinking...');
   voiceRenderTranscript(text, 'you');
   // Settle on a real session AND hydrate WS.byId[sid] the way chatSay does, so the turn-mirror
   // below can't silently no-op when the session object isn't loaded yet.
@@ -3694,11 +3931,11 @@ async function voiceSendTurn(text){
         const data=dl.join('\n');
         if(ev==='token'){ reply+=data; voiceRenderTranscript(reply,'engram'); voiceSpeakStreaming(reply,false); }
         else if(ev==='done'){ try{const d=JSON.parse(data); if(d.reply) reply=d.reply;}catch(_){} voiceRenderTranscript(reply,'engram'); }
-        else if(ev==='error'){ reply='(couldn’t reach Engram - '+data+')'; voiceRenderTranscript(reply,'engram'); }
+        else if(ev==='error'){ reply='(couldn\'t reach Engram - '+data+')'; voiceRenderTranscript(reply,'engram'); }
       }
     }
   }catch(e){
-    reply = reply || '(couldn’t reach Engram — '+(e.message||'try again')+')';
+    reply = reply || '(couldn\'t reach Engram - '+(e.message||'try again')+')';
     voiceRenderTranscript(reply,'engram');
   }
   // Mirror the turn into the live in-memory session so the Chat feed stays in sync. (The server
@@ -3717,7 +3954,7 @@ function voiceSpeakStreaming(full, flush){
   const pending = full.slice(_voiceSpoken.length);
   let upto = pending.length;
   if(!flush){
-    const m = pending.match(/[\s\S]*[.!?…]\s/);
+    const m = pending.match(/[\s\S]*[.!?...]\s/);
     upto = m ? m[0].length : 0;
   }
   const chunk = pending.slice(0, upto).replace(/\s+/g,' ').trim();
@@ -3748,7 +3985,7 @@ function voiceAfterSpeak(){
   _voiceSpoken='';
   if(!VOICE.open) return;
   if(VOICE.supported){ voiceStartListening(); }
-  else { voiceSetPhase('idle'); voiceSetStatus('Type your reply…'); const ti=document.getElementById('voiceTypedInput'); if(ti) ti.focus(); }
+  else { voiceSetPhase('idle'); voiceSetStatus('Type your reply...'); const ti=document.getElementById('voiceTypedInput'); if(ti) ti.focus(); }
 }
 
 function voiceTypedSubmit(e){
@@ -3762,7 +3999,7 @@ function voiceTypedSubmit(e){
   voiceSendTurn(t);
 }
 
-// ---- overlay view helpers (transcript uses textContent — model output is untrusted) ----
+// ---- overlay view helpers (transcript uses textContent - model output is untrusted) ----
 function voiceSetPhase(p){ VOICE.phase=p; const ov=document.getElementById('voiceOverlay'); if(ov) ov.dataset.phase=p; }
 function voiceSetStatus(s){ const el=document.getElementById('voiceStatus'); if(el) el.textContent=s; }
 function voiceRenderTranscript(text, who){
@@ -3851,7 +4088,7 @@ function voiceMaybeMountHeaderBtn(){
 }
 
 /* ============================================================================
-   Settings & Integrations v2 — appended functions (unique names, no collisions)
+   Settings & Integrations v2 - appended functions (unique names, no collisions)
    ========================================================================== */
 
 // ---- client-side UI preferences (theme / accent / density / chat mode) ------
@@ -3905,7 +4142,7 @@ function ccAppearance2(){
     const a = ENGRAM_ACCENTS[k], on = (p.accent||'teal')===k;
     return `<button class="acc-swatch ${on?'on':''}" style="background:${a.hex}" title="${k}" aria-label="${k}" onclick="setEngramPref('accent','${k}')"></button>`;
   }).join('');
-  return ccHead('Appearance','Theme, accent, and density — applied live and remembered on this device.')+`
+  return ccHead('Appearance','Theme, accent, and density - applied live and remembered on this device.')+`
     <div class="scard">
       ${ccSeg('Theme', [{v:'dark',l:'Graphite'},{v:'light',l:'Light'}], p.theme==='light'?'light':'dark', "v=>setEngramPref('theme',v)")}
       <div style="height:16px"></div>
@@ -3935,7 +4172,7 @@ function ccChat2(){
 function ccCost2(c){
   const cost = c.cost || {task_token_budget:250000};
   const v = cost.task_token_budget;
-  return ccHead('Cost','A hard ceiling on a single task run — it stops at the next step once it crosses this many tokens (input + output).')+`
+  return ccHead('Cost','A hard ceiling on a single task run - it stops at the next step once it crosses this many tokens (input + output).')+`
     <div class="scard">
       <div class="field" style="max-width:260px"><label>Per-task token budget</label>
         <input type="number" id="cbudget" min="1000" step="1000" value="${v}" oninput="ccCostSync()"></div>
@@ -3979,7 +4216,7 @@ function ccSlashRef(){
   const keys = ENGRAM_KEYS.map(r=>`<tr data-q="${escAttr((r[0]+' '+r[1]).toLowerCase())}"><td class="cmd k"><kbd>${esc(r[1])}</kbd></td><td class="dsc">${esc(r[0])}</td></tr>`).join('');
   return ccHead('Commands & shortcuts','Type a slash command in the composer, or use a keyboard shortcut anywhere. Filter the reference below.')+`
     <div class="scard">
-      <input class="slash-search" placeholder="Filter commands & shortcuts…" oninput="ccSlashFilter(this.value)" id="slashSearch" autocomplete="off">
+      <input class="slash-search" placeholder="Filter commands & shortcuts..." oninput="ccSlashFilter(this.value)" id="slashSearch" autocomplete="off">
       <h3 style="margin-top:10px">Slash commands</h3>
       <table class="slash-tbl" id="slashCmds">${rows}</table>
     </div>
@@ -3999,16 +4236,38 @@ function ccSlashFilter(q){
 
 // ---- MCP per-row live test (sibling-paired rows; no positional-index lookups) ----
 function mcpRowHtmlV2(s){
-  s = s || {name:'',command:'',args:[]};
+  s = s || {name:'',command:'',args:[],env:{},cwd:'',trusted:false};
+  // env values arrive masked ("•••") from the server; show KEY=•••, and the daemon keeps the real
+  // value for any line left as the mask (same "blank keeps it" rule as the api key).
+  const envText = Object.entries(s.env||{}).map(([k,v])=>`${k}=${v||''}`).join('\n');
+  const hasAdv = envText || (s.cwd||'') || s.trusted;
   return `<div class="mcprow v2">
-    <input placeholder="name" value="${escAttr(s.name)}">
-    <input placeholder="command (e.g. npx)" value="${escAttr(s.command)}">
-    <input placeholder="args (space-separated)" value="${escAttr((s.args||[]).join(' '))}">
-    <button class="tbtn" title="spawn & connect to check it works" onclick="testMcpRow(this)">Test</button>
-    <button class="xbtn" title="remove" onclick="removeMcpRow(this)">×</button>
+    <div class="mcprow-main">
+      <input class="mcp-name" placeholder="name" value="${escAttr(s.name)}">
+      <input class="mcp-cmd" placeholder="command (e.g. npx)" value="${escAttr(s.command)}">
+      <input class="mcp-args" placeholder="args (space-separated)" value="${escAttr((s.args||[]).join(' '))}">
+      <button class="tbtn" title="spawn & connect to check it works" onclick="testMcpRow(this)">Test</button>
+      <button class="xbtn" title="remove" onclick="removeMcpRow(this)">×</button>
+    </div>
+    <details class="mcp-adv"${hasAdv?' open':''}>
+      <summary>secrets, working dir, trust</summary>
+      <textarea class="mcp-env" rows="2" placeholder="API_TOKEN=... (one KEY=value per line; passed only to this server)">${esc(envText)}</textarea>
+      <input class="mcp-cwd" placeholder="working directory (optional, e.g. a repo path)" value="${escAttr(s.cwd||'')}">
+      <label class="mcp-trust"><input type="checkbox" class="mcp-trusted"${s.trusted?' checked':''}> First-party server I trust (its reads won't taint a run)</label>
+    </details>
   </div><div class="mcptest"></div>`;
 }
-// Remove a row and its paired status line via sibling traversal — robust to insertion
+// Parse the per-row env textarea (KEY=value lines) into an object.
+function mcpEnvFromRow(r){
+  const env={};
+  (r.querySelector('.mcp-env')?.value||'').split('\n').forEach(line=>{
+    const eq=line.indexOf('='); if(eq<1) return;
+    const k=line.slice(0,eq).trim(); const v=line.slice(eq+1).trim();
+    if(k) env[k]=v;
+  });
+  return env;
+}
+// Remove a row and its paired status line via sibling traversal - robust to insertion
 // order and to deletions of earlier rows (no fragile data-index selectors).
 function removeMcpRow(btn){
   const row = btn.closest('.mcprow');
@@ -4025,12 +4284,46 @@ function addMcpRowV2(){
   const el = document.getElementById('mcplist'); if(!el) return;
   el.insertAdjacentHTML('beforeend', mcpRowHtmlV2(null));
 }
+// A small, bounded starter set of well-known stdio MCP servers (no API keys; need npx or uvx).
+// Deliberately not a marketplace - just the high-ROI ones, prefilled into an editable row.
+const MCP_TEMPLATES = [
+  // No-secret local tools.
+  { label:'Filesystem', name:'filesystem', command:'npx', args:['-y','@modelcontextprotocol/server-filesystem','.'] },
+  { label:'Fetch',      name:'fetch',      command:'uvx', args:['mcp-server-fetch'] },
+  { label:'Git',        name:'git',        command:'uvx', args:['mcp-server-git','--repository','.'] },
+  { label:'Memory',     name:'memory',     command:'npx', args:['-y','@modelcontextprotocol/server-memory'] },
+  { label:'Sequential', name:'sequential-thinking', command:'npx', args:['-y','@modelcontextprotocol/server-sequential-thinking'] },
+  { label:'Time',       name:'time',       command:'uvx', args:['mcp-server-time'] },
+  // Authenticated services - the env keys are prefilled empty for you to paste secrets into.
+  { label:'GitHub',     name:'github',     command:'npx', args:['-y','@modelcontextprotocol/server-github'], env:['GITHUB_PERSONAL_ACCESS_TOKEN'] },
+  { label:'GitLab',     name:'gitlab',     command:'npx', args:['-y','@modelcontextprotocol/server-gitlab'], env:['GITLAB_PERSONAL_ACCESS_TOKEN','GITLAB_API_URL'] },
+  { label:'Slack',      name:'slack',      command:'npx', args:['-y','@modelcontextprotocol/server-slack'], env:['SLACK_BOT_TOKEN','SLACK_TEAM_ID'] },
+  { label:'Postgres',   name:'postgres',   command:'npx', args:['-y','@modelcontextprotocol/server-postgres','postgresql://USER:PASS@HOST:5432/DB'] },
+  { label:'Notion',     name:'notion',     command:'npx', args:['-y','@notionhq/notion-mcp-server'], env:['NOTION_TOKEN'] },
+  { label:'Brave',      name:'brave-search', command:'npx', args:['-y','@modelcontextprotocol/server-brave-search'], env:['BRAVE_API_KEY'] },
+];
+function addMcpTemplate(i){
+  const t = MCP_TEMPLATES[i]; if(!t) return;
+  const el = document.getElementById('mcplist'); if(!el) return;
+  // Don't duplicate a server that's already in the list.
+  const exists = [...el.querySelectorAll('.mcp-name')].some(inp=>inp.value.trim()===t.name);
+  if(exists){ notify('"'+t.name+'" is already added','ok'); return; }
+  const env = {}; (t.env||[]).forEach(k=>{ env[k]=''; });
+  el.insertAdjacentHTML('beforeend', mcpRowHtmlV2({ name:t.name, command:t.command, args:t.args, env }));
+  notify((t.env&&t.env.length) ? 'Added "'+t.label+'" - paste your '+t.env.join(', ')+' below, then Save' : 'Added "'+t.label+'" - edit the path if needed, then Save','ok');
+}
 async function testMcpRow(btn){
-  const row = btn.closest('.mcprow'), i = row.querySelectorAll('input');
+  const row = btn.closest('.mcprow');
   const line = row.nextElementSibling && row.nextElementSibling.classList.contains('mcptest') ? row.nextElementSibling : null;
-  const server = { name:i[0].value.trim(), command:i[1].value.trim(), args:i[2].value.trim().split(/\s+/).filter(Boolean) };
+  const server = {
+    name:(row.querySelector('.mcp-name')?.value||'').trim(),
+    command:(row.querySelector('.mcp-cmd')?.value||'').trim(),
+    args:(row.querySelector('.mcp-args')?.value||'').trim().split(/\s+/).filter(Boolean),
+    env: mcpEnvFromRow(row),
+    cwd:(row.querySelector('.mcp-cwd')?.value||'').trim(),
+  };
   if(!server.command){ if(line){ line.className='mcptest bad'; line.textContent='enter a command first'; } return; }
-  if(line){ line.className='mcptest run'; line.textContent='spawning & connecting…'; }
+  if(line){ line.className='mcptest run'; line.textContent='spawning & connecting...'; }
   try{
     const r = await J('/v1/config/mcp-test',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(server)});
     if(line){
@@ -4041,10 +4334,14 @@ async function testMcpRow(btn){
   }catch(e){ if(line){ line.className='mcptest bad'; line.textContent='✕ '+e.message; } }
 }
 function collectMcpV2(){
-  return [...document.querySelectorAll('#mcplist .mcprow')].map(r=>{
-    const i = r.querySelectorAll('input');
-    return { name:i[0].value.trim(), command:i[1].value.trim(), args:i[2].value.trim().split(/\s+/).filter(Boolean) };
-  }).filter(s=>s.name&&s.command);
+  return [...document.querySelectorAll('#mcplist .mcprow')].map(r=>({
+    name:(r.querySelector('.mcp-name')?.value||'').trim(),
+    command:(r.querySelector('.mcp-cmd')?.value||'').trim(),
+    args:(r.querySelector('.mcp-args')?.value||'').trim().split(/\s+/).filter(Boolean),
+    env: mcpEnvFromRow(r),
+    cwd:(r.querySelector('.mcp-cwd')?.value||'').trim(),
+    trusted: !!r.querySelector('.mcp-trusted')?.checked,
+  })).filter(s=>s.name&&s.command);
 }
 
 // ---- Integrations gallery (Telegram + webhook channels + MCP, live) ---------
@@ -4075,7 +4372,7 @@ function ccIntegrations2(c){
               : '<button class="sbtn" onclick="ccGo(\'keys\')">Set channel secret</button>');
 
   const mcpCard = card(MCP_IC,'MCP tool servers',
-    mcp.length ? esc(mcp.length+' server'+(mcp.length===1?'':'s')+' configured: '+mcp.map(m=>m.name).join(', ')) : 'Borrow tools from external MCP servers — filesystem, search, your own.',
+    mcp.length ? esc(mcp.length+' server'+(mcp.length===1?'':'s')+' configured: '+mcp.map(m=>m.name).join(', ')) : 'Borrow tools from external MCP servers - filesystem, search, your own.',
     mcp.length?'on':'',
     '<button class="sbtn" onclick="ccGo(\'tools\')">'+(mcp.length?'Manage servers':'Add a server')+'</button>');
 
@@ -4083,21 +4380,21 @@ function ccIntegrations2(c){
     <div class="scard"><div class="integ-grid">${tgCard}${whCard}${mcpCard}</div></div>`;
 }
 async function connectTelegram(){
-  const tok = await askInput({title:'Connect Telegram',label:'Paste your bot token from @BotFather. Stored locally, masked, never sent back to the browser.',placeholder:'123456:ABC-DEF…',ok:'Connect'});
+  const tok = await askInput({title:'Connect Telegram',label:'Paste your bot token from @BotFather. Stored locally, masked, never sent back to the browser.',placeholder:'123456:ABC-DEF...',ok:'Connect'});
   if(tok===null) return;
   const t = tok.trim(); if(!t){ notify('No token entered'); return; }
-  notify('Validating with Telegram…');
+  notify('Validating with Telegram...');
   try{
     const r = await J('/v1/channels/telegram/connect',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token:t})});
-    notify('Connected as @'+(r.username||'bot')+' — answering messages live','ok'); await ccReload();
-  }catch(e){ notify('Couldn’t connect — '+e.message); }
+    notify('Connected as @'+(r.username||'bot')+' - answering messages live','ok'); await ccReload();
+  }catch(e){ notify('Couldn\'t connect - '+e.message); }
 }
 async function disconnectTelegram(){
   if(!await askConfirm({title:'Disconnect Telegram?',message:'The poller stops and the stored bot token is wiped.',ok:'Disconnect',danger:true})) return;
   try{
     await J('/v1/channels/telegram/disconnect',{method:'POST'});
     notify('Telegram disconnected','ok'); await ccReload();
-  }catch(e){ notify('Failed — '+e.message); }
+  }catch(e){ notify('Failed - '+e.message); }
 }
 
 // ---- Messaging (notification routing, live) ---------------------------------
@@ -4111,13 +4408,13 @@ function ccMessaging2(c){
       <h3>Desktop notifications</h3>
       <div class="desc">Surface a native notification when a long task completes, even when the window is in the background.</div>
       <label class="toggle"><input type="checkbox" id="msgNotify" ${on?'checked':''} onchange="toggleDesktopNotify(this)"><span class="track"></span> Send desktop notifications</label>
-      ${perm==='denied' ? '<div class="hint" style="color:var(--warning);margin-top:9px">Notifications are blocked in this browser — allow them in site settings to enable.</div>' : ''}
+      ${perm==='denied' ? '<div class="hint" style="color:var(--warning);margin-top:9px">Notifications are blocked in this browser - allow them in site settings to enable.</div>' : ''}
     </div>
     <div class="scard">
       <h3>Delivery routing</h3>
       <div class="desc">Where scheduled-job output (for example a morning brief) is delivered.</div>
       ${ccSeg('Default channel', [{v:'inapp',l:'In-app'},{v:'telegram',l:'Telegram'}], p.deliverTo||'inapp', "v=>{const p=engramPrefs();p.deliverTo=v;engramSavePrefs(p);notify('Delivery routing saved','ok');}")}
-      ${tgReady ? '' : '<div class="hint" style="margin-top:9px">Telegram delivery needs a connected bot — see Integrations.</div>'}
+      ${tgReady ? '' : '<div class="hint" style="margin-top:9px">Telegram delivery needs a connected bot - see Integrations.</div>'}
     </div>`;
 }
 async function toggleDesktopNotify(box){
@@ -4134,20 +4431,126 @@ async function toggleDesktopNotify(box){
     p.desktopNotify=false; engramSavePrefs(p); notify('Desktop notifications off','ok');
   }
 }
-// Fire a desktop notification when enabled — an honest hook the task-completion path can call.
+// Fire a desktop notification when enabled - an honest hook the task-completion path can call.
 function engramNotifyDesktop(title, body){
   const p = engramPrefs();
   if(!p.desktopNotify || typeof Notification==='undefined' || Notification.permission!=='granted') return false;
   try{ new Notification(title||'Engram', {body:body||''}); return true; }catch(_){ return false; }
 }
 
-// Start the app — runs last so every feature module above is fully initialized first. Wrapped so
+// ===== First-run onboarding ========================================================
+// A brand-new install boots into the offline mock. Rather than leave the user to find
+// Settings › Gateways, a one-screen wizard offers to connect a model: pick a provider,
+// paste a key, test, done. Honest about the offline path - "I'll explore first" is a real
+// choice, not a dead end. Shown once (flag in localStorage); re-openable from the banner.
+const ONBOARD_PROVIDERS = ['anthropic','openai','openrouter','groq','gemini','ollama'];
+let _obKind = null;
+function engramOnboardSeen(){ try{ return localStorage.getItem('engram.onboarded')==='1'; }catch(_){ return false; } }
+function engramOnboardMark(){ try{ localStorage.setItem('engram.onboarded','1'); }catch(_){ } }
+function engramMaybeOnboard(){
+  // Only nudge when there's genuinely no live model yet, and only once.
+  if(engramOnboardSeen()) return;
+  if(CFG && CFG.provider_id && CFG.provider_id!=='mock'){ engramOnboardMark(); return; }
+  if(CFG && CFG.http_enabled===false){ engramOnboardMark(); return; } // offline-only build: no point
+  setTimeout(engramOnboard, 350);
+}
+function engramOnboard(){
+  _obKind = null;
+  let el = document.getElementById('onboard');
+  if(!el){ el=document.createElement('div'); el.id='onboard'; document.body.appendChild(el); }
+  el.innerHTML = obShell(obPickStep());
+  el.hidden=false;
+  document.addEventListener('keydown', obEsc);
+}
+function obClose(skip){
+  const el=document.getElementById('onboard'); if(el){ el.hidden=true; el.innerHTML=''; }
+  document.removeEventListener('keydown', obEsc);
+  engramOnboardMark();
+  if(skip) notify('You can connect a model anytime from Settings › Gateways','ok');
+}
+function obEsc(e){ if(e.key==='Escape') obClose(true); }
+function obShell(inner){
+  return `<div class="ob-back" onclick="if(event.target===this)obClose(true)">
+    <div class="ob-card" role="dialog" aria-label="Set up Engram">
+      <div class="ob-brand"><span class="ob-dot"></span> Engram</div>
+      ${inner}
+    </div></div>`;
+}
+function obPickStep(){
+  const cards = ONBOARD_PROVIDERS.map(k=>{
+    const P=PROVIDERS[k]; if(!P) return '';
+    const sub = P.needsKey ? 'needs an API key' : 'runs locally · no key';
+    return `<button class="ob-prov" onclick="obPick('${k}')">
+      <span class="ob-pdot" style="background:${PROVIDER_COLOR[k]||'#888'}"></span>
+      <span class="ob-pname">${esc(P.label)}</span><span class="ob-psub">${esc(sub)}</span></button>`;
+  }).join('');
+  return `<h2 class="ob-h">Connect a model to think for real</h2>
+    <p class="ob-sub">Engram runs offline in demo mode out of the box. Pick a provider to give it a live brain - your key is stored locally and never written to Engram\'s files.</p>
+    <div class="ob-grid">${cards}</div>
+    <div class="ob-foot"><a href="#" onclick="obClose(true);return false">I\'ll explore in offline mode first</a></div>`;
+}
+function obPick(k){
+  _obKind=k; const P=PROVIDERS[k]||PROVIDERS.mock;
+  const models = P.models.map(m=>`<option value="${escAttr(m)}">${esc(m)}</option>`).join('');
+  const keyBlock = P.needsKey ? `
+    <div class="ob-field"><label>API key</label>
+      <input type="password" id="obKey" placeholder="${escAttr(P.keyHint)}" autocomplete="off" spellcheck="false">
+      <div class="ob-hint" id="obHint">Stored locally (memory-only). Get a key from the provider\'s dashboard.</div></div>` : `
+    <div class="ob-hint" style="margin:4px 0 2px">No API key needed - make sure the local server is running at the base URL below.</div>`;
+  const el=document.getElementById('onboard');
+  el.innerHTML = obShell(`
+    <h2 class="ob-h">${esc(P.label)}</h2>
+    <div class="ob-field"><label>Model</label>
+      <input type="text" id="obModel" list="obModels" value="${escAttr(P.models[0]||'')}" autocomplete="off">
+      <datalist id="obModels">${models}</datalist></div>
+    <div class="ob-field"><label>Base URL</label>
+      <input type="text" id="obBase" value="${escAttr(P.base||'')}" placeholder="default" autocomplete="off"></div>
+    ${keyBlock}
+    <div class="ob-test" id="obTest"></div>
+    <div class="ob-actions">
+      <a href="#" class="ob-back-link" onclick="engramOnboard();return false">← back</a>
+      <span class="ob-grow"></span>
+      <button class="sbtn" onclick="obTest()">Test</button>
+      <button class="sbtn primary" onclick="obSave()">Save &amp; start</button>
+    </div>`);
+  setTimeout(()=>document.getElementById(P.needsKey?'obKey':'obModel')?.focus(),30);
+}
+function obPatch(){
+  const P=PROVIDERS[_obKind]||PROVIDERS.mock;
+  const patch={ provider:{ kind:_obKind, model:(document.getElementById('obModel')?.value||'').trim(), base_url:(document.getElementById('obBase')?.value||'').trim() } };
+  const k=(document.getElementById('obKey')?.value||'').trim(); if(k) patch.provider.api_key=k;
+  return {patch, P};
+}
+async function obTest(){
+  const {patch,P}=obPatch(); const box=document.getElementById('obTest');
+  if(P.needsKey && !patch.provider.api_key){ box.className='ob-test err'; box.textContent='Enter an API key to test.'; return; }
+  box.className='ob-test'; box.textContent='Testing...';
+  try{ const r=await J('/v1/config/test',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(patch)});
+    if(r.ok){ box.className='ob-test ok'; box.textContent='✓ '+(r.provider||'')+' replied: '+(r.reply||'ok'); }
+    else { box.className='ob-test err'; box.textContent='✕ '+(r.error||'failed'); }
+  }catch(e){ box.className='ob-test err'; box.textContent='✕ '+e.message; }
+}
+async function obSave(){
+  const {patch,P}=obPatch(); const box=document.getElementById('obTest');
+  if(P.needsKey && !patch.provider.api_key){ box.className='ob-test err'; box.textContent='Enter an API key first.'; return; }
+  box.className='ob-test'; box.textContent='Saving...';
+  try{ const res=await J('/v1/config',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(patch)});
+    CFG=res; engramOnboardMark();
+    const el=document.getElementById('onboard'); if(el){ el.hidden=true; el.innerHTML=''; }
+    document.removeEventListener('keydown', obEsc);
+    notify('Connected - '+(res.provider_id||_obKind)+' · '+(res.model_in_use||''),'ok');
+    try{ await poll(); }catch(_){}
+    renderNav(); renderView();
+  }catch(e){ box.className='ob-test err'; box.textContent='✕ '+e.message; }
+}
+
+// Start the app - runs last so every feature module above is fully initialized first. Wrapped so
 // a startup error surfaces a readable message instead of a silent blank window.
 try { boot(); }
 catch(e){
   console.error('boot failed', e);
   document.body.innerHTML = '<div style="padding:48px;max-width:560px;margin:8vh auto;font:14px/1.6 -apple-system,system-ui,sans-serif;color:#c8ccd2">'
-    + '<div style="font-size:17px;font-weight:600;margin-bottom:10px;color:#fff">Engram couldn’t start</div>'
+    + '<div style="font-size:17px;font-weight:600;margin-bottom:10px;color:#fff">Engram couldn\'t start</div>'
     + '<div style="color:#8a9099">A startup error occurred. Details:</div>'
     + '<pre style="white-space:pre-wrap;background:#181b1f;border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:12px;margin-top:10px;font:12px ui-monospace,monospace;color:#e2675f">'
     + String((e&&e.stack)||e).replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]))
@@ -4171,9 +4574,16 @@ function attachIsTextType(file){
     || /^(dockerfile|makefile|readme|license)$/.test(n);
 }
 function attachSvg(kind){
-  if(kind==='url') return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/></svg>';
-  if(kind==='memory') return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 12v9"/><path d="M12 12L4 7.5"/><path d="M12 12l8-4.5"/></svg>';
-  return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.5 12.5 21a5 5 0 0 1-7-7l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7L9.6 18.7a1.6 1.6 0 0 1-2.3-2.3l8-8"/></svg>';
+  const S=p=>`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
+  if(kind==='url') return S('<path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/>');
+  if(kind==='memory') return S('<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 12v9"/><path d="M12 12L4 7.5"/><path d="M12 12l8-4.5"/>');
+  if(kind==='image') return S('<rect x="3" y="4" width="18" height="16" rx="2.4"/><circle cx="8.5" cy="9.5" r="1.6"/><path d="m4 17 4.5-4.5a1.6 1.6 0 0 1 2.2 0L16 18"/><path d="m14 16 2-2a1.6 1.6 0 0 1 2.2 0L20 15.5"/>');
+  if(kind==='pdf') return S('<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M8.5 13.5h1.2a1.3 1.3 0 0 1 0 2.6H8.5zM8.5 13.5v4M13 13.5v4h.9a1.6 2 0 0 0 0-4zM16.5 13.5H18M16.5 15.4h1.2M16.5 13.5v4"/>');
+  if(kind==='doc') return S('<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M8.5 13h7M8.5 16h7M8.5 10h3"/>');
+  if(kind==='sheet') return S('<rect x="4" y="4" width="16" height="16" rx="2.2"/><path d="M4 9.5h16M4 14.5h16M9.5 4.5v15M14.5 4.5v15"/>');
+  if(kind==='code') return S('<rect x="3" y="4.5" width="18" height="15" rx="2.4"/><path d="m9 10-2.2 2 2.2 2M15 10l2.2 2-2.2 2M13 9.5l-2 5"/>');
+  if(kind==='text') return S('<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M8.5 13h7M8.5 16h4"/>');
+  return S('<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>');
 }
 function attachFmtSize(n){
   if(n==null) return '';
@@ -4184,10 +4594,16 @@ function attachFmtSize(n){
 // Render the removable pills above the textarea. Always escape names/meta (innerHTML).
 function attachRenderPills(){
   const box=document.getElementById('attachPills'); if(!box) return;
+  const TYPE_LABEL={image:'image',pdf:'PDF',doc:'document',sheet:'spreadsheet',code:'code',text:'text',file:'file'};
   box.innerHTML = ATTACH.items.map((it,i)=>{
-    const meta = it.kind==='memory' ? 'memory' : (it.kind==='url' ? 'link' : (it.ref?'uploaded':attachFmtSize(it.size)));
-    return `<span class="attach-pill kind-${esc(it.kind)} ${it.busy?'busy':''}" title="${escAttr(it.name)}">
-      <span class="ap-ic">${attachSvg(it.kind)}</span>
+    // type-aware meta: documents that extracted show "PDF · read", images show "image", etc.
+    let meta;
+    if(it.kind==='memory') meta='memory';
+    else if(it.kind==='url') meta='link';
+    else { const lbl=TYPE_LABEL[it.ftype]||attachFmtSize(it.size); meta = it.extracted ? `${lbl} · read` : (it.busy?'reading…':lbl); }
+    const ic = it.thumb ? `<span class="ap-ic ap-img"><img src="${escAttr(it.thumb)}" alt=""></span>` : `<span class="ap-ic">${attachSvg(it.kind==='file'?(it.ftype||'file'):it.kind)}</span>`;
+    return `<span class="attach-pill kind-${esc(it.kind)} ft-${esc(it.ftype||'')} ${it.busy?'busy':''}" title="${escAttr(it.name)}">
+      ${ic}
       <span class="ap-name">${esc(it.name)}</span>
       ${meta?`<span class="ap-meta">${esc(meta)}</span>`:''}
       <button class="ap-x" type="button" aria-label="Remove" title="Remove" onclick="attachRemove(${i})">&times;</button></span>`;
@@ -4215,9 +4631,9 @@ function attachToggleMenu(ev){
   const btn=document.getElementById('attachBtn'); if(btn) btn.setAttribute('aria-expanded','true');
   const m=document.createElement('div'); m.id='attachMenu'; m.className='attach-menu'; m.setAttribute('role','menu');
   m.innerHTML=`
-    <button class="am-i" type="button" role="menuitem" onclick="attachPickFiles()">${attachSvg('file')}<span>Attach files</span><span class="am-sub">text or binary</span></button>
-    <button class="am-i" type="button" role="menuitem" onclick="attachAddUrl()">${attachSvg('url')}<span>Add a URL</span></button>
-    <button class="am-i" type="button" role="menuitem" onclick="attachOpenRecall()">${attachSvg('memory')}<span>Pin a memory</span></button>`;
+    <button class="am-i" type="button" role="menuitem" onclick="event.stopPropagation();attachPickFiles()">${attachSvg('file')}<span>Attach files</span><span class="am-sub">PDF, image, doc, sheet, code</span></button>
+    <button class="am-i" type="button" role="menuitem" onclick="event.stopPropagation();attachAddUrl()">${attachSvg('url')}<span>Add a URL</span></button>
+    <button class="am-i" type="button" role="menuitem" onclick="event.stopPropagation();attachOpenRecall()">${attachSvg('memory')}<span>Pin a memory</span></button>`;
   wrap.appendChild(m);
 }
 function attachCloseMenu(){ const m=document.getElementById('attachMenu'); if(m) m.remove();
@@ -4234,18 +4650,44 @@ document.addEventListener('keydown', e=>{
 });
 // ---- files ----
 function attachPickFiles(){ attachCloseMenu(); const inp=document.getElementById('attachFileInput'); if(inp){ inp.value=''; inp.click(); } }
+// Classify an upload so the pill, the icon, and the handling all match the file type.
+function attachFileType(f){
+  const n=(f.name||'').toLowerCase(), t=(f.type||'').toLowerCase();
+  if(t.startsWith('image/')||/\.(png|jpe?g|gif|webp|bmp|svg|avif|heic)$/.test(n)) return 'image';
+  if(t==='application/pdf'||/\.pdf$/.test(n)) return 'pdf';
+  if(/\.(docx?|odt|rtf|pages)$/.test(n)) return 'doc';
+  if(/\.(xlsx?|ods|csv|tsv|numbers)$/.test(n)) return 'sheet';
+  if(attachIsTextType(f)) return /\.(rs|py|js|ts|tsx|jsx|go|java|c|h|cpp|hpp|rb|php|html?|css|scss|sh|bash|zsh|sql|json|ya?ml|toml|xml|swift|kt)$/.test(n)?'code':'text';
+  return 'file';
+}
 async function attachOnFiles(input){
   const files = Array.from(input.files||[]); if(!files.length) return;
   for(const f of files){
+    const ftype = attachFileType(f);
+    if(ftype==='image'){
+      // Image: show a thumbnail, upload to get a ref, and reference it so a vision-capable run can read it.
+      const it={ kind:'file', ftype, name:f.name, size:f.size, text:'', busy:true };
+      try{ it.thumb = await uplFileToDataUrl(f); }catch(_){}
+      ATTACH.items.push(it); attachRenderPills();
+      try{
+        const b64 = await uplFileToBase64(f);
+        const res = await J('/v1/upload',{method:'POST',headers:{'content-type':'application/json'},
+          body:JSON.stringify({ name:f.name, content_b64:b64, mime:f.type||'image/png' })});
+        it.ref = res.ref || f.name;
+        it.text = `[Image attached: ${f.name} (${attachFmtSize(f.size)}), stored as ref ${it.ref}. Use the vision tool to analyze it if the question is about the image.]`;
+      }catch(e){ it.text=`(image ${f.name} - upload failed: ${(e&&e.message)||'error'})`; notify('Upload failed: '+((e&&e.message)||f.name)); }
+      finally { it.busy=false; attachRenderPills(); }
+      continue;
+    }
     if(attachIsTextType(f)){
       try{
         const text = await f.text();
-        ATTACH.items.push({ kind:'file', name:f.name, size:f.size, text });
-      }catch(_){ notify('Couldn’t read '+f.name); }
+        ATTACH.items.push({ kind:'file', ftype, name:f.name, size:f.size, text });
+      }catch(_){ notify('Couldn\'t read '+f.name); }
       attachRenderPills();
     } else {
-      // Binary: stash a placeholder pill, upload, then fill in the server ref.
-      const it={ kind:'file', name:f.name, size:f.size, text:'', busy:true };
+      // Binary doc (PDF/DOCX/XLSX/...) or other: upload; the server extracts text for known docs.
+      const it={ kind:'file', ftype, name:f.name, size:f.size, text:'', busy:true };
       ATTACH.items.push(it); attachRenderPills();
       try{
         const b64 = await uplFileToBase64(f);
@@ -4253,14 +4695,24 @@ async function attachOnFiles(input){
           body:JSON.stringify({ name:f.name, content_b64:b64, mime:f.type||'application/octet-stream' })});
         it.ref = res.ref || res.path || f.name;
         // NOTE: raw text for the model context -- do NOT esc() here, only at render time.
-        it.text = `(binary file uploaded — ${attachFmtSize(f.size)}, ${f.type||'unknown type'}, ref ${it.ref})`;
+        if(res.extracted_text && res.extracted_text.trim()){
+          it.text = `Contents of ${f.name}:\n\n${res.extracted_text}`;
+          it.extracted = true;
+          it.chars = res.extracted_text.length;
+        } else {
+          it.text = `(binary file uploaded - ${attachFmtSize(f.size)}, ${f.type||'unknown type'}, ref ${it.ref})`;
+        }
       }catch(e){
-        it.text = `(binary file ${f.name} — could not be uploaded: ${(e&&e.message)||'error'})`;
+        it.text = `(binary file ${f.name} - could not be uploaded: ${(e&&e.message)||'error'})`;
         notify('Upload failed: '+((e&&e.message)||f.name));
       } finally { it.busy=false; attachRenderPills(); }
     }
   }
   input.value='';
+}
+// FileReader -> full data: URL (kept for image thumbnails).
+function uplFileToDataUrl(file){
+  return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(String(r.result||'')); r.onerror=()=>rej(new Error('read failed')); r.readAsDataURL(file); });
 }
 // FileReader -> bare base64 (strip the data: prefix) for the JSON upload endpoint.
 function uplFileToBase64(file){
@@ -4274,7 +4726,7 @@ function uplFileToBase64(file){
 // ---- url ----
 async function attachAddUrl(){
   attachCloseMenu();
-  const u=((await askInput({title:'Add a URL as context',placeholder:'https://…',ok:'Add'}))||'').trim(); if(!u) return;
+  const u=((await askInput({title:'Add a URL as context',placeholder:'https://...',ok:'Add'}))||'').trim(); if(!u) return;
   let name=u; try{ const x=new URL(u); name=x.hostname + (x.pathname!=='/'?x.pathname:''); }catch(_){ }
   ATTACH.items.push({ kind:'url', name, text:'URL: '+u });
   attachRenderPills();
@@ -4285,7 +4737,7 @@ function attachOpenRecall(){
   attachCloseMenu(); attachCloseRecall();
   const wrap=document.getElementById('attachWrap'); if(!wrap) return;
   const p=document.createElement('div'); p.id='attachRecall'; p.className='attach-recall';
-  p.innerHTML=`<input id="attachRecallQ" placeholder="Search your memory to pin…" autocomplete="off" oninput="attachRecallSearch(this.value)">
+  p.innerHTML=`<input id="attachRecallQ" placeholder="Search your memory to pin..." autocomplete="off" oninput="attachRecallSearch(this.value)">
     <div class="ar-list" id="attachRecallList"><div class="ar-empty">type to search</div></div>`;
   wrap.appendChild(p);
   const i=document.getElementById('attachRecallQ'); if(i) i.focus();

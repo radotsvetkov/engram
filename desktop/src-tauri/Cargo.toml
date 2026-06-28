@@ -10,7 +10,29 @@ license = "MIT"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+# `tray-icon` brings the system tray; the default menu (Edit: copy/paste/cut/select-all,
+# Window, App) is core. Without a native menu, clipboard shortcuts don't work in a webview
+# on macOS - so this is a correctness feature, not chrome.
+tauri = { version = "2", features = ["tray-icon"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Native desktop integration - the layer that turns "a webview over a URL" into a real app,
+# matching/exceeding the integration surface of Claude Desktop:
+#  single-instance: focus the existing window instead of spawning a second daemon+window.
+tauri-plugin-single-instance = "2"
+#  window-state: remember window size/position across launches.
+tauri-plugin-window-state = "2"
+#  global-shortcut: a system-wide hotkey to summon Engram from anywhere.
+tauri-plugin-global-shortcut = "2"
+#  autostart: a real, persisted run-on-login entry, toggled from the tray.
+tauri-plugin-autostart = "2"
+#  notification: native OS notifications when a background task finishes.
+tauri-plugin-notification = "2"
+#  deep-link: register the engram:// URL scheme and route it to the running window.
+tauri-plugin-deep-link = "2"
+#  opener: open external links / files in the OS default app from the shell.
+tauri-plugin-opener = "2"
 
 [[bin]]
 name = "engram-desktop"

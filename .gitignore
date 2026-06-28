@@ -15,12 +15,14 @@ dist/
 # Tauri build-generated schemas and capability manifests.
 /desktop/src-tauri/gen/
 
-# Engram runtime state (local brain - never commit personal memory)
+# Engram runtime state (local brain - never commit personal memory, the signed ledger, or keys).
+# The default ENGRAM_HOME when run from the repo root is ./brain, so ignore the whole home: it
+# holds the memory DB, the hash-chained ledger (ledger.jsonl), the public key, and the
+# consciousness/workspace state. The earlier db-only globs left ledger.jsonl + consciousness.json
+# + workspace.json + ledger.pub committable; ignoring the dir wholesale closes that.
 /.engram/
 *.engram
-brain/**/*.db
-brain/**/*.db-wal
-brain/**/*.db-shm
+/brain/
 *.sqlite
 *.sqlite-*
 

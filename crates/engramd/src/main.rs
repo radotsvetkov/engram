@@ -95,7 +95,11 @@ impl App {
 struct ApiError(String);
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": self.0 }))).into_response()
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": self.0 })),
+        )
+            .into_response()
     }
 }
 type ApiResult = Result<Json<Value>, ApiError>;
@@ -108,14 +112,54 @@ async fn main() {
     // `engramd verify [HOME]` - offline, third-party verification of the audit ledger
     // against its published public key, WITHOUT starting (or trusting) the daemon.
     let args: Vec<String> = std::env::args().collect();
-    if args.get(1).map(String::as_str) == Some("verify") {
-        std::process::exit(verify_cmd(args.get(2).map(String::as_str)));
+    match args.get(1).map(String::as_str) {
+        Some("verify") => std::process::exit(verify_cmd(args.get(2).map(String::as_str))),
+        // `engramd doctor [HOME]` - a self-diagnostic of the local setup (config, provider,
+        // ledger, embedder, channels, port, build features), the way `claude-desktop --doctor`
+        // checks an install. Exits 0 when nothing is broken, 1 when a hard problem is found.
+        Some("doctor") => std::process::exit(doctor_cmd(args.get(2).map(String::as_str))),
+        Some("help") | Some("--help") | Some("-h") => {
+            print_help();
+            std::process::exit(0);
+        }
+        Some("--version") | Some("-V") => {
+            println!("engramd {VERSION}");
+            std::process::exit(0);
+        }
+        // `engramd --run-due` - fire any scheduled jobs that are due, then exit. This is what
+        // the systemd wake-timer runs: it must NEVER start the HTTP server (which would collide
+        // with the socket unit). Used for true zero-idle scheduled wakes on a VPS.
+        Some("--run-due") | Some("run-due") => {
+            init_tracing();
+            match run(RunMode::RunDue).await {
+                Ok(()) => std::process::exit(0),
+                Err(e) => {
+                    tracing::error!(error = %e, "run-due failed");
+                    std::process::exit(1);
+                }
+            }
+        }
+        // Reject an unrecognized flag with usage instead of silently launching the server.
+        Some(other) if other.starts_with('-') => {
+            eprintln!("engramd: unknown option '{other}'\n");
+            print_help();
+            std::process::exit(2);
+        }
+        _ => {}
     }
     init_tracing();
-    if let Err(e) = run().await {
+    if let Err(e) = run(RunMode::Serve).await {
         tracing::error!(error = %e, "fatal");
         std::process::exit(1);
     }
+}
+
+/// How `run()` should behave: serve the HTTP API (the default daemon), or fire any due
+/// scheduled jobs once and exit (the systemd wake-timer path, never binding the socket).
+#[derive(Clone, Copy, PartialEq)]
+enum RunMode {
+    Serve,
+    RunDue,
 }
 
 /// Offline verification of `<HOME>/ledger.jsonl` against `<HOME>/ledger.pub`. Exit codes:
@@ -157,7 +201,10 @@ fn verify_cmd(home_arg: Option<&str>) -> i32 {
     };
     match engram_core::verify_file(&ledger_path, &vk) {
         Ok(n) => {
-            println!("OK - {n} entries, signed hash-chain intact: {}", ledger_path.display());
+            println!(
+                "OK - {n} entries, signed hash-chain intact: {}",
+                ledger_path.display()
+            );
             0
         }
         Err(e) => {
@@ -167,7 +214,323 @@ fn verify_cmd(home_arg: Option<&str>) -> i32 {
     }
 }
 
-async fn run() -> Result<(), Box<dyn std::error::Error>> {
+/// `engramd doctor [HOME]` - a plain-language health check of the local install, so a user
+/// (or a support ticket) can see at a glance what is configured and what is broken without
+/// digging through files. Mirrors the role of `claude-desktop --doctor`. Exit 0 = healthy
+/// (warnings are fine), 1 = at least one hard failure.
+fn doctor_cmd(home_arg: Option<&str>) -> i32 {
+    let home = home_arg
+        .map(String::from)
+        .or_else(|| std::env::var("ENGRAM_HOME").ok())
+        .unwrap_or_else(|| "./brain".into());
+    let dir = std::path::Path::new(&home);
+
+    let mut fails = 0u32;
+    let mut warns = 0u32;
+    // ✓ ok / ⚠ warn / ✗ fail - one line each, with a short explanation.
+    let ok = |label: &str, detail: &str| println!("  \u{2713} {label}: {detail}");
+    let mut warn = |label: &str, detail: &str| {
+        println!("  \u{26A0} {label}: {detail}");
+        warns += 1;
+    };
+    // `warn` borrows `warns` mutably; failures take their counter by ref to avoid borrow conflicts.
+    let fail = |label: &str, detail: &str, fails: &mut u32| {
+        println!("  \u{2717} {label}: {detail}");
+        *fails += 1;
+    };
+
+    println!("Engram doctor - {VERSION}\n");
+
+    // --- State directory -----------------------------------------------------------------
+    println!("State directory");
+    match std::fs::metadata(dir) {
+        Ok(_) => {
+            // Probe writability with a temp file (the daemon needs to write here).
+            let probe = dir.join(".doctor-write-probe");
+            match std::fs::write(&probe, b"ok") {
+                Ok(_) => {
+                    let _ = std::fs::remove_file(&probe);
+                    ok("ENGRAM_HOME", &format!("{} (writable)", dir.display()));
+                }
+                Err(e) => fail(
+                    "ENGRAM_HOME",
+                    &format!("{} not writable: {e}", dir.display()),
+                    &mut fails,
+                ),
+            }
+        }
+        Err(_) => warn(
+            "ENGRAM_HOME",
+            &format!(
+                "{} does not exist yet (created on first run)",
+                dir.display()
+            ),
+        ),
+    }
+
+    // --- Model provider ------------------------------------------------------------------
+    println!("\nModel provider");
+    let cfg = config::Config::load(&home);
+    let p = &cfg.provider;
+    match p.kind.as_str() {
+        "mock" => warn(
+            "provider",
+            "mock (offline) - answers are canned. Set a provider + API key to think for real.",
+        ),
+        kind => {
+            let key = if p.api_key.is_empty() {
+                "no API key"
+            } else {
+                "API key set"
+            };
+            if p.kind != "ollama" && p.api_key.is_empty() {
+                fail(
+                    "provider",
+                    &format!("{kind} selected but no API key configured"),
+                    &mut fails,
+                );
+            } else {
+                ok(
+                    "provider",
+                    &format!("{kind} - model {} - {key}", cfg.model()),
+                );
+            }
+        }
+    }
+    if !cfg!(feature = "http") && p.kind != "mock" {
+        warn(
+            "build",
+            "this build has no network provider (the `http` feature is off) - only the mock runs.",
+        );
+    }
+
+    // --- Embedder ------------------------------------------------------------------------
+    println!("\nMemory / embeddings");
+    match cfg.embed.kind.as_str() {
+        "static" => {
+            if cfg.embed.model_dir.is_empty() {
+                fail(
+                    "embedder",
+                    "mode 'static' but no model directory set",
+                    &mut fails,
+                );
+            } else if std::path::Path::new(&cfg.embed.model_dir)
+                .join("model.safetensors")
+                .exists()
+            {
+                ok(
+                    "embedder",
+                    &format!("static (model2vec) - {}", cfg.embed.model_dir),
+                );
+            } else {
+                fail(
+                    "embedder",
+                    &format!("static model not found in {}", cfg.embed.model_dir),
+                    &mut fails,
+                );
+            }
+        }
+        "gateway" => ok("embedder", "gateway (provider embeddings)"),
+        _ => ok(
+            "embedder",
+            "trigram (offline default) - synonyms via the static model are optional",
+        ),
+    }
+
+    // --- Audit ledger --------------------------------------------------------------------
+    println!("\nAudit ledger");
+    let ledger_path = dir.join("ledger.jsonl");
+    let pub_path = dir.join("ledger.pub");
+    match (
+        std::fs::metadata(&ledger_path),
+        std::fs::read_to_string(&pub_path),
+    ) {
+        (Ok(m), Ok(pubhex)) if m.len() > 0 => match engram_core::verifying_key_from_hex(&pubhex) {
+            Ok(vk) => match engram_core::verify_file(&ledger_path, &vk) {
+                Ok(n) => ok("ledger", &format!("{n} entries, signed hash-chain intact")),
+                Err(e) => fail("ledger", &format!("TAMPER/BROKEN - {e}"), &mut fails),
+            },
+            Err(_) => fail("ledger", "public key is invalid", &mut fails),
+        },
+        _ => warn("ledger", "no ledger yet (written on first run)"),
+    }
+
+    // --- Tools / MCP ---------------------------------------------------------------------
+    println!("\nTools & connectivity");
+    if cfg.mcp.is_empty() {
+        ok("mcp", "no MCP servers configured (optional)");
+    } else {
+        let names: Vec<&str> = cfg.mcp.iter().map(|m| m.name.as_str()).collect();
+        ok(
+            "mcp",
+            &format!("{} server(s): {}", cfg.mcp.len(), names.join(", ")),
+        );
+    }
+    if cfg.channels.telegram_token.is_empty() {
+        ok("telegram", "not connected (optional)");
+    } else {
+        let who = if cfg.channels.telegram_username.is_empty() {
+            "connected".to_string()
+        } else {
+            format!("@{}", cfg.channels.telegram_username)
+        };
+        ok("telegram", &who);
+    }
+    ok(
+        "shell tool",
+        if cfg.security.allow_shell {
+            "ALLOWED (side-effecting)"
+        } else {
+            "off (safe default)"
+        },
+    );
+    ok(
+        "browser automation",
+        if cfg!(feature = "browser-cdp") {
+            "built in"
+        } else {
+            "not built (optional feature)"
+        },
+    );
+
+    // --- Security gates ------------------------------------------------------------------
+    println!("\nSecurity");
+    let addr = std::env::var("ENGRAM_ADDR").unwrap_or_else(|_| "127.0.0.1:8088".into());
+    let local = addr.starts_with("127.") || addr.starts_with("localhost");
+    if cfg.security.api_token.is_empty() {
+        if local {
+            ok(
+                "api auth",
+                "no token, but bound to localhost (fine for desktop use)",
+            );
+        } else {
+            fail(
+                "api auth",
+                &format!(
+                    "NO API TOKEN and bound to {addr} - anyone on the network can drive the agent"
+                ),
+                &mut fails,
+            );
+        }
+    } else {
+        ok("api auth", "bearer token set");
+    }
+    ok(
+        "key custody",
+        "API key is memory-only (never written to config.json) - re-seeded from the environment each boot",
+    );
+
+    // --- Listener / port -----------------------------------------------------------------
+    println!("\nListener");
+    match std::net::TcpStream::connect(&addr) {
+        Ok(_) => ok(
+            "port",
+            &format!("{addr} - a daemon is already serving here"),
+        ),
+        Err(_) => ok(
+            "port",
+            &format!("{addr} - free (the daemon will bind here)"),
+        ),
+    }
+
+    // --- Summary -------------------------------------------------------------------------
+    println!();
+    if fails == 0 && warns == 0 {
+        println!("All checks passed. Engram is ready.");
+    } else {
+        println!("{fails} failure(s), {warns} warning(s). Failures need attention; warnings are usually fine.");
+    }
+    if fails == 0 {
+        0
+    } else {
+        1
+    }
+}
+
+/// `engramd help` - a short usage summary for the CLI surface.
+fn print_help() {
+    println!(
+        "engramd {VERSION} - the Engram agent daemon
+
+USAGE:
+    engramd                 Start the daemon and serve the dashboard (default)
+    engramd doctor [HOME]   Health-check the local install (config, provider, ledger, ports)
+    engramd verify [HOME]   Verify the signed audit ledger offline, without trusting the daemon
+    engramd help            Show this help
+    engramd --version       Print the version
+
+KEY ENV VARS:
+    ENGRAM_HOME             State directory (default ./brain)
+    ENGRAM_ADDR             Listen address (default 127.0.0.1:8088)
+    ENGRAM_IDLE_SECS        Idle seconds before sleeping to zero (default 900)
+    ENGRAM_API_TOKEN        Require this bearer token on the HTTP API (set when exposed)
+    ANTHROPIC_API_KEY       Bring up the Anthropic provider on a fresh install
+    RUST_LOG                Log filter (e.g. info, engramd=debug)
+
+Most configuration is done from the desktop Settings panel and saved to <HOME>/config.json."
+    );
+}
+
+/// If launched under systemd socket activation (or any activator that follows the LISTEN_FDS
+/// protocol), inherit the already-listening socket on fd 3 instead of binding it ourselves.
+/// Returns `Ok(None)` when not socket-activated (the normal desktop/dev path).
+#[cfg(unix)]
+fn systemd_listener() -> std::io::Result<Option<std::net::TcpListener>> {
+    use std::os::unix::io::FromRawFd;
+    let fds = std::env::var("LISTEN_FDS")
+        .ok()
+        .and_then(|v| v.parse::<i32>().ok());
+    let pid = std::env::var("LISTEN_PID")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok());
+    // Only honor the handoff if it was meant for THIS process (LISTEN_PID guards against an fd
+    // inherited by a child after the activator already consumed it).
+    match (fds, pid) {
+        (Some(n), Some(p)) if n >= 1 && p == std::process::id() => {
+            // SD_LISTEN_FDS_START = 3 (after stdio). We use the first passed fd.
+            let listener = unsafe { std::net::TcpListener::from_raw_fd(3) };
+            listener.set_nonblocking(true)?;
+            Ok(Some(listener))
+        }
+        _ => Ok(None),
+    }
+}
+#[cfg(not(unix))]
+fn systemd_listener() -> std::io::Result<Option<std::net::TcpListener>> {
+    Ok(None)
+}
+
+/// Tell a `Type=notify` systemd service we are ready to accept connections (best-effort; a no-op
+/// when not launched by systemd). Without this, a notify-type unit would wait and time out.
+#[cfg(unix)]
+fn sd_notify_ready() {
+    let Ok(path) = std::env::var("NOTIFY_SOCKET") else {
+        return;
+    };
+    let Ok(sock) = std::os::unix::net::UnixDatagram::unbound() else {
+        return;
+    };
+    // systemd uses a leading '@' for an ABSTRACT-namespace socket (the common case). The std
+    // path API can't address that, so build the abstract address explicitly on Linux; fall back
+    // to the path form (and the rare leading-NUL form) otherwise. Advisory - ignore errors.
+    if let Some(name) = path.strip_prefix('@') {
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::linux::net::SocketAddrExt;
+            if let Ok(addr) = std::os::unix::net::SocketAddr::from_abstract_name(name.as_bytes()) {
+                let _ = sock.send_to_addr(b"READY=1", &addr);
+                return;
+            }
+        }
+        let _ = name;
+    } else {
+        let _ = sock.send_to(b"READY=1", &path);
+    }
+}
+#[cfg(not(unix))]
+fn sd_notify_ready() {}
+
+async fn run(mode: RunMode) -> Result<(), Box<dyn std::error::Error>> {
     let home = std::env::var("ENGRAM_HOME").unwrap_or_else(|_| "./brain".into());
     let addr: SocketAddr = std::env::var("ENGRAM_ADDR")
         .unwrap_or_else(|_| "127.0.0.1:8088".into())
@@ -182,15 +545,31 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = config::Config::load(&home);
     tracing::info!(provider = %cfg.provider.kind, model = %cfg.model(), embed = %cfg.embed.kind, "settings loaded");
     let gateway = Arc::new(Gateway::new(cfg.build_provider(), ledger.clone()));
+    gateway.set_default_effort(Some(cfg.provider.effort.clone()));
 
     // Pick the embedder: a real model through the gateway, the pure-Rust static model, or
     // the dependency-free trigram default. The gateway path probes its dimension once.
     let embedder: Arc<dyn engram_memory::Embedder> = match cfg.embed.kind.as_str() {
         "gateway" => {
-            let probe = gateway.embed(&["dimension probe".into()], "init").await?;
-            let dim = probe.first().map(|v| v.len()).unwrap_or(256);
-            tracing::info!(dim, "using gateway embedder");
-            Arc::new(embedder::GatewayEmbedder::new(gateway.clone(), dim))
+            // Probe the embedding dimension once. If the provider has no embeddings endpoint
+            // (Anthropic, the mock, a chat-only base), DON'T crash boot - warn and fall back to
+            // the offline trigram embedder so the daemon still starts and recall still works.
+            match gateway.embed(&["dimension probe".into()], "init").await {
+                Ok(probe) => {
+                    let dim = probe.first().map(|v| v.len()).unwrap_or(256);
+                    tracing::info!(dim, "using gateway embedder");
+                    Arc::new(embedder::GatewayEmbedder::new(
+                        gateway.clone(),
+                        dim,
+                        &cfg.model(),
+                    ))
+                }
+                Err(err) => {
+                    tracing::warn!(error = %err, provider = %cfg.provider.kind,
+                        "gateway embeddings unavailable - falling back to the trigram embedder");
+                    Arc::new(TrigramHashEmbedder::default())
+                }
+            }
         }
         // Pure-Rust static model2vec embedder - real synonym recall, no model runtime.
         "static" => {
@@ -213,15 +592,22 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         _ => Arc::new(TrigramHashEmbedder::default()),
     };
 
-    let memory = Arc::new(Memory::open(format!("{home}/brain.db"), embedder, ledger.clone())?);
-    let signer = Arc::new(SkillSigner::load_or_create(format!("{home}/keys/skill.key"))?);
+    let memory = Arc::new(Memory::open(
+        format!("{home}/brain.db"),
+        embedder,
+        ledger.clone(),
+    )?);
+    let signer = Arc::new(SkillSigner::load_or_create(format!(
+        "{home}/keys/skill.key"
+    ))?);
     let registry = Arc::new(Registry::open(&home, signer, ledger.clone())?);
     seed::ensure_seed(&registry)?;
     let sched = Arc::new(Scheduler::open(&home, ledger.clone())?);
     let bus = Bus::new(1024);
     let activity = Activity::new();
-    let workdir =
-        std::path::PathBuf::from(std::env::var("ENGRAM_WORKDIR").unwrap_or_else(|_| format!("{home}/work")));
+    let workdir = std::path::PathBuf::from(
+        std::env::var("ENGRAM_WORKDIR").unwrap_or_else(|_| format!("{home}/work")),
+    );
     std::fs::create_dir_all(&workdir)?;
     // Personality / standing instructions, shaping every agent run (Hermes's SOUL.md).
     let persona = std::fs::read_to_string(format!("{home}/SOUL.md")).ok();
@@ -231,7 +617,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!(count = mcp_tools.len(), "mcp tools available to the agent");
     }
 
-    ledger.append("core.boot", "core", json!({ "version": VERSION, "addr": addr.to_string() }))?;
+    ledger.append(
+        "core.boot",
+        "core",
+        json!({ "version": VERSION, "addr": addr.to_string() }),
+    )?;
 
     let app = App {
         memory,
@@ -283,14 +673,22 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/agents/{id}/activity", get(agent_activity))
         .route("/v1/skills", get(skills))
         .route("/v1/skills/{id}/run", post(run_skill))
+        .route("/v1/skills/{id}/improve", post(skill_improve))
+        .route("/v1/skills/{id}/activate", post(skill_activate))
+        .route("/v1/skills/{id}/revert", post(skill_revert))
+        .route("/v1/skills/{id}/teach", post(skill_teach))
         .route("/v1/swarm", post(run_swarm))
+        .route("/v1/mission", post(run_mission))
         .route("/v1/agent", post(agent_handler))
         .route("/v1/voice", post(voice_handler))
         .route("/v1/voice/stream", get(voice_stream))
         .route("/v1/channel/{platform}", post(channels::channel_handler))
         .route("/v1/converse", post(converse_handler))
         .route("/v1/converse/stream", post(converse_stream_handler))
-        .route("/v1/upload", post(upload_handler).layer(axum::extract::DefaultBodyLimit::max(34 * 1024 * 1024)))
+        .route(
+            "/v1/upload",
+            post(upload_handler).layer(axum::extract::DefaultBodyLimit::max(34 * 1024 * 1024)),
+        )
         .route("/v1/ledger/tail", get(ledger_tail))
         .route("/v1/ledger/verify", get(ledger_verify))
         .route("/v1/schedule", get(schedule_list).post(schedule_add))
@@ -298,7 +696,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/schedule/{id}", axum::routing::delete(schedule_remove))
         .route("/v1/schedule/{id}/run", post(schedule_run))
         .route("/v1/tasks", get(tasks_list).post(tasks_create))
-        .route("/v1/tasks/{id}", axum::routing::patch(tasks_update).delete(tasks_delete))
+        .route(
+            "/v1/tasks/{id}",
+            axum::routing::patch(tasks_update).delete(tasks_delete),
+        )
         .route("/v1/tasks/{id}/agent", post(tasks_assign))
         .route("/v1/tasks/{id}/handoff", post(task_handoff))
         .route("/v1/tasks/{id}/review", post(task_review))
@@ -308,9 +709,17 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/tasks/{id}/audit", get(task_audit))
         .route("/v1/tasks/{id}/receipt", get(task_receipt))
         .route("/v1/projects", get(projects_list).post(projects_create))
-        .route("/v1/projects/{id}", axum::routing::patch(projects_update).delete(projects_delete))
+        .route(
+            "/v1/projects/{id}",
+            axum::routing::patch(projects_update).delete(projects_delete),
+        )
         .route("/v1/sessions", get(sessions_list).post(sessions_create))
-        .route("/v1/sessions/{id}", get(session_get).patch(session_update).delete(session_delete))
+        .route(
+            "/v1/sessions/{id}",
+            get(session_get)
+                .patch(session_update)
+                .delete(session_delete),
+        )
         .route("/v1/ledger/pubkey", get(ledger_pubkey))
         .route("/v1/policy", get(policy_get).post(policy_set))
         .route("/v1/shell", post(terminal::shell_handler))
@@ -320,41 +729,119 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/config/mcp-test", post(config_mcp_test))
         .route("/v1/channels", get(channels_status))
         .route("/v1/channels/telegram/connect", post(telegram_connect))
-        .route("/v1/channels/telegram/disconnect", post(telegram_disconnect))
+        .route(
+            "/v1/channels/telegram/disconnect",
+            post(telegram_disconnect),
+        )
         .route("/v1/persona", get(persona_get).post(persona_set))
         .route("/v1/restart", post(restart_handler))
         .route("/v1/halt", post(halt_set))
         .route("/v1/events", get(events))
-        .layer(axum::middleware::from_fn_with_state(app.clone(), keep_awake))
-        .layer(axum::middleware::from_fn_with_state(app.clone(), require_auth))
+        .layer(axum::middleware::from_fn_with_state(
+            app.clone(),
+            keep_awake,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            app.clone(),
+            require_auth,
+        ))
         .with_state(app.clone());
 
     // Inbound messaging channel: run as a Telegram bot if a token is configured.
     // Prefer a token saved from the Integrations gallery (config.json); fall back to the env.
     let tg_token = {
         let t = app.cfg().channels.telegram_token.clone();
-        if t.is_empty() { std::env::var("ENGRAM_TELEGRAM_TOKEN").ok() } else { Some(t) }
+        if t.is_empty() {
+            std::env::var("ENGRAM_TELEGRAM_TOKEN").ok()
+        } else {
+            Some(t)
+        }
     };
-    if let Some(token) = tg_token.filter(|t| !t.is_empty()) {
-        tracing::info!("telegram channel active");
-        let handle = telegram::spawn(app.clone(), token);
-        let uname = app.cfg().channels.telegram_username.clone();
-        *app.telegram.lock().expect("telegram lock") = Some((handle, uname));
+    // Only the long-lived server hosts the inbound channels. In --run-due (a one-shot wake) we
+    // must NOT start the Telegram long-poll, or it could land a concurrent UNTRUSTED run during a
+    // wake that is supposed to fire scheduled jobs and exit.
+    if mode == RunMode::Serve {
+        if let Some(token) = tg_token.filter(|t| !t.is_empty()) {
+            tracing::info!("telegram channel active");
+            let handle = telegram::spawn(app.clone(), token);
+            let uname = app.cfg().channels.telegram_username.clone();
+            *app.telegram.lock().expect("telegram lock") = Some((handle, uname));
+        }
     }
+    // `--run-due`: fire any scheduled jobs that are due, then exit WITHOUT binding the socket
+    // (which systemd owns) or starting the HTTP server. This is the zero-idle wake-timer path.
+    if mode == RunMode::RunDue {
+        let now = chrono::Utc::now();
+        let mut fired = 0usize;
+        for job in app.sched.due(now) {
+            let title = job
+                .payload
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&job.name)
+                .to_string();
+            let task = app.tasks.create(title, String::new(), "schedule".into());
+            let _ = app.sched.set_last_task(&job.id, &task.id);
+            let _ = run_task_core(&app, &task.id, None).await;
+            let _ = app.sched.mark_fired(&job.id, now);
+            fired += 1;
+        }
+        tracing::info!(fired, "ran due scheduled jobs (--run-due), exiting");
+        return Ok(());
+    }
+
     // Fire scheduled jobs while the daemon is awake.
     spawn_scheduler_tick(app.clone());
+    spawn_consolidation_tick(app.clone());
 
-    // SO_REUSEADDR so a fresh process can rebind immediately after a restart, even while the
-    // previous one's socket lingers in TIME_WAIT. This keeps the Settings panel's "Restart
-    // daemon" reliable instead of racing the kernel to release the port.
-    let socket = match addr {
-        SocketAddr::V4(_) => tokio::net::TcpSocket::new_v4()?,
-        SocketAddr::V6(_) => tokio::net::TcpSocket::new_v6()?,
+    // Prefer a socket-activated listener: when systemd (or any activator) hands us a listening
+    // fd via LISTEN_FDS, we inherit it instead of binding - this is what makes "0 MB resident at
+    // idle" real, since systemd owns the port and only spawns us on a connection. Binding the
+    // port ourselves under socket activation would EADDRINUSE on the very first request. Falling
+    // back to a normal bind keeps the desktop/dev path (and non-systemd hosts) working. SO_REUSEADDR
+    // keeps the Settings panel's "Restart daemon" reliable across the kernel's TIME_WAIT.
+    // Refuse to expose an unauthenticated control plane on ANY listen path (self-bind OR a
+    // socket-activated inherited fd): a non-loopback address with no API token would let anyone
+    // on the network drive a self-modifying agent that can run a shell and a browser.
+    let guard_exposure = |real: SocketAddr| -> Result<(), Box<dyn std::error::Error>> {
+        let is_loopback = real.ip().is_loopback();
+        if !is_loopback
+            && app.cfg().security.api_token.is_empty()
+            && std::env::var("ENGRAM_ALLOW_INSECURE").as_deref() != Ok("1")
+        {
+            return Err(format!(
+                "refusing to serve on {real} with no API token - an exposed agent must be \
+                 authenticated. Set ENGRAM_API_TOKEN, bind 127.0.0.1 (default), or set \
+                 ENGRAM_ALLOW_INSECURE=1 to override."
+            )
+            .into());
+        }
+        Ok(())
     };
-    socket.set_reuseaddr(true)?;
-    socket.bind(addr)?;
-    let listener = socket.listen(1024)?;
-    tracing::info!(version = VERSION, %addr, idle_s = idle.as_secs(), "engram awake - http ready");
+    let listener = match systemd_listener()? {
+        Some(std_listener) => {
+            // CRITICAL: apply the exposure guard to the REAL inherited socket address (set by the
+            // systemd .socket unit), not ENGRAM_ADDR - otherwise an operator who points
+            // ListenStream at 0.0.0.0 but forgets the token gets a world-open control plane.
+            let real = std_listener.local_addr()?;
+            guard_exposure(real)?;
+            tracing::info!(%real, idle_s = idle.as_secs(), "engram awake - socket-activated (inherited fd)");
+            tokio::net::TcpListener::from_std(std_listener)?
+        }
+        None => {
+            guard_exposure(addr)?;
+            let socket = match addr {
+                SocketAddr::V4(_) => tokio::net::TcpSocket::new_v4()?,
+                SocketAddr::V6(_) => tokio::net::TcpSocket::new_v6()?,
+            };
+            socket.set_reuseaddr(true)?;
+            socket.bind(addr)?;
+            tracing::info!(version = VERSION, %addr, idle_s = idle.as_secs(), "engram awake - http ready");
+            socket.listen(1024)?
+        }
+    };
+    // Tell a Type=notify supervisor we're ready to accept (no-op when not under systemd).
+    sd_notify_ready();
 
     axum::serve(listener, router)
         .with_graceful_shutdown(async move {
@@ -381,8 +868,11 @@ async fn keep_awake(
 ) -> Response {
     app.activity.touch();
     let path = req.uri().path().to_string();
-    app.bus
-        .emit(Spike::new("http.request", Priority::Normal, json!({ "path": path })));
+    app.bus.emit(Spike::new(
+        "http.request",
+        Priority::Normal,
+        json!({ "path": path }),
+    ));
     next.run(req).await
 }
 
@@ -401,7 +891,13 @@ async fn require_auth(
         return next.run(req).await;
     }
     let path = req.uri().path();
-    if path == "/" || path == "/health" || path.starts_with("/v1/channel/") {
+    // The dashboard root and the liveness probe are always open. Inbound channel webhooks are
+    // exempt from the bearer token ONLY when they carry their own shared secret (the handler
+    // enforces it); without a channel secret they fall under the token gate, so an exposed
+    // deployment can never be driven by an anonymous caller. (Channel runs also start Untrusted.)
+    let channel_has_secret = !app.cfg().security.channel_secret.is_empty();
+    if path == "/" || path == "/health" || (path.starts_with("/v1/channel/") && channel_has_secret)
+    {
         return next.run(req).await;
     }
     let presented = req
@@ -446,25 +942,35 @@ async fn dashboard() -> impl IntoResponse {
     // always comes from the local daemon (no network cost to caching it), but WKWebView's disk
     // cache would otherwise heuristically serve an old page across relaunches.
     (
-        [(axum::http::header::CACHE_CONTROL, "no-store, no-cache, must-revalidate")],
+        [(
+            axum::http::header::CACHE_CONTROL,
+            "no-store, no-cache, must-revalidate",
+        )],
         Html(include_str!("../assets/index.html").to_string()),
     )
 }
 
-async fn health() -> ApiResult {
-    // "offline" when no real model provider is configured - the UI surfaces this honestly
-    // rather than returning fake answers.
-    let offline = std::env::var("ENGRAM_ANTHROPIC_API_KEY").is_err()
-        && std::env::var("ENGRAM_LLM_BASE_URL").is_err();
-    Ok(Json(json!({ "ok": true, "version": VERSION, "offline": offline })))
+async fn health(State(app): State<App>) -> ApiResult {
+    // "offline" iff the *live* provider is the mock - the single honest signal, derived from
+    // what the gateway will actually call, not an env-var guess. (The old heuristic missed a
+    // standard ANTHROPIC_API_KEY, a config.json provider, or a custom base, so it could claim
+    // "offline" while a real model was connected - exactly the kind of UI bluff we forbid.)
+    let offline = app.gateway.provider_id() == "mock";
+    Ok(Json(
+        json!({ "ok": true, "version": VERSION, "offline": offline }),
+    ))
 }
 
 async fn meter(State(app): State<App>) -> ApiResult {
-    Ok(Json(serde_json::to_value(app.gateway.meter()).map_err(err)?))
+    Ok(Json(
+        serde_json::to_value(app.gateway.meter()).map_err(err)?,
+    ))
 }
 
 async fn memory_stats(State(app): State<App>) -> ApiResult {
-    Ok(Json(serde_json::to_value(app.memory.stats().map_err(err)?).map_err(err)?))
+    Ok(Json(
+        serde_json::to_value(app.memory.stats().map_err(err)?).map_err(err)?,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -477,7 +983,10 @@ struct RecentQuery {
 
 async fn memory_recent(State(app): State<App>, Query(q): Query<RecentQuery>) -> ApiResult {
     let region = parse_region(q.region.as_deref());
-    let recs = app.memory.recent(region, q.n.unwrap_or(20).min(100)).map_err(err)?;
+    let recs = app
+        .memory
+        .recent(region, q.n.unwrap_or(20).min(100))
+        .map_err(err)?;
     Ok(Json(serde_json::to_value(recs).map_err(err)?))
 }
 
@@ -485,7 +994,12 @@ async fn memory_recent(State(app): State<App>, Query(q): Query<RecentQuery>) -> 
 /// fields the graph needs (region for color/cluster, tier for weight, importance/access for size).
 async fn memory_graph(State(app): State<App>, Query(q): Query<RecentQuery>) -> ApiResult {
     let per = q.n.unwrap_or(60).min(150);
-    let regions = [Region::Identity, Region::Semantic, Region::Episodic, Region::Procedural];
+    let regions = [
+        Region::Identity,
+        Region::Semantic,
+        Region::Episodic,
+        Region::Procedural,
+    ];
     let mut nodes = Vec::new();
     for region in regions {
         for r in app.memory.recent(region, per).map_err(err)? {
@@ -507,11 +1021,16 @@ async fn memory_graph(State(app): State<App>, Query(q): Query<RecentQuery>) -> A
 // ---- Consciousness: the always-loaded working memory ------------------------------------------
 
 async fn consciousness_get(State(app): State<App>) -> ApiResult {
-    Ok(Json(serde_json::to_value(app.consciousness.snapshot()).map_err(err)?))
+    Ok(Json(
+        serde_json::to_value(app.consciousness.snapshot()).map_err(err)?,
+    ))
 }
 
 async fn consciousness_distill(State(app): State<App>) -> ApiResult {
-    let st = app.consciousness.distill(&app.memory, &app.ledger).map_err(err)?;
+    let st = app
+        .consciousness
+        .distill(&app.memory, &app.ledger)
+        .map_err(err)?;
     Ok(Json(serde_json::to_value(st).map_err(err)?))
 }
 
@@ -541,8 +1060,20 @@ async fn consciousness_revert(State(app): State<App>) -> ApiResult {
 
 // ---- Durable named agents (the auditable team) ------------------------------------------------
 
+/// Mask each agent's per-agent api_key in the API view (show only whether one is set), exactly
+/// like the provider key elsewhere - secrets never go back to the browser.
+fn agent_redacted(a: &agents::AgentDef) -> Value {
+    json!({
+        "id": a.id, "name": a.name, "role": a.role, "model": a.model,
+        "provider": a.provider, "base_url": a.base_url,
+        "api_key_set": !a.api_key.is_empty(),
+        "created_ms": a.created_ms, "updated_ms": a.updated_ms,
+    })
+}
+
 async fn agents_list(State(app): State<App>) -> ApiResult {
-    Ok(Json(serde_json::to_value(app.agents.list()).map_err(err)?))
+    let list: Vec<Value> = app.agents.list().iter().map(agent_redacted).collect();
+    Ok(Json(json!(list)))
 }
 
 async fn agents_create(State(app): State<App>, Json(p): Json<Value>) -> ApiResult {
@@ -552,29 +1083,54 @@ async fn agents_create(State(app): State<App>, Json(p): Json<Value>) -> ApiResul
     }
     let role = p.get("role").and_then(|v| v.as_str()).unwrap_or("");
     let model = p.get("model").and_then(|v| v.as_str()).unwrap_or("");
-    let def = app.agents.create(name, role, model);
+    let provider = p.get("provider").and_then(|v| v.as_str()).unwrap_or("");
+    let base_url = p.get("base_url").and_then(|v| v.as_str()).unwrap_or("");
+    let api_key = p.get("api_key").and_then(|v| v.as_str()).unwrap_or("");
+    let def = app
+        .agents
+        .create(name, role, model, provider, base_url, api_key);
     app.ledger
-        .append("agent.create", "user", json!({ "id": def.id, "name": def.name, "model": def.model }))
+        .append(
+            "agent.create",
+            "user",
+            json!({ "id": def.id, "name": def.name, "model": def.model, "provider": def.provider }),
+        )
         .map_err(err)?;
-    Ok(Json(serde_json::to_value(def).map_err(err)?))
+    Ok(Json(agent_redacted(&def)))
 }
 
-async fn agents_update(State(app): State<App>, Path(id): Path<String>, Json(p): Json<Value>) -> ApiResult {
+async fn agents_update(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Json(p): Json<Value>,
+) -> ApiResult {
     let name = p.get("name").and_then(|v| v.as_str());
     let role = p.get("role").and_then(|v| v.as_str());
     let model = p.get("model").and_then(|v| v.as_str());
-    let def = app.agents.update(&id, name, role, model).ok_or_else(|| err("no such agent"))?;
+    let provider = p.get("provider").and_then(|v| v.as_str());
+    let base_url = p.get("base_url").and_then(|v| v.as_str());
+    let api_key = p.get("api_key").and_then(|v| v.as_str());
+    let def = app
+        .agents
+        .update(&id, name, role, model, provider, base_url, api_key)
+        .ok_or_else(|| err("no such agent"))?;
     app.ledger
-        .append("agent.update", "user", json!({ "id": def.id, "name": def.name, "model": def.model }))
+        .append(
+            "agent.update",
+            "user",
+            json!({ "id": def.id, "name": def.name, "model": def.model, "provider": def.provider }),
+        )
         .map_err(err)?;
-    Ok(Json(serde_json::to_value(def).map_err(err)?))
+    Ok(Json(agent_redacted(&def)))
 }
 
 async fn agents_delete(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
     if !app.agents.delete(&id) {
         return Err(err("no such agent"));
     }
-    app.ledger.append("agent.delete", "user", json!({ "id": id })).map_err(err)?;
+    app.ledger
+        .append("agent.delete", "user", json!({ "id": id }))
+        .map_err(err)?;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -582,7 +1138,11 @@ async fn agents_delete(State(app): State<App>, Path(id): Path<String>) -> ApiRes
 /// counted by kind, with its most recent actions and the cards assigned to it. The auditable
 /// experience of a teammate - it grows as the agent works, and every entry is verifiable.
 async fn agent_activity(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
-    let name = app.agents.get(&id).ok_or_else(|| err("no such agent"))?.name;
+    let name = app
+        .agents
+        .get(&id)
+        .ok_or_else(|| err("no such agent"))?
+        .name;
     let entries = app.ledger.read_all().map_err(err)?;
     let mut by_kind: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     let mut total = 0usize;
@@ -599,8 +1159,12 @@ async fn agent_activity(State(app): State<App>, Path(id): Path<String>) -> ApiRe
         .take(25)
         .map(|e| json!({ "seq": e.seq, "kind": e.kind, "ts_ms": e.ts_ms, "hash": e.hash }))
         .collect();
-    let tasks_assigned =
-        app.tasks.list().iter().filter(|t| t.agent.as_deref() == Some(id.as_str())).count();
+    let tasks_assigned = app
+        .tasks
+        .list()
+        .iter()
+        .filter(|t| t.agent.as_deref() == Some(id.as_str()))
+        .count();
     Ok(Json(json!({
         "name": name, "total": total, "by_kind": by_kind, "recent": recent,
         "last_ms": last_ms, "tasks_assigned": tasks_assigned,
@@ -636,7 +1200,10 @@ async fn recall(State(app): State<App>, Query(q): Query<RecallQuery>) -> ApiResu
         Some(t) => Region::for_task(t),
         None => vec![],
     };
-    let hits = app.memory.recall(&q.q, &regions, q.k.unwrap_or(5)).map_err(err)?;
+    let hits = app
+        .memory
+        .recall(&q.q, &regions, q.k.unwrap_or(5))
+        .map_err(err)?;
     Ok(Json(serde_json::to_value(hits).map_err(err)?))
 }
 
@@ -690,12 +1257,126 @@ pub(crate) async fn run_agent_task(
     task: &str,
     max_steps: usize,
 ) -> Result<engram_agent::AgentRun, String> {
-    run_agent_task_cb(app, task, max_steps, engram_core::Taint::Trusted, false, None, None).await
+    run_agent_task_cb(
+        app,
+        task,
+        max_steps,
+        engram_core::Taint::Trusted,
+        false,
+        None,
+        None,
+        None,
+    )
+    .await
 }
 
 /// Run the agent with an explicit initial taint. Untrusted-origin prompts (inbound
 /// webhooks, Telegram) start `Untrusted`, so the no-egress guard applies from step one.
 /// `dry_run` previews intended actions without executing side-effecting tools.
+/// Removes a git worktree when dropped, so a task's isolated tree is cleaned up on every exit path.
+struct WorktreeGuard {
+    repo: std::path::PathBuf,
+    path: std::path::PathBuf,
+}
+impl Drop for WorktreeGuard {
+    fn drop(&mut self) {
+        let repo = std::mem::take(&mut self.repo);
+        let path = std::mem::take(&mut self.path);
+        let remove = move || match std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["worktree", "remove", "--force"])
+            .arg(&path)
+            .output()
+        {
+            Ok(o) if !o.status.success() => tracing::warn!(
+                path = %path.display(),
+                "git worktree remove failed: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            ),
+            Err(e) => {
+                tracing::warn!(path = %path.display(), "git worktree remove could not spawn: {e}")
+            }
+            _ => {}
+        };
+        // Drop runs on a tokio worker thread; `git worktree remove` is a BLOCKING syscall that would
+        // stall the executor (and every other task on it) if a repo lock or slow disk made git hang.
+        // Move it onto the blocking pool. Outside a runtime (e.g. unit tests) run it inline.
+        match tokio::runtime::Handle::try_current() {
+            Ok(h) => {
+                h.spawn_blocking(remove);
+            }
+            Err(_) => remove(),
+        }
+    }
+}
+
+/// With `ENGRAM_WORKTREES=1` and a git workspace, create a detached worktree at `<home>/worktrees/
+/// <task-id>` so this task runs isolated from sibling tasks (parallel agents on one project). Returns
+/// the workdir override (None = use the shared workspace) and a guard that removes it afterward.
+fn prepare_worktree(
+    app: &App,
+    task_id: &str,
+) -> (Option<std::path::PathBuf>, Option<WorktreeGuard>) {
+    if std::env::var("ENGRAM_WORKTREES").as_deref() != Ok("1") {
+        return (None, None);
+    }
+    if !app.workdir.join(".git").exists() {
+        tracing::warn!("ENGRAM_WORKTREES=1 but the workspace is not a git repo - running shared");
+        return (None, None);
+    }
+    let base = std::path::Path::new(&app.home).join("worktrees");
+    let dest = base.join(task_id);
+    // Defense in depth: task_id is already slug-sanitized to [a-z0-9-] (no separators, so no
+    // traversal), but confirm the joined path stays under the worktrees base before we hand it to
+    // git or mkdir - a future id scheme must not be able to escape.
+    if !dest.starts_with(&base) {
+        tracing::warn!(
+            task = task_id,
+            "refusing worktree path that escapes the worktrees dir"
+        );
+        return (None, None);
+    }
+    let _ = std::fs::create_dir_all(&base);
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&app.workdir)
+        .args(["worktree", "add", "--detach"])
+        .arg(&dest)
+        .output();
+    let ok = match &out {
+        Ok(o) if o.status.success() => true,
+        Ok(o) => {
+            tracing::warn!(
+                task = task_id,
+                "git worktree add failed, running shared: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            );
+            false
+        }
+        Err(e) => {
+            tracing::warn!(
+                task = task_id,
+                "git worktree add could not spawn, running shared: {e}"
+            );
+            false
+        }
+    };
+    if ok {
+        tracing::info!(task = task_id, path = %dest.display(), "task running in an isolated git worktree");
+        (
+            Some(dest.clone()),
+            Some(WorktreeGuard {
+                repo: app.workdir.clone(),
+                path: dest,
+            }),
+        )
+    } else {
+        (None, None)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_agent_task_cb(
     app: &App,
     task: &str,
@@ -704,14 +1385,21 @@ pub(crate) async fn run_agent_task_cb(
     dry_run: bool,
     on_step: Option<engram_agent::StepCallback>,
     agent_def: Option<&agents::AgentDef>,
+    workdir_override: Option<std::path::PathBuf>,
 ) -> Result<engram_agent::AgentRun, String> {
     let policy = engram_agent::Policy {
         allow_shell: app.allow_shell.load(std::sync::atomic::Ordering::Relaxed),
         dry_run,
         shell_backend: match std::env::var("ENGRAM_SHELL_BACKEND").as_deref() {
-            Ok("docker") => Some(std::env::var("ENGRAM_DOCKER_IMAGE").unwrap_or_else(|_| "alpine".into())),
-            Ok("ssh") => std::env::var("ENGRAM_SSH_HOST").ok().map(|h| format!("ssh:{h}")),
-            Ok("singularity") => std::env::var("ENGRAM_SINGULARITY_IMAGE").ok().map(|i| format!("singularity:{i}")),
+            Ok("docker") => {
+                Some(std::env::var("ENGRAM_DOCKER_IMAGE").unwrap_or_else(|_| "alpine".into()))
+            }
+            Ok("ssh") => std::env::var("ENGRAM_SSH_HOST")
+                .ok()
+                .map(|h| format!("ssh:{h}")),
+            Ok("singularity") => std::env::var("ENGRAM_SINGULARITY_IMAGE")
+                .ok()
+                .map(|i| format!("singularity:{i}")),
             _ => None,
         },
         ..Default::default()
@@ -722,14 +1410,31 @@ pub(crate) async fn run_agent_task_cb(
         .filter(|m| !m.is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| app.model());
+    // A named agent may bring its OWN provider (mix backends by task complexity: a cheap model on
+    // one provider for triage, a frontier model on another for hard reasoning). When set, run it
+    // through a per-agent gateway so a foreign model id doesn't 404 against the global provider.
+    let gateway = match agent_def.filter(|a| !a.provider.trim().is_empty()) {
+        Some(a) => std::sync::Arc::new(engram_gateway::Gateway::new(
+            config::build_provider_from(&a.provider, &a.base_url, &a.api_key),
+            app.ledger.clone(),
+        )),
+        None => app.gateway.clone(),
+    };
     let ctx = engram_agent::ToolCtx {
         memory: app.memory.clone(),
         skills: app.registry.clone(),
-        gateway: app.gateway.clone(),
+        gateway: gateway.clone(),
         ledger: app.ledger.clone(),
         taint,
+        // A run that begins Untrusted (an inbound channel/scheduled run) is also treated as
+        // sensitive, so the trifecta egress gate is armed from step one for untrusted-origin runs.
+        sensitive: taint.is_untrusted(),
         policy,
-        workdir: app.workdir.clone(),
+        // An isolated per-task workdir (a git worktree, for parallel agents on one project) when
+        // provided, else the shared workspace.
+        workdir: workdir_override
+            .clone()
+            .unwrap_or_else(|| app.workdir.clone()),
         model: model.clone(),
         depth: 0,
         browser: app.browser.clone(),
@@ -740,8 +1445,13 @@ pub(crate) async fn run_agent_task_cb(
     }
     // Production runs verify before finishing (one bounded reflection pass), are bounded by
     // a token budget (runaway-cost guard), and honor the kill switch.
-    let budget: u32 = app.cfg().cost.task_token_budget.try_into().unwrap_or(u32::MAX);
-    let mut agent = engram_agent::Agent::new(app.gateway.clone(), tools, model)
+    let budget: u32 = app
+        .cfg()
+        .cost
+        .task_token_budget
+        .try_into()
+        .unwrap_or(u32::MAX);
+    let mut agent = engram_agent::Agent::new(gateway.clone(), tools, model)
         .max_steps(max_steps)
         .reflect(true)
         .token_budget(budget)
@@ -785,6 +1495,7 @@ async fn agent_handler(State(app): State<App>, Json(r): Json<AgentReq>) -> ApiRe
         r.dry_run,
         None,
         None,
+        None,
     )
     .await
     .map_err(ApiError)?;
@@ -813,11 +1524,19 @@ async fn voice_session(app: App, mut socket: axum::extract::ws::WebSocket) {
                 let send = match turn {
                     Ok((transcript, reply, out)) => {
                         let _ = socket
-                            .send(Ws::Text(json!({ "transcript": transcript, "reply": reply }).to_string().into()))
+                            .send(Ws::Text(
+                                json!({ "transcript": transcript, "reply": reply })
+                                    .to_string()
+                                    .into(),
+                            ))
                             .await;
                         socket.send(Ws::Binary(out.into())).await
                     }
-                    Err(e) => socket.send(Ws::Text(json!({ "error": e }).to_string().into())).await,
+                    Err(e) => {
+                        socket
+                            .send(Ws::Text(json!({ "error": e }).to_string().into()))
+                            .await
+                    }
                 };
                 if send.is_err() {
                     break;
@@ -830,9 +1549,17 @@ async fn voice_session(app: App, mut socket: axum::extract::ws::WebSocket) {
 }
 
 async fn process_voice_turn(app: &App, audio: &[u8]) -> Result<(String, String, Vec<u8>), String> {
-    let transcript = app.gateway.transcribe(audio, "wav", "voice").await.map_err(|e| e.to_string())?;
+    let transcript = app
+        .gateway
+        .transcribe(audio, "wav", "voice")
+        .await
+        .map_err(|e| e.to_string())?;
     let run = run_agent_task(app, &transcript, 8).await?;
-    let out = app.gateway.tts(&run.answer, "alloy", "voice").await.map_err(|e| e.to_string())?;
+    let out = app
+        .gateway
+        .tts(&run.answer, "alloy", "voice")
+        .await
+        .map_err(|e| e.to_string())?;
     Ok((transcript, run.answer, out))
 }
 
@@ -853,20 +1580,33 @@ async fn voice_handler(State(app): State<App>, Json(r): Json<VoiceReq>) -> ApiRe
         .decode(r.audio_b64.as_bytes())
         .map_err(err)?;
     let fmt = r.format.as_deref().unwrap_or("mp3");
-    let transcript = app.gateway.transcribe(&audio, fmt, "voice").await.map_err(err)?;
-    let run = run_agent_task(&app, &transcript, 8).await.map_err(ApiError)?;
+    let transcript = app
+        .gateway
+        .transcribe(&audio, fmt, "voice")
+        .await
+        .map_err(err)?;
+    let run = run_agent_task(&app, &transcript, 8)
+        .await
+        .map_err(ApiError)?;
     let voice = r.voice.as_deref().unwrap_or("alloy");
-    let audio_out = app.gateway.tts(&run.answer, voice, "voice").await.map_err(err)?;
+    let audio_out = app
+        .gateway
+        .tts(&run.answer, voice, "voice")
+        .await
+        .map_err(err)?;
     let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&audio_out);
-    Ok(Json(json!({ "transcript": transcript, "reply": run.answer, "audio_b64": audio_b64 })))
+    Ok(Json(
+        json!({ "transcript": transcript, "reply": run.answer, "audio_b64": audio_b64 }),
+    ))
 }
 
 /// Server-Sent Events: stream the neural bus so the desktop updates the moment anything
 /// happens (a task starts, a step completes, a run finishes) instead of polling.
 async fn events(
     State(app): State<App>,
-) -> axum::response::sse::Sse<impl futures_core::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>>
-{
+) -> axum::response::sse::Sse<
+    impl futures_core::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>,
+> {
     use axum::response::sse::{Event, KeepAlive, Sse};
     let mut syn = app.bus.synapse();
     // Cap the connection lifetime so a held-open stream can never block the daemon's
@@ -918,10 +1658,15 @@ struct PolicyReq {
 /// recorded in the audit ledger, so even a consent change is on the record.
 async fn policy_set(State(app): State<App>, Json(r): Json<PolicyReq>) -> ApiResult {
     if let Some(v) = r.allow_shell {
-        app.allow_shell.store(v, std::sync::atomic::Ordering::Relaxed);
-        let _ = app.ledger.append("policy.set", "user", json!({ "allow_shell": v }));
+        app.allow_shell
+            .store(v, std::sync::atomic::Ordering::Relaxed);
+        let _ = app
+            .ledger
+            .append("policy.set", "user", json!({ "allow_shell": v }));
     }
-    Ok(Json(json!({ "allow_shell": app.allow_shell.load(std::sync::atomic::Ordering::Relaxed) })))
+    Ok(Json(
+        json!({ "allow_shell": app.allow_shell.load(std::sync::atomic::Ordering::Relaxed) }),
+    ))
 }
 
 async fn tasks_list(State(app): State<App>) -> ApiResult {
@@ -938,8 +1683,16 @@ struct TaskCreateReq {
 }
 
 async fn tasks_create(State(app): State<App>, Json(r): Json<TaskCreateReq>) -> ApiResult {
-    let t = app.tasks.create(r.title, r.detail, r.origin.unwrap_or_else(|| "manual".into()));
-    app.bus.emit(Spike::new("task.create", Priority::Low, json!({ "id": t.id })));
+    let t = app.tasks.create(
+        r.title,
+        r.detail,
+        r.origin.unwrap_or_else(|| "manual".into()),
+    );
+    app.bus.emit(Spike::new(
+        "task.create",
+        Priority::Low,
+        json!({ "id": t.id }),
+    ));
     Ok(Json(serde_json::to_value(t).map_err(err)?))
 }
 
@@ -967,15 +1720,35 @@ async fn tasks_update(
 
 /// Assign (or clear) the durable agent that runs a card. Signed as `task.assign` - assigning a
 /// teammate to a card is itself an auditable event.
-async fn tasks_assign(State(app): State<App>, Path(id): Path<String>, Json(p): Json<Value>) -> ApiResult {
-    let agent = p.get("agent").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(String::from);
+async fn tasks_assign(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Json(p): Json<Value>,
+) -> ApiResult {
+    let agent = p
+        .get("agent")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(String::from);
     let agent_name = match &agent {
-        Some(aid) => Some(app.agents.get(aid).ok_or_else(|| err("no such agent"))?.name),
+        Some(aid) => Some(
+            app.agents
+                .get(aid)
+                .ok_or_else(|| err("no such agent"))?
+                .name,
+        ),
         None => None,
     };
-    let t = app.tasks.set_agent(&id, agent.clone()).ok_or_else(|| err("task not found"))?;
+    let t = app
+        .tasks
+        .set_agent(&id, agent.clone())
+        .ok_or_else(|| err("task not found"))?;
     app.ledger
-        .append("task.assign", "user", json!({ "task": id, "agent": agent, "agent_name": agent_name }))
+        .append(
+            "task.assign",
+            "user",
+            json!({ "task": id, "agent": agent, "agent_name": agent_name }),
+        )
         .map_err(err)?;
     Ok(Json(serde_json::to_value(t).map_err(err)?))
 }
@@ -983,11 +1756,29 @@ async fn tasks_assign(State(app): State<App>, Path(id): Path<String>, Json(p): J
 /// Hand a card from its current agent to another, with a note. Reassigns, appends to the card's
 /// hand-off trail, and signs `task.handoff` (from → to + note) - a multi-agent collaboration you
 /// can audit end to end.
-async fn task_handoff(State(app): State<App>, Path(id): Path<String>, Json(p): Json<Value>) -> ApiResult {
-    let to_id = p.get("to").and_then(Value::as_str).filter(|s| !s.is_empty()).map(String::from);
-    let note = p.get("note").and_then(Value::as_str).unwrap_or("").trim().to_string();
+async fn task_handoff(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Json(p): Json<Value>,
+) -> ApiResult {
+    let to_id = p
+        .get("to")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+    let note = p
+        .get("note")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
     let to_name = match &to_id {
-        Some(aid) => app.agents.get(aid).ok_or_else(|| err("no such agent"))?.name,
+        Some(aid) => {
+            app.agents
+                .get(aid)
+                .ok_or_else(|| err("no such agent"))?
+                .name
+        }
         None => "Default agent".into(),
     };
     let task = app.tasks.get(&id).ok_or_else(|| err("task not found"))?;
@@ -1002,7 +1793,11 @@ async fn task_handoff(State(app): State<App>, Path(id): Path<String>, Json(p): J
         .handoff(&id, to_id, &from_name, &to_name, &note)
         .ok_or_else(|| err("task not found"))?;
     app.ledger
-        .append("task.handoff", "user", json!({ "task": id, "from": from_name, "to": to_name, "note": note }))
+        .append(
+            "task.handoff",
+            "user",
+            json!({ "task": id, "from": from_name, "to": to_name, "note": note }),
+        )
         .map_err(err)?;
     Ok(Json(serde_json::to_value(updated).map_err(err)?))
 }
@@ -1031,7 +1826,11 @@ async fn task_review(State(app): State<App>, Path(id): Path<String>) -> ApiResul
 /// Record the user's response to a specialist objection - signing plan + objection + grounds +
 /// choice as ONE ledger artifact, attributed to the agent that raised it. The disagreement itself
 /// becomes auditable.
-async fn task_dissent(State(app): State<App>, Path(id): Path<String>, Json(p): Json<Value>) -> ApiResult {
+async fn task_dissent(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Json(p): Json<Value>,
+) -> ApiResult {
     let objection = p.get("objection").and_then(Value::as_str).unwrap_or("");
     let grounds = p.get("grounds").cloned().unwrap_or_else(|| json!([]));
     let choice = p.get("choice").and_then(Value::as_str).unwrap_or("proceed");
@@ -1072,13 +1871,32 @@ pub(crate) async fn run_task_core(
     if !app.tasks.try_begin(id) {
         return Err("task is already running".into());
     }
-    app.bus.emit(Spike::new("task.run", Priority::Normal, json!({ "id": id })));
+    app.bus.emit(Spike::new(
+        "task.run",
+        Priority::Normal,
+        json!({ "id": id }),
+    ));
 
-    let prompt = if task.detail.trim().is_empty() {
+    let mut prompt = if task.detail.trim().is_empty() {
         task.title.clone()
     } else {
         format!("{}\n\n{}", task.title, task.detail)
     };
+    // Make collaboration real: when this card was handed off (or already ran), prepend the
+    // upstream agent's work product and the latest hand-off note, so the receiving agent
+    // continues the mission instead of restarting from the bare title.
+    if let Some(prev) = task.run.as_ref().filter(|r| !r.answer.trim().is_empty()) {
+        prompt.push_str(&format!(
+            "\n\n--- Previous agent's result (continue/improve on this, don't restart) ---\n{}",
+            prev.answer.chars().take(4000).collect::<String>()
+        ));
+    }
+    if let Some(h) = task.handoffs.last().filter(|h| !h.note.trim().is_empty()) {
+        prompt.push_str(&format!(
+            "\n\n--- Hand-off note from {} to {} ---\n{}",
+            h.from, h.to, h.note
+        ));
+    }
     let before = app.gateway.meter();
     let started_ms = engram_core::now_ms() as i64;
     // Stream live progress onto the card and over the event bus as each step completes.
@@ -1092,7 +1910,11 @@ pub(crate) async fn run_task_core(
     let (base_in, base_out, base_cost) = (before.tokens_in, before.tokens_out, before.cost_usd);
     let on_step: engram_agent::StepCallback = Arc::new(move |i, rec: &engram_agent::StepRecord| {
         tasks.set_progress(&tid, format!("step {i} · {}", rec.tool));
-        bus.emit(Spike::new("task.step", Priority::Low, json!({ "id": tid.as_str(), "step": i, "tool": rec.tool })));
+        bus.emit(Spike::new(
+            "task.step",
+            Priority::Low,
+            json!({ "id": tid.as_str(), "step": i, "tool": rec.tool }),
+        ));
         if let Some(tx) = &step_tx2 {
             // Stream the step as it lands - tool, args, the (truncated) observation, the step's own
             // signed ledger seq+hash, and the live token/cost meter, so the UI shows the glass box
@@ -1110,7 +1932,22 @@ pub(crate) async fn run_task_core(
     // If a durable agent is assigned to this card, it drives the run (its role + model) and signs
     // every step as itself - the auditable team.
     let agent_def = task.agent.as_ref().and_then(|aid| app.agents.get(aid));
-    let run = match run_agent_task_cb(app, &prompt, 10, engram_core::Taint::Trusted, false, Some(on_step), agent_def.as_ref()).await {
+    // Working-tree isolation: with ENGRAM_WORKTREES=1 and a git workspace, each task runs in its
+    // OWN detached git worktree, so several agents can work the same project in parallel without
+    // clobbering each other's files. The guard removes the worktree when the run finishes (any path).
+    let (workdir_override, _worktree_guard) = prepare_worktree(app, &task.id);
+    let run = match run_agent_task_cb(
+        app,
+        &prompt,
+        10,
+        engram_core::Taint::Trusted,
+        false,
+        Some(on_step),
+        agent_def.as_ref(),
+        workdir_override,
+    )
+    .await
+    {
         Ok(r) => r,
         Err(e) => {
             // The agent errored (e.g. provider failure after retries). try_begin already
@@ -1129,7 +1966,11 @@ pub(crate) async fn run_task_core(
                 finished_ms: engram_core::now_ms() as i64,
             };
             app.tasks.finish(id, receipt, "failed");
-            app.bus.emit(Spike::new("task.done", Priority::Normal, json!({ "id": id, "status": "failed" })));
+            app.bus.emit(Spike::new(
+                "task.done",
+                Priority::Normal,
+                json!({ "id": id, "status": "failed" }),
+            ));
             return Err(e);
         }
     };
@@ -1139,7 +1980,11 @@ pub(crate) async fn run_task_core(
 
     // Only a clean final answer is a success; halted / budget / loop / limit are all
     // failures (their answer text says so, and the receipt keeps the exact stop reason).
-    let status = if run.stopped == "final" { "done" } else { "failed" };
+    let status = if run.stopped == "final" {
+        "done"
+    } else {
+        "failed"
+    };
     let receipt = tasks::TaskRun {
         answer: run.answer,
         steps: run.steps,
@@ -1151,8 +1996,15 @@ pub(crate) async fn run_task_core(
         started_ms,
         finished_ms,
     };
-    let result = app.tasks.finish(id, receipt, status).ok_or_else(|| "task vanished".to_string());
-    app.bus.emit(Spike::new("task.done", Priority::Normal, json!({ "id": id, "status": status })));
+    let result = app
+        .tasks
+        .finish(id, receipt, status)
+        .ok_or_else(|| "task vanished".to_string());
+    app.bus.emit(Spike::new(
+        "task.done",
+        Priority::Normal,
+        json!({ "id": id, "status": status }),
+    ));
     result
 }
 
@@ -1167,8 +2019,9 @@ async fn tasks_run(State(app): State<App>, Path(id): Path<String>) -> ApiResult 
 async fn tasks_run_stream(
     State(app): State<App>,
     Path(id): Path<String>,
-) -> axum::response::sse::Sse<impl futures_core::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>>
-{
+) -> axum::response::sse::Sse<
+    impl futures_core::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>,
+> {
     use axum::response::sse::{Event, KeepAlive, Sse};
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
     let (done_tx, done_rx) = tokio::sync::oneshot::channel::<Result<tasks::Task, String>>();
@@ -1192,14 +2045,39 @@ async fn tasks_run_stream(
 
 /// In-process scheduler: while the daemon is awake, fire due jobs by spawning a task and
 /// running it. (On a sleeping zero-idle VPS the systemd timer wakes the core instead.)
+/// Periodic memory consolidation - the "sleep" pass. Demotes warm memories that are stale AND
+/// low-importance to the cold tier so the working set stays small and recall stays fast as the
+/// brain grows. Runs while the daemon is awake; cheap and bounded. (consolidate() had no callers.)
+fn spawn_consolidation_tick(app: App) {
+    tokio::spawn(async move {
+        // First pass shortly after boot, then hourly.
+        tokio::time::sleep(Duration::from_secs(120)).await;
+        loop {
+            // 14 days of inactivity is the warm->cold threshold for a low-importance memory.
+            match app.memory.consolidate(Duration::from_secs(14 * 24 * 3600)) {
+                Ok(n) if n > 0 => tracing::info!(demoted = n, "memory consolidated (warm -> cold)"),
+                Ok(_) => {}
+                Err(e) => tracing::warn!(error = %e, "consolidation failed"),
+            }
+            tokio::time::sleep(Duration::from_secs(3600)).await;
+        }
+    });
+}
+
 fn spawn_scheduler_tick(app: App) {
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(30)).await;
             let now = chrono::Utc::now();
             for job in app.sched.due(now) {
-                let title = job.payload.get("title").and_then(|v| v.as_str()).unwrap_or(&job.name);
-                let task = app.tasks.create(title.to_string(), String::new(), "schedule".into());
+                let title = job
+                    .payload
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&job.name);
+                let task = app
+                    .tasks
+                    .create(title.to_string(), String::new(), "schedule".into());
                 tracing::info!(job = %job.name, task = %task.id, "scheduler firing a task");
                 // Record the task on the job before running so a crash mid-run still leaves a
                 // pointer to the (failed) receipt for the UI's "last run" affordance.
@@ -1213,7 +2091,10 @@ fn spawn_scheduler_tick(app: App) {
 
 /// The signed ledger slice for a task's run - the glass-box audit trail behind a card.
 async fn task_audit(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
-    let task = app.tasks.get(&id).ok_or_else(|| ApiError("task not found".into()))?;
+    let task = app
+        .tasks
+        .get(&id)
+        .ok_or_else(|| ApiError("task not found".into()))?;
     let Some(run) = &task.run else {
         return Ok(Json(json!({ "entries": [] })));
     };
@@ -1227,12 +2108,16 @@ async fn task_audit(State(app): State<App>, Path(id): Path<String>) -> ApiResult
             ts >= run.started_ms && ts <= run.finished_ms + 5
         })
         .collect();
-    Ok(Json(json!({ "entries": entries, "head": run.ledger_head_hash })))
+    Ok(Json(
+        json!({ "entries": entries, "head": run.ledger_head_hash }),
+    ))
 }
 
 /// The ledger's public key, for offline verification (`engramd verify`) by a third party.
 async fn ledger_pubkey(State(app): State<App>) -> ApiResult {
-    Ok(Json(json!({ "pubkey": app.ledger.pubkey_hex(), "alg": "ed25519" })))
+    Ok(Json(
+        json!({ "pubkey": app.ledger.pubkey_hex(), "alg": "ed25519" }),
+    ))
 }
 
 /// A self-contained, independently-verifiable receipt for one task run: the answer, each
@@ -1240,10 +2125,20 @@ async fn ledger_pubkey(State(app): State<App>) -> ApiResult {
 /// public key + verify command - so anyone can confirm the run happened as claimed without
 /// trusting this machine.
 async fn task_receipt(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
-    let task = app.tasks.get(&id).ok_or_else(|| ApiError("task not found".into()))?;
-    let run = task.run.clone().ok_or_else(|| ApiError("task has no run yet".into()))?;
-    let seqs: std::collections::HashSet<u64> =
-        run.steps.iter().map(|s| s.ledger_seq).filter(|&s| s > 0).collect();
+    let task = app
+        .tasks
+        .get(&id)
+        .ok_or_else(|| ApiError("task not found".into()))?;
+    let run = task
+        .run
+        .clone()
+        .ok_or_else(|| ApiError("task has no run yet".into()))?;
+    let seqs: std::collections::HashSet<u64> = run
+        .steps
+        .iter()
+        .map(|s| s.ledger_seq)
+        .filter(|&s| s > 0)
+        .collect();
     let by_seq: std::collections::HashMap<u64, String> = app
         .ledger
         .read_all()
@@ -1259,7 +2154,10 @@ async fn task_receipt(State(app): State<App>, Path(id): Path<String>) -> ApiResu
         .iter()
         .filter(|s| s.ledger_seq > 0)
         .all(|s| by_seq.get(&s.ledger_seq) == Some(&s.ledger_hash));
-    let entries: Vec<_> = by_seq.into_iter().map(|(seq, hash)| json!({ "seq": seq, "hash": hash })).collect();
+    let entries: Vec<_> = by_seq
+        .into_iter()
+        .map(|(seq, hash)| json!({ "seq": seq, "hash": hash }))
+        .collect();
     Ok(Json(json!({
         "task": { "id": task.id, "title": task.title },
         "answer": run.answer,
@@ -1289,12 +2187,32 @@ struct ConverseReq {
 }
 
 async fn converse_handler(State(app): State<App>, Json(r): Json<ConverseReq>) -> ApiResult {
-    let persona = r.session.as_ref().and_then(|sid| app.workspace.persona_for_session(sid));
-    let turn = converse::converse(&app.memory, &app.gateway, &r.text, &app.model(), persona.as_deref(), &r.attachments)
-        .await
-        .map_err(ApiError)?;
+    let persona = r
+        .session
+        .as_ref()
+        .and_then(|sid| app.workspace.persona_for_session(sid));
+    let turn = converse::converse(
+        &app.memory,
+        &app.gateway,
+        &r.text,
+        &app.model(),
+        persona.as_deref(),
+        &r.attachments,
+    )
+    .await
+    .map_err(ApiError)?;
     if let Some(sid) = &r.session {
-        app.workspace.append_turn(sid, &r.text, &turn.reply, turn.recalled.clone(), turn.recalled_refs.iter().map(|rf| serde_json::to_value(rf).unwrap_or_default()).collect(), turn.learned.clone());
+        app.workspace.append_turn(
+            sid,
+            &r.text,
+            &turn.reply,
+            turn.recalled.clone(),
+            turn.recalled_refs
+                .iter()
+                .map(|rf| serde_json::to_value(rf).unwrap_or_default())
+                .collect(),
+            turn.learned.clone(),
+        );
     }
     Ok(Json(json!({
         "reply": turn.reply,
@@ -1311,21 +2229,45 @@ async fn converse_handler(State(app): State<App>, Json(r): Json<ConverseReq>) ->
 async fn converse_stream_handler(
     State(app): State<App>,
     Json(r): Json<ConverseReq>,
-) -> axum::response::sse::Sse<impl futures_core::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>>
-{
+) -> axum::response::sse::Sse<
+    impl futures_core::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>,
+> {
     use axum::response::sse::{Event, KeepAlive, Sse};
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
     tokio::spawn(async move {
         let model = app.model();
-        let persona = r.session.as_ref().and_then(|sid| app.workspace.persona_for_session(sid));
+        let persona = r
+            .session
+            .as_ref()
+            .and_then(|sid| app.workspace.persona_for_session(sid));
         let txd = tx.clone();
         let mut on_delta = move |frag: String| {
             let _ = txd.send(Event::default().event("token").data(frag));
         };
-        match converse::converse_stream(&app.memory, &app.gateway, &r.text, &model, persona.as_deref(), &r.attachments, &mut on_delta).await {
+        match converse::converse_stream(
+            &app.memory,
+            &app.gateway,
+            &r.text,
+            &model,
+            persona.as_deref(),
+            &r.attachments,
+            &mut on_delta,
+        )
+        .await
+        {
             Ok(turn) => {
                 if let Some(sid) = &r.session {
-                    app.workspace.append_turn(sid, &r.text, &turn.reply, turn.recalled.clone(), turn.recalled_refs.iter().map(|rf| serde_json::to_value(rf).unwrap_or_default()).collect(), turn.learned.clone());
+                    app.workspace.append_turn(
+                        sid,
+                        &r.text,
+                        &turn.reply,
+                        turn.recalled.clone(),
+                        turn.recalled_refs
+                            .iter()
+                            .map(|rf| serde_json::to_value(rf).unwrap_or_default())
+                            .collect(),
+                        turn.learned.clone(),
+                    );
                 }
                 let _ = tx.send(Event::default().event("done").data(
                     json!({ "reply": turn.reply, "recalled": turn.recalled, "recalled_refs": turn.recalled_refs, "learned": turn.learned })
@@ -1354,9 +2296,110 @@ struct UploadReq {
     mime: Option<String>,
 }
 
+/// Extract readable text from an uploaded document (PDF / DOCX / XLSX / CSV / plain text) so the
+/// agent can actually read it. Returns `None` for an unknown/binary type or when the `docs` feature
+/// is off (the file is still stored; only text extraction is gated). Output is capped by the caller.
+fn extract_document_text(name: &str, bytes: &[u8]) -> Option<String> {
+    let lower = name.to_lowercase();
+    // Plain-text-ish formats are just UTF-8 (handled even without the docs feature).
+    if lower.ends_with(".txt")
+        || lower.ends_with(".md")
+        || lower.ends_with(".csv")
+        || lower.ends_with(".tsv")
+        || lower.ends_with(".json")
+        || lower.ends_with(".log")
+        || lower.ends_with(".yml")
+        || lower.ends_with(".yaml")
+    {
+        return Some(String::from_utf8_lossy(bytes).into_owned());
+    }
+    #[cfg(feature = "docs")]
+    {
+        // Cap the text accumulated DURING extraction (not just the final output) so a decompression
+        // bomb - a tiny compressed XLSX/DOCX that inflates to gigabytes - cannot exhaust memory
+        // before the caller's 600KB output cap is applied. (A file crafted to make pdf-extract or
+        // calamine itself panic still aborts the process under `panic = "abort"`; isolating the
+        // parser in a subprocess is the documented deferred hardening, see THREAT-MODEL T9. The
+        // 25MB input cap in upload_handler bounds that today.)
+        const EXTRACT_CAP: usize = 8 * 1024 * 1024;
+        if lower.ends_with(".pdf") {
+            return pdf_extract::extract_text_from_mem(bytes)
+                .ok()
+                .filter(|s| !s.trim().is_empty());
+        }
+        if lower.ends_with(".xlsx") || lower.ends_with(".xls") || lower.ends_with(".ods") {
+            use calamine::Reader;
+            let cur = std::io::Cursor::new(bytes.to_vec());
+            if let Ok(mut wb) = calamine::open_workbook_auto_from_rs(cur) {
+                let mut out = String::new();
+                'sheets: for s in wb.sheet_names().to_vec() {
+                    if let Ok(range) = wb.worksheet_range(&s) {
+                        out.push_str(&format!("# Sheet: {s}\n"));
+                        for row in range.rows() {
+                            let line: Vec<String> = row.iter().map(|c| c.to_string()).collect();
+                            out.push_str(&line.join("\t"));
+                            out.push('\n');
+                            if out.len() > EXTRACT_CAP {
+                                break 'sheets; // stop before a bomb inflates without bound
+                            }
+                        }
+                    }
+                }
+                return Some(out).filter(|s| !s.trim().is_empty());
+            }
+        }
+        if lower.ends_with(".docx") {
+            // A .docx is a zip; the body lives in word/document.xml. Read at most EXTRACT_CAP of the
+            // DECOMPRESSED entry (Read::take) so a zip bomb cannot inflate without bound, then strip
+            // tags, turning paragraph/break tags into newlines.
+            use std::io::Read;
+            if let Ok(mut zip) = zip::ZipArchive::new(std::io::Cursor::new(bytes.to_vec())) {
+                if let Ok(f) = zip.by_name("word/document.xml") {
+                    let mut buf = Vec::new();
+                    if f.take(EXTRACT_CAP as u64).read_to_end(&mut buf).is_ok() {
+                        let xml = String::from_utf8_lossy(&buf)
+                            .replace("</w:p>", "\n")
+                            .replace("<w:br/>", "\n");
+                        let mut text = String::with_capacity(xml.len() / 2);
+                        let mut in_tag = false;
+                        for ch in xml.chars() {
+                            match ch {
+                                '<' => in_tag = true,
+                                '>' => in_tag = false,
+                                c if !in_tag => text.push(c),
+                                _ => {}
+                            }
+                        }
+                        return Some(text).filter(|s| !s.trim().is_empty());
+                    }
+                }
+            }
+        }
+    }
+    #[cfg(not(feature = "docs"))]
+    let _ = bytes;
+    None
+}
+
+/// Truncate `t` to at most `cap` bytes on a UTF-8 char boundary, appending a marker when it cuts.
+/// `String::truncate` panics on a byte index that lands mid-codepoint, so extracted document text
+/// (which can contain multibyte UTF-8 past the cap) must be trimmed back to the nearest boundary.
+fn cap_text_on_boundary(mut t: String, cap: usize) -> String {
+    if t.len() > cap {
+        let mut end = cap;
+        while end > 0 && !t.is_char_boundary(end) {
+            end -= 1;
+        }
+        t.truncate(end);
+        t.push_str("\n...[document truncated]");
+    }
+    t
+}
+
 /// Store an uploaded (typically binary) file under `<home>/uploads` and return a ref the
 /// chat composer can attach to a turn. The filename is sanitized to a basename plus a short
-/// nanos prefix, so a hostile `name` can't traverse out of the uploads dir.
+/// nanos prefix, so a hostile `name` can't traverse out of the uploads dir. For documents
+/// (PDF/DOCX/XLSX/CSV) the readable text is extracted and returned so the agent can read them.
 async fn upload_handler(State(app): State<App>, Json(r): Json<UploadReq>) -> ApiResult {
     use base64::Engine;
     let bytes = base64::engine::general_purpose::STANDARD
@@ -1368,7 +2411,12 @@ async fn upload_handler(State(app): State<App>, Json(r): Json<UploadReq>) -> Api
     let base = std::path::Path::new(&r.name)
         .file_name()
         .and_then(|s| s.to_str())
-        .map(|s| s.replace(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_')), "_"))
+        .map(|s| {
+            s.replace(
+                |c: char| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_')),
+                "_",
+            )
+        })
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "file".to_string());
     let dir = std::path::Path::new(&app.home).join("uploads");
@@ -1379,11 +2427,15 @@ async fn upload_handler(State(app): State<App>, Json(r): Json<UploadReq>) -> Api
         .unwrap_or(0);
     let stored = format!("{:x}-{}", nanos, base);
     std::fs::write(dir.join(&stored), &bytes).map_err(err)?;
+    // Extract readable text for documents so the agent can actually read them (capped so a huge
+    // PDF can't blow the context). The UI attaches this text to the turn.
+    let extracted = extract_document_text(&base, &bytes).map(|t| cap_text_on_boundary(t, 600_000));
     Ok(Json(json!({
         "ref": stored,
         "name": base,
         "size": bytes.len(),
         "mime": r.mime.unwrap_or_else(|| "application/octet-stream".into()),
+        "extracted_text": extracted,
     })))
 }
 
@@ -1397,7 +2449,9 @@ async fn skills(State(app): State<App>) -> ApiResult {
         .into_iter()
         .filter(|e| e.kind == "skill.learn")
         .filter_map(|e| {
-            serde_json::from_str::<Value>(e.payload.get()).ok().map(|v| (v, e.seq, e.hash))
+            serde_json::from_str::<Value>(e.payload.get())
+                .ok()
+                .map(|v| (v, e.seq, e.hash))
         })
         .collect();
     let mut out = Vec::new();
@@ -1406,7 +2460,11 @@ async fn skills(State(app): State<App>) -> ApiResult {
         let versions = app.registry.versions(&id).map_err(err)?;
         // The gold-signal size: recorded (input, accepted-output) pairs a candidate is scored
         // against. Zero means there is no scored signal yet - the UI must say "unverified".
-        let runs = app.registry.accepted_runs(&id).map(|r| r.len()).unwrap_or(0);
+        let runs = app
+            .registry
+            .accepted_runs(&id)
+            .map(|r| r.len())
+            .unwrap_or(0);
         let events: Vec<Value> = learn
             .iter()
             .filter(|(v, _, _)| v.get("id").and_then(Value::as_str) == Some(id.as_str()))
@@ -1449,6 +2507,365 @@ async fn run_skill(
         "host_calls": outcome.host_calls,
         "duration_us": outcome.duration_us,
         "logs": outcome.logs,
+    })))
+}
+
+/// Replay a skill version against its recorded `(input, gold)` runs USING REAL CAPABILITIES
+/// (memory + the gateway, the same context a live run gets), scoring each output against the
+/// accepted one. `exact_match` is all-or-nothing; any other metric gives partial credit via a
+/// character-bigram similarity, so a near-correct LLM-backed skill can measurably improve. This
+/// is the async fix for the old `score_version` that replayed with no capabilities (always 0).
+async fn score_skill_async(
+    app: &App,
+    id: &str,
+    version: u32,
+    runs: &[(Vec<u8>, Vec<u8>)],
+    metric: &str,
+) -> f32 {
+    if runs.is_empty() {
+        return 0.0;
+    }
+    let Ok((signed, wasm)) = app.registry.load(id, version) else {
+        return 0.0;
+    };
+    let vk = *app.registry.verifying();
+    let exact = metric == "exact_match";
+    // Bound the replay set (an unbounded loop of live LLM calls is a cost/availability DoS) and
+    // cooperate with the kill switch so a stuck improve can be stopped. Score the most recent K.
+    const MAX_REPLAYS: usize = 50;
+    let scored: Vec<&(Vec<u8>, Vec<u8>)> = runs.iter().rev().take(MAX_REPLAYS).collect();
+    let mut total = 0.0f32;
+    let mut n = 0usize;
+    for (input, gold) in &scored {
+        if app.halt.load(std::sync::atomic::Ordering::Relaxed) {
+            break;
+        }
+        let ctx = engram_skills::RunCtx::pure()
+            .memory(app.memory.clone(), Region::ALL.to_vec())
+            .gateway(app.gateway.clone());
+        if let Ok(o) = app
+            .host
+            .run_signed_async(&signed, &wasm, &vk, input, ctx)
+            .await
+        {
+            total += if exact {
+                if &o.output == gold {
+                    1.0
+                } else {
+                    0.0
+                }
+            } else {
+                bigram_similarity(&o.output, gold)
+            };
+        }
+        n += 1;
+    }
+    if n == 0 {
+        0.0
+    } else {
+        total / n as f32
+    }
+}
+
+/// Character-bigram Jaccard similarity in [0,1] - partial credit for a near-correct output.
+fn bigram_similarity(a: &[u8], b: &[u8]) -> f32 {
+    if a == b {
+        return 1.0;
+    }
+    let grams = |s: &[u8]| -> std::collections::HashSet<(u8, u8)> {
+        s.windows(2).map(|w| (w[0], w[1])).collect()
+    };
+    let (ga, gb) = (grams(a), grams(b));
+    if ga.is_empty() && gb.is_empty() {
+        return if a == b { 1.0 } else { 0.0 };
+    }
+    let inter = ga.intersection(&gb).count() as f32;
+    let union = ga.union(&gb).count() as f32;
+    if union == 0.0 {
+        0.0
+    } else {
+        inter / union
+    }
+}
+
+#[derive(Deserialize)]
+struct ImproveReq {
+    /// WebAssembly Text source for the candidate version (compiled here with the same `wat`
+    /// crate the seed skills use). Keeps authoring data-only - no native code path.
+    wat: String,
+    description: Option<String>,
+}
+
+/// Author + A/B-gate a candidate skill version: compile the WAT, install it as a new version,
+/// replay BOTH the incumbent and the candidate against the recorded runs under real capabilities,
+/// and promote the candidate iff it measurably wins. Every outcome is signed into the ledger.
+/// This is the route that makes "self-improving skills" exist at runtime.
+async fn skill_improve(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Json(r): Json<ImproveReq>,
+) -> ApiResult {
+    let (active_signed, _) = app.registry.load_active(&id).map_err(err)?;
+    let m = &active_signed.manifest;
+    let wasm = wat::parse_str(&r.wat).map_err(|e| err(format!("invalid WAT: {e}")))?;
+    let candidate = engram_skills::NewSkill {
+        id: id.clone(),
+        category: m.category.clone(),
+        description: r.description.unwrap_or_else(|| m.description.clone()),
+        capabilities: m.capabilities.clone(),
+        metric: m.metric.clone(),
+    };
+    let candidate_version = app.registry.install(candidate, &wasm).map_err(err)?;
+    let runs = app.registry.accepted_runs(&id).map_err(err)?;
+    let active = app.registry.active_version(&id).map_err(err)?.unwrap_or(0);
+    if runs.is_empty() {
+        return Ok(Json(json!({
+            "decision": "no_data", "id": id, "candidate": candidate_version,
+            "note": "no recorded runs to judge against yet - teach it some accepted runs first"
+        })));
+    }
+    let incumbent_score = score_skill_async(&app, &id, active, &runs, &m.metric).await;
+    let candidate_score = score_skill_async(&app, &id, candidate_version, &runs, &m.metric).await;
+    // Promotion gate. exact_match is deterministic, so a strict win is sound. A fuzzy (LLM/bigram)
+    // metric is noisy, so require a real MARGIN and a minimum sample count - otherwise sampling
+    // jitter could promote an equal-or-worse candidate.
+    let exact = m.metric == "exact_match";
+    let margin = if exact { 0.0 } else { 0.05 };
+    let promoted = candidate_score > incumbent_score + margin && (exact || runs.len() >= 3);
+    if promoted {
+        app.registry
+            .set_active(&id, candidate_version, "user", "skill.promote")
+            .map_err(err)?;
+    }
+    let _ = app.ledger.append(
+        "skill.learn",
+        "user",
+        json!({ "id": id, "promoted": promoted, "from": active, "candidate": candidate_version,
+                "incumbent_score": incumbent_score, "candidate_score": candidate_score, "replays": runs.len() }),
+    );
+    Ok(Json(json!({
+        "decision": if promoted { "promoted" } else { "rejected" },
+        "id": id, "from": active, "candidate": candidate_version,
+        "incumbent_score": incumbent_score, "candidate_score": candidate_score, "replays": runs.len(),
+    })))
+}
+
+#[derive(Deserialize)]
+struct ActivateReq {
+    version: u32,
+}
+
+/// Set the active version of a skill (the explicit, one-click promote/rollback control).
+async fn skill_activate(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Json(r): Json<ActivateReq>,
+) -> ApiResult {
+    app.registry
+        .set_active(&id, r.version, "user", "skill.activate")
+        .map_err(err)?;
+    Ok(Json(json!({ "ok": true, "id": id, "active": r.version })))
+}
+
+/// Revert a skill to its previous version (or an explicit one) - the auditable undo.
+async fn skill_revert(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Json(r): Json<Value>,
+) -> ApiResult {
+    let versions = app.registry.versions(&id).map_err(err)?;
+    let target = r
+        .get("version")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32)
+        .or_else(|| {
+            // Default: the version just below the current active one.
+            let active = app.registry.active_version(&id).ok().flatten().unwrap_or(0);
+            versions.iter().copied().filter(|&v| v < active).max()
+        });
+    let Some(v) = target else {
+        return Err(ApiError("no earlier version to revert to".into()));
+    };
+    app.registry
+        .set_active(&id, v, "user", "skill.revert")
+        .map_err(err)?;
+    Ok(Json(json!({ "ok": true, "id": id, "active": v })))
+}
+
+#[derive(Deserialize)]
+struct TeachReq {
+    input: String,
+    gold: String,
+    reward: Option<f32>,
+}
+
+/// Capture a runtime example as a gold `(input, accepted-output)` pair on the active version, so
+/// the replay/scoring set GROWS with real use instead of being frozen at seed time.
+async fn skill_teach(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Json(r): Json<TeachReq>,
+) -> ApiResult {
+    let active = app
+        .registry
+        .active_version(&id)
+        .map_err(err)?
+        .ok_or_else(|| err("no active version"))?;
+    // Validate + clamp the reward: a NaN/inf would write a poison line to runs.jsonl that
+    // permanently breaks this skill's replay/improve routes.
+    let reward = r.reward.unwrap_or(1.0);
+    if !reward.is_finite() {
+        return Err(ApiError("reward must be a finite number".into()));
+    }
+    let reward = reward.clamp(0.0, 1.0);
+    app.registry
+        .record_run(&id, active, r.input.as_bytes(), r.gold.as_bytes(), reward)
+        .map_err(err)?;
+    let n = app
+        .registry
+        .accepted_runs(&id)
+        .map(|v| v.len())
+        .unwrap_or(0);
+    Ok(Json(
+        json!({ "ok": true, "id": id, "version": active, "recorded_runs": n }),
+    ))
+}
+
+#[derive(Deserialize)]
+struct MissionReq {
+    goal: String,
+    max_subtasks: Option<usize>,
+}
+
+/// Tolerantly pull a `[{title, detail}, ...]` subtask list out of a planner completion (the model
+/// may wrap the JSON in prose or fences). Returns empty if nothing parses.
+fn parse_subtasks(text: &str) -> Vec<(String, String)> {
+    let (Some(s), Some(e)) = (text.find('['), text.rfind(']')) else {
+        return Vec::new();
+    };
+    if e <= s {
+        return Vec::new();
+    }
+    let arr: Vec<Value> = serde_json::from_str(&text[s..=e]).unwrap_or_default();
+    arr.into_iter()
+        .filter_map(|v| {
+            let title = v.get("title").and_then(|t| t.as_str())?.trim().to_string();
+            if title.is_empty() {
+                return None;
+            }
+            let detail = v
+                .get("detail")
+                .and_then(|d| d.as_str())
+                .unwrap_or("")
+                .to_string();
+            Some((title, detail))
+        })
+        .collect()
+}
+
+/// A mission coordinator: decompose a goal into subtasks (planner pass), run them as real cards
+/// CONCURRENTLY (each an auditable, signed run with its own receipt), then synthesize one answer
+/// (aggregator pass). This is the "run multiple worker agents on a complex task" capability built
+/// on the durable kanban + agent loop, with every step on the ledger.
+async fn run_mission(State(app): State<App>, Json(r): Json<MissionReq>) -> ApiResult {
+    let goal = r.goal.trim().to_string();
+    if goal.is_empty() {
+        return Err(ApiError("empty goal".into()));
+    }
+    let max = r.max_subtasks.unwrap_or(4).clamp(1, 6);
+    let model = app.model();
+
+    // 1. PLAN: decompose into independent subtasks.
+    let plan_prompt = format!(
+        "Decompose this goal into {max} or fewer concrete, independent subtasks that together \
+         accomplish it. Reply with ONLY a JSON array like [{{\"title\":\"...\",\"detail\":\"...\"}}].\n\nGoal:\n{goal}"
+    );
+    let preq = engram_gateway::CompletionRequest::new(
+        model.clone(),
+        vec![engram_gateway::Message::user(plan_prompt)],
+    )
+    .max_tokens(800);
+    let plan_text = app
+        .gateway
+        .complete(
+            engram_gateway::Call::new(preq)
+                .actor("mission")
+                .tainted(engram_core::Taint::Trusted),
+        )
+        .await
+        .map(|c| c.text)
+        .unwrap_or_default();
+    let mut subtasks = parse_subtasks(&plan_text);
+    if subtasks.is_empty() {
+        subtasks = vec![(goal.clone(), String::new())]; // fallback: treat the goal as one task
+    }
+    subtasks.truncate(max);
+    let _ = app.ledger.append(
+        "mission.plan",
+        "user",
+        json!({ "goal": goal, "subtasks": subtasks.iter().map(|(t, _)| t).collect::<Vec<_>>() }),
+    );
+
+    // 2. EXECUTE: one real card per subtask, run concurrently under a small concurrency bound.
+    let sem = Arc::new(tokio::sync::Semaphore::new(4));
+    let mut handles = Vec::new();
+    for (title, detail) in &subtasks {
+        let card = app
+            .tasks
+            .create(title.clone(), detail.clone(), "mission".into());
+        let appc = app.clone();
+        let cid = card.id.clone();
+        let title = title.clone();
+        let sem = sem.clone();
+        handles.push(tokio::spawn(async move {
+            let _permit = sem.acquire().await;
+            let answer = match run_task_core(&appc, &cid, None).await {
+                Ok(t) => t.run.map(|r| r.answer).unwrap_or_default(),
+                Err(e) => format!("(failed: {e})"),
+            };
+            (cid, title, answer)
+        }));
+    }
+    let mut results = Vec::new();
+    for h in handles {
+        if let Ok(triple) = h.await {
+            results.push(triple);
+        }
+    }
+
+    // 3. AGGREGATE: synthesize the subtask answers into one cohesive result.
+    let joined = results
+        .iter()
+        .map(|(_, t, a)| format!("### {t}\n{a}"))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let agg_prompt =
+        format!("Synthesize these subtask results into one cohesive answer to the goal.\n\nGoal: {goal}\n\n{joined}");
+    let areq = engram_gateway::CompletionRequest::new(
+        model,
+        vec![engram_gateway::Message::user(agg_prompt)],
+    )
+    .max_tokens(1500);
+    let summary = app
+        .gateway
+        .complete(
+            engram_gateway::Call::new(areq)
+                .actor("mission")
+                .tainted(engram_core::Taint::Trusted),
+        )
+        .await
+        .map(|c| c.text)
+        .unwrap_or_else(|_| joined.clone());
+    let _ = app.ledger.append(
+        "mission.done",
+        "user",
+        json!({ "goal": goal, "subtasks": results.len() }),
+    );
+
+    Ok(Json(json!({
+        "goal": goal,
+        "subtasks": results.iter().map(|(cid, t, a)| json!({ "task": cid, "title": t, "answer": a })).collect::<Vec<_>>(),
+        "summary": summary,
     })))
 }
 
@@ -1502,7 +2919,10 @@ async fn schedule_preview(State(_app): State<App>, Query(q): Query<PreviewQuery>
 async fn schedule_add(State(app): State<App>, Json(r): Json<ScheduleReq>) -> ApiResult {
     let now = chrono::Utc::now();
     let recurrence = parse_schedule(&r.when, now).map_err(err)?;
-    let job = app.sched.add(r.name, r.payload, recurrence, now).map_err(err)?;
+    let job = app
+        .sched
+        .add(r.name, r.payload, recurrence, now)
+        .map_err(err)?;
     Ok(Json(serde_json::to_value(job).map_err(err)?))
 }
 
@@ -1531,8 +2951,12 @@ async fn schedule_run(State(app): State<App>, Path(id): Path<String>) -> ApiResu
     // Record the task on the job before running so a crash mid-run still leaves a pointer to
     // the (failed) receipt for the UI's "last run" affordance.
     let _ = app.sched.set_last_task(&job.id, &task.id);
-    let updated = run_task_core(&app, &task.id, None).await.map_err(ApiError)?;
-    Ok(Json(json!({ "task_id": task.id, "status": updated.status })))
+    let updated = run_task_core(&app, &task.id, None)
+        .await
+        .map_err(ApiError)?;
+    Ok(Json(
+        json!({ "task_id": task.id, "status": updated.status }),
+    ))
 }
 
 fn parse_region(s: Option<&str>) -> Region {
@@ -1545,7 +2969,10 @@ fn parse_region(s: Option<&str>) -> Region {
 }
 
 fn env_u64(key: &str, default: u64) -> u64 {
-    std::env::var(key).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
+    std::env::var(key)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(default)
 }
 
 #[derive(Deserialize)]
@@ -1554,6 +2981,12 @@ struct McpServerCfg {
     command: String,
     #[serde(default)]
     args: Vec<String>,
+    #[serde(default)]
+    env: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    cwd: String,
+    #[serde(default)]
+    trusted: bool,
 }
 
 /// Load MCP servers from `<home>/mcp.json` (a JSON array of {name, command, args}) and
@@ -1569,9 +3002,30 @@ async fn load_mcp(home: &str) -> Vec<Arc<dyn engram_agent::Tool>> {
             return Vec::new();
         }
     };
-    let configs: Vec<(String, String, Vec<String>)> =
-        cfg.into_iter().map(|c| (c.name, c.command, c.args)).collect();
-    engram_agent::connect_servers(&configs).await
+    let specs: Vec<engram_agent::McpServerSpec> = cfg
+        .into_iter()
+        .map(|c| engram_agent::McpServerSpec {
+            name: c.name,
+            command: c.command,
+            args: c.args,
+            env: c.env,
+            cwd: if c.cwd.is_empty() { None } else { Some(c.cwd) },
+            trusted: c.trusted,
+        })
+        .collect();
+    engram_agent::connect_servers(&specs).await
+}
+
+/// Convert a stored MCP server config into the connector's spec (env/cwd/trusted threaded through).
+fn mcp_spec(c: config::McpServer) -> engram_agent::McpServerSpec {
+    engram_agent::McpServerSpec {
+        name: c.name,
+        command: c.command,
+        args: c.args,
+        env: c.env,
+        cwd: if c.cwd.is_empty() { None } else { Some(c.cwd) },
+        trusted: c.trusted,
+    }
 }
 
 // --- Settings (read and edited by the desktop's Settings panel) ---------------------
@@ -1582,6 +3036,9 @@ async fn config_get(State(app): State<App>) -> ApiResult {
     v["provider_id"] = json!(app.gateway.provider_id());
     v["model_in_use"] = json!(app.model());
     v["http_enabled"] = json!(cfg!(feature = "http"));
+    // Honest capability flags the UI badges instead of advertising tools that can only error.
+    v["browser_enabled"] = json!(engram_agent::browser_available());
+    v["keyring_enabled"] = json!(cfg!(feature = "keyring"));
     v["version"] = json!(VERSION);
     Ok(Json(v))
 }
@@ -1592,14 +3049,21 @@ async fn channels_status(State(app): State<App>) -> ApiResult {
         Some((_, u)) => (true, u.clone()),
         None => (false, String::new()),
     };
-    Ok(Json(json!({ "telegram": { "connected": connected, "username": username } })))
+    Ok(Json(
+        json!({ "telegram": { "connected": connected, "username": username } }),
+    ))
 }
 
 /// Connect Telegram live: validate the token against getMe, (re)start the poller without a
 /// restart, persist the token, and sign the connection into the ledger. The token never returns
 /// to the browser; only the public bot @username does.
 async fn telegram_connect(State(app): State<App>, Json(p): Json<Value>) -> ApiResult {
-    let token = p.get("token").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    let token = p
+        .get("token")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
     if token.is_empty() {
         return Err(err("no token provided"));
     }
@@ -1613,15 +3077,22 @@ async fn telegram_connect(State(app): State<App>, Json(p): Json<Value>) -> ApiRe
         let mut cfg = app.config.write().expect("config lock");
         cfg.channels.telegram_token = token.clone();
         cfg.channels.telegram_username = id.username.clone();
-        cfg.save(&app.home).map_err(|e| err(format!("could not save settings: {e}")))?;
+        cfg.save(&app.home)
+            .map_err(|e| err(format!("could not save settings: {e}")))?;
     }
     let handle = telegram::spawn(app.clone(), token);
     *app.telegram.lock().expect("telegram lock") = Some((handle, id.username.clone()));
     // Sign the connection - the bot identity only, NEVER the token.
     app.ledger
-        .append("channel.connect", "user", json!({ "channel": "telegram", "bot": id.username }))
+        .append(
+            "channel.connect",
+            "user",
+            json!({ "channel": "telegram", "bot": id.username }),
+        )
         .map_err(err)?;
-    Ok(Json(json!({ "ok": true, "channel": "telegram", "username": id.username, "name": id.name })))
+    Ok(Json(
+        json!({ "ok": true, "channel": "telegram", "username": id.username, "name": id.name }),
+    ))
 }
 
 /// Disconnect Telegram live: stop the poller, wipe the token, and sign the disconnection.
@@ -1633,10 +3104,15 @@ async fn telegram_disconnect(State(app): State<App>) -> ApiResult {
         let mut cfg = app.config.write().expect("config lock");
         cfg.channels.telegram_token.clear();
         cfg.channels.telegram_username.clear();
-        cfg.save(&app.home).map_err(|e| err(format!("could not save settings: {e}")))?;
+        cfg.save(&app.home)
+            .map_err(|e| err(format!("could not save settings: {e}")))?;
     }
     app.ledger
-        .append("channel.disconnect", "user", json!({ "channel": "telegram" }))
+        .append(
+            "channel.disconnect",
+            "user",
+            json!({ "channel": "telegram" }),
+        )
         .map_err(err)?;
     Ok(Json(json!({ "ok": true })))
 }
@@ -1649,22 +3125,32 @@ async fn config_set(State(app): State<App>, Json(patch): Json<Value>) -> ApiResu
     let mut cfg = before.clone();
     apply_config_patch(&mut cfg, &patch);
 
-    cfg.save(&app.home).map_err(|e| err(format!("could not save settings: {e}")))?;
+    cfg.save(&app.home)
+        .map_err(|e| err(format!("could not save settings: {e}")))?;
 
     // Hot-swap the provider and shell consent.
     app.gateway.set_provider(Arc::from(cfg.build_provider()));
-    app.allow_shell
-        .store(cfg.security.allow_shell, std::sync::atomic::Ordering::Relaxed);
+    app.gateway
+        .set_default_effort(Some(cfg.provider.effort.clone()));
+    app.allow_shell.store(
+        cfg.security.allow_shell,
+        std::sync::atomic::Ordering::Relaxed,
+    );
 
     // Reconnect MCP servers live when the list changed (old subprocesses die on drop).
     // Report how many actually connected so the UI can flag a bad command instead of
     // silently dropping it.
     let mut mcp_report: Option<(usize, usize)> = None;
     if cfg.mcp != before.mcp {
-        let configs: Vec<(String, String, Vec<String>)> =
-            cfg.mcp.iter().map(|m| (m.name.clone(), m.command.clone(), m.args.clone())).collect();
-        let (tools, connected) = engram_agent::connect_servers_reported(&configs).await;
-        tracing::info!(connected = connected.len(), requested = cfg.mcp.len(), tools = tools.len(), "mcp servers reconnected after settings change");
+        let specs: Vec<engram_agent::McpServerSpec> =
+            cfg.mcp.iter().cloned().map(mcp_spec).collect();
+        let (tools, connected) = engram_agent::connect_servers_reported(&specs).await;
+        tracing::info!(
+            connected = connected.len(),
+            requested = cfg.mcp.len(),
+            tools = tools.len(),
+            "mcp servers reconnected after settings change"
+        );
         mcp_report = Some((connected.len(), cfg.mcp.len()));
         *app.mcp_tools.write().expect("mcp lock") = tools;
     }
@@ -1704,7 +3190,9 @@ async fn config_test(State(app): State<App>, Json(patch): Json<Value>) -> ApiRes
     let id = provider.id().to_string();
     let req = engram_gateway::CompletionRequest::new(
         cfg.model(),
-        vec![engram_gateway::Message::user("Reply with the single word: ok")],
+        vec![engram_gateway::Message::user(
+            "Reply with the single word: ok",
+        )],
     )
     .max_tokens(16);
     match provider.complete(&req).await {
@@ -1715,7 +3203,9 @@ async fn config_test(State(app): State<App>, Json(patch): Json<Value>) -> ApiRes
             "reply": c.text.chars().take(120).collect::<String>(),
             "tokens_out": c.tokens_out,
         }))),
-        Err(e) => Ok(Json(json!({ "ok": false, "provider": id, "error": e.to_string() }))),
+        Err(e) => Ok(Json(
+            json!({ "ok": false, "provider": id, "error": e.to_string() }),
+        )),
     }
 }
 
@@ -1724,20 +3214,63 @@ async fn config_test(State(app): State<App>, Json(patch): Json<Value>) -> ApiRes
 /// command is caught before it's saved. The probe subprocess is dropped immediately after.
 /// Reachable only behind `require_auth` (the router-wide layer), like the rest of /v1/*.
 async fn config_mcp_test(Json(body): Json<Value>) -> ApiResult {
-    let name = body.get("name").and_then(|v| v.as_str()).unwrap_or("probe").to_string();
-    let command = body.get("command").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let name = body
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("probe")
+        .to_string();
+    let command = body
+        .get("command")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     if command.is_empty() {
         return Ok(Json(json!({ "ok": false, "error": "no command" })));
     }
     let args: Vec<String> = body
         .get("args")
         .and_then(|v| v.as_array())
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
+        })
         .unwrap_or_default();
-    let configs = vec![(name.clone(), command, args)];
-    let (tools, connected) = engram_agent::connect_servers_reported(&configs).await;
+    // Accept optional per-server env (object of string->string) and cwd so a Test can exercise an
+    // authenticated server exactly as it will run after saving.
+    let env: std::collections::BTreeMap<String, String> = body
+        .get("env")
+        .and_then(|v| v.as_object())
+        .map(|o| {
+            o.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect()
+        })
+        .unwrap_or_default();
+    let cwd = body
+        .get("cwd")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    // Honor the trusted flag so the Test exercises the server exactly as it will run after saving
+    // (a trusted server's reads do not taint the run; a Test should reflect that same posture).
+    let trusted = body
+        .get("trusted")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let specs = vec![engram_agent::McpServerSpec {
+        name: name.clone(),
+        command,
+        args,
+        env,
+        cwd,
+        trusted,
+    }];
+    let (tools, connected) = engram_agent::connect_servers_reported(&specs).await;
     if connected.is_empty() {
-        Ok(Json(json!({ "ok": false, "error": "could not connect - check the command and args" })))
+        Ok(Json(
+            json!({ "ok": false, "error": "could not connect - check the command and args" }),
+        ))
     } else {
         Ok(Json(json!({ "ok": true, "tools": tools.len() })))
     }
@@ -1766,6 +3299,14 @@ fn apply_config_patch(cfg: &mut config::Config, p: &Value) {
         }
         if flag(pr, "clear_api_key") {
             cfg.provider.api_key.clear();
+        }
+        if let Some(x) = s(pr, "effort") {
+            // Only "low"/"medium"/"high" enable it; anything else means the model default.
+            cfg.provider.effort = if matches!(x.as_str(), "low" | "medium" | "high") {
+                x
+            } else {
+                String::new()
+            };
         }
     }
     if let Some(e) = p.get("embed") {
@@ -1813,24 +3354,64 @@ fn apply_config_patch(cfg: &mut config::Config, p: &Value) {
         }
     }
     if let Some(arr) = p.get("mcp").and_then(|v| v.as_array()) {
-        cfg.mcp = arr
-            .iter()
-            .filter_map(|m| serde_json::from_value::<config::McpServer>(m.clone()).ok())
-            .filter(|m| !m.name.is_empty() && !m.command.is_empty())
-            .collect();
+        let existing = cfg.mcp.clone();
+        // The redacted view masks env VALUES, so a settings round-trip must not wipe secrets. We
+        // use the RAW JSON to tell "env omitted" (a UI with no env editor - inherit the previous
+        // env) apart from "env present" (even an explicit {} clears it), and un-mask any value the
+        // UI sent back as the mask placeholder (same "blank keeps it" rule as the api_key).
+        const MASK: &str = "\u{2022}\u{2022}\u{2022}";
+        let mut next: Vec<config::McpServer> = Vec::new();
+        for m in arr {
+            let Ok(mut srv) = serde_json::from_value::<config::McpServer>(m.clone()) else {
+                continue;
+            };
+            if srv.name.is_empty() || srv.command.is_empty() {
+                continue;
+            }
+            let raw_has_env = m.get("env").map(|e| e.is_object()).unwrap_or(false);
+            if let Some(prev) = existing.iter().find(|e| e.name == srv.name) {
+                if !raw_has_env {
+                    srv.env = prev.env.clone();
+                } else {
+                    for (k, v) in srv.env.iter_mut() {
+                        if v == MASK {
+                            if let Some(pv) = prev.env.get(k) {
+                                *v = pv.clone();
+                            }
+                        }
+                    }
+                }
+            }
+            // Never persist a literal mask as if it were a secret: a value still equal to the mask
+            // here had no previous value to restore (a new server, a renamed key, or a server that
+            // never had that key), so storing it would write "•••" as the real secret. Drop it.
+            srv.env.retain(|_, v| v != MASK);
+            next.push(srv);
+        }
+        cfg.mcp = next;
     }
 }
 
 /// The persona (SOUL.md) - the standing instructions prepended to every agent run.
 async fn persona_get(State(app): State<App>) -> ApiResult {
-    let text = app.persona.read().expect("persona lock").clone().unwrap_or_default();
+    let text = app
+        .persona
+        .read()
+        .expect("persona lock")
+        .clone()
+        .unwrap_or_default();
     Ok(Json(json!({ "persona": text })))
 }
 
 /// Save the persona. Writes `<home>/SOUL.md` (or removes it when cleared) and updates the
 /// live value, so it shapes the very next run without a restart.
 async fn persona_set(State(app): State<App>, Json(body): Json<Value>) -> ApiResult {
-    let text = body.get("persona").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    let text = body
+        .get("persona")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
     let path = std::path::Path::new(&app.home).join("SOUL.md");
     if text.is_empty() {
         let _ = std::fs::remove_file(&path);
@@ -1839,7 +3420,9 @@ async fn persona_set(State(app): State<App>, Json(body): Json<Value>) -> ApiResu
         std::fs::write(&path, &text).map_err(|e| err(format!("could not save persona: {e}")))?;
         *app.persona.write().expect("persona lock") = Some(text.clone());
     }
-    app.ledger.append("persona.set", "user", json!({ "length": text.len() })).ok();
+    app.ledger
+        .append("persona.set", "user", json!({ "length": text.len() }))
+        .ok();
     Ok(Json(json!({ "ok": true, "length": text.len() })))
 }
 
@@ -1854,12 +3437,39 @@ async fn restart_handler(State(app): State<App>) -> ApiResult {
     // API-token gate when one is set).
     static RESTARTING: AtomicBool = AtomicBool::new(false);
     if RESTARTING.swap(true, Ordering::SeqCst) {
-        return Ok(Json(json!({ "ok": true, "restarting": true, "already": true })));
+        return Ok(Json(
+            json!({ "ok": true, "restarting": true, "already": true }),
+        ));
     }
     app.ledger.append("core.restart", "user", json!({})).ok();
-    tokio::spawn(async {
-        // Let the HTTP response flush before we exit.
+    // Carry the live, memory-only API key across the restart so reloading boot-time settings
+    // (e.g. a new embedder) doesn't silently drop a connected provider back to the offline mock.
+    // The key moves process-memory -> successor process-memory via env + exec; it never touches
+    // disk, preserving the key-custody policy. (Unix only; elsewhere we fall back to a plain exit
+    // and the key is re-seeded from the environment as before.)
+    let carry_key = app.cfg().provider.api_key.clone();
+    tokio::spawn(async move {
+        // Let the HTTP response flush before we restart.
         tokio::time::sleep(Duration::from_millis(300)).await;
+        // NOTE: we deliberately do NOT push the key into the process environment before re-exec.
+        // That would leak it (via inheritance) to /v1/shell commands and every MCP child process,
+        // including untrusted ones. Persistence across the restart is handled by the secret store
+        // (config.rs read_secret_key: OS keyring or the 0600 secret.key), so the successor reloads
+        // the key with no env exposure. (carry_key kept only for the absent-secret-store edge.)
+        let _ = &carry_key;
+        #[cfg(unix)]
+        {
+            if let Ok(exe) = std::env::current_exe() {
+                use std::os::unix::process::CommandExt;
+                tracing::info!(
+                    "restart requested - re-exec to reload settings (key carried in memory)"
+                );
+                // exec replaces this image in place (same PID), so the supervisor keeps waiting on
+                // us and never sees a gap; the bound socket fd is CLOEXEC so the successor rebinds.
+                let err = std::process::Command::new(exe).exec();
+                tracing::error!(error = %err, "re-exec failed - exiting for the supervisor to respawn");
+            }
+        }
         tracing::info!("restart requested - exiting to reload boot-time settings");
         std::process::exit(0);
     });
@@ -1872,16 +3482,39 @@ struct SessionsQuery {
     project: Option<String>,
 }
 async fn projects_list(State(app): State<App>) -> ApiResult {
-    Ok(Json(serde_json::to_value(app.workspace.projects()).map_err(err)?))
+    Ok(Json(
+        serde_json::to_value(app.workspace.projects()).map_err(err)?,
+    ))
 }
 async fn projects_create(State(app): State<App>, Json(b): Json<Value>) -> ApiResult {
-    let name = b.get("name").and_then(|v| v.as_str()).unwrap_or("Project").trim().to_string();
-    let name = if name.is_empty() { "Project".into() } else { name };
-    Ok(Json(serde_json::to_value(app.workspace.create_project(name)).map_err(err)?))
+    let name = b
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Project")
+        .trim()
+        .to_string();
+    let name = if name.is_empty() {
+        "Project".into()
+    } else {
+        name
+    };
+    Ok(Json(
+        serde_json::to_value(app.workspace.create_project(name)).map_err(err)?,
+    ))
 }
-async fn projects_update(State(app): State<App>, Path(id): Path<String>, Json(b): Json<Value>) -> ApiResult {
-    let name = b.get("name").and_then(|v| v.as_str()).map(|s| s.trim().to_string());
-    let persona = b.get("persona").and_then(|v| v.as_str()).map(str::to_string);
+async fn projects_update(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Json(b): Json<Value>,
+) -> ApiResult {
+    let name = b
+        .get("name")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string());
+    let persona = b
+        .get("persona")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
     let p = app
         .workspace
         .update_project(&id, name, persona)
@@ -1893,21 +3526,39 @@ async fn projects_delete(State(app): State<App>, Path(id): Path<String>) -> ApiR
 }
 async fn sessions_list(State(app): State<App>, Query(q): Query<SessionsQuery>) -> ApiResult {
     let proj = q.project.unwrap_or_else(|| "personal".into());
-    Ok(Json(serde_json::to_value(app.workspace.sessions_meta(&proj)).map_err(err)?))
+    Ok(Json(
+        serde_json::to_value(app.workspace.sessions_meta(&proj)).map_err(err)?,
+    ))
 }
 async fn sessions_create(State(app): State<App>, Json(b): Json<Value>) -> ApiResult {
-    let project_id = b.get("project_id").and_then(|v| v.as_str()).unwrap_or("personal").to_string();
+    let project_id = b
+        .get("project_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("personal")
+        .to_string();
     let title = b.get("title").and_then(|v| v.as_str()).map(str::to_string);
-    Ok(Json(serde_json::to_value(app.workspace.create_session(project_id, title)).map_err(err)?))
+    Ok(Json(
+        serde_json::to_value(app.workspace.create_session(project_id, title)).map_err(err)?,
+    ))
 }
 async fn session_get(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
-    let s = app.workspace.session(&id).ok_or_else(|| ApiError("session not found".into()))?;
+    let s = app
+        .workspace
+        .session(&id)
+        .ok_or_else(|| ApiError("session not found".into()))?;
     Ok(Json(serde_json::to_value(s).map_err(err)?))
 }
-async fn session_update(State(app): State<App>, Path(id): Path<String>, Json(b): Json<Value>) -> ApiResult {
+async fn session_update(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Json(b): Json<Value>,
+) -> ApiResult {
     let title = b.get("title").and_then(|v| v.as_str()).map(str::to_string);
     let fav = b.get("fav").and_then(|v| v.as_bool());
-    let project_id = b.get("project_id").and_then(|v| v.as_str()).map(str::to_string);
+    let project_id = b
+        .get("project_id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
     let s = app
         .workspace
         .update_session(&id, title, fav, project_id)
@@ -1921,5 +3572,85 @@ async fn session_delete(State(app): State<App>, Path(id): Path<String>) -> ApiRe
 fn init_tracing() {
     use tracing_subscriber::{fmt, EnvFilter};
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    fmt().with_env_filter(filter).with_target(false).compact().init();
+    fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .compact()
+        .init();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Regression for the audit's HIGH panic finding: String::truncate panics on a non-char-boundary
+    // byte index, which a >cap document containing multibyte UTF-8 would hit. cap_text_on_boundary
+    // must trim back to a boundary and never panic.
+    #[test]
+    fn cap_text_truncates_on_char_boundary_without_panic() {
+        // 'é' is 2 bytes; a cap that lands mid-codepoint must be walked back, not panic.
+        let s = "é".repeat(1000); // 2000 bytes
+        let out = cap_text_on_boundary(s, 1001); // 1001 is mid-'é'
+        assert!(out.starts_with('é'));
+        assert!(out.ends_with("[document truncated]"));
+        // The kept prefix is valid UTF-8 ending on a boundary (<= the cap).
+        let kept = out.trim_end_matches("\n...[document truncated]");
+        assert!(kept.len() <= 1001);
+        assert!(kept.chars().all(|c| c == 'é'));
+
+        // Emoji (4 bytes) at every offset around the cap must also be safe.
+        let e = "😀".repeat(500); // 2000 bytes
+        for cap in 1998..=2002 {
+            let _ = cap_text_on_boundary(e.clone(), cap); // must not panic
+        }
+        // Under cap: returned unchanged.
+        assert_eq!(cap_text_on_boundary("hi".into(), 100), "hi");
+    }
+
+    // Plain-text extraction works even without the `docs` feature, and binary/unknown types yield None.
+    #[test]
+    fn extract_plain_text_and_unknown() {
+        let csv = b"name,role\nAda,founder\n";
+        assert_eq!(
+            extract_document_text("team.csv", csv).as_deref(),
+            Some("name,role\nAda,founder\n")
+        );
+        assert_eq!(
+            extract_document_text("notes.md", b"# Hi").as_deref(),
+            Some("# Hi")
+        );
+        // An unknown/binary type extracts nothing (the file is still stored by the caller).
+        assert_eq!(extract_document_text("photo.png", &[0u8, 1, 2, 3]), None);
+    }
+
+    // Regression for the audit's HIGH decompression-bomb finding: a DOCX whose document.xml inflates
+    // past the extraction cap must be bounded, not read without limit. (docs feature only.)
+    #[cfg(feature = "docs")]
+    #[test]
+    fn docx_extraction_is_bounded() {
+        use std::io::Write;
+        // Build a DOCX (zip) whose document.xml is ~12MB of text, above the 8MB EXTRACT_CAP.
+        let body = format!(
+            "<w:document><w:body><w:p><w:r><w:t>{}</w:t></w:r></w:p></w:body></w:document>",
+            "A".repeat(12 * 1024 * 1024)
+        );
+        let mut buf = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            zip.start_file::<_, ()>(
+                "word/document.xml",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+            zip.write_all(body.as_bytes()).unwrap();
+            zip.finish().unwrap();
+        }
+        let out = extract_document_text("big.docx", &buf).expect("some text");
+        // Bounded by EXTRACT_CAP (8MB) + a little tag overhead, never the full 12MB.
+        assert!(
+            out.len() <= 9 * 1024 * 1024,
+            "extraction not bounded: {} bytes",
+            out.len()
+        );
+    }
 }

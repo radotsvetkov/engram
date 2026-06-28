@@ -91,7 +91,10 @@ fn local_at(date: NaiveDate, t: NaiveTime) -> DateTime<Utc> {
 }
 
 fn is_weekend(dt: DateTime<Utc>) -> bool {
-    matches!(dt.with_timezone(&Local).weekday(), Weekday::Sat | Weekday::Sun)
+    matches!(
+        dt.with_timezone(&Local).weekday(),
+        Weekday::Sat | Weekday::Sun
+    )
 }
 
 fn weekday_from_u8(n: u8) -> Weekday {
@@ -113,14 +116,20 @@ pub fn parse(input: &str, now: DateTime<Utc>) -> Result<Recurrence, ParseError> 
 
     if let Some(rest) = s.strip_prefix("in ") {
         let dur = parse_duration(rest).ok_or_else(|| ParseError(input.to_string()))?;
-        return Ok(Recurrence::Once { at_ms: (now + dur).timestamp_millis() });
+        return Ok(Recurrence::Once {
+            at_ms: (now + dur).timestamp_millis(),
+        });
     }
 
     // Weekday-specific (check before the generic "every").
     for (name, n) in WEEKDAYS {
         if s.contains(name) {
             let (hour, min) = find_time(&s).unwrap_or((9, 0));
-            return Ok(Recurrence::Weekly { weekday: *n, hour, min });
+            return Ok(Recurrence::Weekly {
+                weekday: *n,
+                hour,
+                min,
+            });
         }
     }
 
@@ -129,7 +138,10 @@ pub fn parse(input: &str, now: DateTime<Utc>) -> Result<Recurrence, ParseError> 
         return Ok(Recurrence::Weekdays { hour, min });
     }
 
-    if s.contains("every day") || s.starts_with("daily") || (s.starts_with("at ") && find_time(&s).is_some()) {
+    if s.contains("every day")
+        || s.starts_with("daily")
+        || (s.starts_with("at ") && find_time(&s).is_some())
+    {
         let (hour, min) = find_time(&s).unwrap_or((9, 0));
         return Ok(Recurrence::Daily { hour, min });
     }
@@ -137,7 +149,9 @@ pub fn parse(input: &str, now: DateTime<Utc>) -> Result<Recurrence, ParseError> 
     if let Some(rest) = s.strip_prefix("every ") {
         // "every 5 minutes", "every hour", "every 30 seconds"
         if let Some(dur) = parse_duration(rest) {
-            return Ok(Recurrence::Interval { secs: dur.num_seconds().max(1) });
+            return Ok(Recurrence::Interval {
+                secs: dur.num_seconds().max(1),
+            });
         }
         // "every <time>" with a clock time means daily at that time.
         if let Some((hour, min)) = find_time(&s) {
@@ -281,7 +295,14 @@ mod tests {
     #[test]
     fn parses_weekly() {
         let r = parse("every monday at 8:30", now()).unwrap();
-        assert_eq!(r, Recurrence::Weekly { weekday: 0, hour: 8, min: 30 });
+        assert_eq!(
+            r,
+            Recurrence::Weekly {
+                weekday: 0,
+                hour: 8,
+                min: 30
+            }
+        );
         let local = r.next_after(now()).unwrap().with_timezone(&Local);
         assert_eq!(local.weekday(), Weekday::Mon);
         assert_eq!((local.hour(), local.minute()), (8, 30));
@@ -289,9 +310,18 @@ mod tests {
 
     #[test]
     fn parses_intervals() {
-        assert_eq!(parse("every 5 minutes", now()).unwrap(), Recurrence::Interval { secs: 300 });
-        assert_eq!(parse("every hour", now()).unwrap(), Recurrence::Interval { secs: 3600 });
-        assert_eq!(parse("every 30 seconds", now()).unwrap(), Recurrence::Interval { secs: 30 });
+        assert_eq!(
+            parse("every 5 minutes", now()).unwrap(),
+            Recurrence::Interval { secs: 300 }
+        );
+        assert_eq!(
+            parse("every hour", now()).unwrap(),
+            Recurrence::Interval { secs: 3600 }
+        );
+        assert_eq!(
+            parse("every 30 seconds", now()).unwrap(),
+            Recurrence::Interval { secs: 30 }
+        );
     }
 
     #[test]

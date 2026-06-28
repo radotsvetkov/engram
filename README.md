@@ -41,7 +41,7 @@ Engram is a Rust workspace of small, single-purpose crates. Capability comes fro
 - **Regions (`region`)**: memory is partitioned the way a brain is (Episodic, Semantic, Identity, Procedural), and recall consults only the regions that fit the task type, so a question about *who you are* does not scan every conversation you ever had.
 - **Embeddings (`embed` / `static_embed`)**: an `Embedder` trait with a dependency-free default (signed feature hashing over word tokens and character trigrams, L2-normalized) that keeps the binary tiny and the pipeline testable offline, plus a **pure-Rust static (model2vec) embedder** for real synonym/paraphrase recall (`ENGRAM_EMBED=static`), a distilled embedding table read straight from `model.safetensors`, no ONNX runtime, no ML crate. A provider embedding model also plugs into the same trait through the gateway. Changing embedders re-embeds existing memories into the new space.
 
-**`crates/engram-gateway`, the LLM gateway.** The single audited choke-point every model and embedding call passes through, so nothing reaches a model off the record. Provider-agnostic behind a `Provider` trait: an offline `MockProvider` runs everywhere with no credentials, and an `HttpProvider` (behind `--features http`, OpenAI-compatible, for Anthropic / OpenAI / OpenRouter) is opt-in so default builds stay small and offline. It meters tokens and cost per call, and enforces the first half of the taint rule, an untrusted call has its secret-bearing context stripped before it reaches the model, with the redaction metered and ledgered.
+**`crates/engram-gateway`, the LLM gateway.** The single audited choke-point every model and embedding call passes through, so nothing reaches a model off the record. Provider-agnostic behind a `Provider` trait: an offline `MockProvider` runs everywhere with no credentials, and an `HttpProvider` (behind `--features http`) is opt-in so default builds stay small and offline. Anthropic uses its native Messages transport; every other backend is OpenAI-compatible and shares one code path - OpenAI, OpenRouter, Groq, DeepSeek, Mistral, Together, xAI, Perplexity, Google's Gemini endpoint, and local Ollama / LM Studio / vLLM / llama.cpp - each with a built-in default endpoint so picking one Just Works once you add a key. It meters tokens and cost per call, and enforces the first half of the taint rule, an untrusted call has its secret-bearing context stripped before it reaches the model, with the redaction metered and ledgered.
 
 **`crates/engram-skills`, the skill runtime.** Skills are not prompts; they are small signed WASM programs that run in a capability-sandboxed, fuel-bounded host (via `wasmi`, a pure-Rust interpreter chosen for a tiny binary and a deterministic deny-by-default sandbox). A skill receives a host function only if its signed manifest was granted the matching capability; importing anything ungranted fails to link, so an over-reaching skill never starts, and a runaway skill traps on fuel exhaustion instead of hanging the core. A registry versions skills and their recorded runs. On top of it sits the **self-improving learning loop**: a candidate version is replayed against the inputs the skill has actually seen, scored on the skill's own metric, A/B-gated head-to-head against the incumbent, promoted only on a measured win with consent, and one `set_active` away from being reverted. **Egress capabilities (LLM, Net) are revoked automatically for any run that read untrusted input**: the no-egress half of the taint rule, proven at the sandbox boundary.
 
@@ -65,7 +65,7 @@ The security edges here are what a bolted-on tool loop cannot retrofit:
 
 - **Every tool call is ledgered**: signed, hash-chained, replayable. The run is auditable by construction, not by a log you are asked to trust.
 - **The filesystem is workdir-confined** and the **shell is off by default**; the dangerous capabilities are closed unless you open them.
-- **The run is *tainted* the instant a web or browser tool reads untrusted content**, and taint only ever spreads. After that point the `shell` is refused and the model's secret-bearing context is stripped before the next call, the prompt-injection → exfiltration chain is broken at the boundary, not by a hoped-for prompt. The same taint flows into subagents and into any memory the run writes.
+- **The run is *tainted* the instant a web or browser tool reads untrusted content**, and taint only ever spreads. After that point the `shell` is refused and the model's secret-bearing context is stripped before the next call. **Egress** (web_fetch/web_search, send_message, browser navigation, untrusted MCP) is refused once the run is *also* sensitive - it has read the user's private data (a `memory_recall`, a `read_file`, an authenticated MCP) - the full lethal trifecta. Gating egress on the conjunction is deliberate: pure web research keeps working, while a run holding something worth stealing can't carry it out. The prompt-injection → exfiltration chain is broken at the boundary, not by a hoped-for prompt; the SSRF guard additionally pins each connection to the IP it validated and re-checks every redirect hop, so a public URL can't rebind or 302 to a metadata address. The same taint flows into subagents and into any memory the run writes.
 
 **`crates/engramd`, the daemon.** This is where the parts become an agent. It opens the ledger, the hybrid memory, the skill registry, the gateway, the scheduler, and the agent's toolset (built-ins plus any MCP servers), and exposes them over a small local HTTP API plus the redesigned desktop control center (see [Desktop](#desktop)). That single page gives you a Kanban board fed by a chat composer, glass-box signed task cards, an ambient trust/cost spine, and views for **Chat / Tasks / Schedule / Memory / Skills**: all over Server-Sent Events. Every request keeps the brain awake and fires a spike; after an idle window with no requests the process exits to zero, so on a socket-activated VPS there is nothing resident between uses.
 
@@ -148,6 +148,10 @@ The thesis is that Engram now *matches* [Nous Hermes](https://github.com/nousres
 | **Signed audit ledger** | 100% of memory writes, skill mutations, and tool calls signed, hash-chained, and one-click reversible | mutable Markdown/SQLite with manual review |
 | **Self-modifying-skill safety** | 100% of skill executions sandboxed (WASM, deny-by-default, fuel-bounded), egress revoked on untrusted-data runs | 0% validation on the live in-agent skill-patch path |
 | **Learning loop** | candidate skill versions replayed, A/B-gated head-to-head, promoted only on a measured win, reversible | no measured self-improvement gate |
+| **Document ingest** | chat uploads of PDF / DOCX / XLSX / ODS / CSV are text-extracted server-side (capped) so the agent reads the actual content, not a placeholder | attachments are not first-class |
+| **Per-agent model & provider** | each durable agent can carry its own model AND provider/base-url/key, so a team mixes a cheap triage model with a frontier reasoning model; the key is masked in the API and stored 0600 like the signing key | single global model |
+| **Parallel-safe worktrees** | with `ENGRAM_WORKTREES=1` on a git workspace, each task runs in its own detached `git worktree`, cleaned up on exit, so several agents work one project without clobbering | shared working dir |
+| **Integrations** | a one-click MCP gallery (Filesystem, Fetch, Git, GitHub, GitLab, Slack, Postgres, Notion, Brave, ...) with a per-server secret / working-dir / trust editor; secrets masked in the API and 0600 on disk | a fixed integration list, no MCP client |
 | **Control surface** | one coherent desktop control center: a Kanban board fed by a single chat composer, glass-box task cards carrying the signed ledger slice for their run, and an ambient trust/cost spine ("ledger verified · N", today's cost) in the top bar | a split CLI + chat-app + admin-dashboard, with opaque cost |
 
 ### Where Engram does *not* yet match Hermes
@@ -155,7 +159,7 @@ The thesis is that Engram now *matches* [Nous Hermes](https://github.com/nousres
 These are honest gaps, not spin:
 
 - **Voice mode**: not built. Engram does text-to-speech as a tool, but there is no live voice-conversation loop.
-- **Breadth of integrations**: Hermes ships 20+ messaging platforms and ~6 execution backends. Engram has **Telegram + outbound webhook** for messaging and **local / Docker / SSH** shell backends plus the **WASM** skill sandbox. The MCP client narrows this gap (any MCP server becomes available) but the out-of-the-box surface is smaller.
+- **Breadth of messaging platforms**: Hermes ships 20+ messaging platforms. Engram has **Telegram + a generic inbound/outbound webhook** (which already covers Make / Zapier / Typeform / Tally and any platform that can POST). For tools, the **MCP gallery** turns any MCP server into a first-class integration (GitHub, GitLab, Slack, Postgres, Notion, Brave, filesystem, git, fetch, ...) with a per-server secret editor, so the *capability* surface is broad; the out-of-the-box *chat-platform* count is still smaller.
 - **Live media and real recall need a provider key.** `vision_analyze`, `image_generate`, `text_to_speech`, and synonym-level (>0.85) semantic recall route through a real model: they require building with `--features http` and configuring a provider, and fall back to the offline mock otherwise. The default offline build still does the agentic loop, files, shell, web, the interactive browser, and morphological recall.
 
 ## Build & run
@@ -184,7 +188,7 @@ cargo test --workspace
 
 ## Settings
 
-The desktop app has a **Settings** panel (the gear in the sidebar) for the things you change most: the model and provider (Anthropic, any OpenAI-compatible endpoint, OpenRouter, or a local Ollama), the embeddings mode, the security gates (API token, channel secret, shell access), the per-task token budget, the MCP servers, and the persona (your `SOUL.md`). There is a **Test connection** button so you can check a key and model before saving.
+The desktop app has a **Settings** panel (the gear in the sidebar) for the things you change most: the model and provider - Anthropic (native), or any OpenAI-compatible backend with a one-click preset and built-in endpoint (OpenAI, OpenRouter, Groq, DeepSeek, Mistral, Together, xAI, Perplexity, Google Gemini) and the local ones (Ollama, LM Studio, vLLM, llama.cpp) - the embeddings mode, the security gates (API token, channel secret, shell access), the per-task token budget, the MCP servers (with a small bounded set of one-click templates: filesystem, fetch, git, memory, …), and the persona (your `SOUL.md`). There is a **Test connection** button so you can check a key and model before saving, and a first-run wizard that walks a new user through connecting a model. A brand-new install runs the offline mock and says so honestly until you connect one.
 
 Settings are stored in `<ENGRAM_HOME>/config.json` (written `0600`, since it holds keys). Almost everything applies immediately, with no restart: the model and provider are hot-swapped under the running daemon, the security gates and cost cap are read live, the persona shapes the very next run, and editing the MCP list reconnects the servers on the spot. The one exception is the embeddings mode, which is wired once at boot, so the panel offers a **Restart daemon** button for it (the desktop shell brings the daemon straight back). When there is no `config.json` yet, the daemon reads its settings from the environment below, so an existing env-configured deployment keeps working and shows its current state in the panel until you first save.
 
@@ -237,28 +241,44 @@ To exercise the agent with real tools, enable the optional features and (for liv
 a provider:
 
 ```sh
-# Build with the interactive browser and a real network LLM provider.
-cargo build --release --features browser-cdp,http
+# Build with the interactive browser, a real network LLM provider, and document ingest
+# (--features docs adds PDF / DOCX / XLSX / CSV text extraction for chat uploads).
+cargo build --release --features browser-cdp,http,docs
 
 # Enable the shell, route it through a network-isolated container, and run.
 ENGRAM_TOOLS_SHELL=1 ENGRAM_SHELL_BACKEND=docker \
 ENGRAM_LLM_BASE_URL=https://api.example.com/v1 ENGRAM_LLM_API_KEY=… \
   ./target/release/engramd
+
+# Isolate every task in its own git worktree (parallel agents on one repo, no clobbering).
+# Point the workspace at a git repo, then:
+ENGRAM_WORKTREES=1 ENGRAM_WORKDIR=/path/to/repo ./target/release/engramd
 ```
 
 ### Desktop app
 
-A native Tauri shell that wraps the dashboard and starts the daemon for you. It opens the
-window onto the daemon's own dashboard, supervises `engramd` while open, and quits cleanly so
-the daemon can sleep to zero. One command builds the daemon and launches it:
+A native Tauri shell that wraps the dashboard and starts the daemon for you - a *real*
+desktop app, not a webview over a URL. On top of supervising `engramd` it wires the OS-level
+surface a real agent app needs: a **system tray** (Show / Hide / Restart agent / Open at
+login / Quit), **close-to-tray** so the agent stays reachable with the window shut, a
+**native menu bar** (so clipboard shortcuts work in the webview on macOS), a **global hotkey**
+(Cmd/Ctrl+Shift+Space) to summon it, a **single-instance lock** that focuses the existing
+window, **run-at-login**, **window-state persistence**, the **`engram://` deep-link scheme**,
+and **desktop notifications** on task completion. One command builds the daemon, stages it as
+the bundled sidecar, and launches:
 
 ```sh
 scripts/desktop.sh                         # needs: cargo install tauri-cli --version '^2'
-scripts/desktop.sh build                   # native bundle (.app/.dmg/.deb/.msi)
+scripts/desktop.sh build                   # native bundle (.app/.dmg/.deb/.AppImage/.msi)
 ```
 
 The macOS `.app` build is verified end to end (it carries the Engram icon and weighs about
 8 MB). See [`desktop/README.md`](./desktop/README.md).
+
+The daemon also self-diagnoses: **`engramd doctor [HOME]`** prints a plain-language health
+check (state dir, provider + key, embedder, ledger integrity, MCP servers, channels, security
+gates, port) and exits non-zero on a hard problem - the local equivalent of the verify command
+for "is this install set up right?".
 
 ### Running the benchmark
 

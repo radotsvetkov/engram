@@ -35,11 +35,14 @@ impl StaticEmbedder {
 
         // --- tokenizer.json: vocab, unk token, casing ---
         let tj: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(dir.join("tokenizer.json")).map_err(|e| format!("tokenizer.json: {e}"))?,
+            &std::fs::read(dir.join("tokenizer.json"))
+                .map_err(|e| format!("tokenizer.json: {e}"))?,
         )
         .map_err(|e| format!("tokenizer.json parse: {e}"))?;
         let model = &tj["model"];
-        let vocab_obj = model["vocab"].as_object().ok_or("tokenizer.json has no model.vocab")?;
+        let vocab_obj = model["vocab"]
+            .as_object()
+            .ok_or("tokenizer.json has no model.vocab")?;
         let mut vocab = HashMap::with_capacity(vocab_obj.len());
         for (k, v) in vocab_obj {
             if let Some(id) = v.as_u64() {
@@ -50,18 +53,26 @@ impl StaticEmbedder {
         let unk = *vocab.get(unk_tok).unwrap_or(&0);
         let lowercase = tj["normalizer"]["lowercase"].as_bool().unwrap_or(true);
         // HF BertNormalizer: a null strip_accents defaults to the lowercase setting.
-        let strip_accents = tj["normalizer"]["strip_accents"].as_bool().unwrap_or(lowercase);
+        let strip_accents = tj["normalizer"]["strip_accents"]
+            .as_bool()
+            .unwrap_or(lowercase);
 
         // --- model.safetensors: the `embeddings` F32 [rows, dim] matrix ---
-        let raw = std::fs::read(dir.join("model.safetensors")).map_err(|e| format!("model.safetensors: {e}"))?;
+        let raw = std::fs::read(dir.join("model.safetensors"))
+            .map_err(|e| format!("model.safetensors: {e}"))?;
         if raw.len() < 8 {
             return Err("model.safetensors too small".into());
         }
         let hlen = u64::from_le_bytes(raw[0..8].try_into().unwrap()) as usize;
-        let header_end = 8usize.checked_add(hlen).filter(|&e| e <= raw.len()).ok_or("bad safetensors header length")?;
-        let hdr: serde_json::Value =
-            serde_json::from_slice(&raw[8..header_end]).map_err(|e| format!("safetensors header: {e}"))?;
-        let emb = hdr.get("embeddings").ok_or("safetensors has no 'embeddings' tensor")?;
+        let header_end = 8usize
+            .checked_add(hlen)
+            .filter(|&e| e <= raw.len())
+            .ok_or("bad safetensors header length")?;
+        let hdr: serde_json::Value = serde_json::from_slice(&raw[8..header_end])
+            .map_err(|e| format!("safetensors header: {e}"))?;
+        let emb = hdr
+            .get("embeddings")
+            .ok_or("safetensors has no 'embeddings' tensor")?;
         if emb["dtype"].as_str() != Some("F32") {
             return Err("embeddings dtype must be F32".into());
         }
@@ -69,20 +80,42 @@ impl StaticEmbedder {
         let rows = shape.first().and_then(|v| v.as_u64()).ok_or("bad shape")? as usize;
         let dim = shape.get(1).and_then(|v| v.as_u64()).ok_or("bad shape")? as usize;
         let off = emb["data_offsets"].as_array().ok_or("no data_offsets")?;
-        let s = off.first().and_then(|v| v.as_u64()).ok_or("bad data_offsets")? as usize;
-        let e = off.get(1).and_then(|v| v.as_u64()).ok_or("bad data_offsets")? as usize;
+        let s = off
+            .first()
+            .and_then(|v| v.as_u64())
+            .ok_or("bad data_offsets")? as usize;
+        let e = off
+            .get(1)
+            .and_then(|v| v.as_u64())
+            .ok_or("bad data_offsets")? as usize;
         // Checked arithmetic - a malformed model must error, never panic on overflow.
         let start = header_end.checked_add(s).ok_or("data_offsets overflow")?;
         let end = header_end.checked_add(e).ok_or("data_offsets overflow")?;
         let data = raw.get(start..end).ok_or("embeddings data out of bounds")?;
-        let expected = rows.checked_mul(dim).and_then(|v| v.checked_mul(4)).ok_or("embeddings shape too large")?;
+        let expected = rows
+            .checked_mul(dim)
+            .and_then(|v| v.checked_mul(4))
+            .ok_or("embeddings shape too large")?;
         if data.len() != expected {
-            return Err(format!("embeddings size mismatch: {} bytes for {rows}x{dim}", data.len()));
+            return Err(format!(
+                "embeddings size mismatch: {} bytes for {rows}x{dim}",
+                data.len()
+            ));
         }
-        let matrix: Vec<f32> =
-            data.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+        let matrix: Vec<f32> = data
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
 
-        Ok(Self { vocab, matrix, rows, dim, unk, lowercase, strip_accents })
+        Ok(Self {
+            vocab,
+            matrix,
+            rows,
+            dim,
+            unk,
+            lowercase,
+            strip_accents,
+        })
     }
 
     fn tokenize(&self, text: &str) -> Vec<u32> {
@@ -277,12 +310,18 @@ mod tests {
         let cars = e.embed("cars");
         let norm = (cars[0] * cars[0] + cars[1] * cars[1]).sqrt();
         assert!((norm - 1.0).abs() < 1e-5, "not normalized: {cars:?}");
-        assert!(cars[0] > 0.0 && cars[1] > 0.0, "both pieces should contribute: {cars:?}");
+        assert!(
+            cars[0] > 0.0 && cars[1] > 0.0,
+            "both pieces should contribute: {cars:?}"
+        );
     }
 
     #[test]
     fn pretokenize_splits_punctuation_and_strips_accents() {
-        assert_eq!(pretokenize("Hello, world!", true, false), vec!["hello", ",", "world", "!"]);
+        assert_eq!(
+            pretokenize("Hello, world!", true, false),
+            vec!["hello", ",", "world", "!"]
+        );
         // lowercase + strip accents: "Café" -> "cafe".
         assert_eq!(pretokenize("Café", true, true), vec!["cafe"]);
     }

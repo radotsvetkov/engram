@@ -142,7 +142,12 @@ impl SkillHost {
     /// Run raw WASM with async host capabilities (LLM, Net) available. The skill runs on
     /// a blocking thread so its synchronous host functions can drive async gateway calls
     /// without stalling a runtime worker.
-    pub async fn run_async(&self, wasm: &[u8], input: &[u8], ctx: RunCtx) -> Result<Outcome, SkillError> {
+    pub async fn run_async(
+        &self,
+        wasm: &[u8],
+        input: &[u8],
+        ctx: RunCtx,
+    ) -> Result<Outcome, SkillError> {
         let engine = self.engine.clone();
         let wasm = wasm.to_vec();
         let input = input.to_vec();
@@ -189,7 +194,9 @@ fn run_inner(
         host_calls: 0,
     };
     let mut store = Store::new(engine, state);
-    store.set_fuel(ctx.fuel).map_err(|e| SkillError::Wasm(e.to_string()))?;
+    store
+        .set_fuel(ctx.fuel)
+        .map_err(|e| SkillError::Wasm(e.to_string()))?;
 
     // Deny-by-default linking, with egress capabilities revoked under taint.
     let egress_revoked = ctx.taint.is_untrusted();
@@ -250,7 +257,11 @@ fn run_inner(
     // unbounded host allocation (OOM/DoS).
     const MAX_SKILL_OUTPUT: usize = 16 * 1024 * 1024;
     let mem_size = memory.data(&store).len();
-    if out_len > MAX_SKILL_OUTPUT || out_ptr.checked_add(out_len).map_or(true, |end| end > mem_size) {
+    if out_len > MAX_SKILL_OUTPUT
+        || out_ptr
+            .checked_add(out_len)
+            .map_or(true, |end| end > mem_size)
+    {
         return Err(SkillError::Abi(format!(
             "skill output region out of bounds: ptr={out_ptr} len={out_len} mem={mem_size}"
         )));
@@ -420,7 +431,12 @@ fn add_llm(linker: &mut Linker<HostState>) -> Result<(), SkillError> {
         .func_wrap(
             "engram",
             "llm",
-            |mut caller: Caller<'_, HostState>, ptr: i32, len: i32, out_ptr: i32, out_cap: i32| -> i32 {
+            |mut caller: Caller<'_, HostState>,
+             ptr: i32,
+             len: i32,
+             out_ptr: i32,
+             out_cap: i32|
+             -> i32 {
                 let prompt = match read_str(&caller, ptr, len) {
                     Some(p) => p,
                     None => return -1,
@@ -429,14 +445,18 @@ fn add_llm(linker: &mut Linker<HostState>) -> Result<(), SkillError> {
                     let st = caller.data();
                     (st.gateway.clone(), st.handle.clone(), st.taint)
                 };
-                let (Some(gateway), Some(handle)) = (gateway, handle) else { return -1 };
-                let model = std::env::var("ENGRAM_MODEL").unwrap_or_else(|_| "claude-haiku-4-5".into());
+                let (Some(gateway), Some(handle)) = (gateway, handle) else {
+                    return -1;
+                };
+                let model =
+                    std::env::var("ENGRAM_MODEL").unwrap_or_else(|_| "claude-haiku-4-5".into());
                 let req = CompletionRequest::new(model, vec![Message::user(prompt)]);
-                let completion =
-                    match handle.block_on(gateway.complete(Call::new(req).actor("skill").tainted(taint))) {
-                        Ok(c) => c,
-                        Err(_) => return -1,
-                    };
+                let completion = match handle
+                    .block_on(gateway.complete(Call::new(req).actor("skill").tainted(taint)))
+                {
+                    Ok(c) => c,
+                    Err(_) => return -1,
+                };
                 let bytes = completion.text.into_bytes();
                 let mem = match caller.get_export("memory") {
                     Some(Extern::Memory(m)) => m,
@@ -488,7 +508,9 @@ mod tests {
     #[test]
     fn runs_echo_skill() {
         let host = SkillHost::new();
-        let out = host.run(&echo_wat(), b"hello brain", RunCtx::pure()).unwrap();
+        let out = host
+            .run(&echo_wat(), b"hello brain", RunCtx::pure())
+            .unwrap();
         assert_eq!(out.output, b"hello brain");
         assert!(out.fuel_used > 0, "fuel should be consumed");
     }
@@ -567,7 +589,10 @@ mod tests {
             .memory(memory, vec![Region::Semantic]);
         let out = host.run(&wasm, b"sky", ctx).unwrap();
         let text = String::from_utf8_lossy(&out.output);
-        assert!(text.contains("blue"), "recall should surface the stored fact, got: {text}");
+        assert!(
+            text.contains("blue"),
+            "recall should surface the stored fact, got: {text}"
+        );
         assert_eq!(out.host_calls, 1);
     }
 
@@ -629,11 +654,19 @@ mod tests {
         let ledger = Arc::new(Ledger::open(dir.path()).unwrap());
         let gateway = Arc::new(Gateway::new(Box::new(MockProvider), ledger));
         let host = SkillHost::new();
-        let ctx = RunCtx::pure().granted(vec![Capability::Llm]).gateway(gateway);
+        let ctx = RunCtx::pure()
+            .granted(vec![Capability::Llm])
+            .gateway(gateway);
         // A skill reaches the model only through the audited gateway, on the async path.
-        let out = host.run_async(&llm_skill(), b"say hello", ctx).await.unwrap();
+        let out = host
+            .run_async(&llm_skill(), b"say hello", ctx)
+            .await
+            .unwrap();
         let text = String::from_utf8_lossy(&out.output);
-        assert!(text.contains("mock"), "skill should receive the model reply, got: {text}");
+        assert!(
+            text.contains("mock"),
+            "skill should receive the model reply, got: {text}"
+        );
         assert_eq!(out.host_calls, 1);
     }
 }

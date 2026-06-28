@@ -30,7 +30,12 @@ pub struct Dissent {
 
 /// Review a task against recalled memory. Returns a grounded objection, or `None` when nothing real
 /// conflicts (or no model is connected to assess - in which case we stay silent rather than guess).
-pub async fn review(memory: &Memory, gateway: &Gateway, model: &str, task: &str) -> Option<Dissent> {
+pub async fn review(
+    memory: &Memory,
+    gateway: &Gateway,
+    model: &str,
+    task: &str,
+) -> Option<Dissent> {
     // Only a real model can assess conflict; the offline mock cannot, so we do not pretend it can.
     if gateway.provider_id() == "mock" {
         return None;
@@ -79,7 +84,11 @@ fn parse(reply: &str, cites: &[(i64, String, String)]) -> Option<Dissent> {
             // Verify: a 1-based index into the set we actually recalled. Drop anything else.
             if n >= 1 && n <= cites.len() && seen.insert(n) {
                 let (id, region, text) = &cites[n - 1];
-                grounds.push(Ground { id: *id, region: region.clone(), text: text.clone() });
+                grounds.push(Ground {
+                    id: *id,
+                    region: region.clone(),
+                    text: text.clone(),
+                });
             }
         }
     }
@@ -103,7 +112,11 @@ mod tests {
     fn cites() -> Vec<(i64, String, String)> {
         vec![
             (10, "identity".into(), "Never deploy on Fridays".into()),
-            (11, "semantic".into(), "Prod requires a staging soak first".into()),
+            (
+                11,
+                "semantic".into(),
+                "Prod requires a staging soak first".into(),
+            ),
             (12, "identity".into(), "Prefers concise answers".into()),
         ]
     }
@@ -118,8 +131,11 @@ mod tests {
     #[test]
     fn grounded_conflict_keeps_only_real_citations() {
         // The model cites 1 and 2 (real) and 9 (out of range / hallucinated) - 9 is dropped.
-        let d = parse("CONFLICT: 1, 2, 9 | deploying now skips the Friday rule and the soak", &cites())
-            .expect("should dissent");
+        let d = parse(
+            "CONFLICT: 1, 2, 9 | deploying now skips the Friday rule and the soak",
+            &cites(),
+        )
+        .expect("should dissent");
         assert_eq!(d.grounds.len(), 2);
         assert_eq!(d.grounds[0].id, 10);
         assert_eq!(d.grounds[1].id, 11);

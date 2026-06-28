@@ -76,7 +76,14 @@ pub struct Entry {
 
 /// Domain-separated, length-prefixed content hash. Length prefixes make the field
 /// boundaries unambiguous, so no two distinct entries can collide by concatenation.
-fn content_hash(seq: u64, ts_ms: u64, prev: &Hash, kind: &str, actor: &str, payload_raw: &str) -> Hash {
+fn content_hash(
+    seq: u64,
+    ts_ms: u64,
+    prev: &Hash,
+    kind: &str,
+    actor: &str,
+    payload_raw: &str,
+) -> Hash {
     let mut h = blake3::Hasher::new();
     h.update(DOMAIN);
     h.update(&seq.to_le_bytes());
@@ -228,7 +235,11 @@ fn read_entries(path: &Path) -> Result<Vec<Entry>, LedgerError> {
         Err(e) => return Err(e.into()),
     };
     let raw: Vec<String> = BufReader::new(file).lines().collect::<Result<_, _>>()?;
-    let nonempty: Vec<&str> = raw.iter().map(String::as_str).filter(|l| !l.trim().is_empty()).collect();
+    let nonempty: Vec<&str> = raw
+        .iter()
+        .map(String::as_str)
+        .filter(|l| !l.trim().is_empty())
+        .collect();
     let mut out = Vec::with_capacity(nonempty.len());
     for (i, line) in nonempty.iter().enumerate() {
         match serde_json::from_str::<Entry>(line) {
@@ -352,8 +363,16 @@ mod tests {
     fn appends_and_verifies() {
         let dir = temp();
         let l = Ledger::open(dir.path()).unwrap();
-        let e1 = l.append("memory.write", "core", json!({ "fact": "user likes Rust" })).unwrap();
-        let e2 = l.append("skill.promote", "user", json!({ "skill": "drafter", "v": 3 })).unwrap();
+        let e1 = l
+            .append("memory.write", "core", json!({ "fact": "user likes Rust" }))
+            .unwrap();
+        let e2 = l
+            .append(
+                "skill.promote",
+                "user",
+                json!({ "skill": "drafter", "v": 3 }),
+            )
+            .unwrap();
         assert_eq!(e1.seq, 1);
         assert_eq!(e2.seq, 2);
         assert_eq!(e2.prev, e1.hash); // chain links
@@ -382,13 +401,18 @@ mod tests {
         let verifying;
         {
             let l = Ledger::open(dir.path()).unwrap();
-            l.append("memory.write", "core", json!({ "amount": 10 })).unwrap();
-            l.append("memory.write", "core", json!({ "amount": 20 })).unwrap();
+            l.append("memory.write", "core", json!({ "amount": 10 }))
+                .unwrap();
+            l.append("memory.write", "core", json!({ "amount": 20 }))
+                .unwrap();
             verifying = l.verifying;
         }
         // Rewrite the first entry's payload on disk, keeping its old hash/sig.
-        let mut lines: Vec<String> =
-            std::fs::read_to_string(&path).unwrap().lines().map(String::from).collect();
+        let mut lines: Vec<String> = std::fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .map(String::from)
+            .collect();
         lines[0] = lines[0].replace("\"amount\":10", "\"amount\":9999");
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
 
@@ -412,8 +436,12 @@ mod tests {
         }
         // Simulate a crash mid-append: a truncated JSON fragment with no trailing newline.
         use std::io::Write;
-        let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
-        f.write_all(b"{\"seq\":3,\"kind\":\"c\",\"actor\":\"core\",\"payl").unwrap();
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        f.write_all(b"{\"seq\":3,\"kind\":\"c\",\"actor\":\"core\",\"payl")
+            .unwrap();
         drop(f);
         // The ledger still loads (not bricked) and verifies its complete prefix.
         let l = Ledger::open(dir.path()).unwrap();
@@ -429,7 +457,10 @@ mod tests {
         l.append("b", "core", json!(2)).unwrap();
         // The published public key (hex) reconstructs and verifies the signed file.
         let vk = verifying_key_from_hex(&l.pubkey_hex()).unwrap();
-        assert_eq!(verify_file(&dir.path().join("ledger.jsonl"), &vk).unwrap(), 2);
+        assert_eq!(
+            verify_file(&dir.path().join("ledger.jsonl"), &vk).unwrap(),
+            2
+        );
         // Bad hex is an error, never a panic.
         assert!(verifying_key_from_hex("not-hex").is_err());
     }
@@ -438,7 +469,13 @@ mod tests {
     fn revert_is_appended_not_erased() {
         let dir = temp();
         let l = Ledger::open(dir.path()).unwrap();
-        let bad = l.append("skill.mutate", "skill:drafter@4", json!({ "regression": true })).unwrap();
+        let bad = l
+            .append(
+                "skill.mutate",
+                "skill:drafter@4",
+                json!({ "regression": true }),
+            )
+            .unwrap();
         let rev = l.revert("user", &bad.hash, "metric dropped").unwrap();
         assert_eq!(rev.kind, "revert");
         let payload: serde_json::Value = serde_json::from_str(rev.payload.get()).unwrap();

@@ -13,7 +13,10 @@ pub fn socket_activation(exec: &str, port: u16) -> (String, String) {
         "[Unit]\n\
          Description=Engram core socket (zero-idle activation)\n\n\
          [Socket]\n\
-         ListenStream={port}\n\
+         # Bind loopback by default - an exposed agent must be authenticated. To reach it from\n\
+         # the network, front it with a reverse proxy (TLS + the API token) or change this to\n\
+         # ListenStream={port} AND set ENGRAM_API_TOKEN in the service.\n\
+         ListenStream=127.0.0.1:{port}\n\
          # Hand the accepted connection to a freshly-spawned engramd.\n\
          Accept=no\n\n\
          [Install]\n\
@@ -25,6 +28,8 @@ pub fn socket_activation(exec: &str, port: u16) -> (String, String) {
          Requires=engram.socket\n\
          After=engram.socket\n\n\
          [Service]\n\
+         # Type=notify: engramd inherits the listening fd from the socket unit and signals\n\
+         # readiness via sd_notify - it never binds the port itself (that would EADDRINUSE).\n\
          Type=notify\n\
          ExecStart={exec}\n\
          # Hardening: minimal privileges for a self-modifying agent.\n\
@@ -69,9 +74,22 @@ mod tests {
     #[test]
     fn socket_unit_has_listen_and_activation() {
         let (socket, service) = socket_activation("/usr/local/bin/engramd", 8088);
-        assert!(socket.contains("ListenStream=8088"));
+        assert!(
+            socket.contains("ListenStream=127.0.0.1:8088"),
+            "binds loopback by default"
+        );
         assert!(service.contains("Requires=engram.socket"));
+        assert!(service.contains("Type=notify"));
         assert!(service.contains("NoNewPrivileges=yes"));
+    }
+
+    #[test]
+    fn wake_timer_runs_due_and_exits() {
+        let (svc, _timer) = wake_timer("/usr/local/bin/engramd", "*-*-* 09:00:00");
+        // The wake service MUST run the due-jobs subcommand, never the bare server (which would
+        // collide with the socket). Type=oneshot so systemd waits for it to finish and exit.
+        assert!(svc.contains("--run-due"));
+        assert!(svc.contains("Type=oneshot"));
     }
 
     #[test]

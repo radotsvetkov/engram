@@ -26,6 +26,15 @@ pub trait BrowserSession: Send + Sync {
     async fn type_text(&self, selector: &str, text: &str) -> Result<String, String>;
     async fn extract(&self, selector: Option<&str>) -> Result<String, String>;
     async fn screenshot(&self, path: &std::path::Path) -> Result<(), String>;
+    /// Wait until `selector` exists (up to `timeout_ms`). The real CDP session overrides this;
+    /// the default reports the feature is off so a SPA's late-rendered element can be awaited.
+    async fn wait_for(&self, _selector: &str, _timeout_ms: u64) -> Result<String, String> {
+        Err("interactive browser not enabled (build engramd with --features browser-cdp)".into())
+    }
+    /// Scroll the page by `dy` pixels (negative = up). Overridden by the CDP session.
+    async fn scroll(&self, _dy: i64) -> Result<String, String> {
+        Err("interactive browser not enabled (build engramd with --features browser-cdp)".into())
+    }
 }
 
 /// Placeholder used when no interactive browser is built in.
@@ -64,8 +73,13 @@ pub struct ToolCtx {
     pub gateway: Arc<Gateway>,
     pub ledger: Arc<Ledger>,
     /// The run's current taint. `Untrusted` once any tool has read attacker-influenceable
-    /// content (e.g. a web page) - dangerous tools refuse to act under it.
+    /// content (e.g. a web page) - the shell is refused and secret context is stripped under it.
     pub taint: Taint,
+    /// The run's second provenance dimension: has it surfaced the user's private data (a memory
+    /// recall, a local file read, an authenticated MCP read)? Egress is refused only when the run
+    /// is BOTH `taint==Untrusted` AND `sensitive` (the lethal trifecta). Propagated into subagents
+    /// via the cloned ctx, so a delegated worker can't launder an exfiltration past the gate.
+    pub sensitive: bool,
     pub policy: Policy,
     /// Filesystem actions are confined to this directory.
     pub workdir: PathBuf,
@@ -125,10 +139,19 @@ pub trait Tool: Send + Sync {
         false
     }
     /// True if this tool can carry data *out* to an attacker-influenceable destination
-    /// (the web, a webhook, an MCP server, a browser navigation). Such tools are refused
-    /// once the run is tainted - the no-egress half of the taint rule, enforced centrally
-    /// at the agent's dispatch boundary so every tool (native and MCP) is covered.
+    /// (the web, a webhook, an MCP server, a browser navigation). Egress is refused only
+    /// when the run is BOTH tainted (read untrusted content) AND sensitive (read private
+    /// data) - the full lethal-trifecta rule - so pure web research (untrusted but not
+    /// sensitive) still works while exfiltration of private data is blocked by construction.
+    /// Enforced centrally at the agent's dispatch boundary so every tool is covered.
     fn is_egress(&self) -> bool {
+        false
+    }
+    /// True if this tool surfaces the user's *private/sensitive* data into the run (recalling
+    /// personal memory, reading local files, an authenticated MCP/service read). Combined with
+    /// `taints()`, this is what arms the no-egress gate: untrusted content alone is not enough
+    /// to exfiltrate - there must also be something private in the run worth leaking.
+    fn reads_sensitive(&self) -> bool {
         false
     }
     /// True if this tool changes the world outside the brain (writes files, runs shell,

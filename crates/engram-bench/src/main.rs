@@ -30,25 +30,76 @@ struct Case {
 /// these at all.
 fn cases() -> Vec<Case> {
     vec![
-        Case { fact: "user preferences for dark themes in the editor", query: "preferred theming" },
-        Case { fact: "the agent consolidates memories overnight", query: "memory consolidation while sleeping" },
-        Case { fact: "scheduling recurring reminders every morning", query: "recurrent schedules" },
-        Case { fact: "skills are sandboxed programs that improve with use", query: "sandboxing improvable programs" },
-        Case { fact: "Engram runs on a cheap virtual private server", query: "running cheaply on a VPS" },
-        Case { fact: "the ledger is signed and tamper evident", query: "tamper-evident signing" },
-        Case { fact: "Radoslav prefers minimal dependencies", query: "minimal dependency preference" },
-        Case { fact: "embeddings turn text into vectors for semantic search", query: "vector embedding for meaning" },
-        Case { fact: "the core sleeps to zero memory when idle", query: "idle sleeping to zero" },
-        Case { fact: "the capital of France is Paris", query: "what is the capital of France" },
-        Case { fact: "WebAssembly modules run in a fuel-bounded sandbox", query: "fuel bounded wasm sandboxing" },
-        Case { fact: "recall fuses keyword and semantic ranking", query: "fusing semantic and keyword ranks" },
+        Case {
+            fact: "user preferences for dark themes in the editor",
+            query: "preferred theming",
+        },
+        Case {
+            fact: "the agent consolidates memories overnight",
+            query: "memory consolidation while sleeping",
+        },
+        Case {
+            fact: "scheduling recurring reminders every morning",
+            query: "recurrent schedules",
+        },
+        Case {
+            fact: "skills are sandboxed programs that improve with use",
+            query: "sandboxing improvable programs",
+        },
+        Case {
+            fact: "Engram runs on a cheap virtual private server",
+            query: "running cheaply on a VPS",
+        },
+        Case {
+            fact: "the ledger is signed and tamper evident",
+            query: "tamper-evident signing",
+        },
+        Case {
+            fact: "Radoslav prefers minimal dependencies",
+            query: "minimal dependency preference",
+        },
+        Case {
+            fact: "embeddings turn text into vectors for semantic search",
+            query: "vector embedding for meaning",
+        },
+        Case {
+            fact: "the core sleeps to zero memory when idle",
+            query: "idle sleeping to zero",
+        },
+        Case {
+            fact: "the capital of France is Paris",
+            query: "what is the capital of France",
+        },
+        Case {
+            fact: "WebAssembly modules run in a fuel-bounded sandbox",
+            query: "fuel bounded wasm sandboxing",
+        },
+        Case {
+            fact: "recall fuses keyword and semantic ranking",
+            query: "fusing semantic and keyword ranks",
+        },
         // True synonyms: no shared word OR character-trigram - only a learned embedder
         // (not the morphological trigram baseline) can bridge these.
-        Case { fact: "she bought a new automobile last week", query: "purchasing a car recently" },
-        Case { fact: "the physician prescribed rest and fluids", query: "advice from a doctor" },
-        Case { fact: "the film received glowing reviews", query: "the movie got great write-ups" },
-        Case { fact: "he is fluent in several tongues", query: "speaks many languages" },
-        Case { fact: "the firm hired a dozen new staff", query: "the company recruited employees" },
+        Case {
+            fact: "she bought a new automobile last week",
+            query: "purchasing a car recently",
+        },
+        Case {
+            fact: "the physician prescribed rest and fluids",
+            query: "advice from a doctor",
+        },
+        Case {
+            fact: "the film received glowing reviews",
+            query: "the movie got great write-ups",
+        },
+        Case {
+            fact: "he is fluent in several tongues",
+            query: "speaks many languages",
+        },
+        Case {
+            fact: "the firm hired a dozen new staff",
+            query: "the company recruited employees",
+        },
     ]
 }
 
@@ -103,7 +154,12 @@ fn evaluate(embedder: Arc<dyn engram_memory::Embedder>) -> Score {
     let cases = cases();
     let mut want: HashMap<&str, i64> = HashMap::new();
     for c in &cases {
-        want.insert(c.fact, mem.remember(WriteReq::new(Region::Semantic, c.fact)).unwrap().id);
+        want.insert(
+            c.fact,
+            mem.remember(WriteReq::new(Region::Semantic, c.fact))
+                .unwrap()
+                .id,
+        );
     }
     for d in distractors() {
         mem.remember(WriteReq::new(Region::Semantic, d)).unwrap();
@@ -127,27 +183,43 @@ fn evaluate(embedder: Arc<dyn engram_memory::Embedder>) -> Score {
             }
         }
     }
-    Score { hits, mrr, hard_hits, hard_total, n: cases.len() }
+    Score {
+        hits,
+        mrr,
+        hard_hits,
+        hard_total,
+        n: cases.len(),
+    }
 }
 
 fn main() {
     let trig = evaluate(Arc::new(TrigramHashEmbedder::default()));
     // Compare against the static (model2vec) embedder when ENGRAM_STATIC_MODEL points at a
     // model directory - this is what measures the synonym-level recall jump.
-    let stat = std::env::var("ENGRAM_STATIC_MODEL").ok().and_then(|p| match StaticEmbedder::load(&p) {
-        Ok(e) => Some(evaluate(Arc::new(e))),
-        Err(err) => {
-            eprintln!("static embedder load failed ({p}): {err}");
-            None
-        }
-    });
+    let stat =
+        std::env::var("ENGRAM_STATIC_MODEL")
+            .ok()
+            .and_then(|p| match StaticEmbedder::load(&p) {
+                Ok(e) => Some(evaluate(Arc::new(e))),
+                Err(err) => {
+                    eprintln!("static embedder load failed ({p}): {err}");
+                    None
+                }
+            });
 
     let total_facts = trig.n + distractors().len();
     println!("# Engram benchmark - paraphrase recall & footprint\n");
-    println!("Corpus: {total_facts} facts. Queries: {}. Recall@10.\n", trig.n);
+    println!(
+        "Corpus: {total_facts} facts. Queries: {}. Recall@10.\n",
+        trig.n
+    );
 
     let row = |label: &str, s: &Score| {
-        let hard = if s.hard_total == 0 { 0.0 } else { 100.0 * s.hard_hits as f32 / s.hard_total as f32 };
+        let hard = if s.hard_total == 0 {
+            0.0
+        } else {
+            100.0 * s.hard_hits as f32 / s.hard_total as f32
+        };
         println!(
             "| {label} | {:.0}% ({}/{}) | {:.3} | {:.0}% ({}/{}) |",
             100.0 * s.hits as f32 / s.n as f32,
@@ -167,7 +239,10 @@ fn main() {
     }
     println!("| keyword-only baseline | - | - | 0% (by construction) |");
 
-    println!("\nBinary size (full agent): {}   ·   Idle RAM: 0 MB (socket-activated)", binary_size());
+    println!(
+        "\nBinary size (full agent): {}   ·   Idle RAM: 0 MB (socket-activated)",
+        binary_size()
+    );
     if stat.is_none() {
         println!(
             "\nNote: set ENGRAM_STATIC_MODEL=<model2vec dir> to measure the static embedder's \

@@ -76,7 +76,10 @@ impl Embedder for TrigramHashEmbedder {
     fn embed(&self, text: &str) -> Vec<f32> {
         let mut v = vec![0f32; self.dim];
         let lower = text.to_lowercase();
-        for tok in lower.split(|c: char| !c.is_alphanumeric()).filter(|t| !t.is_empty()) {
+        for tok in lower
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|t| !t.is_empty())
+        {
             bump(&mut v, format!("w:{tok}").as_bytes());
             let padded = format!("#{tok}#");
             let chars: Vec<char> = padded.chars().collect();

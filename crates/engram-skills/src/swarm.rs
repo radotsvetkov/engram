@@ -59,7 +59,9 @@ pub async fn run_pipeline(
         if let Some(g) = &gateway {
             ctx = ctx.gateway(g.clone());
         }
-        let out = host.run_signed_async(&signed, &wasm, &vk, &data, ctx).await?;
+        let out = host
+            .run_signed_async(&signed, &wasm, &vk, &data, ctx)
+            .await?;
         trace.push(StepTrace {
             skill: id.clone(),
             version,
@@ -74,7 +76,10 @@ pub async fn run_pipeline(
         "swarm",
         json!({ "steps": steps, "stages": trace.len() }),
     )?;
-    Ok(PipelineOutcome { output: data, steps: trace })
+    Ok(PipelineOutcome {
+        output: data,
+        steps: trace,
+    })
 }
 
 #[cfg(test)]
@@ -125,9 +130,16 @@ mod tests {
         .unwrap();
         let host = SkillHost::new();
 
-        let out = run_pipeline(&host, &reg, &["shout".into(), "shout".into()], b"hello", None, None)
-            .await
-            .unwrap();
+        let out = run_pipeline(
+            &host,
+            &reg,
+            &["shout".into(), "shout".into()],
+            b"hello",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(out.output, b"HELLO");
         assert_eq!(out.steps.len(), 2);
         assert!(reg.ledger().verify().unwrap() >= 1);

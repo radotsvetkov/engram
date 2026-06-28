@@ -18,7 +18,7 @@ pub mod tool;
 pub mod tools;
 
 pub use agent::{Agent, AgentError, AgentRun, StepCallback, StepRecord};
-pub use mcp::{connect_servers, connect_servers_reported, McpClient, McpTool};
+pub use mcp::{connect_servers, connect_servers_reported, McpClient, McpServerSpec, McpTool};
 pub use tool::{confine, BrowserSession, NoBrowser, Policy, Tool, ToolCtx, ToolRegistry};
 
 use std::sync::Arc;
@@ -31,7 +31,15 @@ fn base_tools() -> ToolRegistry {
         .with(Arc::new(tools::MemoryRememberTool))
         .with(Arc::new(tools::ReadFileTool))
         .with(Arc::new(tools::WriteFileTool))
+        .with(Arc::new(tools::EditFileTool))
+        .with(Arc::new(tools::AppendFileTool))
         .with(Arc::new(tools::ListDirTool))
+        .with(Arc::new(tools::GlobTool))
+        .with(Arc::new(tools::GrepTool))
+        .with(Arc::new(tools::MakeDirTool))
+        .with(Arc::new(tools::MoveFileTool))
+        .with(Arc::new(tools::CopyFileTool))
+        .with(Arc::new(tools::DeleteFileTool))
         .with(Arc::new(tools::ShellTool))
         .with(Arc::new(tools::BrowserReadTool))
         .with(Arc::new(tools::BrowserScreenshotTool))
@@ -39,6 +47,8 @@ fn base_tools() -> ToolRegistry {
         .with(Arc::new(tools::BrowserClickTool))
         .with(Arc::new(tools::BrowserTypeTool))
         .with(Arc::new(tools::BrowserExtractTool))
+        .with(Arc::new(tools::BrowserWaitTool))
+        .with(Arc::new(tools::BrowserScrollTool))
         .with(Arc::new(tools::VisionAnalyzeTool))
         .with(Arc::new(tools::ImageGenerateTool))
         .with(Arc::new(tools::TextToSpeechTool))
@@ -67,9 +77,26 @@ pub fn browser_session() -> Arc<dyn BrowserSession> {
     #[cfg(feature = "browser-cdp")]
     {
         if let Some(chrome) = tools::find_chrome() {
-            let port = std::env::var("ENGRAM_CDP_PORT").ok().and_then(|s| s.parse().ok()).unwrap_or(9222);
+            let port = std::env::var("ENGRAM_CDP_PORT")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(9222);
             return Arc::new(browser_cdp::CdpBrowser::new(chrome, port));
         }
     }
     Arc::new(NoBrowser)
+}
+
+/// Whether interactive browser automation is actually available (built with `browser-cdp` AND a
+/// Chrome/Chromium binary is on the system). The daemon surfaces this so the UI can show an honest
+/// "interactive browsing: on/off" badge instead of advertising a tool that will only error.
+pub fn browser_available() -> bool {
+    #[cfg(feature = "browser-cdp")]
+    {
+        tools::find_chrome().is_some()
+    }
+    #[cfg(not(feature = "browser-cdp"))]
+    {
+        false
+    }
 }

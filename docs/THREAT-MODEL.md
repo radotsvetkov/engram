@@ -165,19 +165,30 @@ job, where there is no human in the loop to notice.
 control and it breaks the trifecta directly. Every byte is tagged by provenance. The
 primitive already exists: `Taint` in `engram-core` is monotonic and sticky - once a
 run reads `Untrusted` data, the join law guarantees the taint cannot be cleared for the
-rest of that run. v0.1 wires *enforcement* onto that primitive: **a skill run that has
-read tainted (web/memory-of-unknown-origin) data is automatically dropped to NO-EGRESS
-and NO-SECRET-ACCESS for the remainder of that run.** Injected instructions can still
-run code inside the sandbox, but that code cannot phone home and cannot touch a
-credential. The block is recorded in the ledger, so it is visible in the desktop audit
-view. Enforcement is at **two layers**: WASM skills lose their egress capabilities at the
-sandbox boundary, and the **agent tool loop** refuses any egress tool - `send_message`,
-`web_fetch`/`web_search`, the browser tools, and *any MCP tool* - once the run is tainted,
-via a single `Tool::is_egress()` gate at the dispatch boundary (not per-tool opt-in).
-Runs whose prompt arrives from an untrusted ingress (inbound webhook, Telegram) start
-tainted, so they have no egress from step one. A complementary **SSRF guard** resolves
-every outbound URL and refuses loopback (the daemon's own API), link-local cloud-metadata
-(169.254.169.254), private, and non-http(s) targets, closing the data-in-the-URL channel.
+rest of that run. v0.1 wires *enforcement* onto that primitive at **two layers**:
+
+1. **Untrusted alone** (a tool read web/memory-of-unknown-origin content) immediately drops
+   the run to **NO-SHELL** and **NO-SECRET-CONTEXT** (the gateway strips every secret-tagged
+   message before the next model call), and WASM skills lose their egress capabilities at the
+   sandbox boundary. Injected instructions can still run sandboxed code, but it cannot reach a
+   shell or be handed a credential.
+2. **Untrusted *and* sensitive** - the full lethal trifecta (untrusted content **plus** the
+   user's private data in the same run, e.g. a `memory_recall`, a `read_file`, or an
+   authenticated MCP read) - additionally drops the run to **NO-EGRESS**: the agent tool loop
+   refuses every egress tool (`send_message`, `web_fetch`/`web_search`, the browser navigation
+   tools, and *any untrusted MCP tool*) via a single `Tool::is_egress()` gate at the dispatch
+   boundary, folding in the current turn's classification so the block can't be raced within a
+   parallel batch. Gating egress on the *conjunction* (not on untrusted alone) is deliberate:
+   pure web research - untrusted content with no private data in the run - must keep working,
+   while a run that has touched something worth stealing can never carry it out. The block is
+   ledgered, so it is visible in the desktop audit view.
+
+Runs whose prompt arrives from an untrusted ingress (inbound webhook, Telegram) start tainted.
+A complementary **SSRF guard** resolves every outbound URL, refuses loopback (the daemon's own
+API), link-local cloud-metadata (169.254.169.254), private, and non-http(s) targets, and -
+critically - **pins the connection to the exact IP it validated and re-validates every redirect
+hop**, so a public host cannot 302 to (or DNS-rebind to) a private/metadata address. This closes
+the data-in-the-URL channel and the rebinding TOCTOU.
 Supporting controls in v0.1: untrusted content is passed to the planner as
 clearly-delimited *data*, never as instructions. **[DEFERRED]** A dedicated
 prompt-injection classifier on web/memory ingress, and the egress-filtering proxy that
@@ -384,6 +395,65 @@ periodically anchoring the chain head to an external transparency log / remote c
 The local chain is tamper-*evident* today; external co-signing makes it tamper-*proof*
 against host compromise. We do not claim the latter until it ships.
 
+### T9 - Untrusted document parsing on upload (MEDIUM-HIGH)
+
+**Description.** Rich chat uploads (the `docs` feature) parse attacker-supplied files -
+PDF (pdf-extract/lopdf), DOCX/XLSX/ODS (zip + calamine), CSV/text - to extract text the
+agent then reads. Three risks: (a) a parser panic or DoS on a malformed file (a zip/
+decompression bomb, a deeply nested or cyclic PDF object graph, a huge sheet); (b)
+zip-slip / path traversal if an archive entry name is trusted as a filesystem path; (c)
+the extracted text being treated as *trusted* content when it is in fact attacker-
+controlled, smuggling a prompt injection past the taint boundary.
+
+**Why it is dangerous here.** The upload handler runs in-process in the daemon, so a
+parser panic that is not contained becomes a request-killing 500 (or worse, a poisoned
+Mutex), and the extracted text flows straight into the agent's context.
+
+**Mitigation. [SHIP, partial].** The stored filename is reduced to a sanitized basename
+plus a nanos prefix, so a hostile `name` cannot traverse out of `<home>/uploads` or
+collide. Extraction reads archive *content* by fixed inner path (`word/document.xml`),
+never by attacker-named entries, so there is no zip-slip-to-filesystem. Input is capped at
+25 MB and text is bounded *during* extraction, not just after: the DOCX entry is read
+through `Read::take` and XLSX accumulation stops, both at an 8 MB ceiling, so a
+decompression bomb (a tiny compressed file that inflates to gigabytes) cannot exhaust
+memory before the final 600 KB output cap (truncated on a UTF-8 char boundary) applies.
+The path is behind an opt-in feature, off in the minimal/musl build.
+In the conversational path (where an upload is attached), the content is framed to the
+model as untrusted reference material, not instructions (`attachments_context`), and that
+path is text-only - it exposes no egress/secret tool to hijack. **[DEFERRED, and the
+honest gap]** When extracted document text reaches a *tool-bearing* agent run, that run
+should be mechanically tainted (no egress / no secrets) the way a web/browser read is,
+rather than relying on the prompt-level framing alone; today the conversational path is
+text-only so the framing suffices there, but the mechanical taint-on-document-ingest is
+the control that would make a prompt injection inside a PDF contained-by-construction on
+every path. Also deferred: parsing in a separate resource-capped subprocess/WASM so a
+parser-library memory-safety bug cannot touch daemon memory at all, and a
+decompression-ratio limit enforced before full inflation.
+
+### T10 - Integration secret custody and per-agent provider keys (MEDIUM-HIGH)
+
+**Description.** The MCP integration gallery and per-agent providers let the user store
+secrets (a GitHub token, a Slack bot token, a Postgres URL, an OpenAI key for one agent).
+Risks: a secret leaking unmasked through an API response or a log; a masked placeholder
+(`•••`) being written back as the literal string, silently destroying the real secret; a
+secret landing in a world-readable file; or an attacker-influenced MCP `command`/`env`
+being spawned by the connection-test endpoint.
+
+**Why it is dangerous here.** These keys are bearer credentials to third-party accounts;
+unlike the signing key they are *meant* to be used outbound, so the blast radius of a leak
+is another system entirely.
+
+**Mitigation. [SHIP].** Provider keys, per-agent `api_key`, and MCP `env` values are
+**masked (`•••`) in every API response** (`agent_redacted`, the redacted config view) and
+never logged; they are persisted only to `0600` files (config / `agents.json` / `mcp.json`),
+the same custody as the signing key. The "blank keeps it" round-trip is explicit: a field
+left as the mask or blank preserves the stored secret rather than overwriting it, so a
+round-tripped UI never clobbers a key it was never shown. The MCP test endpoint spawns only
+a user-authored server definition (the same one that would be saved), workdir-scoped, not an
+externally supplied command. **[DEFERRED]** Routing these into the OS secret store (as the
+provider key already optionally is via `keyring`) instead of a `0600` file on the headless
+build; per-secret scoping so one agent's key is not readable when another agent runs.
+
 ---
 
 ## 5. Control summary
@@ -398,6 +468,8 @@ against host compromise. We do not claim the latter until it ships.
 | T6 | Priv-esc / sandbox escape | Single WASM boundary; empty sandbox env; signing key core-only | **SHIP** |
 | T7 | Unattended-job abuse | Taint rule + ledgered/reversible scheduled actions | **SHIP (partial)** |
 | T8 | Audit tampering | Append-only, hash-chained, Ed25519-signed, reversible ledger | **SHIP - already implemented** |
+| T9 | Untrusted document parsing | Sanitized filename, fixed inner-path read (no zip-slip), char-safe size cap, prompt-level untrusted framing (conversational path is text-only); mechanical taint-on-ingest deferred | **SHIP (partial)** |
+| T10 | Integration secret custody | Masked in API + logs, `0600` on disk, "blank keeps it" round-trip, test spawns only user-authored server | **SHIP (partial)** |
 
 **Deferred (documented, not in v0.1):** egress-filtering proxy (DNS-exfil and beacon
 defense); full dependency pinning / mirror / hook-disabling supply-chain hardening;

@@ -31,10 +31,15 @@ pub async fn validate(token: &str) -> Result<Identity, String> {
         .await
         .map_err(|_| "couldn't reach Telegram - are you offline?".to_string())?;
     let ok_status = resp.status().is_success();
-    let json: serde_json::Value =
-        resp.json().await.map_err(|_| "unexpected response from Telegram".to_string())?;
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|_| "unexpected response from Telegram".to_string())?;
     if !ok_status || !json["ok"].as_bool().unwrap_or(false) {
-        return Err(json["description"].as_str().unwrap_or("invalid bot token").to_string());
+        return Err(json["description"]
+            .as_str()
+            .unwrap_or("invalid bot token")
+            .to_string());
     }
     let r = &json["result"];
     Ok(Identity {
@@ -52,7 +57,11 @@ pub fn spawn(app: App, token: String) -> tokio::task::AbortHandle {
         let mut offset: i64 = 0;
         loop {
             let url = format!("{base}/getUpdates?timeout=30&offset={offset}");
-            let json: serde_json::Value = match client.get(&url).send().await.and_then(|r| r.error_for_status())
+            let json: serde_json::Value = match client
+                .get(&url)
+                .send()
+                .await
+                .and_then(|r| r.error_for_status())
             {
                 Ok(r) => match r.json().await {
                     Ok(j) => j,
@@ -65,18 +74,32 @@ pub fn spawn(app: App, token: String) -> tokio::task::AbortHandle {
                 }
             };
 
-            let Some(updates) = json["result"].as_array() else { continue };
+            let Some(updates) = json["result"].as_array() else {
+                continue;
+            };
             for u in updates {
                 if let Some(uid) = u["update_id"].as_i64() {
                     offset = uid + 1;
                 }
-                let (Some(text), Some(chat_id)) =
-                    (u["message"]["text"].as_str(), u["message"]["chat"]["id"].as_i64())
-                else {
+                let (Some(text), Some(chat_id)) = (
+                    u["message"]["text"].as_str(),
+                    u["message"]["chat"]["id"].as_i64(),
+                ) else {
                     continue;
                 };
                 // Inbound chat is untrusted: start the run tainted (no shell, no egress).
-                let answer = match crate::run_agent_task_cb(&app, text, 8, engram_core::Taint::Untrusted, false, None, None).await {
+                let answer = match crate::run_agent_task_cb(
+                    &app,
+                    text,
+                    8,
+                    engram_core::Taint::Untrusted,
+                    false,
+                    None,
+                    None,
+                    None,
+                )
+                .await
+                {
                     Ok(run) => run.answer,
                     Err(e) => format!("error: {e}"),
                 };

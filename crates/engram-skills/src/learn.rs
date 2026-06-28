@@ -82,7 +82,10 @@ pub fn improve(
     let candidate_version = registry.install(candidate, candidate_wasm)?;
     let runs = registry.accepted_runs(id)?;
     if runs.is_empty() {
-        return Ok(Decision::NoData { id: id.to_string(), candidate: candidate_version });
+        return Ok(Decision::NoData {
+            id: id.to_string(),
+            candidate: candidate_version,
+        });
     }
     let active = registry
         .active_version(id)?
@@ -201,7 +204,9 @@ mod tests {
     fn setup() -> (SkillHost, Registry, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let ledger = Arc::new(Ledger::open(dir.path()).unwrap());
-        let signer = Arc::new(crate::manifest::SkillSigner::load_or_create(dir.path().join("skill.key")).unwrap());
+        let signer = Arc::new(
+            crate::manifest::SkillSigner::load_or_create(dir.path().join("skill.key")).unwrap(),
+        );
         let reg = Registry::open(dir.path(), signer, ledger).unwrap();
         (SkillHost::new(), reg, dir)
     }
@@ -213,14 +218,23 @@ mod tests {
         // Install v1 (echo) and record the inputs/outputs the user actually accepted.
         reg.install(new_skill(), &echo()).unwrap();
         assert_eq!(reg.active_version("upcase").unwrap(), Some(1));
-        for (inp, gold) in [(b"abc".as_slice(), b"ABC".as_slice()), (b"xy".as_slice(), b"XY".as_slice())] {
+        for (inp, gold) in [
+            (b"abc".as_slice(), b"ABC".as_slice()),
+            (b"xy".as_slice(), b"XY".as_slice()),
+        ] {
             reg.record_run("upcase", 1, inp, gold, 1.0).unwrap();
         }
 
         // Offer v2 (upcase). It must replay-win and be promoted.
         let decision = improve(&host, &reg, "upcase", new_skill(), &upcase(), true).unwrap();
         match decision {
-            Decision::Promoted { to, incumbent_score, candidate_score, replays, .. } => {
+            Decision::Promoted {
+                to,
+                incumbent_score,
+                candidate_score,
+                replays,
+                ..
+            } => {
                 assert_eq!(to, 2);
                 assert_eq!(replays, 2);
                 assert_eq!(incumbent_score, 0.0);
@@ -243,7 +257,8 @@ mod tests {
         assert_eq!(reg.active_version("upcase").unwrap(), Some(1));
 
         // And a manual promotion can be reverted.
-        reg.set_active("upcase", 2, "user", "skill.activate").unwrap();
+        reg.set_active("upcase", 2, "user", "skill.activate")
+            .unwrap();
         assert_eq!(reg.active_version("upcase").unwrap(), Some(2));
         reg.set_active("upcase", 1, "user", "skill.revert").unwrap();
         assert_eq!(reg.active_version("upcase").unwrap(), Some(1));

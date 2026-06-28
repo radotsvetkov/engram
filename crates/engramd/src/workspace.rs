@@ -75,7 +75,11 @@ pub struct WorkspaceStore {
 
 static SEQ: AtomicU64 = AtomicU64::new(1);
 fn new_id(prefix: &str) -> String {
-    format!("{prefix}-{}-{}", now_ms(), SEQ.fetch_add(1, Ordering::Relaxed))
+    format!(
+        "{prefix}-{}-{}",
+        now_ms(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 impl WorkspaceStore {
@@ -96,9 +100,17 @@ impl WorkspaceStore {
             Err(_) => Data::default(),
         };
         if data.projects.is_empty() {
-            data.projects.push(Project { id: "personal".into(), name: "Personal".into(), created_ms: now_ms(), persona: String::new() });
+            data.projects.push(Project {
+                id: "personal".into(),
+                name: "Personal".into(),
+                created_ms: now_ms(),
+                persona: String::new(),
+            });
         }
-        let store = WorkspaceStore { path, data: Mutex::new(data) };
+        let store = WorkspaceStore {
+            path,
+            data: Mutex::new(data),
+        };
         store.persist();
         store
     }
@@ -118,7 +130,12 @@ impl WorkspaceStore {
     }
     /// Whether a project id exists - used to keep sessions from being orphaned.
     fn has_project(&self, id: &str) -> bool {
-        self.data.lock().expect("ws").projects.iter().any(|p| p.id == id)
+        self.data
+            .lock()
+            .expect("ws")
+            .projects
+            .iter()
+            .any(|p| p.id == id)
     }
 
     // --- projects ---
@@ -126,12 +143,22 @@ impl WorkspaceStore {
         self.data.lock().expect("ws").projects.clone()
     }
     pub fn create_project(&self, name: String) -> Project {
-        let p = Project { id: new_id("p"), name, created_ms: now_ms(), persona: String::new() };
+        let p = Project {
+            id: new_id("p"),
+            name,
+            created_ms: now_ms(),
+            persona: String::new(),
+        };
         self.data.lock().expect("ws").projects.push(p.clone());
         self.persist();
         p
     }
-    pub fn update_project(&self, id: &str, name: Option<String>, persona: Option<String>) -> Option<Project> {
+    pub fn update_project(
+        &self,
+        id: &str,
+        name: Option<String>,
+        persona: Option<String>,
+    ) -> Option<Project> {
         let out = {
             let mut d = self.data.lock().expect("ws");
             d.projects.iter_mut().find(|p| p.id == id).map(|p| {
@@ -152,7 +179,11 @@ impl WorkspaceStore {
     /// The standing-instructions persona for the project that owns a session (if any).
     pub fn persona_for_session(&self, session_id: &str) -> Option<String> {
         let d = self.data.lock().expect("ws");
-        let pid = d.sessions.iter().find(|s| s.id == session_id).map(|s| s.project_id.clone())?;
+        let pid = d
+            .sessions
+            .iter()
+            .find(|s| s.id == session_id)
+            .map(|s| s.project_id.clone())?;
         d.projects
             .iter()
             .find(|p| p.id == pid)
@@ -194,18 +225,35 @@ impl WorkspaceStore {
                 messages: s.messages.len(),
             })
             .collect();
-        v.sort_by_key(|s| (std::cmp::Reverse(s.updated_ms), std::cmp::Reverse(s.created_ms))); // most-recent first, stable on ties
+        v.sort_by_key(|s| {
+            (
+                std::cmp::Reverse(s.updated_ms),
+                std::cmp::Reverse(s.created_ms),
+            )
+        }); // most-recent first, stable on ties
         v
     }
     pub fn session(&self, id: &str) -> Option<Session> {
-        self.data.lock().expect("ws").sessions.iter().find(|s| s.id == id).cloned()
+        self.data
+            .lock()
+            .expect("ws")
+            .sessions
+            .iter()
+            .find(|s| s.id == id)
+            .cloned()
     }
     pub fn create_session(&self, project_id: String, title: Option<String>) -> Session {
         // Keep sessions from being orphaned under a project that doesn't exist.
         let project_id = if self.has_project(&project_id) {
             project_id
         } else {
-            self.data.lock().expect("ws").projects.first().map(|p| p.id.clone()).unwrap_or_else(|| "personal".into())
+            self.data
+                .lock()
+                .expect("ws")
+                .projects
+                .first()
+                .map(|p| p.id.clone())
+                .unwrap_or_else(|| "personal".into())
         };
         let now = now_ms();
         let s = Session {
@@ -282,8 +330,22 @@ impl WorkspaceStore {
                         let t: String = user_text.trim().chars().take(42).collect();
                         s.title = if t.is_empty() { "New chat".into() } else { t };
                     }
-                    s.messages.push(Msg { role: "user".into(), text: user_text.into(), recalled: vec![], recalled_refs: vec![], learned: vec![], ts_ms: now });
-                    s.messages.push(Msg { role: "engram".into(), text: reply.into(), recalled, recalled_refs, learned, ts_ms: now });
+                    s.messages.push(Msg {
+                        role: "user".into(),
+                        text: user_text.into(),
+                        recalled: vec![],
+                        recalled_refs: vec![],
+                        learned: vec![],
+                        ts_ms: now,
+                    });
+                    s.messages.push(Msg {
+                        role: "engram".into(),
+                        text: reply.into(),
+                        recalled,
+                        recalled_refs,
+                        learned,
+                        ts_ms: now,
+                    });
                     s.updated_ms = now;
                     true
                 }

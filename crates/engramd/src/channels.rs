@@ -39,8 +39,15 @@ pub async fn channel_handler(
                         .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("secret=")))
                         .map(str::to_string)
                 });
-            if !provided.as_deref().map(|p| crate::ct_eq(p, &secret)).unwrap_or(false) {
-                return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "bad or missing channel secret" })))
+            if !provided
+                .as_deref()
+                .map(|p| crate::ct_eq(p, &secret))
+                .unwrap_or(false)
+            {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({ "error": "bad or missing channel secret" })),
+                )
                     .into_response();
             }
         }
@@ -52,10 +59,23 @@ pub async fn channel_handler(
     let Some(text) = extract_text(&platform, &body) else {
         return Json(json!({ "ok": true, "ignored": true })).into_response();
     };
-    let _ = app.ledger.append("channel.in", "user", json!({ "platform": platform }));
+    let _ = app
+        .ledger
+        .append("channel.in", "user", json!({ "platform": platform }));
     // Inbound webhook content is untrusted: the run starts tainted, so it cannot run
     // shell or exfiltrate even though anyone can POST here.
-    match crate::run_agent_task_cb(&app, &text, 8, engram_core::Taint::Untrusted, false, None, None).await {
+    match crate::run_agent_task_cb(
+        &app,
+        &text,
+        8,
+        engram_core::Taint::Untrusted,
+        false,
+        None,
+        None,
+        None,
+    )
+    .await
+    {
         Ok(run) => Json(reply(&platform, &run.answer)).into_response(),
         Err(e) => ApiError(e).into_response(),
     }
@@ -64,7 +84,9 @@ pub async fn channel_handler(
 /// Platform handshakes: Slack URL verification, Discord PING.
 fn handshake(platform: &str, body: &Value) -> Option<Value> {
     match platform {
-        "slack" if body["type"] == "url_verification" => Some(json!({ "challenge": body["challenge"] })),
+        "slack" if body["type"] == "url_verification" => {
+            Some(json!({ "challenge": body["challenge"] }))
+        }
         "discord" if body["type"] == 1 => Some(json!({ "type": 1 })),
         _ => None,
     }
@@ -73,7 +95,9 @@ fn handshake(platform: &str, body: &Value) -> Option<Value> {
 /// Pull the user's text out of a platform's payload.
 fn extract_text(platform: &str, body: &Value) -> Option<String> {
     let t = match platform {
-        "slack" => body["text"].as_str().or_else(|| body["event"]["text"].as_str()),
+        "slack" => body["text"]
+            .as_str()
+            .or_else(|| body["event"]["text"].as_str()),
         "discord" => body["content"]
             .as_str()
             .or_else(|| body["data"]["options"][0]["value"].as_str()),
@@ -113,20 +137,42 @@ mod tests {
 
     #[test]
     fn discord_ping_pongs() {
-        assert_eq!(handshake("discord", &json!({ "type": 1 })).unwrap()["type"], 1);
+        assert_eq!(
+            handshake("discord", &json!({ "type": 1 })).unwrap()["type"],
+            1
+        );
     }
 
     #[test]
     fn extracts_text_per_platform() {
-        assert_eq!(extract_text("slack", &json!({ "event": { "text": "hi slack" } })).as_deref(), Some("hi slack"));
-        assert_eq!(extract_text("slack", &json!({ "text": "slash cmd" })).as_deref(), Some("slash cmd"));
         assert_eq!(
-            extract_text("discord", &json!({ "data": { "options": [{ "value": "hi discord" }] } })).as_deref(),
+            extract_text("slack", &json!({ "event": { "text": "hi slack" } })).as_deref(),
+            Some("hi slack")
+        );
+        assert_eq!(
+            extract_text("slack", &json!({ "text": "slash cmd" })).as_deref(),
+            Some("slash cmd")
+        );
+        assert_eq!(
+            extract_text(
+                "discord",
+                &json!({ "data": { "options": [{ "value": "hi discord" }] } })
+            )
+            .as_deref(),
             Some("hi discord")
         );
-        assert_eq!(extract_text("telegram", &json!({ "message": { "text": "hi tg" } })).as_deref(), Some("hi tg"));
-        assert_eq!(extract_text("mattermost", &json!({ "text": "hi mm" })).as_deref(), Some("hi mm"));
-        assert_eq!(extract_text("whatsapp", &json!({ "message": "hi generic" })).as_deref(), Some("hi generic"));
+        assert_eq!(
+            extract_text("telegram", &json!({ "message": { "text": "hi tg" } })).as_deref(),
+            Some("hi tg")
+        );
+        assert_eq!(
+            extract_text("mattermost", &json!({ "text": "hi mm" })).as_deref(),
+            Some("hi mm")
+        );
+        assert_eq!(
+            extract_text("whatsapp", &json!({ "message": "hi generic" })).as_deref(),
+            Some("hi generic")
+        );
         assert!(extract_text("slack", &json!({ "event": { "text": "   " } })).is_none());
     }
 

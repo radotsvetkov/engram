@@ -101,11 +101,29 @@ pub struct CompletionRequest {
     pub temperature: f32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ToolDef>,
+    /// Provider-agnostic reasoning effort: "low" | "medium" | "high" (anything else = the model
+    /// default, nothing sent). Applied MODEL-AWARELY by each provider - OpenAI reasoning models get
+    /// `reasoning_effort`, Claude models get an extended-thinking budget - so it never breaks a model
+    /// that does not accept the parameter. None/empty leaves the request exactly as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
 }
 
 impl CompletionRequest {
     pub fn new(model: impl Into<String>, messages: Vec<Message>) -> Self {
-        Self { model: model.into(), messages, max_tokens: 1024, temperature: 0.7, tools: Vec::new() }
+        Self {
+            model: model.into(),
+            messages,
+            max_tokens: 1024,
+            temperature: 0.7,
+            tools: Vec::new(),
+            effort: None,
+        }
+    }
+    /// Set the reasoning effort ("low" | "medium" | "high"); an empty/None value is ignored.
+    pub fn effort(mut self, effort: Option<String>) -> Self {
+        self.effort = effort.filter(|e| !e.trim().is_empty());
+        self
     }
     pub fn max_tokens(mut self, n: u32) -> Self {
         self.max_tokens = n;

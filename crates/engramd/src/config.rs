@@ -50,11 +50,22 @@ pub struct ProviderCfg {
     #[serde(skip_serializing)]
     pub api_key: String,
     pub model: String,
+    /// Reasoning effort applied to model calls: "" (model default) | "low" | "medium" | "high".
+    /// Mapped model-awarely by the gateway (OpenAI `reasoning_effort` / Claude extended-thinking),
+    /// so it is a no-op on models that do not support it.
+    #[serde(default)]
+    pub effort: String,
 }
 
 impl Default for ProviderCfg {
     fn default() -> Self {
-        Self { kind: "mock".into(), base_url: String::new(), api_key: String::new(), model: "claude-haiku-4-5".into() }
+        Self {
+            kind: "mock".into(),
+            base_url: String::new(),
+            api_key: String::new(),
+            model: "claude-haiku-4-5".into(),
+            effort: String::new(),
+        }
     }
 }
 
@@ -70,7 +81,10 @@ pub struct EmbedCfg {
 
 impl Default for EmbedCfg {
     fn default() -> Self {
-        Self { kind: "trigram".into(), model_dir: String::new() }
+        Self {
+            kind: "trigram".into(),
+            model_dir: String::new(),
+        }
     }
 }
 
@@ -96,7 +110,9 @@ pub struct CostCfg {
 
 impl Default for CostCfg {
     fn default() -> Self {
-        Self { task_token_budget: 250_000 }
+        Self {
+            task_token_budget: 250_000,
+        }
     }
 }
 
@@ -107,6 +123,18 @@ pub struct McpServer {
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
+    /// Per-server environment variables (API keys, tokens) passed ONLY to this subprocess - so an
+    /// authenticated server (GitHub/Slack/Postgres) is configurable without polluting the daemon's
+    /// global env. Stored in config.json but masked in the redacted view sent to the browser.
+    #[serde(default)]
+    pub env: std::collections::BTreeMap<String, String>,
+    /// Working directory for the subprocess (e.g. a repo root for a git/filesystem server).
+    #[serde(default)]
+    pub cwd: String,
+    /// A first-party server you trust: its reads no longer taint/sensitise the run (default false,
+    /// i.e. treated as untrusted+sensitive so it can't launder content into an egress-capable run).
+    #[serde(default)]
+    pub trusted: bool,
 }
 
 impl Config {
@@ -133,17 +161,27 @@ impl Config {
             },
             Err(_) => Self::from_env(home),
         };
-        // The API key is never persisted (skip_serializing), so a config.json saved after a key was
-        // set comes back without it. Re-seed from the environment each boot - the env is the source
-        // of truth when present; otherwise keep whatever loaded (back-compat), never wiping a key.
+        // The API key is kept OUT of config.json (skip_serializing) so that document stays
+        // shareable/backup-able. Re-seed it each boot, in precedence order:
+        //   1. the environment (ENGRAM_* / ANTHROPIC_API_KEY) - the source of truth on a VPS;
+        //   2. the local secret store (OS keyring when built with `keyring`, else a 0600 file
+        //      next to the Ed25519 signing key) - so a key typed into the desktop UI survives
+        //      idle-sleep, restart, and reboot instead of silently degrading to the offline mock.
         if let Some(k) = env_api_key() {
             cfg.provider.api_key = k;
         } else if cfg.provider.kind == "anthropic" {
             // Also honor the standard ANTHROPIC_API_KEY (the SDK convention) for the Anthropic
-            // provider, so an exported key Just Works and survives restarts under the memory-only
-            // key policy. Scoped to kind == "anthropic" so it can never pollute an OpenAI/Ollama
-            // config that legitimately has a different (unpersisted) key.
-            if let Some(k) = std::env::var("ANTHROPIC_API_KEY").ok().filter(|s| !s.is_empty()) {
+            // provider. Scoped to kind == "anthropic" so it can never pollute an OpenAI/Ollama
+            // config that legitimately has a different key.
+            if let Some(k) = std::env::var("ANTHROPIC_API_KEY")
+                .ok()
+                .filter(|s| !s.is_empty())
+            {
+                cfg.provider.api_key = k;
+            }
+        }
+        if cfg.provider.api_key.is_empty() {
+            if let Some(k) = read_secret_key(home) {
                 cfg.provider.api_key = k;
             }
         }
@@ -165,13 +203,17 @@ impl Config {
             c.provider.kind = "anthropic".into();
             c.provider.api_key = key;
             c.provider.base_url = std::env::var("ENGRAM_LLM_BASE_URL").unwrap_or_default();
-        } else if let (Ok(base), Ok(key)) =
-            (std::env::var("ENGRAM_LLM_BASE_URL"), std::env::var("ENGRAM_LLM_API_KEY"))
-        {
+        } else if let (Ok(base), Ok(key)) = (
+            std::env::var("ENGRAM_LLM_BASE_URL"),
+            std::env::var("ENGRAM_LLM_API_KEY"),
+        ) {
             c.provider.kind = detect_kind(&base);
             c.provider.base_url = base;
             c.provider.api_key = key;
-        } else if let Some(key) = std::env::var("ANTHROPIC_API_KEY").ok().filter(|k| !k.is_empty()) {
+        } else if let Some(key) = std::env::var("ANTHROPIC_API_KEY")
+            .ok()
+            .filter(|k| !k.is_empty())
+        {
             // Standard Anthropic env var: an exported key brings up the real provider on a fresh
             // install (no config.json yet) with no UI step. base_url is left empty so the provider
             // uses its built-in https://api.anthropic.com/v1 default - matching the UI's anthropic
@@ -189,7 +231,10 @@ impl Config {
         c.security.api_token = std::env::var("ENGRAM_API_TOKEN").unwrap_or_default();
         c.security.channel_secret = std::env::var("ENGRAM_CHANNEL_SECRET").unwrap_or_default();
         c.security.allow_shell = std::env::var("ENGRAM_TOOLS_SHELL").as_deref() == Ok("1");
-        if let Some(b) = std::env::var("ENGRAM_TASK_TOKEN_BUDGET").ok().and_then(|v| v.parse().ok()) {
+        if let Some(b) = std::env::var("ENGRAM_TASK_TOKEN_BUDGET")
+            .ok()
+            .and_then(|v| v.parse().ok())
+        {
             c.cost.task_token_budget = b;
         }
         c.mcp = read_mcp_json(home);
@@ -197,19 +242,28 @@ impl Config {
     }
 
     /// Persist to `config.json` (0600) and mirror the MCP list into `mcp.json` so the
-    /// agent connector picks it up on the next wake.
+    /// agent connector picks it up on the next wake. The API key is written to the local
+    /// secret store (NOT config.json) so it survives a restart without leaking into backups.
     pub fn save(&self, home: &str) -> std::io::Result<()> {
         let text = serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".into());
         let path = Self::path(home);
-        std::fs::write(&path, text)?;
-        restrict(&path);
+        // config.json + mcp.json can carry per-server MCP env secrets, so create them owner-only
+        // atomically (no chmod-after-write window where they're briefly group/other-readable).
+        write_owner_only(&path, text.as_bytes())?;
         let mcp_path = Path::new(home).join("mcp.json");
         if self.mcp.is_empty() {
             let _ = std::fs::remove_file(&mcp_path);
         } else {
-            let _ = std::fs::write(&mcp_path, serde_json::to_string_pretty(&self.mcp).unwrap_or_default());
-            restrict(&mcp_path);
+            let _ = write_owner_only(
+                &mcp_path,
+                serde_json::to_string_pretty(&self.mcp)
+                    .unwrap_or_default()
+                    .as_bytes(),
+            );
         }
+        // Persist (or clear) the API key in the local secret store. Best-effort: a failure here
+        // must not lose the user's other settings - the key simply won't survive the next restart.
+        write_secret_key(home, &self.provider.api_key);
         Ok(())
     }
 
@@ -223,30 +277,18 @@ impl Config {
     }
 
     /// Build a live provider from these settings (mirrors `make_provider`'s env logic).
+    ///
+    /// Anthropic uses its native Messages transport; every other non-mock kind is treated as an
+    /// OpenAI-compatible HTTP backend (OpenAI, OpenRouter, Groq, DeepSeek, Mistral, Together, xAI,
+    /// Perplexity, Gemini's OpenAI endpoint, and local Ollama / LM Studio / vLLM / llama.cpp). The
+    /// base URL comes from the saved config, else a built-in default for that kind, so a user can
+    /// pick a provider and have it work without hunting down the endpoint.
     pub fn build_provider(&self) -> Box<dyn engram_gateway::Provider> {
-        #[cfg(feature = "http")]
-        {
-            let p = &self.provider;
-            match p.kind.as_str() {
-                "anthropic" if !p.api_key.is_empty() => {
-                    return Box::new(engram_gateway::AnthropicProvider::new(p.base_url.clone(), p.api_key.clone()));
-                }
-                "openai" | "openrouter" | "ollama" | "http" => {
-                    let base = if p.base_url.is_empty() { default_base(&p.kind) } else { p.base_url.clone() };
-                    if !base.is_empty() {
-                        // Ollama's OpenAI-compatible endpoint ignores the key but the client wants one.
-                        let key = if p.api_key.is_empty() && p.kind == "ollama" {
-                            "ollama".to_string()
-                        } else {
-                            p.api_key.clone()
-                        };
-                        return Box::new(engram_gateway::HttpProvider::new(p.kind.clone(), base, key));
-                    }
-                }
-                _ => {}
-            }
-        }
-        Box::new(engram_gateway::MockProvider)
+        build_provider_from(
+            &self.provider.kind,
+            &self.provider.base_url,
+            &self.provider.api_key,
+        )
     }
 
     /// A secrets-masked view for the UI - keys are never sent back to the browser.
@@ -257,6 +299,7 @@ impl Config {
                 "base_url": self.provider.base_url,
                 "model": self.provider.model,
                 "api_key_set": !self.provider.api_key.is_empty(),
+                "effort": self.provider.effort,
             },
             "embed": { "kind": self.embed.kind, "model_dir": self.embed.model_dir },
             "security": {
@@ -269,7 +312,16 @@ impl Config {
                 "telegram_set": !self.channels.telegram_token.is_empty(),
                 "telegram_username": self.channels.telegram_username,
             },
-            "mcp": self.mcp,
+            // Mask per-server env VALUES (they hold secrets) - the UI shows which keys are set,
+            // never their values, exactly like the provider api_key.
+            "mcp": self.mcp.iter().map(|m| json!({
+                "name": m.name,
+                "command": m.command,
+                "args": m.args,
+                "cwd": m.cwd,
+                "trusted": m.trusted,
+                "env": m.env.keys().map(|k| (k.clone(), json!("\u{2022}\u{2022}\u{2022}"))).collect::<serde_json::Map<_,_>>(),
+            })).collect::<Vec<_>>(),
         })
     }
 }
@@ -283,14 +335,82 @@ fn env_api_key() -> Option<String> {
         .filter(|k| !k.is_empty())
 }
 
-/// The default host for an OpenAI-compatible backend kind.
+/// The default endpoint for a known OpenAI-compatible backend kind. Empty for an unknown kind
+/// (the caller then falls back to the mock), so a typo can never silently hit the wrong host.
 #[cfg(feature = "http")]
 fn default_base(kind: &str) -> String {
     match kind {
-        "openrouter" => "https://openrouter.ai/api/v1".into(),
-        "ollama" => "http://localhost:11434/v1".into(),
-        _ => String::new(),
+        "openai" => "https://api.openai.com/v1",
+        "openrouter" => "https://openrouter.ai/api/v1",
+        "ollama" => "http://localhost:11434/v1",
+        "groq" => "https://api.groq.com/openai/v1",
+        "deepseek" => "https://api.deepseek.com",
+        "mistral" => "https://api.mistral.ai/v1",
+        "together" => "https://api.together.xyz/v1",
+        "xai" => "https://api.x.ai/v1",
+        "perplexity" => "https://api.perplexity.ai",
+        // Google's OpenAI-compatible Gemini endpoint.
+        "gemini" => "https://generativelanguage.googleapis.com/v1beta/openai",
+        "lmstudio" => "http://localhost:1234/v1",
+        "vllm" => "http://localhost:8000/v1",
+        "llamacpp" => "http://localhost:8080/v1",
+        _ => "",
     }
+    .into()
+}
+
+/// Local OpenAI-compatible servers that need no API key (the client still wants a placeholder).
+#[cfg(feature = "http")]
+fn is_local_backend(kind: &str) -> bool {
+    matches!(kind, "ollama" | "lmstudio" | "vllm" | "llamacpp")
+}
+
+/// Build a provider from explicit (kind, base_url, api_key) - shared by the global config and the
+/// per-agent provider routing (so a team can mix backends/models by task complexity). Falls back
+/// to the offline mock for an unknown kind or a missing required key, never a wrong-host call.
+pub fn build_provider_from(
+    kind: &str,
+    base_url: &str,
+    api_key: &str,
+) -> Box<dyn engram_gateway::Provider> {
+    #[cfg(feature = "http")]
+    {
+        match kind {
+            "mock" | "" => {}
+            "anthropic" => {
+                if !api_key.is_empty() {
+                    return Box::new(engram_gateway::AnthropicProvider::new(
+                        base_url.to_string(),
+                        api_key.to_string(),
+                    ));
+                }
+            }
+            kind => {
+                let base = if base_url.is_empty() {
+                    default_base(kind)
+                } else {
+                    base_url.to_string()
+                };
+                if !base.is_empty() {
+                    let key = if api_key.is_empty() && is_local_backend(kind) {
+                        "local".to_string()
+                    } else {
+                        api_key.to_string()
+                    };
+                    return Box::new(engram_gateway::HttpProvider::new(
+                        kind.to_string(),
+                        base,
+                        key,
+                    ));
+                }
+            }
+        }
+    }
+    #[cfg(not(feature = "http"))]
+    {
+        let _ = (kind, base_url, api_key);
+    }
+    Box::new(engram_gateway::MockProvider)
 }
 
 /// Guess a backend kind from a base URL, for env migration.
@@ -311,15 +431,94 @@ fn read_mcp_json(home: &str) -> Vec<McpServer> {
         .unwrap_or_default()
 }
 
-/// Best-effort tighten file permissions to owner-only (secrets live here).
-fn restrict(path: &Path) {
-    #[cfg(unix)]
+// --- Local secret store for the API key --------------------------------------------------
+// The key survives restarts without ever entering config.json (so configs stay shareable).
+// With the `keyring` feature it lives in the OS secret store (Keychain / libsecret / Credential
+// Manager); otherwise it lives in a 0600 file beside the Ed25519 signing key - the same posture
+// the signing key already uses, so this is not a new disk-exposure surface.
+
+fn secret_path(home: &str) -> PathBuf {
+    Path::new(home).join("secret.key")
+}
+
+#[cfg(feature = "keyring")]
+fn keyring_entry(home: &str) -> Option<keyring::Entry> {
+    // Scope the entry to this ENGRAM_HOME so multiple profiles don't collide.
+    keyring::Entry::new("engram", &format!("provider_api_key:{home}")).ok()
+}
+
+/// Read the persisted API key (OS keyring first when built in, then the 0600 file).
+fn read_secret_key(home: &str) -> Option<String> {
+    #[cfg(feature = "keyring")]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        if let Some(entry) = keyring_entry(home) {
+            if let Ok(k) = entry.get_password() {
+                if !k.is_empty() {
+                    return Some(k);
+                }
+            }
+        }
     }
+    std::fs::read_to_string(secret_path(home))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Persist (non-empty) or clear (empty) the API key in the local secret store. Best-effort.
+fn write_secret_key(home: &str, key: &str) {
+    #[cfg(feature = "keyring")]
+    {
+        if let Some(entry) = keyring_entry(home) {
+            if key.is_empty() {
+                let _ = entry.delete_credential();
+                let _ = std::fs::remove_file(secret_path(home));
+                return;
+            }
+            match entry.set_password(key) {
+                Ok(()) => {
+                    // Keyring owns the secret now: keep the file path clean.
+                    let _ = std::fs::remove_file(secret_path(home));
+                    return;
+                }
+                Err(e) => {
+                    // Don't silently lose the key: fall through to the 0600 file fallback.
+                    tracing::warn!(error = %e, "OS keyring write failed - falling back to the 0600 secret file");
+                }
+            }
+        }
+    }
+    let path = secret_path(home);
+    if key.is_empty() {
+        let _ = std::fs::remove_file(&path);
+    } else {
+        // Create owner-only ATOMICALLY (no fs::write-then-chmod TOCTOU window where the secret is
+        // briefly group/other-readable).
+        let _ = write_owner_only(&path, key.as_bytes());
+    }
+}
+
+/// Write `bytes` to `path`, truncating, with mode 0600 set at creation time (Unix) so the file is
+/// never momentarily world/group-readable. On non-Unix this is a plain create+write.
+fn write_owner_only(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    #[cfg(unix)]
+    let mut f = {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?
+    };
     #[cfg(not(unix))]
-    let _ = path;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)?;
+    f.write_all(bytes)
 }
 
 #[cfg(test)]
@@ -330,9 +529,14 @@ mod tests {
         // Atomic counter (not just nanos) so parallel tests never share a dir under load.
         use std::sync::atomic::{AtomicU64, Ordering};
         static SEQ: AtomicU64 = AtomicU64::new(0);
-        let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let d = std::env::temp_dir()
-            .join(format!("engram-config-test-{n}-{}", SEQ.fetch_add(1, Ordering::Relaxed)));
+        let n = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let d = std::env::temp_dir().join(format!(
+            "engram-config-test-{n}-{}",
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
         std::fs::create_dir_all(&d).unwrap();
         d.to_string_lossy().into_owned()
     }
@@ -368,23 +572,50 @@ mod tests {
     }
 
     #[test]
-    fn api_key_never_persists_to_disk() {
+    fn api_key_stays_out_of_config_but_survives_restart_via_secret_store() {
         let _lock = ENV_LOCK.lock().unwrap();
+        // Isolate from any real key the dev shell exports, so the only source is the secret store.
+        let _g1 = EnvVarGuard::unset("ENGRAM_ANTHROPIC_API_KEY");
+        let _g2 = EnvVarGuard::unset("ENGRAM_LLM_API_KEY");
+        let _g3 = EnvVarGuard::unset("ANTHROPIC_API_KEY");
         let home = tmphome();
         let mut c = Config::default();
         c.provider.kind = "anthropic".into();
         c.provider.api_key = "sk-ant-SUPERSECRET".into();
         c.save(&home).unwrap();
-        // The key must NOT be in config.json; non-secret fields must be.
+        // The key must NEVER be in config.json (so configs stay shareable); other fields persist.
         let on_disk = std::fs::read_to_string(Config::path(&home)).unwrap();
-        assert!(!on_disk.contains("SUPERSECRET"), "api_key was written to config.json");
-        assert!(on_disk.contains("anthropic"), "non-secret fields should persist");
-        // Reloading must not resurrect the on-disk secret. The key may be re-seeded from the
-        // environment (ENGRAM_* or, for an anthropic provider, the standard ANTHROPIC_API_KEY) -
-        // that is the intended memory-only-via-env policy - but never from config.json.
+        assert!(
+            !on_disk.contains("SUPERSECRET"),
+            "api_key must not be written to config.json"
+        );
+        assert!(
+            on_disk.contains("anthropic"),
+            "non-secret fields should persist"
+        );
+        // It MUST come back on reload from the local secret store - the fix for "key lost on
+        // restart". (With the default build that's the 0600 secret.key file; verify its mode.)
         let reloaded = Config::load(&home);
-        assert_ne!(reloaded.provider.api_key, "sk-ant-SUPERSECRET", "api_key came back from disk");
+        assert_eq!(
+            reloaded.provider.api_key, "sk-ant-SUPERSECRET",
+            "key must survive a restart"
+        );
         assert_eq!(reloaded.provider.kind, "anthropic");
+        #[cfg(all(unix, not(feature = "keyring")))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let p = std::path::Path::new(&home).join("secret.key");
+            let mode = std::fs::metadata(&p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "the secret file must be owner-only");
+        }
+        // Clearing the key wipes it from the store (no lingering secret on disk).
+        let mut cleared = Config::load(&home);
+        cleared.provider.api_key = String::new();
+        cleared.save(&home).unwrap();
+        assert!(
+            Config::load(&home).provider.api_key.is_empty(),
+            "cleared key must not resurrect"
+        );
         std::fs::remove_dir_all(&home).ok();
     }
 
@@ -428,11 +659,75 @@ mod tests {
         // No config.json in `home` -> from_env runs and should bring up the real provider.
         let home = tmphome();
         let c = Config::load(&home);
-        assert_eq!(c.provider.kind, "anthropic", "standard key must select the anthropic provider");
-        assert_eq!(c.provider.api_key, "sk-ant-env-adopt-test", "standard key must be adopted");
+        assert_eq!(
+            c.provider.kind, "anthropic",
+            "standard key must select the anthropic provider"
+        );
+        assert_eq!(
+            c.provider.api_key, "sk-ant-env-adopt-test",
+            "standard key must be adopted"
+        );
         // base_url stays empty so the provider uses its correct https://api.anthropic.com/v1 default.
-        assert!(c.provider.base_url.is_empty(), "must not adopt the raw host ANTHROPIC_BASE_URL");
-        assert_eq!(c.model(), "claude-haiku-4-5", "default model must be a real Anthropic id");
+        assert!(
+            c.provider.base_url.is_empty(),
+            "must not adopt the raw host ANTHROPIC_BASE_URL"
+        );
+        assert_eq!(
+            c.model(),
+            "claude-haiku-4-5",
+            "default model must be a real Anthropic id"
+        );
         std::fs::remove_dir_all(&home).ok();
+    }
+
+    // The provider router is the connectivity surface: every known OpenAI-compatible kind must
+    // build a live HTTP provider (id == kind), and an unknown kind must fall back to the mock
+    // rather than silently posting to the wrong host. Only meaningful with the `http` feature.
+    #[cfg(feature = "http")]
+    #[test]
+    fn build_provider_routes_known_kinds_and_falls_back_safely() {
+        let mk = |kind: &str, key: &str| {
+            let mut c = Config::default();
+            c.provider.kind = kind.into();
+            c.provider.api_key = key.into();
+            c.build_provider().id().to_string()
+        };
+        // Cloud OpenAI-compatible backends (with a key) route to their own id.
+        for kind in [
+            "openai",
+            "openrouter",
+            "groq",
+            "deepseek",
+            "mistral",
+            "together",
+            "xai",
+            "perplexity",
+            "gemini",
+        ] {
+            assert_eq!(
+                mk(kind, "sk-test"),
+                kind,
+                "{kind} must build a live HTTP provider"
+            );
+        }
+        // Local backends need no key.
+        for kind in ["ollama", "lmstudio", "vllm", "llamacpp"] {
+            assert_eq!(mk(kind, ""), kind, "{kind} must build without a key");
+        }
+        // Anthropic with a key uses its native transport.
+        assert_eq!(mk("anthropic", "sk-ant-x"), "anthropic");
+        // Anthropic with NO key, an unknown kind, and the mock all fall back to the mock - never
+        // a wrong-host call.
+        assert_eq!(
+            mk("anthropic", ""),
+            "mock",
+            "anthropic without a key must not go live"
+        );
+        assert_eq!(
+            mk("totally-unknown", "k"),
+            "mock",
+            "an unknown kind must fall back to mock"
+        );
+        assert_eq!(mk("mock", ""), "mock");
     }
 }

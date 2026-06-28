@@ -38,13 +38,23 @@ pub struct CdpBrowser {
 
 impl CdpBrowser {
     pub fn new(chrome: String, port: u16) -> Self {
-        Self { chrome, port, conn: Mutex::new(None) }
+        Self {
+            chrome,
+            port,
+            conn: Mutex::new(None),
+        }
     }
 
     async fn ensure<'a>(&self, guard: &'a mut Option<Conn>) -> Result<&'a mut Conn, String> {
         if guard.is_none() {
             let child = tokio::process::Command::new(&self.chrome)
-                .args(["--headless", "--disable-gpu", "--no-sandbox", "--no-first-run", "--disable-extensions"])
+                .args([
+                    "--headless",
+                    "--disable-gpu",
+                    "--no-sandbox",
+                    "--no-first-run",
+                    "--disable-extensions",
+                ])
                 .arg(format!("--remote-debugging-port={}", self.port))
                 .arg("about:blank")
                 .stdout(Stdio::null())
@@ -53,8 +63,14 @@ impl CdpBrowser {
                 .spawn()
                 .map_err(|e| format!("launch chrome: {e}"))?;
             let ws_url = self.discover_ws().await?;
-            let (ws, _) = connect_async(ws_url.as_str()).await.map_err(|e| format!("cdp connect: {e}"))?;
-            *guard = Some(Conn { _child: child, ws, next_id: 1 });
+            let (ws, _) = connect_async(ws_url.as_str())
+                .await
+                .map_err(|e| format!("cdp connect: {e}"))?;
+            *guard = Some(Conn {
+                _child: child,
+                ws,
+                next_id: 1,
+            });
         }
         Ok(guard.as_mut().unwrap())
     }
@@ -62,7 +78,11 @@ impl CdpBrowser {
     async fn discover_ws(&self) -> Result<String, String> {
         let client = reqwest::Client::new();
         for _ in 0..50 {
-            if let Ok(resp) = client.get(format!("http://127.0.0.1:{}/json", self.port)).send().await {
+            if let Ok(resp) = client
+                .get(format!("http://127.0.0.1:{}/json", self.port))
+                .send()
+                .await
+            {
                 if let Ok(list) = resp.json::<Value>().await {
                     if let Some(arr) = list.as_array() {
                         if let Some(t) = arr
@@ -83,7 +103,10 @@ impl CdpBrowser {
         let id = conn.next_id;
         conn.next_id += 1;
         let payload = json!({ "id": id, "method": method, "params": params }).to_string();
-        conn.ws.send(Message::Text(payload)).await.map_err(|e| e.to_string())?;
+        conn.ws
+            .send(Message::Text(payload))
+            .await
+            .map_err(|e| e.to_string())?;
         // Bound the wait: a missing/never-arriving response must not hang the tool forever
         // while holding the browser session lock.
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
@@ -96,7 +119,9 @@ impl CdpBrowser {
                 Ok(n) => n,
                 Err(_) => return Err("cdp command timed out".into()),
             };
-            let msg = next.ok_or("cdp connection closed")?.map_err(|e| e.to_string())?;
+            let msg = next
+                .ok_or("cdp connection closed")?
+                .map_err(|e| e.to_string())?;
             let txt = match msg.to_text() {
                 Ok(t) => t,
                 Err(_) => continue,
@@ -159,26 +184,84 @@ impl BrowserSession for CdpBrowser {
         Ok(text.as_str().unwrap_or("").chars().take(6000).collect())
     }
 
+    async fn wait_for(&self, selector: &str, timeout_ms: u64) -> Result<String, String> {
+        let deadline = Duration::from_millis(timeout_ms.clamp(100, 30_000));
+        let start = std::time::Instant::now();
+        let expr = format!("!!document.querySelector({})", js_str(selector));
+        loop {
+            // Acquire the session lock for ONE poll only, then RELEASE it across the sleep - so a
+            // long wait_for can't monopolize the shared browser for up to 30s and block every
+            // other browser tool call (and the subagents sharing the session) in the meantime.
+            let present = {
+                let mut guard = self.conn.lock().await;
+                let conn = self.ensure(&mut guard).await?;
+                Self::eval(conn, &expr)
+                    .await
+                    .ok()
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+            };
+            if present {
+                return Ok("present".into());
+            }
+            if start.elapsed() >= deadline {
+                return Err(format!(
+                    "selector {selector} not found within {}ms",
+                    deadline.as_millis()
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    async fn scroll(&self, dy: i64) -> Result<String, String> {
+        let mut guard = self.conn.lock().await;
+        let conn = self.ensure(&mut guard).await?;
+        Self::eval(
+            conn,
+            &format!("window.scrollBy(0,{dy}); String(window.scrollY)"),
+        )
+        .await?;
+        Ok(format!("scrolled {dy}px"))
+    }
+
     async fn click(&self, selector: &str) -> Result<String, String> {
         let mut guard = self.conn.lock().await;
         let conn = self.ensure(&mut guard).await?;
+        // Auto-wait briefly so a click on a not-yet-rendered element doesn't spuriously fail.
         let expr = format!(
-            "(()=>{{const e=document.querySelector({}); if(!e) return 'not found'; e.click(); return 'clicked';}})()",
-            js_str(selector)
+            "(async()=>{{for(let i=0;i<30;i++){{const e=document.querySelector({s}); \
+             if(e){{ e.scrollIntoView({{block:'center'}}); e.click(); return 'clicked'; }} \
+             await new Promise(r=>setTimeout(r,100));}} return 'not found';}})()",
+            s = js_str(selector)
         );
-        Ok(Self::eval(conn, &expr).await?.as_str().unwrap_or("ok").to_string())
+        Ok(Self::eval(conn, &expr)
+            .await?
+            .as_str()
+            .unwrap_or("ok")
+            .to_string())
     }
 
     async fn type_text(&self, selector: &str, text: &str) -> Result<String, String> {
         let mut guard = self.conn.lock().await;
         let conn = self.ensure(&mut guard).await?;
+        // Set the value through React's native setter and fire input+change+keyup so controlled
+        // SPA inputs actually update (a bare `.value=` is ignored by React). Auto-wait for the field.
         let expr = format!(
-            "(()=>{{const e=document.querySelector({}); if(!e) return 'not found'; e.focus(); e.value={}; \
-             e.dispatchEvent(new Event('input',{{bubbles:true}})); return 'typed';}})()",
-            js_str(selector),
-            js_str(text)
+            "(async()=>{{let e=null; for(let i=0;i<30;i++){{e=document.querySelector({s}); if(e) break; \
+             await new Promise(r=>setTimeout(r,100));}} if(!e) return 'not found'; e.focus(); \
+             const proto=e instanceof HTMLTextAreaElement?HTMLTextAreaElement.prototype:HTMLInputElement.prototype; \
+             const set=Object.getOwnPropertyDescriptor(proto,'value'); if(set&&set.set){{set.set.call(e,{t});}}else{{e.value={t};}} \
+             e.dispatchEvent(new Event('input',{{bubbles:true}})); e.dispatchEvent(new Event('change',{{bubbles:true}})); \
+             e.dispatchEvent(new KeyboardEvent('keyup',{{bubbles:true}})); return 'typed';}})()",
+            s = js_str(selector),
+            t = js_str(text)
         );
-        Ok(Self::eval(conn, &expr).await?.as_str().unwrap_or("ok").to_string())
+        Ok(Self::eval(conn, &expr)
+            .await?
+            .as_str()
+            .unwrap_or("ok")
+            .to_string())
     }
 
     async fn extract(&self, selector: Option<&str>) -> Result<String, String> {
@@ -191,7 +274,13 @@ impl BrowserSession for CdpBrowser {
             ),
             None => "document.body ? document.body.innerText : ''".to_string(),
         };
-        Ok(Self::eval(conn, &expr).await?.as_str().unwrap_or("").chars().take(6000).collect())
+        Ok(Self::eval(conn, &expr)
+            .await?
+            .as_str()
+            .unwrap_or("")
+            .chars()
+            .take(6000)
+            .collect())
     }
 
     async fn screenshot(&self, path: &std::path::Path) -> Result<(), String> {
@@ -199,8 +288,12 @@ impl BrowserSession for CdpBrowser {
         let conn = self.ensure(&mut guard).await?;
         let r = Self::cmd(conn, "Page.captureScreenshot", json!({ "format": "png" })).await?;
         let data = r["data"].as_str().ok_or("no screenshot data")?;
-        let bytes = base64::engine::general_purpose::STANDARD.decode(data).map_err(|e| e.to_string())?;
-        tokio::fs::write(path, bytes).await.map_err(|e| e.to_string())
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .map_err(|e| e.to_string())?;
+        tokio::fs::write(path, bytes)
+            .await
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -227,10 +320,24 @@ mod tests {
         let text = b.open(&url).await.unwrap();
         assert!(text.contains("empty"), "open got: {text:?}");
 
+        // wait_for finds an existing selector immediately; a missing one times out (fast).
+        b.wait_for("#in", 2000)
+            .await
+            .expect("wait_for an existing selector");
+        assert!(
+            b.wait_for("#nope", 300).await.is_err(),
+            "missing selector must time out"
+        );
+        b.scroll(120).await.expect("scroll");
+
         b.type_text("#in", "engram-rocks").await.unwrap();
         b.click("#btn").await.unwrap();
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        b.wait_for("#out", 2000).await.unwrap();
         let out = b.extract(Some("#out")).await.unwrap();
-        assert_eq!(out.trim(), "engram-rocks", "click+type should populate #out");
+        assert_eq!(
+            out.trim(),
+            "engram-rocks",
+            "click+type should populate #out"
+        );
     }
 }

@@ -27,7 +27,10 @@ const HISTORY: usize = 12;
 const LINE_CHARS: usize = 160;
 
 fn now_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 /// Where a conscious line came from - the provenance that makes it verifiable.
@@ -83,12 +86,19 @@ impl Consciousness {
             .ok()
             .and_then(|s| serde_json::from_str::<Persisted>(&s).ok())
             .unwrap_or_default();
-        Self { path, inner: Mutex::new(inner) }
+        Self {
+            path,
+            inner: Mutex::new(inner),
+        }
     }
 
     /// The current state, for the UI.
     pub fn snapshot(&self) -> State {
-        self.inner.lock().expect("consciousness lock").current.clone()
+        self.inner
+            .lock()
+            .expect("consciousness lock")
+            .current
+            .clone()
     }
 
     /// The always-loaded block prepended to every run's system prompt. `None` when empty, so the
@@ -128,12 +138,22 @@ impl Consciousness {
         cands.sort_by(|a, b| {
             region_rank(&a.region)
                 .cmp(&region_rank(&b.region))
-                .then(b.importance.partial_cmp(&a.importance).unwrap_or(std::cmp::Ordering::Equal))
+                .then(
+                    b.importance
+                        .partial_cmp(&a.importance)
+                        .unwrap_or(std::cmp::Ordering::Equal),
+                )
                 .then(b.created_ms.cmp(&a.created_ms))
         });
 
         let mut g = self.inner.lock().expect("consciousness lock");
-        let mut lines: Vec<Line> = g.current.lines.iter().filter(|l| l.pinned).cloned().collect();
+        let mut lines: Vec<Line> = g
+            .current
+            .lines
+            .iter()
+            .filter(|l| l.pinned)
+            .cloned()
+            .collect();
         let mut used: HashSet<i64> = lines
             .iter()
             .filter_map(|l| match l.source {
@@ -171,7 +191,11 @@ impl Consciousness {
             )
             .map_err(|e| e.to_string())?;
         push_history(&mut g);
-        g.current = State { version: next_version, distilled_at_ms: now_ms(), lines };
+        g.current = State {
+            version: next_version,
+            distilled_at_ms: now_ms(),
+            lines,
+        };
         self.persist(&g);
         Ok(g.current.clone())
     }
@@ -210,7 +234,9 @@ impl Consciousness {
         }
         let mut g = self.inner.lock().expect("consciousness lock");
         if g.current.lines.len() >= MAX_LINES {
-            return Err(format!("working memory is full ({MAX_LINES} lines) - remove one first"));
+            return Err(format!(
+                "working memory is full ({MAX_LINES} lines) - remove one first"
+            ));
         }
         let uid = g.next_uid;
         g.next_uid += 1;
@@ -277,7 +303,9 @@ impl Consciousness {
 
     /// Atomic, owner-only write (temp + rename), so a crash mid-write can't corrupt the file.
     fn persist(&self, g: &Persisted) {
-        let Ok(bytes) = serde_json::to_vec_pretty(g) else { return };
+        let Ok(bytes) = serde_json::to_vec_pretty(g) else {
+            return;
+        };
         let tmp = self.path.with_extension("json.tmp");
         if std::fs::write(&tmp, &bytes).is_ok() {
             #[cfg(unix)]

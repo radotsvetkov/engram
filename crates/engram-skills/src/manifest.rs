@@ -88,7 +88,10 @@ impl SkillSigner {
     pub fn load_or_create(path: impl AsRef<Path>) -> Result<Self, ManifestError> {
         let path = path.as_ref();
         let signing = if let Ok(bytes) = std::fs::read(path) {
-            let seed: [u8; 32] = bytes.as_slice().try_into().map_err(|_| ManifestError::Key)?;
+            let seed: [u8; 32] = bytes
+                .as_slice()
+                .try_into()
+                .map_err(|_| ManifestError::Key)?;
             SigningKey::from_bytes(&seed)
         } else {
             if let Some(parent) = path.parent() {

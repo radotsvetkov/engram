@@ -39,8 +39,10 @@ pub struct MeterSnapshot {
 
 impl Meter {
     fn record(&self, tokens_in: u32, tokens_out: u32, cost_usd: f64) {
-        self.tokens_in.fetch_add(tokens_in as u64, Ordering::Relaxed);
-        self.tokens_out.fetch_add(tokens_out as u64, Ordering::Relaxed);
+        self.tokens_in
+            .fetch_add(tokens_in as u64, Ordering::Relaxed);
+        self.tokens_out
+            .fetch_add(tokens_out as u64, Ordering::Relaxed);
         self.cost_micros
             .fetch_add((cost_usd * 1_000_000.0) as u64, Ordering::Relaxed);
         self.calls.fetch_add(1, Ordering::Relaxed);
@@ -65,7 +67,11 @@ pub struct Call {
 
 impl Call {
     pub fn new(request: CompletionRequest) -> Self {
-        Self { request, taint: Taint::Trusted, actor: "core".into() }
+        Self {
+            request,
+            taint: Taint::Trusted,
+            actor: "core".into(),
+        }
     }
     pub fn tainted(mut self, taint: Taint) -> Self {
         self.taint = self.taint.join(taint);
@@ -85,6 +91,9 @@ pub struct Gateway {
     ledger: Arc<Ledger>,
     meter: Meter,
     prices: HashMap<String, Price>,
+    /// The reasoning effort applied to calls that do not specify their own (set from settings, and
+    /// per-agent gateways carry their own). Behind a lock so the settings panel can change it live.
+    default_effort: std::sync::Mutex<Option<String>>,
 }
 
 impl Gateway {
@@ -94,7 +103,15 @@ impl Gateway {
             ledger,
             meter: Meter::default(),
             prices: default_prices(),
+            default_effort: std::sync::Mutex::new(None),
         }
+    }
+
+    /// Set the reasoning effort applied to calls that do not carry their own ("low"|"medium"|"high";
+    /// empty/None clears it). Picked up by the next call, so settings take effect without a restart.
+    pub fn set_default_effort(&self, effort: Option<String>) {
+        *self.default_effort.lock().expect("effort lock") =
+            effort.filter(|e| matches!(e.as_str(), "low" | "medium" | "high"));
     }
 
     /// A cheap clone of the current provider handle. Callers hold the `Arc`, not the
@@ -129,6 +146,9 @@ impl Gateway {
     /// before it reaches the model - half of breaking the injection→exfiltration
     /// chain. The redaction is metered and written to the audit ledger.
     pub async fn complete(&self, mut call: Call) -> Result<Completion, GatewayError> {
+        if call.request.effort.is_none() {
+            call.request.effort = self.default_effort.lock().expect("effort lock").clone();
+        }
         let mut redacted = 0usize;
         if call.taint.is_untrusted() {
             let before = call.request.messages.len();
@@ -152,13 +172,19 @@ impl Gateway {
         mut call: Call,
         on_delta: &mut (dyn FnMut(String) + Send),
     ) -> Result<Completion, GatewayError> {
+        if call.request.effort.is_none() {
+            call.request.effort = self.default_effort.lock().expect("effort lock").clone();
+        }
         let mut redacted = 0usize;
         if call.taint.is_untrusted() {
             let before = call.request.messages.len();
             call.request.messages.retain(|m| !m.secret);
             redacted = before - call.request.messages.len();
         }
-        let completion = self.provider().complete_stream(&call.request, on_delta).await?;
+        let completion = self
+            .provider()
+            .complete_stream(&call.request, on_delta)
+            .await?;
         self.record_call(&call, &completion, redacted)?;
         Ok(completion)
     }
@@ -171,7 +197,8 @@ impl Gateway {
         redacted: usize,
     ) -> Result<(), GatewayError> {
         let cost = self.cost(completion);
-        self.meter.record(completion.tokens_in, completion.tokens_out, cost);
+        self.meter
+            .record(completion.tokens_in, completion.tokens_out, cost);
         self.ledger.append(
             "llm.call",
             &call.actor,
@@ -189,7 +216,11 @@ impl Gateway {
     }
 
     /// Embed texts through the provider, metered and audited.
-    pub async fn embed(&self, texts: &[String], actor: &str) -> Result<Vec<Vec<f32>>, GatewayError> {
+    pub async fn embed(
+        &self,
+        texts: &[String],
+        actor: &str,
+    ) -> Result<Vec<Vec<f32>>, GatewayError> {
         let out = self.provider().embed(texts).await?;
         let tokens_in: u32 = texts.iter().map(|t| approx_tokens(t)).sum();
         self.meter.record(tokens_in, 0, 0.0);
@@ -214,7 +245,12 @@ impl Gateway {
     }
 
     /// Transcribe audio bytes to text, metered and audited.
-    pub async fn transcribe(&self, audio: &[u8], format: &str, actor: &str) -> Result<String, GatewayError> {
+    pub async fn transcribe(
+        &self,
+        audio: &[u8],
+        format: &str,
+        actor: &str,
+    ) -> Result<String, GatewayError> {
         let text = self.provider().transcribe(audio, format).await?;
         self.meter.record(0, approx_tokens(&text), 0.0);
         self.ledger.append(
@@ -238,10 +274,15 @@ impl Gateway {
     }
 
     fn cost(&self, c: &Completion) -> f64 {
-        // Exact match, else a family match so versioned ids like "claude-haiku-4-5-..."
-        // still cost against the "claude-haiku" entry.
+        // Exact match, else the LONGEST family key contained in the model id, so a versioned id
+        // like "claude-haiku-4-5-..." costs against "claude-haiku" while "gpt-4o-mini" never
+        // accidentally matches the shorter "gpt-4o" entry (HashMap order is nondeterministic).
         let price = self.prices.get(&c.model).copied().or_else(|| {
-            self.prices.iter().find(|(k, _)| c.model.contains(k.as_str())).map(|(_, p)| *p)
+            self.prices
+                .iter()
+                .filter(|(k, _)| c.model.contains(k.as_str()))
+                .max_by_key(|(k, _)| k.len())
+                .map(|(_, p)| *p)
         });
         match price {
             Some(p) => {
@@ -250,6 +291,12 @@ impl Gateway {
             }
             None => 0.0,
         }
+    }
+
+    /// True when this model id has a known list price - lets the UI tell a real $0.00 (mock /
+    /// local model) apart from an unpriced cloud model whose spend isn't being tracked.
+    pub fn is_priced(&self, model: &str) -> bool {
+        self.prices.contains_key(model) || self.prices.keys().any(|k| model.contains(k.as_str()))
     }
 }
 
@@ -265,10 +312,44 @@ fn taint_str(t: Taint) -> &'static str {
 /// are illustrative defaults; override with [`Gateway::with_price`].
 fn default_prices() -> HashMap<String, Price> {
     let mut m = HashMap::new();
-    m.insert("claude-haiku".into(), Price { in_per_mtok: 1.0, out_per_mtok: 5.0 });
-    m.insert("claude-sonnet".into(), Price { in_per_mtok: 3.0, out_per_mtok: 15.0 });
-    m.insert("claude-opus".into(), Price { in_per_mtok: 15.0, out_per_mtok: 75.0 });
-    m.insert("gpt-4o-mini".into(), Price { in_per_mtok: 0.15, out_per_mtok: 0.60 });
+    let mut p = |k: &str, i: f64, o: f64| {
+        m.insert(
+            k.to_string(),
+            Price {
+                in_per_mtok: i,
+                out_per_mtok: o,
+            },
+        )
+    };
+    // Anthropic (family keys match versioned ids).
+    p("claude-haiku", 1.0, 5.0);
+    p("claude-sonnet", 3.0, 15.0);
+    p("claude-opus", 15.0, 75.0);
+    p("claude-fable", 5.0, 25.0);
+    // OpenAI.
+    p("gpt-4o-mini", 0.15, 0.60);
+    p("gpt-4o", 2.5, 10.0);
+    p("o4-mini", 1.10, 4.40);
+    // DeepSeek.
+    p("deepseek-reasoner", 0.55, 2.19);
+    p("deepseek-chat", 0.27, 1.10);
+    // Groq / Together (open Llama + Qwen weights).
+    p("llama-3.3-70b", 0.59, 0.79);
+    p("llama-3.1-8b", 0.05, 0.08);
+    p("llama-3.1-70b", 0.59, 0.79);
+    p("qwen2.5-72b", 0.90, 0.90);
+    // Mistral.
+    p("mistral-large", 2.0, 6.0);
+    p("mistral-small", 0.20, 0.60);
+    p("codestral", 0.30, 0.90);
+    // xAI Grok.
+    p("grok-2", 2.0, 10.0);
+    // Google Gemini (OpenAI endpoint).
+    p("gemini-1.5-flash", 0.075, 0.30);
+    p("gemini-2.0-flash", 0.10, 0.40);
+    p("gemini-1.5-pro", 1.25, 5.0);
+    // Perplexity (online sonar models).
+    p("sonar", 1.0, 1.0);
     m
 }
 
@@ -314,7 +395,9 @@ mod tests {
             ],
         );
         // An untrusted call must drop the secret system message.
-        gw.complete(Call::new(req).tainted(Taint::Untrusted)).await.unwrap();
+        gw.complete(Call::new(req).tainted(Taint::Untrusted))
+            .await
+            .unwrap();
         let p = last_payload(&ledger);
         assert_eq!(p["redacted_secrets"], 1);
         assert_eq!(p["taint"], "untrusted");
@@ -340,5 +423,43 @@ mod tests {
         }
         assert!(gw.meter().cost_usd > 0.0);
         assert_eq!(gw.meter().calls, 3);
+    }
+
+    #[test]
+    fn pricing_covers_new_providers_and_avoids_substring_collisions() {
+        let (gw, _l, _d) = gw();
+        // The newly supported providers are priced (no silent $0 for a real cloud model).
+        for m in [
+            "deepseek-chat",
+            "llama-3.3-70b-versatile",
+            "mistral-large-latest",
+            "grok-2-latest",
+            "gemini-2.0-flash",
+            "gpt-4o",
+            "claude-fable-5",
+        ] {
+            assert!(gw.is_priced(m), "{m} should be priced");
+        }
+        let mini = gw.cost(&Completion {
+            text: String::new(),
+            model: "gpt-4o-mini".into(),
+            tokens_in: 1_000_000,
+            tokens_out: 0,
+            tool_calls: vec![],
+        });
+        let full = gw.cost(&Completion {
+            text: String::new(),
+            model: "gpt-4o".into(),
+            tokens_in: 1_000_000,
+            tokens_out: 0,
+            tool_calls: vec![],
+        });
+        // Longest-match must keep gpt-4o-mini ($0.15/M) cheaper than gpt-4o ($2.5/M), never colliding.
+        assert!(
+            (mini - 0.15).abs() < 1e-9,
+            "gpt-4o-mini in-price, got {mini}"
+        );
+        assert!((full - 2.5).abs() < 1e-9, "gpt-4o in-price, got {full}");
+        assert!(!gw.is_priced("some-unknown-model-xyz"));
     }
 }

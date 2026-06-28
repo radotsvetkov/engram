@@ -25,6 +25,9 @@ use crate::region::Region;
 
 /// How many candidates each search arm contributes before fusion.
 const ARM_LIMIT: usize = 64;
+/// The semantic arm scans at most this many salience-ordered candidates, so recall latency stays
+/// flat as the brain grows past tens of thousands of memories (instead of an O(n) full scan).
+const SEM_SCAN_CAP: usize = 5000;
 /// Reciprocal Rank Fusion constant (standard default).
 const RRF_K: f32 = 60.0;
 
@@ -158,7 +161,11 @@ impl Memory {
         let current = format!("{}:{}", self.embedder.name(), self.embedder.dim());
         let mut conn = self.conn.lock().expect("memory mutex poisoned");
         let stored: Option<String> = conn
-            .query_row("SELECT value FROM meta WHERE key = 'embed_space'", [], |r| r.get(0))
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'embed_space'",
+                [],
+                |r| r.get(0),
+            )
             .optional()?;
         if stored.as_deref() == Some(current.as_str()) {
             return Ok(());
@@ -167,7 +174,8 @@ impl Memory {
         // dropped before we open the write transaction).
         let rows: Vec<(i64, String)> = {
             let mut stmt = conn.prepare("SELECT id, text FROM facts WHERE deleted = 0")?;
-            let mapped = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+            let mapped =
+                stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
             let mut v = Vec::new();
             for row in mapped {
                 v.push(row?);
@@ -176,7 +184,10 @@ impl Memory {
         };
         // First-ever open with nothing stored: just stamp the space, nothing to migrate.
         if stored.is_none() && rows.is_empty() {
-            conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('embed_space', ?1)", params![current])?;
+            conn.execute(
+                "INSERT OR REPLACE INTO meta(key, value) VALUES('embed_space', ?1)",
+                params![current],
+            )?;
             return Ok(());
         }
         // Audit BEFORE mutating (ledger-first, like remember) and propagate any ledger
@@ -189,9 +200,15 @@ impl Memory {
         let tx = conn.transaction()?;
         for (id, text) in &rows {
             let emb = to_bytes(&self.embedder.embed(text));
-            tx.execute("UPDATE facts SET embedding = ?1 WHERE id = ?2", params![emb, id])?;
+            tx.execute(
+                "UPDATE facts SET embedding = ?1 WHERE id = ?2",
+                params![emb, id],
+            )?;
         }
-        tx.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('embed_space', ?1)", params![current])?;
+        tx.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES('embed_space', ?1)",
+            params![current],
+        )?;
         tx.commit()?;
         Ok(())
     }
@@ -203,6 +220,42 @@ impl Memory {
         let content_hash = blake3::hash(req.text.as_bytes()).to_hex().to_string();
         let now = now_ms() as i64;
         let taint = taint_str(req.taint);
+
+        // Dedup: re-learning a fact that already exists VERBATIM in the same region must not pile up
+        // a duplicate row (that is how the table grows unbounded). Instead bump its importance (to
+        // the max of old/new) and access count - reinforcing what is repeatedly seen - and return it.
+        // Dedup-and-insert under a SINGLE held connection lock so the check and the insert are
+        // atomic. The earlier version released the lock between the SELECT and the INSERT, so two
+        // concurrent remember() of the same (region, content_hash) could both miss the row and both
+        // INSERT a duplicate (a TOCTOU). Holding the one Mutex<Connection> across both closes it.
+        // ledger.append() runs while the lock is held, which is safe: it never re-enters the memory
+        // connection, so there is no lock cycle.
+        let mut conn = self.conn.lock().expect("memory mutex poisoned");
+        let existing: Option<(i64, f64)> = conn
+            .query_row(
+                "SELECT id, importance FROM facts WHERE region = ?1 AND content_hash = ?2 \
+                 AND deleted = 0 AND superseded_by IS NULL LIMIT 1",
+                params![req.region.as_str(), content_hash],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        if let Some((id, old_imp)) = existing {
+            let new_imp = (old_imp as f32).max(req.importance);
+            conn.execute(
+                "UPDATE facts SET importance = ?1, access_count = access_count + 1, last_access_ms = ?2 WHERE id = ?3",
+                params![new_imp as f64, now, id],
+            )?;
+            if let Some(rec) = get_record(&conn, id)? {
+                let _ = self.ledger.append(
+                    "memory.write",
+                    &req.actor,
+                    json!({ "region": req.region.as_str(), "content_hash": content_hash, "deduped": true }),
+                );
+                return Ok(rec);
+            }
+            // (Effectively unreachable: we just updated this row.) Fall through to a fresh insert,
+            // still holding the lock so it stays atomic.
+        }
 
         let entry = self.ledger.append(
             "memory.write",
@@ -217,7 +270,6 @@ impl Memory {
         )?;
 
         let meta_str = serde_json::to_string(&req.metadata)?;
-        let mut conn = self.conn.lock().expect("memory mutex poisoned");
         // One transaction so the row and its FTS index are all-or-nothing - a failure
         // can never leave the fact searchable-but-missing or present-but-unsearchable.
         let tx = conn.transaction()?;
@@ -306,23 +358,29 @@ impl Memory {
                 taint = taint_clause("f.")
             );
             let mut stmt = conn.prepare(&sql)?;
-            let rows = stmt.query_map(params![match_q, ARM_LIMIT as i64], |r| r.get::<_, i64>(0))?;
+            let rows =
+                stmt.query_map(params![match_q, ARM_LIMIT as i64], |r| r.get::<_, i64>(0))?;
             for id in rows {
                 keyword.push(id?);
             }
         }
 
-        // --- semantic arm (cosine over every candidate region row) ---
+        // --- semantic arm (cosine over a BOUNDED, salience-ordered candidate set) ---
+        // Scanning every row's embedding is O(n) and won't survive tens of thousands of memories
+        // on a $5 VPS. Instead scan at most SEM_SCAN_CAP candidates, ordered by importance then
+        // recency (backed by idx_facts_salience), so the work stays flat as the brain grows AND
+        // what-matters is preferentially considered. The keyword arm (FTS index) is already bounded.
         let sem_sql = format!(
-            "SELECT id, embedding FROM facts WHERE deleted = 0 AND superseded_by IS NULL AND {region}{taint}",
+            "SELECT id, embedding FROM facts WHERE deleted = 0 AND superseded_by IS NULL AND {region}{taint} \
+             ORDER BY importance DESC, last_access_ms DESC LIMIT {cap}",
             region = region_clause("", regions),
-            taint = taint_clause("")
+            taint = taint_clause(""),
+            cap = SEM_SCAN_CAP,
         );
         let mut sims: Vec<(i64, f32)> = {
             let mut stmt = conn.prepare(&sem_sql)?;
-            let rows = stmt.query_map([], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?))
-            })?;
+            let rows =
+                stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))?;
             let mut out = Vec::new();
             for row in rows {
                 let (id, blob) = row?;
@@ -411,7 +469,11 @@ impl Memory {
             )?
         };
         if n > 0 {
-            let _ = self.ledger.append("memory.supersede", "core", json!({ "old": old_id, "by": by_id }));
+            let _ = self.ledger.append(
+                "memory.supersede",
+                "core",
+                json!({ "old": old_id, "by": by_id }),
+            );
         }
         Ok(n > 0)
     }
@@ -505,8 +567,9 @@ impl Memory {
     /// Counts for the Memory Atlas.
     pub fn stats(&self) -> Result<Stats> {
         let conn = self.conn.lock().expect("memory mutex poisoned");
-        let total =
-            conn.query_row("SELECT COUNT(*) FROM facts WHERE deleted = 0", [], |r| r.get(0))?;
+        let total = conn.query_row("SELECT COUNT(*) FROM facts WHERE deleted = 0", [], |r| {
+            r.get(0)
+        })?;
         let by_region = group_count(&conn, "region")?;
         let by_tier = group_count(&conn, "tier")?;
         Ok(Stats {
@@ -538,6 +601,8 @@ fn init_schema(conn: &Connection) -> Result<()> {
             superseded_by INTEGER
         );
         CREATE INDEX IF NOT EXISTS idx_facts_region ON facts(region, deleted);
+        CREATE INDEX IF NOT EXISTS idx_facts_salience ON facts(importance DESC, last_access_ms DESC);
+        CREATE INDEX IF NOT EXISTS idx_facts_dedup ON facts(region, content_hash);
         CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(text, tokenize = 'unicode61');
         CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);",
     )?;
@@ -639,7 +704,11 @@ mod tests {
     #[test]
     fn remember_then_recall_keyword() {
         let (m, _d) = mem();
-        m.remember(WriteReq::new(Region::Semantic, "Engram runs on a cheap VPS")).unwrap();
+        m.remember(WriteReq::new(
+            Region::Semantic,
+            "Engram runs on a cheap VPS",
+        ))
+        .unwrap();
         let hits = m.recall("cheap VPS", &[Region::Semantic], 5).unwrap();
         assert_eq!(hits.len(), 1);
         assert!(hits[0].record.text.contains("VPS"));
@@ -647,10 +716,45 @@ mod tests {
     }
 
     #[test]
+    fn dedup_on_write_bumps_instead_of_duplicating() {
+        let (m, _d) = mem();
+        let fact = "The user prefers concise answers";
+        let a = m
+            .remember(WriteReq::new(Region::Identity, fact).importance(0.4))
+            .unwrap();
+        // Re-learning the SAME fact must not create a second row; it bumps the existing one.
+        let b = m
+            .remember(WriteReq::new(Region::Identity, fact).importance(0.9))
+            .unwrap();
+        assert_eq!(a.id, b.id, "the duplicate must merge into the same row");
+        assert!(
+            (b.importance - 0.9).abs() < 1e-6,
+            "importance bumps to the max seen"
+        );
+        assert!(b.access_count >= 1, "access count reinforced");
+        // Recall returns exactly ONE row for that fact (not two).
+        let hits = m.recall("concise answers", &[Region::Identity], 5).unwrap();
+        assert_eq!(hits.len(), 1, "deduped fact appears once in recall");
+        // A genuinely different fact in the same region is a separate row.
+        let c = m
+            .remember(WriteReq::new(Region::Identity, "The user works in Rust"))
+            .unwrap();
+        assert_ne!(c.id, a.id);
+    }
+
+    #[test]
     fn semantic_recall_finds_what_keyword_misses() {
         let (m, _d) = mem();
-        m.remember(WriteReq::new(Region::Identity, "the user preferences include a dark theme")).unwrap();
-        m.remember(WriteReq::new(Region::Identity, "the weather in Berlin is cold today")).unwrap();
+        m.remember(WriteReq::new(
+            Region::Identity,
+            "the user preferences include a dark theme",
+        ))
+        .unwrap();
+        m.remember(WriteReq::new(
+            Region::Identity,
+            "the weather in Berlin is cold today",
+        ))
+        .unwrap();
 
         // No shared whole-word tokens with the stored text ("preferred"/"theming"
         // are different tokens than "preferences"/"theme"), so keyword search alone
@@ -658,7 +762,9 @@ mod tests {
         assert!(build_match("preferred theming")
             .map(|q| !q.contains("preferences"))
             .unwrap_or(true));
-        let hits = m.recall("preferred theming", &[Region::Identity], 3).unwrap();
+        let hits = m
+            .recall("preferred theming", &[Region::Identity], 3)
+            .unwrap();
         assert!(!hits.is_empty(), "hybrid recall should find the paraphrase");
         assert!(hits[0].record.text.contains("preferences"));
         assert!(
@@ -671,9 +777,19 @@ mod tests {
     #[test]
     fn recall_respects_regions() {
         let (m, _d) = mem();
-        m.remember(WriteReq::new(Region::Identity, "favourite language is Rust")).unwrap();
-        m.remember(WriteReq::new(Region::Episodic, "favourite language is Rust")).unwrap();
-        let hits = m.recall("favourite language", &[Region::Identity], 5).unwrap();
+        m.remember(WriteReq::new(
+            Region::Identity,
+            "favourite language is Rust",
+        ))
+        .unwrap();
+        m.remember(WriteReq::new(
+            Region::Episodic,
+            "favourite language is Rust",
+        ))
+        .unwrap();
+        let hits = m
+            .recall("favourite language", &[Region::Identity], 5)
+            .unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].record.region, "identity");
     }
@@ -681,20 +797,32 @@ mod tests {
     #[test]
     fn recall_trusted_excludes_untrusted_provenance() {
         let (m, _d) = mem();
-        m.remember(WriteReq::new(Region::Semantic, "Engram deploys to a cheap VPS")).unwrap();
+        m.remember(WriteReq::new(
+            Region::Semantic,
+            "Engram deploys to a cheap VPS",
+        ))
+        .unwrap();
         // Content read during a tainted run (e.g. scraped from an attacker page) inherits
         // Untrusted provenance.
         m.remember(
-            WriteReq::new(Region::Semantic, "Engram deploys to a cheap VPS, per a web page")
-                .taint(Taint::Untrusted),
+            WriteReq::new(
+                Region::Semantic,
+                "Engram deploys to a cheap VPS, per a web page",
+            )
+            .taint(Taint::Untrusted),
         )
         .unwrap();
 
         // The transparency recall sees both…
-        assert_eq!(m.recall("cheap VPS", &[Region::Semantic], 5).unwrap().len(), 2);
+        assert_eq!(
+            m.recall("cheap VPS", &[Region::Semantic], 5).unwrap().len(),
+            2
+        );
         // …but model-facing recall returns only the trusted one - injected memory can't
         // re-surface as trusted context and poison a clean run.
-        let trusted = m.recall_trusted("cheap VPS", &[Region::Semantic], 5).unwrap();
+        let trusted = m
+            .recall_trusted("cheap VPS", &[Region::Semantic], 5)
+            .unwrap();
         assert_eq!(trusted.len(), 1);
         assert_eq!(trusted[0].record.taint, "trusted");
     }
@@ -705,38 +833,95 @@ mod tests {
         let ledger = Arc::new(Ledger::open(dir.path()).unwrap());
         let path = dir.path().join("brain.db");
         {
-            let m = Memory::open(&path, Arc::new(TrigramHashEmbedder::new(256)), ledger.clone()).unwrap();
-            m.remember(WriteReq::new(Region::Semantic, "Engram runs on a cheap VPS")).unwrap();
+            let m = Memory::open(
+                &path,
+                Arc::new(TrigramHashEmbedder::new(256)),
+                ledger.clone(),
+            )
+            .unwrap();
+            m.remember(WriteReq::new(
+                Region::Semantic,
+                "Engram runs on a cheap VPS",
+            ))
+            .unwrap();
         }
         // Reopen under a different-dimension embedder - a new embedding space.
-        let m = Memory::open(&path, Arc::new(TrigramHashEmbedder::new(128)), ledger.clone()).unwrap();
+        let m = Memory::open(
+            &path,
+            Arc::new(TrigramHashEmbedder::new(128)),
+            ledger.clone(),
+        )
+        .unwrap();
         // The migration ran and is recorded…
-        assert!(ledger.read_all().unwrap().iter().any(|e| e.kind == "memory.reembed"));
+        assert!(ledger
+            .read_all()
+            .unwrap()
+            .iter()
+            .any(|e| e.kind == "memory.reembed"));
         // …and recall still works against the re-embedded vectors.
-        assert_eq!(m.recall("cheap VPS", &[Region::Semantic], 5).unwrap().len(), 1);
+        assert_eq!(
+            m.recall("cheap VPS", &[Region::Semantic], 5).unwrap().len(),
+            1
+        );
         // Reopening with the SAME embedder is a no-op - no second migration.
-        let before = ledger.read_all().unwrap().iter().filter(|e| e.kind == "memory.reembed").count();
-        let _again = Memory::open(&path, Arc::new(TrigramHashEmbedder::new(128)), ledger.clone()).unwrap();
-        let after = ledger.read_all().unwrap().iter().filter(|e| e.kind == "memory.reembed").count();
-        assert_eq!(before, after, "no migration when the embedding space is unchanged");
+        let before = ledger
+            .read_all()
+            .unwrap()
+            .iter()
+            .filter(|e| e.kind == "memory.reembed")
+            .count();
+        let _again = Memory::open(
+            &path,
+            Arc::new(TrigramHashEmbedder::new(128)),
+            ledger.clone(),
+        )
+        .unwrap();
+        let after = ledger
+            .read_all()
+            .unwrap()
+            .iter()
+            .filter(|e| e.kind == "memory.reembed")
+            .count();
+        assert_eq!(
+            before, after,
+            "no migration when the embedding space is unchanged"
+        );
     }
 
     #[test]
     fn supersede_makes_the_old_fact_history_not_recalled() {
         let (m, _d) = mem();
-        let berlin = m.remember(WriteReq::new(Region::Identity, "User lives Berlin")).unwrap();
-        let munich = m.remember(WriteReq::new(Region::Identity, "User lives Munich")).unwrap();
+        let berlin = m
+            .remember(WriteReq::new(Region::Identity, "User lives Berlin"))
+            .unwrap();
+        let munich = m
+            .remember(WriteReq::new(Region::Identity, "User lives Munich"))
+            .unwrap();
         // Before supersession both surface.
-        assert_eq!(m.recall("where the user lives", &[Region::Identity], 5).unwrap().len(), 2);
+        assert_eq!(
+            m.recall("where the user lives", &[Region::Identity], 5)
+                .unwrap()
+                .len(),
+            2
+        );
 
         assert!(m.supersede(berlin.id, munich.id).unwrap());
 
         // Only the current truth recalls - the stale fact can't be confidently wrong.
-        let hits = m.recall("where the user lives", &[Region::Identity], 5).unwrap();
-        assert!(hits.iter().all(|h| h.record.id != berlin.id), "superseded fact must not recall");
+        let hits = m
+            .recall("where the user lives", &[Region::Identity], 5)
+            .unwrap();
+        assert!(
+            hits.iter().all(|h| h.record.id != berlin.id),
+            "superseded fact must not recall"
+        );
         assert!(hits.iter().any(|h| h.record.id == munich.id));
         // The prefix lookup now sees only the current value.
-        assert_eq!(m.current_with_prefix(Region::Identity, "User lives ").unwrap(), vec![munich.id]);
+        assert_eq!(
+            m.current_with_prefix(Region::Identity, "User lives ")
+                .unwrap(),
+            vec![munich.id]
+        );
         // Superseding a non-current id is a no-op.
         assert!(!m.supersede(berlin.id, munich.id).unwrap());
     }
@@ -744,9 +929,14 @@ mod tests {
     #[test]
     fn forget_then_restore() {
         let (m, _d) = mem();
-        let rec = m.remember(WriteReq::new(Region::Semantic, "secret to forget")).unwrap();
+        let rec = m
+            .remember(WriteReq::new(Region::Semantic, "secret to forget"))
+            .unwrap();
         assert!(m.forget(rec.id, "user", "no longer relevant").unwrap());
-        assert!(m.recall("secret", &[Region::Semantic], 5).unwrap().is_empty());
+        assert!(m
+            .recall("secret", &[Region::Semantic], 5)
+            .unwrap()
+            .is_empty());
         assert!(m.restore(rec.id, "user").unwrap());
         assert_eq!(m.recall("secret", &[Region::Semantic], 5).unwrap().len(), 1);
     }
@@ -761,7 +951,9 @@ mod tests {
             ledger.clone(),
         )
         .unwrap();
-        let rec = m.remember(WriteReq::new(Region::Semantic, "tracked fact")).unwrap();
+        let rec = m
+            .remember(WriteReq::new(Region::Semantic, "tracked fact"))
+            .unwrap();
         assert!(rec.ledger_seq.is_some());
         assert!(ledger.verify().unwrap() >= 1);
     }
@@ -769,11 +961,17 @@ mod tests {
     #[test]
     fn consolidation_demotes_stale_low_importance() {
         let (m, _d) = mem();
-        let rec = m.remember(WriteReq::new(Region::Episodic, "trivial chatter").importance(0.1)).unwrap();
+        let rec = m
+            .remember(WriteReq::new(Region::Episodic, "trivial chatter").importance(0.1))
+            .unwrap();
         // Age the row past the warm window.
         {
             let conn = m.conn.lock().unwrap();
-            conn.execute("UPDATE facts SET last_access_ms = 0 WHERE id = ?1", [rec.id]).unwrap();
+            conn.execute(
+                "UPDATE facts SET last_access_ms = 0 WHERE id = ?1",
+                [rec.id],
+            )
+            .unwrap();
         }
         let demoted = m.consolidate(Duration::from_secs(60)).unwrap();
         assert_eq!(demoted, 1);

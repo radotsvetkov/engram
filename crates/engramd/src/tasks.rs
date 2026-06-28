@@ -80,16 +80,37 @@ fn infer_tags(text: &str) -> Vec<String> {
     let t = text.to_lowercase();
     let mut tags = Vec::new();
     let has = |words: &[&str]| words.iter().any(|w| t.contains(w));
-    if has(&["search", "google", "web", "online", "url", "http", "news", "look up"]) {
+    if has(&[
+        "search", "google", "web", "online", "url", "http", "news", "look up",
+    ]) {
         tags.push("web".into());
     }
-    if has(&["browser", "click", "navigate", "screenshot", "page", "website", "site"]) {
+    if has(&[
+        "browser",
+        "click",
+        "navigate",
+        "screenshot",
+        "page",
+        "website",
+        "site",
+    ]) {
         tags.push("browser".into());
     }
-    if has(&["file", "write", "read", "save", "folder", "directory", "csv", "pdf"]) {
+    if has(&[
+        "file",
+        "write",
+        "read",
+        "save",
+        "folder",
+        "directory",
+        "csv",
+        "pdf",
+    ]) {
         tags.push("files".into());
     }
-    if has(&["run", "command", "shell", "script", "build", "install", "compile"]) {
+    if has(&[
+        "run", "command", "shell", "script", "build", "install", "compile",
+    ]) {
         tags.push("shell".into());
     }
     tags
@@ -115,7 +136,10 @@ impl TaskStore {
             },
             Err(_) => Vec::new(),
         };
-        TaskStore { path, tasks: Mutex::new(tasks) }
+        TaskStore {
+            path,
+            tasks: Mutex::new(tasks),
+        }
     }
 
     /// Write atomically (temp + rename) and owner-only.
@@ -137,14 +161,25 @@ impl TaskStore {
     }
 
     pub fn get(&self, id: &str) -> Option<Task> {
-        self.tasks.lock().expect("tasks mutex").iter().find(|t| t.id == id).cloned()
+        self.tasks
+            .lock()
+            .expect("tasks mutex")
+            .iter()
+            .find(|t| t.id == id)
+            .cloned()
     }
 
     pub fn create(&self, title: String, detail: String, origin: String) -> Task {
         let now = now_ms() as i64;
         let tool_tags = infer_tags(&format!("{title} {detail}"));
+        // A process-wide counter guarantees a unique id even when several cards are created in the
+        // same millisecond with the same title - e.g. a mission's parallel subtask cards, which
+        // would otherwise collide on `t-{now}-{slug}` and corrupt each other's runs.
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
         let task = Task {
-            id: format!("t-{now}-{}", slug(&title)),
+            id: format!("t-{now}-{seq}-{}", slug(&title)),
             title,
             detail,
             status: "todo".into(),
@@ -200,7 +235,14 @@ impl TaskStore {
     }
 
     /// Hand a card to another agent: reassign it and append the hand-off (with its note) to the trail.
-    pub fn handoff(&self, id: &str, to_agent: Option<String>, from_name: &str, to_name: &str, note: &str) -> Option<Task> {
+    pub fn handoff(
+        &self,
+        id: &str,
+        to_agent: Option<String>,
+        from_name: &str,
+        to_name: &str,
+        note: &str,
+    ) -> Option<Task> {
         let mut t = self.tasks.lock().expect("tasks mutex");
         let task = t.iter_mut().find(|x| x.id == id)?;
         task.agent = to_agent;
@@ -291,9 +333,14 @@ mod tests {
         // Atomic counter (not just nanos) so parallel tests never share a dir under load.
         use std::sync::atomic::{AtomicU64, Ordering};
         static SEQ: AtomicU64 = AtomicU64::new(0);
-        let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let d = std::env::temp_dir()
-            .join(format!("engram-tasks-test-{n}-{}", SEQ.fetch_add(1, Ordering::Relaxed)));
+        let n = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let d = std::env::temp_dir().join(format!(
+            "engram-tasks-test-{n}-{}",
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
         std::fs::create_dir_all(&d).unwrap();
         d
     }
@@ -303,7 +350,13 @@ mod tests {
         let d = tmpdir();
         let s = TaskStore::open(&d);
         let t = s.create("do a thing".into(), String::new(), "test".into());
-        assert_eq!(s.set_agent(&t.id, Some("ag1".into())).unwrap().agent.as_deref(), Some("ag1"));
+        assert_eq!(
+            s.set_agent(&t.id, Some("ag1".into()))
+                .unwrap()
+                .agent
+                .as_deref(),
+            Some("ag1")
+        );
         assert!(s.set_agent(&t.id, None).unwrap().agent.is_none());
         assert!(s.set_agent("nope", Some("x".into())).is_none());
         std::fs::remove_dir_all(&d).ok();
@@ -315,14 +368,24 @@ mod tests {
         let s = TaskStore::open(&d);
         let t = s.create("investigate".into(), String::new(), "test".into());
         s.set_agent(&t.id, Some("scout-id".into()));
-        let after = s.handoff(&t.id, Some("rev-id".into()), "Scout", "Reviewer", "found it, verify").unwrap();
+        let after = s
+            .handoff(
+                &t.id,
+                Some("rev-id".into()),
+                "Scout",
+                "Reviewer",
+                "found it, verify",
+            )
+            .unwrap();
         assert_eq!(after.agent.as_deref(), Some("rev-id"));
         assert_eq!(after.handoffs.len(), 1);
         assert_eq!(after.handoffs[0].from, "Scout");
         assert_eq!(after.handoffs[0].to, "Reviewer");
         assert_eq!(after.handoffs[0].note, "found it, verify");
         // a second hand-off appends rather than replacing, and can clear the agent
-        let after2 = s.handoff(&t.id, None, "Reviewer", "Default agent", "done").unwrap();
+        let after2 = s
+            .handoff(&t.id, None, "Reviewer", "Default agent", "done")
+            .unwrap();
         assert_eq!(after2.handoffs.len(), 2);
         assert!(after2.agent.is_none());
         std::fs::remove_dir_all(&d).ok();

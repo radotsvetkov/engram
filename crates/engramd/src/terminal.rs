@@ -40,15 +40,23 @@ fn shell_enabled(app: &App) -> bool {
 /// and an agent command run in the same place (local, a network-isolated container, ssh, ...).
 fn backend() -> Option<String> {
     match std::env::var("ENGRAM_SHELL_BACKEND").as_deref() {
-        Ok("docker") => Some(std::env::var("ENGRAM_DOCKER_IMAGE").unwrap_or_else(|_| "alpine".into())),
-        Ok("ssh") => std::env::var("ENGRAM_SSH_HOST").ok().map(|h| format!("ssh:{h}")),
-        Ok("singularity") => std::env::var("ENGRAM_SINGULARITY_IMAGE").ok().map(|i| format!("singularity:{i}")),
+        Ok("docker") => {
+            Some(std::env::var("ENGRAM_DOCKER_IMAGE").unwrap_or_else(|_| "alpine".into()))
+        }
+        Ok("ssh") => std::env::var("ENGRAM_SSH_HOST")
+            .ok()
+            .map(|h| format!("ssh:{h}")),
+        Ok("singularity") => std::env::var("ENGRAM_SINGULARITY_IMAGE")
+            .ok()
+            .map(|i| format!("singularity:{i}")),
         _ => None,
     }
 }
 
 fn home() -> PathBuf {
-    std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("/"))
+    std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/"))
 }
 
 /// Resolve a requested directory to an existing one, defaulting to the workdir. The human
@@ -101,7 +109,11 @@ pub async fn shell_handler(State(app): State<App>, Json(r): Json<ShellReq>) -> R
             Ok(c) if c.is_dir() => {
                 let entry = app
                     .ledger
-                    .append("terminal.exec", "user", json!({ "command": command, "cwd": c.display().to_string() }))
+                    .append(
+                        "terminal.exec",
+                        "user",
+                        json!({ "command": command, "cwd": c.display().to_string() }),
+                    )
                     .ok();
                 Json(json!({
                     "ok": true, "stdout": "", "stderr": "", "exit": 0,
@@ -122,7 +134,11 @@ pub async fn shell_handler(State(app): State<App>, Json(r): Json<ShellReq>) -> R
     let (program, args) = engram_agent::tools::shell_command(backend().as_deref(), &cwd, &command);
     // Set PWD to match the real working directory: the `pwd`/`$PWD` shell builtins trust an
     // inherited PWD over getcwd(), so without this they'd echo the daemon's stale PWD, not `cwd`.
-    let fut = tokio::process::Command::new(&program).args(&args).current_dir(&cwd).env("PWD", &cwd).output();
+    let fut = tokio::process::Command::new(&program)
+        .args(&args)
+        .current_dir(&cwd)
+        .env("PWD", &cwd)
+        .output();
     let (exit, stdout, stderr) = match tokio::time::timeout(Duration::from_secs(60), fut).await {
         Ok(Ok(out)) => (
             out.status.code().unwrap_or(-1),
@@ -169,9 +185,15 @@ pub async fn fs_handler(State(app): State<App>, Query(q): Query<FsQuery>) -> Res
         }
     }
     // Directories first, then case-insensitive by name.
-    entries.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase())));
+    entries.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase()))
+    });
     entries.truncate(500);
-    let list: Vec<_> = entries.into_iter().map(|(dir, name)| json!({ "dir": dir, "name": name })).collect();
+    let list: Vec<_> = entries
+        .into_iter()
+        .map(|(dir, name)| json!({ "dir": dir, "name": name }))
+        .collect();
     Json(json!({
         "path": dir.display().to_string(),
         "parent": dir.parent().map(|p| p.display().to_string()),

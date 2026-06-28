@@ -3,8 +3,13 @@ Description=Engram core socket (zero-idle activation)
 
 [Socket]
 # systemd owns the listening socket. There is NO Engram process until a connection
-# arrives - this is the mechanism behind "0 MB resident at idle".
-ListenStream=8088
+# arrives - this is the mechanism behind "0 MB resident at idle". engramd inherits this
+# fd (LISTEN_FDS) instead of binding the port itself.
+#
+# Bind loopback by default: an exposed agent must be authenticated. To reach it from the
+# network, front it with a reverse proxy (TLS + the API token), or change this to
+# `ListenStream=8088` AND set ENGRAM_API_TOKEN in engram.service.
+ListenStream=127.0.0.1:8088
 Accept=no
 
 [Install]

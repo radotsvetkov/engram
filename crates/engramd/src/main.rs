@@ -1066,7 +1066,7 @@ fn agent_redacted(a: &agents::AgentDef) -> Value {
     json!({
         "id": a.id, "name": a.name, "role": a.role, "model": a.model,
         "provider": a.provider, "base_url": a.base_url,
-        "api_key_set": !a.api_key.is_empty(),
+        "api_key_set": !a.api_key.is_empty(), "effort": a.effort,
         "created_ms": a.created_ms, "updated_ms": a.updated_ms,
     })
 }
@@ -1086,9 +1086,10 @@ async fn agents_create(State(app): State<App>, Json(p): Json<Value>) -> ApiResul
     let provider = p.get("provider").and_then(|v| v.as_str()).unwrap_or("");
     let base_url = p.get("base_url").and_then(|v| v.as_str()).unwrap_or("");
     let api_key = p.get("api_key").and_then(|v| v.as_str()).unwrap_or("");
+    let effort = p.get("effort").and_then(|v| v.as_str()).unwrap_or("");
     let def = app
         .agents
-        .create(name, role, model, provider, base_url, api_key);
+        .create(name, role, model, provider, base_url, api_key, effort);
     app.ledger
         .append(
             "agent.create",
@@ -1110,9 +1111,10 @@ async fn agents_update(
     let provider = p.get("provider").and_then(|v| v.as_str());
     let base_url = p.get("base_url").and_then(|v| v.as_str());
     let api_key = p.get("api_key").and_then(|v| v.as_str());
+    let effort = p.get("effort").and_then(|v| v.as_str());
     let def = app
         .agents
-        .update(&id, name, role, model, provider, base_url, api_key)
+        .update(&id, name, role, model, provider, base_url, api_key, effort)
         .ok_or_else(|| err("no such agent"))?;
     app.ledger
         .append(
@@ -1414,10 +1416,15 @@ pub(crate) async fn run_agent_task_cb(
     // one provider for triage, a frontier model on another for hard reasoning). When set, run it
     // through a per-agent gateway so a foreign model id doesn't 404 against the global provider.
     let gateway = match agent_def.filter(|a| !a.provider.trim().is_empty()) {
-        Some(a) => std::sync::Arc::new(engram_gateway::Gateway::new(
-            config::build_provider_from(&a.provider, &a.base_url, &a.api_key),
-            app.ledger.clone(),
-        )),
+        Some(a) => {
+            let gw = std::sync::Arc::new(engram_gateway::Gateway::new(
+                config::build_provider_from(&a.provider, &a.base_url, &a.api_key),
+                app.ledger.clone(),
+            ));
+            // The agent's own reasoning effort rides on its own gateway (model-default when empty).
+            gw.set_default_effort(Some(a.effort.clone()));
+            gw
+        }
         None => app.gateway.clone(),
     };
     let ctx = engram_agent::ToolCtx {

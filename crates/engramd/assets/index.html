@@ -2757,6 +2757,9 @@ function agentEdit(id){
     <select class="ask-input" id="agProvider">${provOpts}</select>
     <input class="ask-input" id="agBase" placeholder="Base URL (optional - blank uses the provider default)" value="${escAttr(a.base_url||'')}" autocomplete="off">
     <input class="ask-input" type="password" id="agKey" placeholder="${a.api_key_set?'•••• - blank keeps the saved key':'API key for this agent (only if it uses its own provider)'}" autocomplete="off">
+    <select class="ask-input" id="agEffort" title="How hard this agent's model thinks. Applied when the agent runs through its own provider; ignored by models that don't support it.">
+      ${[['','Reasoning effort - Auto (model default)'],['low','Reasoning effort - Low'],['medium','Reasoning effort - Medium'],['high','Reasoning effort - High']].map(([v,l])=>`<option value="${v}"${(a.effort||'')===v?' selected':''}>${esc(l)}</option>`).join('')}
+    </select>
     <div class="ask-actions"><button class="ask-ghost" onclick="this.closest('.overlay').remove()">Cancel</button><button class="ask-ok" onclick="agentSave('${escAttr(a.id)}',this)">Save</button></div>
   </div>`;
   document.body.appendChild(ov);
@@ -2770,9 +2773,10 @@ async function agentSave(id, btn){
   const provider=ov.querySelector('#agProvider').value.trim();
   const base_url=ov.querySelector('#agBase').value.trim();
   const api_key=ov.querySelector('#agKey').value.trim();
+  const effort=ov.querySelector('#agEffort').value;
   if(!name){ notify('An agent needs a name'); return; }
   try{
-    const body=JSON.stringify({name,role,model,provider,base_url,api_key});
+    const body=JSON.stringify({name,role,model,provider,base_url,api_key,effort});
     if(id) await J('/v1/agents/'+id,{method:'POST',headers:MIND_JSON,body});
     else await J('/v1/agents',{method:'POST',headers:MIND_JSON,body});
     ov.remove(); notify('Agent saved · signed','ok'); if(ccActive==='agents') renderCC();

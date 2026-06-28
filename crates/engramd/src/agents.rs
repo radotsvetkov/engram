@@ -33,6 +33,15 @@ fn uid() -> String {
     format!("ag{nanos:x}{n:x}")
 }
 
+/// Normalize a reasoning-effort string: only "low"/"medium"/"high" are kept, anything else (incl.
+/// "auto"/"") becomes "" (the model default).
+fn norm_effort(e: &str) -> String {
+    match e.trim() {
+        "low" | "medium" | "high" => e.trim().to_string(),
+        _ => String::new(),
+    }
+}
+
 /// A durable agent definition.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AgentDef {
@@ -56,6 +65,10 @@ pub struct AgentDef {
     pub base_url: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub api_key: String,
+    /// Reasoning effort for this agent's runs: "" (model default) | "low" | "medium" | "high".
+    /// Applied (model-awarely) when the agent runs through its own provider gateway.
+    #[serde(default)]
+    pub effort: String,
     pub created_ms: i64,
     pub updated_ms: i64,
 }
@@ -100,6 +113,7 @@ impl AgentStore {
         provider: &str,
         base_url: &str,
         api_key: &str,
+        effort: &str,
     ) -> AgentDef {
         let now = now_ms();
         let def = AgentDef {
@@ -110,6 +124,7 @@ impl AgentStore {
             provider: provider.trim().to_string(),
             base_url: base_url.trim().to_string(),
             api_key: api_key.trim().to_string(),
+            effort: norm_effort(effort),
             created_ms: now,
             updated_ms: now,
         };
@@ -131,6 +146,7 @@ impl AgentStore {
         provider: Option<&str>,
         base_url: Option<&str>,
         api_key: Option<&str>,
+        effort: Option<&str>,
     ) -> Option<AgentDef> {
         let mut g = self.agents.lock().expect("agents lock");
         let a = g.iter_mut().find(|a| a.id == id)?;
@@ -154,6 +170,9 @@ impl AgentStore {
             if !k.is_empty() {
                 a.api_key = k.to_string();
             }
+        }
+        if let Some(e) = effort {
+            a.effort = norm_effort(e);
         }
         a.updated_ms = now_ms();
         let out = a.clone();
@@ -215,13 +234,22 @@ mod tests {
     fn create_get_update_delete() {
         let d = tmpdir();
         let s = AgentStore::open(&d);
-        let a = s.create("Scout", "research", "claude-haiku", "", "", "");
+        let a = s.create("Scout", "research", "claude-haiku", "", "", "", "");
         assert_eq!(a.name, "Scout");
         assert_eq!(s.list().len(), 1);
         assert_eq!(s.get(&a.id).unwrap().role, "research");
         // each Some applies; None leaves the field
         let u = s
-            .update(&a.id, Some("Scout2"), None, Some("opus"), None, None, None)
+            .update(
+                &a.id,
+                Some("Scout2"),
+                None,
+                Some("opus"),
+                None,
+                None,
+                None,
+                None,
+            )
             .unwrap();
         assert_eq!(u.name, "Scout2");
         assert_eq!(u.model, "opus");
@@ -239,7 +267,7 @@ mod tests {
         let s = AgentStore::open(&d);
         let mut ids = HashSet::new();
         for i in 0..500 {
-            let a = s.create(&format!("a{i}"), "", "", "", "", "");
+            let a = s.create(&format!("a{i}"), "", "", "", "", "", "");
             assert!(ids.insert(a.id), "duplicate agent id generated");
         }
         std::fs::remove_dir_all(&d).ok();
@@ -250,7 +278,7 @@ mod tests {
         let d = tmpdir();
         {
             let s = AgentStore::open(&d);
-            s.create("Persisted", "r", "m", "", "", "");
+            s.create("Persisted", "r", "m", "", "", "", "");
         }
         let s2 = AgentStore::open(&d);
         assert_eq!(s2.list().len(), 1);

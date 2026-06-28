@@ -1661,6 +1661,7 @@ pub(crate) async fn run_agent_task(
         None,
         None,
         None,
+        None,
     )
     .await
 }
@@ -1785,6 +1786,7 @@ pub(crate) async fn run_agent_task_cb(
     taint: engram_core::Taint,
     dry_run: bool,
     on_step: Option<engram_agent::StepCallback>,
+    on_narration: Option<engram_agent::NarrationCallback>,
     agent_def: Option<&agents::AgentDef>,
     workdir_override: Option<std::path::PathBuf>,
 ) -> Result<engram_agent::AgentRun, String> {
@@ -2011,6 +2013,9 @@ pub(crate) async fn run_agent_task_cb(
     if let Some(cb) = on_step {
         agent = agent.on_step(cb);
     }
+    if let Some(cb) = on_narration {
+        agent = agent.on_narration(cb);
+    }
     let result = agent.run(task, ctx).await.map_err(|e| e.to_string());
     // FLYWHEEL - auto-capture: on a completed, real (non-dry) trusted run, write one concise
     // episodic memory so the next task can recall what was done. Best-effort; dedup-on-write
@@ -2098,6 +2103,7 @@ async fn agent_handler(State(app): State<App>, Json(r): Json<AgentReq>) -> ApiRe
         r.max_steps.unwrap_or(8),
         engram_core::Taint::Trusted,
         r.dry_run,
+        None,
         None,
         None,
         None,
@@ -2626,6 +2632,7 @@ pub(crate) async fn run_task_core(
         engram_core::Taint::Trusted,
         false,
         Some(on_step),
+        None,
         agent_def.as_ref(),
         workdir_override,
     )
@@ -3004,7 +3011,12 @@ async fn converse_stream_handler(
              assumptions and state them, rather than stalling. When researching multiple things, run \
              the searches in parallel (delegate sub-tasks). Present the result cleanly: a short \
              intro, then well-formatted tables with real working links, and end with a concrete \
-             next step you can take. Never show internal verification checklists or meta-notes.\n\n",
+             next step you can take. Never show internal verification checklists or meta-notes.\n\
+             GROUNDING (critical): only state facts — prices, links, schedules, availability — that \
+             you ACTUALLY retrieved with a tool this turn. Never invent or guess values, and never \
+             output a link you didn't get from a real result. If a source is blocked, rate-limited, \
+             or you couldn't verify something, say so plainly and give the official site to check, \
+             rather than fabricating a number or URL.\n\n",
         );
         if !history.is_empty() {
             task.push_str("You are mid-conversation. Here is what was said so far - use it; do NOT re-ask for context you already have:\n");
@@ -3044,6 +3056,13 @@ async fn converse_stream_handler(
                 );
             },
         );
+        // Stream the model's interim commentary ("I've kicked off two searches…") so the user sees
+        // what it's doing live instead of a silent wait that jumps to the final answer.
+        let txn = tx.clone();
+        let on_narration: engram_agent::NarrationCallback = std::sync::Arc::new(move |note: &str| {
+            let note: String = note.chars().take(600).collect();
+            let _ = txn.send(Event::default().event("narration").data(json!({ "text": note }).to_string()));
+        });
         match run_agent_task_cb(
             &app,
             &task,
@@ -3051,6 +3070,7 @@ async fn converse_stream_handler(
             engram_core::Taint::Trusted,
             false,
             Some(on_step),
+            Some(on_narration),
             None,
             None,
         )

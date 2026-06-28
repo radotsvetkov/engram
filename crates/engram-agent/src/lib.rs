@@ -19,7 +19,7 @@ pub mod skills_tools;
 pub mod tool;
 pub mod tools;
 
-pub use agent::{Agent, AgentError, AgentRun, StepCallback, StepRecord};
+pub use agent::{Agent, AgentError, AgentRun, NarrationCallback, StepCallback, StepRecord};
 pub use mcp::{connect_servers, connect_servers_reported, McpClient, McpServerSpec, McpTool};
 pub use skills_runtime::{improve_skill, run_active, score_skill, SkillRunParams};
 pub use tool::{confine, BrowserSession, NoBrowser, Policy, Tool, ToolCtx, ToolRegistry};

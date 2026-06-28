@@ -97,6 +97,7 @@ pub fn spawn(app: App, token: String) -> tokio::task::AbortHandle {
                     None,
                     None,
                     None,
+                    None,
                 )
                 .await
                 {

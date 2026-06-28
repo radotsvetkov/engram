@@ -23,8 +23,9 @@ use crate::tool::{ToolCtx, ToolRegistry};
 /// Summarize older turns once the working transcript exceeds this many estimated tokens,
 /// so a long run never overflows the model's context window.
 const COMPACT_TOKEN_THRESHOLD: u32 = 12_000;
-/// How many times to retry a transient provider failure before giving up.
-const MODEL_RETRIES: u32 = 3;
+/// How many times to retry a transient provider failure before giving up. Higher than a plain
+/// network retry because provider RATE LIMITS (429) need several seconds of backoff to clear.
+const MODEL_RETRIES: u32 = 5;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AgentError {
@@ -58,6 +59,10 @@ pub struct AgentRun {
 /// Called after each tool step with (step number, the full step record) - for live progress and
 /// a streaming "watch the agent work" view (tool, args, observation, and the step's signed receipt).
 pub type StepCallback = Arc<dyn Fn(usize, &StepRecord) + Send + Sync>;
+/// Called with the model's interim commentary (the text it writes alongside a batch of tool calls,
+/// e.g. "I've kicked off two parallel searches…") so the UI can show what it's THINKING/DOING live,
+/// instead of going silent until the final answer lands.
+pub type NarrationCallback = Arc<dyn Fn(&str) + Send + Sync>;
 
 pub struct Agent {
     gateway: Arc<Gateway>,
@@ -67,6 +72,7 @@ pub struct Agent {
     /// Personality / standing instructions (from SOUL.md), prepended to the prompt.
     persona: Option<String>,
     on_step: Option<StepCallback>,
+    on_narration: Option<NarrationCallback>,
     /// Run one verify-before-finish reflection pass before accepting the final answer.
     reflect: bool,
     /// Hard ceiling on total tokens (in+out) a run may spend before it stops - a runaway
@@ -89,6 +95,7 @@ impl Agent {
             max_steps: 8,
             persona: None,
             on_step: None,
+            on_narration: None,
             reflect: false,
             token_budget: None,
             halt: None,
@@ -133,6 +140,11 @@ impl Agent {
     /// Observe each step as it completes (for live UI progress).
     pub fn on_step(mut self, cb: StepCallback) -> Self {
         self.on_step = Some(cb);
+        self
+    }
+    /// Register a callback for the model's interim commentary (see [`NarrationCallback`]).
+    pub fn on_narration(mut self, cb: NarrationCallback) -> Self {
+        self.on_narration = Some(cb);
         self
     }
 
@@ -256,6 +268,15 @@ impl Agent {
                 });
             }
 
+            // Surface the model's interim commentary live (the "what I'm doing" narration it writes
+            // alongside a batch of tool calls) so the user sees activity instead of a silent wait
+            // that then jumps to the final answer.
+            if let Some(cb) = &self.on_narration {
+                let note = completion.text.trim();
+                if !note.is_empty() {
+                    cb(note);
+                }
+            }
             messages.push(Message::assistant_tool_calls(
                 completion.text.clone(),
                 completion.tool_calls.clone(),
@@ -379,7 +400,11 @@ impl Agent {
                     if attempt >= MODEL_RETRIES {
                         return Err(e.into());
                     }
-                    let backoff = Duration::from_millis(250u64 * (1u64 << (attempt - 1)));
+                    // Exponential backoff, capped at 8s. Rate limits (429) in particular need
+                    // seconds, not milliseconds, to clear — so start at 500ms: 0.5,1,2,4,8s.
+                    let backoff = Duration::from_millis(
+                        (500u64 * (1u64 << (attempt - 1))).min(8_000),
+                    );
                     tracing::warn!(attempt, error = %e, "model call failed; retrying after backoff");
                     tokio::time::sleep(backoff).await;
                 }

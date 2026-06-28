@@ -861,6 +861,10 @@
   .cstep.clk:hover { color:var(--text-primary); border-color:var(--accent); }
   .cstep .cs-open { margin-left:3px; opacity:.6; font-size:10px; }
   .chat-steps .step-shot { flex-basis:100%; margin:3px 0; }
+  /* Live narration: the model's "what I'm doing" commentary while it works */
+  .chat-notes { display:flex; flex-direction:column; gap:4px; margin:2px 0 8px; }
+  .cnote { font-size:12.5px; line-height:1.5; color:var(--text-secondary); font-style:italic; opacity:.92; }
+  .cnote a { color:var(--accent,#45c8a8); font-style:normal; }
   /* File viewer modal (open an artifact/file for reading where there's no chat canvas) */
   .fv-ov { position:fixed; inset:0; z-index:1200; background:rgba(10,14,20,.55); display:flex; align-items:center; justify-content:center; padding:5vh 4vw; backdrop-filter:blur(2px); }
   .fv-card { background:var(--surface-1,#fff); border:1px solid var(--border,#2a2c34); border-radius:14px; width:min(900px,100%); max-height:90vh; display:flex; flex-direction:column; box-shadow:0 24px 64px rgba(0,0,0,.35); overflow:hidden; }
@@ -2128,8 +2132,11 @@ function paintFeed(toBottom=true){
       const chip=`<span class="cstep${st.ok?'':' bad'}${clk}" title="${escAttr(openable?('Open '+fpath):(st.observation||'').replace(/\s+/g,' ').slice(0,180))}"><span class="cs-ic">${st.ok?'✓':'✕'}</span>${esc(lbl)}${openable?'<span class="cs-open">↗</span>':''}</span>`;
       return chip+stepShotHtml(st);
     }).join('')}</div>`:'';
-    const body = m.text ? (mdToHtml(m.text) + (m.streaming?'<span class="caret"></span>':'')) : (m.streaming?thinkingDots:'...');
-    return `<div>${steps}<div class="msg engram"${m.streaming?' id="streamMsg"':''}>${body}</div>${ribbon}${learned}</div>`;
+    // The model's live "what I'm doing" commentary (narration) — shown above the tool chips so a
+    // long run reads as activity, not a silent wait.
+    const notes=(m.notes&&m.notes.length)?`<div class="chat-notes">${m.notes.map(n=>`<div class="cnote">${mdInline(esc(n))}</div>`).join('')}</div>`:'';
+    const body = m.text ? (mdToHtml(m.text) + (m.streaming?'<span class="caret"></span>':'')) : (m.streaming?(notes||steps?'':thinkingDots):'...');
+    return `<div>${notes}${steps}<div class="msg engram"${m.streaming?' id="streamMsg"':''}>${body}</div>${ribbon}${learned}</div>`;
   }).join('') || chatWelcome();
   artsAfterPaint();   // detect substantial code/doc blocks, inject "Open in canvas" chips, sync the pane
   if(toBottom) f.scrollTop=f.scrollHeight;
@@ -2198,19 +2205,28 @@ async function chatSay(text, attachments){
         const live = WS.activeSession===sid;
         if(ev==='token'){ msg.text+=data; if(live) streamTick(msg); }
         else if(ev==='step'){ try{ const d=JSON.parse(data); (msg.steps=msg.steps||[]).push(d); if(live) paintFeedSticky(); }catch(_){} }
+        else if(ev==='narration'){ try{ const d=JSON.parse(data); if(d.text&&d.text.trim()){ (msg.notes=msg.notes||[]).push(d.text.trim()); if(live) paintFeedSticky(); } }catch(_){} }
         else if(ev==='done'){ try{const d=JSON.parse(data); if(d.reply) msg.text=d.reply; msg.recalled=d.recalled; msg.recalled_refs=d.recalled_refs; msg.learned=d.learned; if(d.steps) msg.steps=d.steps;}catch(_){} if(typeof _artifacts==='object') _artifacts.items=null; if(live) paintFeed(); }
-        else if(ev==='error'){ msg.text='(couldn\'t reach Engram - '+data+')'; if(live) paintFeed(); }
+        else if(ev==='error'){ msg.text=friendlyChatError(data); if(live) paintFeed(); }
       }
     }
     if(!msg.text) msg.text='(no reply)';
     msg.streaming=false; if(typeof _artifacts==='object') _artifacts.items=null; if(WS.activeSession===sid) paintFeed();
   } catch(e){
     const stopped = e && e.name==='AbortError';
-    msg.text = stopped ? (msg.text || '(stopped)') : (msg.text || '(couldn\'t reach Engram - '+(e.message||'try again')+')');
+    msg.text = stopped ? (msg.text || '(stopped)') : (msg.text || friendlyChatError(e.message||'try again'));
     msg.streaming=false; if(WS.activeSession===sid) paintFeed();
   } finally {
     setChatBusy(false); _chatAbort=null;
   }
+}
+// Turn a raw provider/transport error into a clear, actionable message instead of a scary dump.
+function friendlyChatError(data){
+  const s=String(data||'');
+  if(/429|rate.?limit|too many requests/i.test(s)) return '⚠️ Your model provider is rate-limiting requests (429). Wait a few seconds and try again — or switch to a less limited model in Settings (e.g. a paid Anthropic key). Mistral\'s free tier limits requests per minute.';
+  if(/\b401\b|\b403\b|invalid.*key|unauthor/i.test(s)) return '⚠️ The provider rejected the API key. Check it in Settings › Keys & security.';
+  if(/timeout|timed out/i.test(s)) return '⚠️ The model took too long to respond. Try again, or pick a faster model.';
+  return '⚠️ Couldn\'t complete the request — '+s;
 }
 
 // ---- model picker (searchable, provider-grouped popover) ----

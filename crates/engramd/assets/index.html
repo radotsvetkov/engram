@@ -2725,6 +2725,7 @@ const ccHead=(t,s)=>`<h2>${t}</h2><div class="sub">${s}</div>`;
 
 function ccGateways(c){
   const p=c.provider||{kind:'mock',model:'',base_url:'',api_key_set:false}, kinds=Object.keys(PROVIDERS);
+  const md=c.media||{};
   const opt=(val,sel,label)=>`<option value="${escAttr(val)}"${val===sel?' selected':''}>${esc(label)}</option>`;
   const noteHttp = c.http_enabled===false ? '<div class="offline">This build has no network providers compiled in - only the offline mock works. Rebuild with <code>--features http</code> for real models.</div>' : '';
   return ccHead('Gateways','Which model backend Engram thinks with. Hot-swaps live - no restart.')+noteHttp+`
@@ -2739,6 +2740,19 @@ function ccGateways(c){
         <input type="password" id="pkey" placeholder="${p.api_key_set?'•••••••• - blank keeps the saved key':''}" autocomplete="off"><div class="hint" id="keyHint"></div></div>
       <div class="sactions"><button class="sbtn" onclick="testProvider()">Test connection</button>${p.api_key_set?'<button class="sbtn ghost" onclick="clearSecret(\'provider\',\'clear_api_key\')">Clear key</button>':''}<span class="grow"></span><button class="sbtn primary" onclick="saveSettings()">Save</button></div>
       <div class="testline" id="testline"></div>
+    </div>
+    <div class="scard">
+      <h3>Media models</h3>
+      <div class="desc">Per-modality model overrides for the vision, image, speech, and transcription tools. Leave blank to use the default. These hot-swap on save - no restart.</div>
+      <div class="row2">
+        <div class="field"><label>Vision (read images)</label><input type="text" id="mvision" value="${escAttr(md.vision_model||'')}" placeholder="(your primary model)" autocomplete="off"></div>
+        <div class="field"><label>Image generation</label><input type="text" id="mimage" value="${escAttr(md.image_model||'')}" placeholder="gpt-image-1" autocomplete="off"></div>
+      </div>
+      <div class="row2">
+        <div class="field"><label>Text to speech</label><input type="text" id="mtts" value="${escAttr(md.tts_model||'')}" placeholder="tts-1" autocomplete="off"></div>
+        <div class="field"><label>Speech to text</label><input type="text" id="mstt" value="${escAttr(md.stt_model||'')}" placeholder="whisper-1" autocomplete="off"></div>
+      </div>
+      <div class="sactions"><span class="grow"></span><button class="sbtn primary" onclick="saveSettings()">Save</button></div>
     </div>`;
 }
 function ccKeys(c){
@@ -2801,6 +2815,8 @@ function ccTools(c){
           <div class="hint" id="stargethint">${bk==='ssh'?'e.g. deploy@10.0.0.5 (key auth, must be set up)':'e.g. alpine, ubuntu:24.04, or your own image'}</div>
         </div>
       </div>
+      <label class="toggle" style="margin-top:14px"><input type="checkbox" id="sworktree" ${s.enable_worktree_isolation?'checked':''}><span class="track"></span> Isolate each task in its own git worktree</label>
+      <div class="hint">Each task runs in a throwaway git worktree under (home)/worktrees, so parallel agents can't clobber each other's files. Needs the workspace to be a git repository; falls back to the shared workspace otherwise.</div>
       <div class="ph" style="margin-top:11px"><b>No egress</b> - on by default. Once a run reads untrusted content, tools that would send data to the web are blocked. (A visual allowlist editor lands in Phase 2.)</div>
       <div class="sactions"><span class="grow"></span><button class="sbtn primary" onclick="saveSettings()">Save</button></div>
     </div>`;
@@ -3065,10 +3081,17 @@ async function dissentResolve(choice){
   if(choice==='proceed'){ notify('Proceeding - decision signed','ok'); runTaskLive(p.id); }
   else { notify('Held back - decision signed','ok'); openTask(p.id,true); }
 }
-function ccAdvanced(){ return ccHead('Advanced','Daemon, ledger, and the danger zone.')+`
+function ccAdvanced(c){ c=c||{}; const b=c.browser||{}; return ccHead('Advanced','Daemon, ledger, browser, and the danger zone.')+`
     <div class="scard"><h3>Audit ledger</h3>
       <div class="desc">Every state change is hash-chained and Ed25519-signed. Verify re-walks the whole chain and reports if anything was altered.</div>
       <div class="sactions"><button class="sbtn" onclick="verifyLedgerNow()">Verify ledger now</button><span class="grow"></span></div></div>
+    <div class="scard"><h3>Browser automation <span class="badge restart">restart to apply</span></h3>
+      <div class="desc">The interactive browser (screenshots, clicks) launches Chrome/Chromium over the DevTools Protocol. Leave the path blank to auto-detect. The session is built at boot, so changes need a restart.</div>
+      <div class="row2">
+        <div class="field"><label>Chrome / Chromium path</label><input type="text" id="bchrome" value="${escAttr(b.chrome_path||'')}" placeholder="(auto-detect)" autocomplete="off"></div>
+        <div class="field"><label>CDP port</label><input type="number" id="bport" min="0" max="65535" value="${b.cdp_port?b.cdp_port:''}" placeholder="9222" autocomplete="off"><div class="hint">0 / blank = default (9222).</div></div>
+      </div>
+      <div class="sactions"><button class="sbtn" onclick="restartDaemon()">Restart daemon</button><span class="grow"></span><button class="sbtn primary" onclick="saveSettings()">Save</button></div></div>
     <div class="scard"><h3>Daemon</h3>
       <div class="desc">Engram sleeps to zero when idle and wakes on the next request. Restart applies boot-time settings (the embedder).</div>
       <div class="sactions"><button class="sbtn" onclick="restartDaemon()">Restart daemon</button><span class="grow"></span></div></div>
@@ -3162,10 +3185,13 @@ function collectSettings(){
   const has=id=>!!document.getElementById(id), patch={};
   if(has('pkind')){ patch.provider={ kind:gv('pkind'), model:gv('pmodel'), base_url:gv('pbase') }; const k=gv('pkey'); if(k) patch.provider.api_key=k; }
   if(has('ekind')) patch.embed={ kind:gv('ekind'), model_dir:gv('edir') };
-  if(has('sshell')||has('stok')||has('ssec')||has('sbackend')){ patch.security={}; if(has('sshell')) patch.security.allow_shell=document.getElementById('sshell').checked;
+  if(has('sshell')||has('stok')||has('ssec')||has('sbackend')||has('sworktree')){ patch.security={}; if(has('sshell')) patch.security.allow_shell=document.getElementById('sshell').checked;
     const t=gv('stok'); if(t) patch.security.api_token=t; const s=gv('ssec'); if(s) patch.security.channel_secret=s;
-    if(has('sbackend')){ patch.security.shell_backend=gv('sbackend'); patch.security.shell_target=gv('starget'); } }
+    if(has('sbackend')){ patch.security.shell_backend=gv('sbackend'); patch.security.shell_target=gv('starget'); }
+    if(has('sworktree')) patch.security.enable_worktree_isolation=document.getElementById('sworktree').checked; }
   if(has('cbudget')) patch.cost={ task_token_budget: Math.max(1000, parseInt(gv('cbudget'),10)||250000) };
+  if(has('mvision')) patch.media={ vision_model:gv('mvision'), image_model:gv('mimage'), tts_model:gv('mtts'), stt_model:gv('mstt') };
+  if(has('bchrome')||has('bport')) patch.browser={ chrome_path:gv('bchrome'), cdp_port: Math.max(0, Math.min(65535, parseInt(gv('bport'),10)||0)) };
   if(has('mcplist')) patch.mcp=collectMcpV2();
   return patch;
 }
@@ -4623,8 +4649,30 @@ function ccIntegrations2(c){
     mcp.length?'on':'',
     '<button class="sbtn" onclick="ccGo(\'tools\')">'+(mcp.length?'Manage servers':'Add a server')+'</button>');
 
+  const SEND_IC = SVG('<path d="M22 2 11 13M22 2l-7 20-4-9-9-4Z"/>');
+  const obWh = !!ch.webhook_url_set;
+  const obWhActions = obWh
+    ? `<span class="badge set">configured</span><span style="flex:1"></span><button class="sbtn ghost" onclick="setWebhook()">Change</button><button class="sbtn ghost" onclick="clearSecret('channels','clear_webhook_url')">Remove</button>`
+    : `<button class="sbtn primary" onclick="setWebhook()">Set webhook</button>`;
+  const obWhCard = card(SEND_IC,'Outbound webhook',
+    obWh ? 'The agent\'s <code>send_message</code> tool posts here by default (Slack, Discord, Mattermost...). SSRF-guarded at send; the URL is masked.'
+         : 'Give the <code>send_message</code> tool a default destination - a Slack/Discord/Mattermost incoming webhook. Validated by the SSRF guard when used.',
+    obWh?'on':'', obWhActions);
+
   return ccHead('Integrations','Connect outside channels and tool servers. Connecting writes to the local config and round-trips through the daemon.')+`
-    <div class="scard"><div class="integ-grid">${tgCard}${whCard}${mcpCard}</div></div>`;
+    <div class="scard"><div class="integ-grid">${tgCard}${whCard}${obWhCard}${mcpCard}</div></div>`;
+}
+// Set the default outbound webhook URL for the send_message tool. Masked once saved (it may embed
+// a secret, like a Slack token); the SSRF guard validates it at send time, not here.
+async function setWebhook(){
+  const url = await askInput({title:'Outbound webhook',label:'Paste an incoming webhook URL (Slack, Discord, Mattermost, or your own). Stored locally and masked; validated by the SSRF guard when the agent sends.',placeholder:'https://hooks.slack.com/services/...',ok:'Save'});
+  if(url===null) return;
+  const u=url.trim(); if(!u){ notify('No URL entered'); return; }
+  if(!/^https?:\/\//i.test(u)){ notify('Webhook must be an http(s) URL'); return; }
+  try{
+    await J('/v1/config',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({channels:{webhook_url:u}})});
+    notify('Webhook saved','ok'); await ccReload();
+  }catch(e){ notify('Save failed - '+e.message); }
 }
 async function connectTelegram(){
   const tok = await askInput({title:'Connect Telegram',label:'Paste your bot token from @BotFather. Stored locally, masked, never sent back to the browser.',placeholder:'123456:ABC-DEF...',ok:'Connect'});

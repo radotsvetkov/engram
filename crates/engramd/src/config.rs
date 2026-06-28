@@ -20,6 +20,38 @@ pub struct Config {
     pub cost: CostCfg,
     pub channels: ChannelsCfg,
     pub mcp: Vec<McpServer>,
+    /// Per-modality model overrides (vision / image / TTS / STT). Empty = the built-in default.
+    #[serde(default)]
+    pub media: MediaCfg,
+    /// Interactive-browser settings (Chrome path + CDP port). Applied at boot.
+    #[serde(default)]
+    pub browser: BrowserCfg,
+}
+
+/// Model overrides for the non-text modalities. Each empty string keeps the built-in default
+/// (or the matching ENGRAM_* env var). Surfaced in Settings > Gateways.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MediaCfg {
+    /// Model the vision tool uses to read images. Empty = inherit the run's primary model.
+    pub vision_model: String,
+    /// Image-generation model. Empty = `gpt-image-1`.
+    pub image_model: String,
+    /// Text-to-speech model. Empty = `tts-1`.
+    pub tts_model: String,
+    /// Speech-to-text model. Empty = `whisper-1`.
+    pub stt_model: String,
+}
+
+/// Interactive-browser configuration. The session is built once at boot, so changes are
+/// "restart to apply". Surfaced in Settings > Advanced.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BrowserCfg {
+    /// Explicit Chrome/Chromium binary path. Empty = auto-detect (or the ENGRAM_CHROME env var).
+    pub chrome_path: String,
+    /// Chrome DevTools Protocol port. 0 (the default) = fall through to ENGRAM_CDP_PORT, then 9222.
+    pub cdp_port: u16,
 }
 
 /// Outbound/inbound messaging channels the desktop's Integrations gallery configures.
@@ -33,6 +65,11 @@ pub struct ChannelsCfg {
     /// (unlike the token). Empty when not connected.
     #[serde(default)]
     pub telegram_username: String,
+    /// Default outbound webhook URL for the `send_message` tool (e.g. a Slack/Discord/Mattermost
+    /// incoming webhook). Empty = no default. A Slack-style URL embeds a secret, so it is masked in
+    /// the redacted API view (only presence is reported) and validated by the SSRF guard at use.
+    #[serde(default)]
+    pub webhook_url: String,
 }
 
 /// Which model backend to call, and with what credentials.
@@ -105,6 +142,10 @@ pub struct SecurityCfg {
     /// The target for the chosen backend: the Docker image (docker) or the user@host (ssh).
     #[serde(default)]
     pub shell_target: String,
+    /// Run each task in its own throwaway git worktree (when the workspace is a git repo), so
+    /// concurrent agents can't clobber each other's files. Off by default. Mirrors ENGRAM_WORKTREES.
+    #[serde(default)]
+    pub enable_worktree_isolation: bool,
 }
 
 /// Resolve a (backend, target) pair into the policy's shell-backend string the agent expects:
@@ -309,6 +350,7 @@ impl Config {
             &self.provider.kind,
             &self.provider.base_url,
             &self.provider.api_key,
+            &self.media,
         )
     }
 
@@ -329,11 +371,24 @@ impl Config {
                 "allow_shell": self.security.allow_shell,
                 "shell_backend": self.security.shell_backend,
                 "shell_target": self.security.shell_target,
+                "enable_worktree_isolation": self.security.enable_worktree_isolation,
             },
             "cost": { "task_token_budget": self.cost.task_token_budget },
             "channels": {
                 "telegram_set": !self.channels.telegram_token.is_empty(),
                 "telegram_username": self.channels.telegram_username,
+                // A Slack-style webhook URL embeds a secret, so report presence only - never the URL.
+                "webhook_url_set": !self.channels.webhook_url.is_empty(),
+            },
+            "media": {
+                "vision_model": self.media.vision_model,
+                "image_model": self.media.image_model,
+                "tts_model": self.media.tts_model,
+                "stt_model": self.media.stt_model,
+            },
+            "browser": {
+                "chrome_path": self.browser.chrome_path,
+                "cdp_port": self.browser.cdp_port,
             },
             // Mask per-server env VALUES (they hold secrets) - the UI shows which keys are set,
             // never their values, exactly like the provider api_key.
@@ -395,6 +450,7 @@ pub fn build_provider_from(
     kind: &str,
     base_url: &str,
     api_key: &str,
+    media: &MediaCfg,
 ) -> Box<dyn engram_gateway::Provider> {
     #[cfg(feature = "http")]
     {
@@ -420,18 +476,20 @@ pub fn build_provider_from(
                     } else {
                         api_key.to_string()
                     };
-                    return Box::new(engram_gateway::HttpProvider::new(
-                        kind.to_string(),
-                        base,
-                        key,
-                    ));
+                    return Box::new(
+                        engram_gateway::HttpProvider::new(kind.to_string(), base, key).with_media(
+                            media.image_model.clone(),
+                            media.tts_model.clone(),
+                            media.stt_model.clone(),
+                        ),
+                    );
                 }
             }
         }
     }
     #[cfg(not(feature = "http"))]
     {
-        let _ = (kind, base_url, api_key);
+        let _ = (kind, base_url, api_key, media);
     }
     Box::new(engram_gateway::MockProvider)
 }

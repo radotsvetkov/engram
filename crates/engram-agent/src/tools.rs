@@ -1266,7 +1266,12 @@ impl Tool for VisionAnalyzeTool {
         let question = arg_str(args, "question")?;
         let bytes = tokio::fs::read(&path).await.map_err(|e| e.to_string())?;
         let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-        let model = std::env::var("ENGRAM_VISION_MODEL").unwrap_or_else(|_| ctx.model.clone());
+        let model = ctx
+            .policy
+            .vision_model
+            .clone()
+            .or_else(|| std::env::var("ENGRAM_VISION_MODEL").ok())
+            .unwrap_or_else(|| ctx.model.clone());
         let req = CompletionRequest::new(model, vec![Message::user_with_image(question, b64)]);
         let completion = ctx
             .gateway
@@ -1605,7 +1610,12 @@ impl Tool for BrowserScreenshotTool {
         if let Some(question) = args["question"].as_str().filter(|q| !q.is_empty()) {
             let bytes = tokio::fs::read(&path).await.map_err(|e| e.to_string())?;
             let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-            let model = std::env::var("ENGRAM_VISION_MODEL").unwrap_or_else(|_| ctx.model.clone());
+            let model = ctx
+                .policy
+                .vision_model
+                .clone()
+                .or_else(|| std::env::var("ENGRAM_VISION_MODEL").ok())
+                .unwrap_or_else(|| ctx.model.clone());
             let req = CompletionRequest::new(model, vec![Message::user_with_image(question, b64)]);
             let c = ctx
                 .gateway
@@ -1951,11 +1961,14 @@ mod web {
         }
         async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
             let text = arg_str(args, "text")?;
+            // Precedence: explicit per-call url > the default from settings (Integrations) >
+            // the ENGRAM_WEBHOOK_URL env var. resolve_guarded below SSRF-validates the winner.
             let url = args["url"]
                 .as_str()
                 .map(String::from)
+                .or_else(|| ctx.policy.webhook_url.clone())
                 .or_else(|| std::env::var("ENGRAM_WEBHOOK_URL").ok())
-                .ok_or("no webhook url (pass 'url' or set ENGRAM_WEBHOOK_URL)")?;
+                .ok_or("no webhook url (pass 'url', set one in Integrations, or set ENGRAM_WEBHOOK_URL)")?;
             let target = super::resolve_guarded(&url).await?;
             let _ = ctx.ledger.append(
                 "agent.send_message",

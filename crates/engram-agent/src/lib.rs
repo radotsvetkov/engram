@@ -73,16 +73,34 @@ pub fn sub_tools() -> ToolRegistry {
 
 /// Build the interactive browser session: a real CDP-backed Chrome when built with
 /// `browser-cdp` and Chrome is present, otherwise a no-op that errors with guidance.
-pub fn browser_session() -> Arc<dyn BrowserSession> {
+/// Build the browser session at boot. `chrome_override` (a binary path) and `port_override`
+/// (the CDP port) come from the daemon's settings; each falls back to auto-detect / the
+/// ENGRAM_CHROME / ENGRAM_CDP_PORT env vars when `None`/empty. The session is fixed for the
+/// process lifetime, so changing these in the UI is a "restart to apply" setting.
+pub fn browser_session(
+    chrome_override: Option<String>,
+    port_override: Option<u16>,
+) -> Arc<dyn BrowserSession> {
     #[cfg(feature = "browser-cdp")]
     {
-        if let Some(chrome) = tools::find_chrome() {
-            let port = std::env::var("ENGRAM_CDP_PORT")
-                .ok()
-                .and_then(|s| s.parse().ok())
+        let chrome = chrome_override
+            .filter(|p| !p.is_empty() && std::path::Path::new(p).exists())
+            .or_else(tools::find_chrome);
+        if let Some(chrome) = chrome {
+            let port = port_override
+                .filter(|p| *p != 0)
+                .or_else(|| {
+                    std::env::var("ENGRAM_CDP_PORT")
+                        .ok()
+                        .and_then(|s| s.parse().ok())
+                })
                 .unwrap_or(9222);
             return Arc::new(browser_cdp::CdpBrowser::new(chrome, port));
         }
+    }
+    #[cfg(not(feature = "browser-cdp"))]
+    {
+        let _ = (chrome_override, port_override);
     }
     Arc::new(NoBrowser)
 }

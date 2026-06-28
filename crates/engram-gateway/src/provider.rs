@@ -670,6 +670,12 @@ mod http {
         base_url: String,
         api_key: String,
         id: String,
+        /// Media model overrides (empty = the built-in default / the ENGRAM_* env var). Baked in
+        /// at construction; the daemon rebuilds the provider on every settings save, so editing
+        /// these in the UI takes effect on the next run without a restart.
+        image_model: String,
+        tts_model: String,
+        stt_model: String,
     }
 
     impl HttpProvider {
@@ -683,7 +689,23 @@ mod http {
                 base_url: base_url.into().trim_end_matches('/').to_string(),
                 api_key: api_key.into(),
                 id: id.into(),
+                image_model: String::new(),
+                tts_model: String::new(),
+                stt_model: String::new(),
             }
+        }
+
+        /// Set the image / TTS / STT model overrides (each empty string = leave at the default).
+        pub fn with_media(
+            mut self,
+            image_model: impl Into<String>,
+            tts_model: impl Into<String>,
+            stt_model: impl Into<String>,
+        ) -> Self {
+            self.image_model = image_model.into().trim().to_string();
+            self.tts_model = tts_model.into().trim().to_string();
+            self.stt_model = stt_model.into().trim().to_string();
+            self
         }
     }
 
@@ -800,8 +822,11 @@ mod http {
 
         async fn generate_image(&self, prompt: &str) -> Result<Vec<u8>, GatewayError> {
             use base64::Engine;
-            let model =
-                std::env::var("ENGRAM_IMAGE_MODEL").unwrap_or_else(|_| "gpt-image-1".into());
+            let model = if !self.image_model.is_empty() {
+                self.image_model.clone()
+            } else {
+                std::env::var("ENGRAM_IMAGE_MODEL").unwrap_or_else(|_| "gpt-image-1".into())
+            };
             let body = serde_json::json!({
                 "model": model, "prompt": prompt, "n": 1, "size": "1024x1024", "response_format": "b64_json"
             });
@@ -826,7 +851,11 @@ mod http {
         }
 
         async fn tts(&self, text: &str, voice: &str) -> Result<Vec<u8>, GatewayError> {
-            let model = std::env::var("ENGRAM_TTS_MODEL").unwrap_or_else(|_| "tts-1".into());
+            let model = if !self.tts_model.is_empty() {
+                self.tts_model.clone()
+            } else {
+                std::env::var("ENGRAM_TTS_MODEL").unwrap_or_else(|_| "tts-1".into())
+            };
             let body = serde_json::json!({ "model": model, "input": text, "voice": voice });
             let resp = self
                 .client
@@ -844,7 +873,11 @@ mod http {
         }
 
         async fn transcribe(&self, audio: &[u8], format: &str) -> Result<String, GatewayError> {
-            let model = std::env::var("ENGRAM_STT_MODEL").unwrap_or_else(|_| "whisper-1".into());
+            let model = if !self.stt_model.is_empty() {
+                self.stt_model.clone()
+            } else {
+                std::env::var("ENGRAM_STT_MODEL").unwrap_or_else(|_| "whisper-1".into())
+            };
             let mime = match format {
                 "mp3" => "audio/mpeg",
                 "wav" => "audio/wav",

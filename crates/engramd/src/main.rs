@@ -635,7 +635,10 @@ async fn run(mode: RunMode) -> Result<(), Box<dyn std::error::Error>> {
         workdir,
         persona: Arc::new(std::sync::RwLock::new(persona)),
         mcp_tools: Arc::new(std::sync::RwLock::new(mcp_tools)),
-        browser: engram_agent::browser_session(),
+        browser: engram_agent::browser_session(
+            Some(cfg.browser.chrome_path.clone()).filter(|p| !p.is_empty()),
+            Some(cfg.browser.cdp_port).filter(|p| *p != 0),
+        ),
         tasks: Arc::new(tasks::TaskStore::open(std::path::Path::new(&home))),
         workspace: Arc::new(workspace::WorkspaceStore::open(std::path::Path::new(&home))),
         allow_shell: Arc::new(std::sync::atomic::AtomicBool::new(cfg.security.allow_shell)),
@@ -1365,18 +1368,24 @@ impl Drop for WorktreeGuard {
     }
 }
 
-/// With `ENGRAM_WORKTREES=1` and a git workspace, create a detached worktree at `<home>/worktrees/
-/// <task-id>` so this task runs isolated from sibling tasks (parallel agents on one project). Returns
-/// the workdir override (None = use the shared workspace) and a guard that removes it afterward.
+/// With worktree isolation enabled (Settings > Tools, or `ENGRAM_WORKTREES=1`) and a git workspace,
+/// create a detached worktree at `<home>/worktrees/<task-id>` so this task runs isolated from sibling
+/// tasks (parallel agents on one project). Returns the workdir override (None = use the shared
+/// workspace) and a guard that removes it afterward.
 fn prepare_worktree(
     app: &App,
     task_id: &str,
 ) -> (Option<std::path::PathBuf>, Option<WorktreeGuard>) {
-    if std::env::var("ENGRAM_WORKTREES").as_deref() != Ok("1") {
+    // Live setting wins; the env var is the headless/server fallback (acts as a floor).
+    let enabled = app.cfg().security.enable_worktree_isolation
+        || std::env::var("ENGRAM_WORKTREES").as_deref() == Ok("1");
+    if !enabled {
         return (None, None);
     }
     if !app.workdir.join(".git").exists() {
-        tracing::warn!("ENGRAM_WORKTREES=1 but the workspace is not a git repo - running shared");
+        tracing::warn!(
+            "worktree isolation is on but the workspace is not a git repo - running shared"
+        );
         return (None, None);
     }
     let base = std::path::Path::new(&app.home).join("worktrees");
@@ -1464,6 +1473,16 @@ pub(crate) async fn run_agent_task_cb(
                 _ => None,
             })
         },
+        // Per-run media + egress settings, read from the live config (empty = fall through to the
+        // ENGRAM_* env var / built-in default at the tool's use-site).
+        vision_model: {
+            let m = app.cfg().media.vision_model.trim().to_string();
+            (!m.is_empty()).then_some(m)
+        },
+        webhook_url: {
+            let u = app.cfg().channels.webhook_url.trim().to_string();
+            (!u.is_empty()).then_some(u)
+        },
         ..Default::default()
     };
     // A named agent brings its own model (the right model per task); else the global default.
@@ -1478,7 +1497,7 @@ pub(crate) async fn run_agent_task_cb(
     let gateway = match agent_def.filter(|a| !a.provider.trim().is_empty()) {
         Some(a) => {
             let gw = std::sync::Arc::new(engram_gateway::Gateway::new(
-                config::build_provider_from(&a.provider, &a.base_url, &a.api_key),
+                config::build_provider_from(&a.provider, &a.base_url, &a.api_key, &app.cfg().media),
                 app.ledger.clone(),
             ));
             // The agent's own reasoning effort rides on its own gateway (model-default when empty).
@@ -3222,9 +3241,12 @@ async fn config_set(State(app): State<App>, Json(patch): Json<Value>) -> ApiResu
         *app.mcp_tools.write().expect("mcp lock") = tools;
     }
 
-    // Only the embedder is wired once at boot; flag a change so the UI can offer a restart.
-    let restart_needed =
-        cfg.embed.kind != before.embed.kind || cfg.embed.model_dir != before.embed.model_dir;
+    // The embedder and the browser session are wired once at boot; flag a change to either so the
+    // UI can offer a restart. (Provider, shell, worktrees, media models, and webhook apply live.)
+    let restart_needed = cfg.embed.kind != before.embed.kind
+        || cfg.embed.model_dir != before.embed.model_dir
+        || cfg.browser.chrome_path != before.browser.chrome_path
+        || cfg.browser.cdp_port != before.browser.cdp_port;
 
     // Capture before the move so the ledger entry doesn't re-lock the config we just took.
     let (provider_kind, model) = (cfg.provider.kind.clone(), cfg.model());
@@ -3408,6 +3430,12 @@ fn apply_config_patch(cfg: &mut config::Config, p: &Value) {
         if let Some(x) = s(sec, "shell_target") {
             cfg.security.shell_target = x.trim().to_string();
         }
+        if let Some(b) = sec
+            .get("enable_worktree_isolation")
+            .and_then(|v| v.as_bool())
+        {
+            cfg.security.enable_worktree_isolation = b;
+        }
         if flag(sec, "clear_api_token") {
             cfg.security.api_token.clear();
         }
@@ -3420,6 +3448,30 @@ fn apply_config_patch(cfg: &mut config::Config, p: &Value) {
             cfg.cost.task_token_budget = n.max(1_000);
         }
     }
+    if let Some(m) = p.get("media") {
+        // Each empty string means "use the built-in default" - so blanking a field resets it.
+        if let Some(x) = s(m, "vision_model") {
+            cfg.media.vision_model = x.trim().to_string();
+        }
+        if let Some(x) = s(m, "image_model") {
+            cfg.media.image_model = x.trim().to_string();
+        }
+        if let Some(x) = s(m, "tts_model") {
+            cfg.media.tts_model = x.trim().to_string();
+        }
+        if let Some(x) = s(m, "stt_model") {
+            cfg.media.stt_model = x.trim().to_string();
+        }
+    }
+    if let Some(b) = p.get("browser") {
+        if let Some(x) = s(b, "chrome_path") {
+            cfg.browser.chrome_path = x.trim().to_string();
+        }
+        if let Some(n) = b.get("cdp_port").and_then(|v| v.as_u64()) {
+            // 0 = unset (fall back to env/9222); otherwise clamp into the valid TCP range.
+            cfg.browser.cdp_port = if n == 0 { 0 } else { n.clamp(1, 65_535) as u16 };
+        }
+    }
     if let Some(ch) = p.get("channels") {
         if let Some(x) = s(ch, "telegram_token") {
             if !x.is_empty() {
@@ -3428,6 +3480,16 @@ fn apply_config_patch(cfg: &mut config::Config, p: &Value) {
         }
         if flag(ch, "clear_telegram_token") {
             cfg.channels.telegram_token.clear();
+        }
+        // The webhook URL follows the "blank keeps it" rule (it's masked in the redacted view),
+        // with an explicit clear flag to remove it.
+        if let Some(x) = s(ch, "webhook_url") {
+            if !x.trim().is_empty() {
+                cfg.channels.webhook_url = x.trim().to_string();
+            }
+        }
+        if flag(ch, "clear_webhook_url") {
+            cfg.channels.webhook_url.clear();
         }
     }
     if let Some(arr) = p.get("mcp").and_then(|v| v.as_array()) {
@@ -3659,6 +3721,62 @@ fn init_tracing() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The newly-surfaced env-only settings (worktrees, media models, browser, webhook) must
+    // round-trip through apply_config_patch, and the webhook URL must be masked in redacted().
+    #[test]
+    fn config_patch_round_trips_the_surfaced_settings() {
+        let mut cfg = config::Config::default();
+        apply_config_patch(
+            &mut cfg,
+            &json!({
+                "security": { "enable_worktree_isolation": true },
+                "media": { "vision_model": "gpt-4o", "image_model": "dall-e-3",
+                           "tts_model": "tts-1-hd", "stt_model": "whisper-large" },
+                "browser": { "chrome_path": "/opt/chromium", "cdp_port": 9333 },
+                "channels": { "webhook_url": "https://hooks.slack.com/services/SECRET" },
+            }),
+        );
+        assert!(cfg.security.enable_worktree_isolation);
+        assert_eq!(cfg.media.vision_model, "gpt-4o");
+        assert_eq!(cfg.media.image_model, "dall-e-3");
+        assert_eq!(cfg.media.tts_model, "tts-1-hd");
+        assert_eq!(cfg.media.stt_model, "whisper-large");
+        assert_eq!(cfg.browser.chrome_path, "/opt/chromium");
+        assert_eq!(cfg.browser.cdp_port, 9333);
+        assert_eq!(
+            cfg.channels.webhook_url,
+            "https://hooks.slack.com/services/SECRET"
+        );
+
+        // The redacted view exposes presence + the non-secret fields, but NEVER the webhook URL.
+        let red = cfg.redacted();
+        assert_eq!(red["security"]["enable_worktree_isolation"], json!(true));
+        assert_eq!(red["media"]["vision_model"], json!("gpt-4o"));
+        assert_eq!(red["browser"]["cdp_port"], json!(9333));
+        assert_eq!(red["channels"]["webhook_url_set"], json!(true));
+        assert!(
+            !red.to_string().contains("SECRET"),
+            "the webhook URL must be masked in the redacted view"
+        );
+
+        // The "blank keeps it" rule: an empty webhook_url must NOT wipe the saved one...
+        apply_config_patch(&mut cfg, &json!({ "channels": { "webhook_url": "  " } }));
+        assert_eq!(
+            cfg.channels.webhook_url,
+            "https://hooks.slack.com/services/SECRET"
+        );
+        // ...but the explicit clear flag removes it.
+        apply_config_patch(
+            &mut cfg,
+            &json!({ "channels": { "clear_webhook_url": true } }),
+        );
+        assert!(cfg.channels.webhook_url.is_empty());
+
+        // A 0 CDP port means "unset" (fall through to env/9222), not a literal port 0.
+        apply_config_patch(&mut cfg, &json!({ "browser": { "cdp_port": 0 } }));
+        assert_eq!(cfg.browser.cdp_port, 0);
+    }
 
     // Regression for the audit's HIGH panic finding: String::truncate panics on a non-char-boundary
     // byte index, which a >cap document containing multibyte UTF-8 would hit. cap_text_on_boundary

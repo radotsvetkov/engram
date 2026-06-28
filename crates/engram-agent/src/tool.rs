@@ -108,6 +108,14 @@ pub struct Policy {
     /// Dry-run / planning-only: side-effecting tools are not executed; the agent is told
     /// what it *would* do, so a plan can be previewed before anything changes.
     pub dry_run: bool,
+    /// Model the vision tool uses to read images. `None` = inherit the run's model (or the
+    /// ENGRAM_VISION_MODEL env var). Carried on the policy because it's a per-run setting read
+    /// from the live config when the run starts.
+    pub vision_model: Option<String>,
+    /// Default destination for the `send_message` tool when the call omits a `url`. `None` = no
+    /// default (the tool then needs an explicit url or the ENGRAM_WEBHOOK_URL env var). The
+    /// SSRF guard still validates whatever URL is finally used.
+    pub webhook_url: Option<String>,
 }
 
 impl Default for Policy {
@@ -119,6 +127,8 @@ impl Default for Policy {
             timeout_secs: 30,
             shell_backend: None,
             dry_run: false,
+            vision_model: None,
+            webhook_url: None,
         }
     }
 }

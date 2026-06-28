@@ -1021,6 +1021,14 @@ async fn screenshot_get(State(app): State<App>, Query(q): Query<ShotQuery>) -> R
     if !ok {
         return (StatusCode::NOT_FOUND, "not found").into_response();
     }
+    // Cap the read so a pathologically large file in the workspace can't exhaust memory (a screenshot
+    // is normally well under this).
+    const MAX_SHOT: u64 = 32 * 1024 * 1024;
+    if let Ok(meta) = tokio::fs::metadata(&full).await {
+        if meta.len() > MAX_SHOT {
+            return (StatusCode::PAYLOAD_TOO_LARGE, "image too large").into_response();
+        }
+    }
     match tokio::fs::read(&full).await {
         Ok(bytes) => (
             [

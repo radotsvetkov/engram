@@ -2232,7 +2232,12 @@ function brainMergeGraph(raw){
     if(ex){ ex.tier=n.tier; ex.access=n.access; ex.importance=n.importance; ex.tierA=tierA; ex.r=r; continue; }
     B.nodes.push(brainNode(n, BRAIN_REDUCED?1:0)); added++;
   }
+  const before=B.nodes.length;
   if(raw.length) B.nodes=B.nodes.filter(n=>fresh.has(n.id));
+  // The synapse cache (B.edges) stores node ARRAY INDICES; adding or removing a node shifts them, so
+  // any change to the node set must invalidate the cache or the next frame draws edges to wrong/gone
+  // nodes. (brainForget already resets it; this covers the live poll's merges.)
+  if(added>0 || B.nodes.length!==before) B.edges=null;
   // Deliberately do NOT re-warm the settled layout: a new memory appears at its own anchor spot
   // (with the birth animation) without shaking every other node - the brain stays calm to read.
   return added;

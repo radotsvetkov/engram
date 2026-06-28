@@ -223,7 +223,13 @@
   .af-card { display:flex; flex-direction:column; gap:7px; text-decoration:none; color:var(--text-secondary); cursor:pointer;
     border:1px solid var(--border-strong); border-radius:12px; padding:9px; background:var(--surface-2); transition:border-color .12s, background .12s, transform .12s; }
   .af-card:hover { border-color:var(--accent-soft); background:var(--surface-3); color:var(--text); transform:translateY(-1px); }
-  .af-thumb { width:100%; aspect-ratio:4/3; border-radius:8px; overflow:hidden; background:var(--surface); display:flex; align-items:center; justify-content:center; }
+  .af-thumb { position:relative; width:100%; aspect-ratio:4/3; border-radius:8px; overflow:hidden; background:var(--surface); display:flex; align-items:center; justify-content:center; }
+  .af-chat { position:absolute; top:6px; right:6px; width:27px; height:27px; padding:0; border:1px solid var(--border-strong); border-radius:8px;
+    background:rgba(10,12,15,.66); color:#fff; cursor:pointer; display:flex; align-items:center; justify-content:center;
+    opacity:0; transition:opacity .12s, background .12s, color .12s, border-color .12s; backdrop-filter:blur(5px); z-index:2; }
+  .af-card:hover .af-chat, .af-chat:focus-visible { opacity:1; }
+  .af-chat:hover { background:var(--accent); color:#0b0d10; border-color:var(--accent); }
+  .af-chat svg { width:15px; height:15px; }
   .af-thumb img { width:100%; height:100%; object-fit:cover; display:block; }
   .af-thumb.fileic { font-size:34px; opacity:.78; }
   .af-thumb.broken::after { content:'⚠'; font-size:22px; opacity:.5; }
@@ -3567,9 +3573,11 @@ async function renderArtifacts(force){
   const truncated = shown.length>400; if(truncated) shown=shown.slice(0,400);
   const cards=shown.map(i=>{
     const url=`/v1/artifact?task=${encodeURIComponent(i.task)}&path=${encodeURIComponent(i.path)}`;
+    // Jump back to the conversation that made this artifact - the task panel (its run + answer).
+    const chat=i.task?`<button class="af-chat" title="Open the conversation that created this" aria-label="Open the conversation that created this" onclick="afOpenTask('${escAttr(i.task)}',event)">${ICONS.Chat}</button>`:'';
     const meta=`<div class="af-name" title="${escAttr(i.name)}">${esc(i.name)}</div><div class="af-sub">${esc(i.title||'task')} · ${afSize(i.size)} · ${afAge(i.mtime)}</div>`;
-    if(i.kind==='image') return `<div class="af-card" onclick="imgLightbox('${escAttr(url)}')" title="${escAttr(i.name)}"><div class="af-thumb"><img loading="lazy" src="${escAttr(url)}" alt="" onerror="this.closest('.af-thumb').classList.add('broken')"></div>${meta}</div>`;
-    return `<a class="af-card" href="${escAttr(url)}" download title="Download ${escAttr(i.name)}"><div class="af-thumb fileic">${AF_ICON[i.kind]||'📎'}</div>${meta}</a>`;
+    if(i.kind==='image') return `<div class="af-card" onclick="imgLightbox('${escAttr(url)}')" title="${escAttr(i.name)}"><div class="af-thumb">${chat}<img loading="lazy" src="${escAttr(url)}" alt="" onerror="this.closest('.af-thumb').classList.add('broken')"></div>${meta}</div>`;
+    return `<a class="af-card" href="${escAttr(url)}" download title="Download ${escAttr(i.name)}"><div class="af-thumb fileic">${chat}${AF_ICON[i.kind]||'📎'}</div>${meta}</a>`;
   }).join('');
   const body = shown.length
     ? `<div class="af-grid">${cards}</div>${truncated?'<div class="muted" style="text-align:center;padding:14px">Showing the first 400. Narrow with a filter or search.</div>':''}`
@@ -3587,6 +3595,14 @@ function afSearch(v){
   const focused=document.activeElement===document.querySelector('.af-search');
   renderArtifacts();
   if(focused){ const s=document.querySelector('.af-search'); if(s){ s.focus(); s.setSelectionRange(s.value.length,s.value.length); } }
+}
+// Open the task that produced an artifact - its run panel is the conversation where it was made.
+// Must not trigger the card's own action (image lightbox / file download), hence stop the event.
+async function afOpenTask(taskId, ev){
+  if(ev){ ev.preventDefault(); ev.stopPropagation(); }
+  go('Tasks');
+  if(!(state.tasks||[]).find(t=>t.id===taskId)){ try{ await loadTasks(); }catch(_){} }
+  openTask(taskId);
 }
 async function renderActivity(){
   document.getElementById('viewname').textContent='Activity';

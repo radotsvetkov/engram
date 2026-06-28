@@ -27,6 +27,7 @@ mod config;
 mod conscious;
 mod converse;
 mod dissent;
+mod distill;
 mod embedder;
 mod seed;
 mod tasks;
@@ -1888,7 +1889,7 @@ pub(crate) async fn run_agent_task_cb(
         .task_token_budget
         .try_into()
         .unwrap_or(u32::MAX);
-    let mut agent = engram_agent::Agent::new(gateway.clone(), tools, model)
+    let mut agent = engram_agent::Agent::new(gateway.clone(), tools, model.clone())
         .max_steps(max_steps)
         .reflect(true)
         .token_budget(budget)
@@ -1942,6 +1943,51 @@ pub(crate) async fn run_agent_task_cb(
                         .taint(taint)
                         .actor("agent"),
                 );
+            }
+            // AUTONOMOUS DISTILLATION (opt-in, off by default): after a task that did real multi-step
+            // work, reflect once on whether it yielded a reusable program and, if so, park it as an
+            // INACTIVE proposed skill (signed + ledgered). One bounded model call, gated by the flag
+            // AND a tool-step threshold, so a daemon that opts out pays nothing and zero-idle holds.
+            const MIN_STEPS_TO_DISTILL: usize = 3;
+            if app.cfg().security.auto_distill_skills
+                && run.steps.len() >= MIN_STEPS_TO_DISTILL
+                && !app.cfg().security.disable_skill_author
+            {
+                let existing = app.registry.skills().unwrap_or_default();
+                if let Some(p) =
+                    distill::propose(&gateway, &model, task, &run.answer, &existing).await
+                {
+                    let new = engram_skills::NewSkill {
+                        id: p.id.clone(),
+                        category: "problem_solving".into(),
+                        description: p.description.clone(),
+                        capabilities: vec![], // distilled skills are pure by default — no egress
+                        metric: "exact_match".into(),
+                        runtime: engram_skills::Runtime::Process,
+                        interpreter: Some(p.interpreter.clone()),
+                        when_to_use: p.when_to_use.clone(),
+                    };
+                    // Installed INACTIVE: invisible to skill_search/auto-select until it earns
+                    // activation (taught + improved, or explicitly activated from the dashboard).
+                    if let Ok(version) = app.registry.install_inactive(new, p.source.as_bytes()) {
+                        for (inp, out) in &p.examples {
+                            let _ = app.registry.record_run(
+                                &p.id,
+                                version,
+                                inp.as_bytes(),
+                                out.as_bytes(),
+                                1.0,
+                            );
+                        }
+                        let _ = app.ledger.append(
+                            "skill.distill",
+                            "distiller",
+                            json!({ "id": p.id, "version": version, "active": false,
+                                    "examples": p.examples.len(), "steps": run.steps.len() }),
+                        );
+                        tracing::info!(id = %p.id, version, "distilled a proposed skill (inactive)");
+                    }
+                }
             }
         }
     }
@@ -2593,6 +2639,51 @@ async fn tasks_run_stream(
 /// Periodic memory consolidation - the "sleep" pass. Demotes warm memories that are stale AND
 /// low-importance to the cold tier so the working set stays small and recall stays fast as the
 /// brain grows. Runs while the daemon is awake; cheap and bounded. (consolidate() had no callers.)
+/// Skill-sleep prune: soft-retire skills that were PROPOSED (inactive) but never adopted — no active
+/// version, never run, and older than `older_than_ms`. Reversible (bytes kept) and ledgered. Only
+/// invoked when autonomous distillation is enabled — the mechanism that creates such deadweight — so
+/// a daemon that never opts in never has its skills touched.
+fn prune_proposed_skills(app: &App, older_than_ms: u64) -> usize {
+    let entries = match app.ledger.read_all() {
+        Ok(e) => e,
+        Err(_) => return 0,
+    };
+    let mut ran: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut install_ts: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    for e in &entries {
+        let id = serde_json::from_str::<Value>(e.payload.get())
+            .ok()
+            .and_then(|v| v.get("id").and_then(Value::as_str).map(|s| s.to_string()));
+        let Some(id) = id else { continue };
+        match e.kind.as_str() {
+            "skill.run" => {
+                ran.insert(id);
+            }
+            "skill.install" | "skill.distill" => {
+                install_ts.entry(id).or_insert(e.ts_ms);
+            }
+            _ => {}
+        }
+    }
+    let now = engram_core::now_ms();
+    let mut pruned = 0;
+    for id in app.registry.skills().unwrap_or_default() {
+        // Adopted (has an active version) or ever-run skills are never pruned.
+        if app.registry.active_version(&id).ok().flatten().is_some() || ran.contains(&id) {
+            continue;
+        }
+        // Age gate, so a freshly-proposed skill isn't retired before it's had a chance to be adopted.
+        let old_enough = install_ts
+            .get(&id)
+            .map(|ts| now.saturating_sub(*ts) >= older_than_ms)
+            .unwrap_or(false);
+        if old_enough && app.registry.retire(&id, "skill-sleep").is_ok() {
+            pruned += 1;
+        }
+    }
+    pruned
+}
+
 fn spawn_consolidation_tick(app: App) {
     tokio::spawn(async move {
         // First pass shortly after boot, then hourly.
@@ -2603,6 +2694,13 @@ fn spawn_consolidation_tick(app: App) {
                 Ok(n) if n > 0 => tracing::info!(demoted = n, "memory consolidated (warm -> cold)"),
                 Ok(_) => {}
                 Err(e) => tracing::warn!(error = %e, "consolidation failed"),
+            }
+            // Skill-sleep: retire proposed-but-never-adopted skills (opt-in, same window as memory).
+            if app.cfg().security.auto_distill_skills {
+                let pruned = prune_proposed_skills(&app, 14 * 24 * 3600 * 1000);
+                if pruned > 0 {
+                    tracing::info!(pruned, "skill-sleep: retired proposed skills never adopted");
+                }
             }
             tokio::time::sleep(Duration::from_secs(3600)).await;
         }
@@ -3935,6 +4033,9 @@ fn apply_config_patch(cfg: &mut config::Config, p: &Value) {
         }
         if let Some(b) = sec.get("disable_skill_author").and_then(|v| v.as_bool()) {
             cfg.security.disable_skill_author = b;
+        }
+        if let Some(b) = sec.get("auto_distill_skills").and_then(|v| v.as_bool()) {
+            cfg.security.auto_distill_skills = b;
         }
         if flag(sec, "clear_api_token") {
             cfg.security.api_token.clear();

@@ -156,6 +156,12 @@ pub struct SecurityCfg {
     /// ON, so skills pop up from real use. Inverted so the zero value keeps the on-by-default posture.
     #[serde(default)]
     pub disable_skill_author: bool,
+    /// AUTONOMOUS distillation: after a task, the model reflects on whether the work yields a reusable
+    /// program and, if so, proposes one (installed inactive). OFF by default — it puts one extra model
+    /// call on the per-task path, so it's strictly opt-in to protect the zero-idle/low-cost posture.
+    /// Enabling it also turns on the skill-sleep prune that retires proposed-but-never-adopted skills.
+    #[serde(default)]
+    pub auto_distill_skills: bool,
 }
 
 /// Resolve a (backend, target) pair into the policy's shell-backend string the agent expects:
@@ -411,6 +417,7 @@ impl Config {
                 "enable_worktree_isolation": self.security.enable_worktree_isolation,
                 "disabled_tools": self.security.disabled_tools,
                 "disable_skill_author": self.security.disable_skill_author,
+                "auto_distill_skills": self.security.auto_distill_skills,
             },
             "cost": { "task_token_budget": self.cost.task_token_budget },
             "channels": {

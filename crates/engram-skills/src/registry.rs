@@ -144,6 +144,17 @@ impl Registry {
     /// Install a new version: sign it, persist the bytes and manifest, and make it
     /// active if the skill has no active version yet. Returns the new version number.
     pub fn install(&self, new: NewSkill, wasm: &[u8]) -> Result<u32> {
+        self.install_inner(new, wasm, true)
+    }
+
+    /// Install a version WITHOUT activating it, even when the skill has no active version yet. Used
+    /// by autonomous distillation: a proposed skill is parked inactive (invisible to skill_search /
+    /// auto-select) until it is taught + improved or explicitly activated, so junk can't auto-run.
+    pub fn install_inactive(&self, new: NewSkill, wasm: &[u8]) -> Result<u32> {
+        self.install_inner(new, wasm, false)
+    }
+
+    fn install_inner(&self, new: NewSkill, wasm: &[u8], activate: bool) -> Result<u32> {
         let sd = self.skill_dir(&new.id);
         fs::create_dir_all(&sd)?;
         let version = self.next_version(&new.id)?;
@@ -172,15 +183,36 @@ impl Registry {
             sd.join(format!("manifest-v{version}.json")),
             serde_json::to_vec_pretty(&signed)?,
         )?;
-        if self.active_version(&new.id)?.is_none() {
+        if activate && self.active_version(&new.id)?.is_none() {
             fs::write(sd.join("active"), version.to_string())?;
         }
         self.ledger.append(
             "skill.install",
             "core",
-            json!({ "id": new.id, "version": version, "module_hash": manifest.module_hash }),
+            json!({ "id": new.id, "version": version, "module_hash": manifest.module_hash, "active": activate }),
         )?;
         Ok(version)
+    }
+
+    /// Soft-retire a skill: drop its active pointer (so it's hidden from listing/selection) and mark
+    /// it retired, keeping the signed bytes + manifests on disk so it's recoverable (re-activate a
+    /// version to bring it back). The retirement is signed into the ledger. Used by the skill-sleep
+    /// prune to clear away proposed-but-never-adopted skills.
+    pub fn retire(&self, id: &str, actor: &str) -> Result<()> {
+        let sd = self.skill_dir(id);
+        if !sd.exists() {
+            return Err(RegistryError::NotFound(id.to_string()));
+        }
+        let _ = fs::remove_file(sd.join("active"));
+        fs::write(sd.join("retired"), b"1")?;
+        self.ledger
+            .append("skill.retire", actor, json!({ "id": id }))?;
+        Ok(())
+    }
+
+    /// True if the skill has been soft-retired.
+    pub fn is_retired(&self, id: &str) -> bool {
+        self.skill_dir(id).join("retired").exists()
     }
 
     /// Load a specific signed version and its bytes.
@@ -251,6 +283,10 @@ impl Registry {
             for e in rd.flatten() {
                 if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                     if let Some(n) = e.file_name().to_str() {
+                        // Soft-retired skills are hidden from listing (and thus from selection/UI).
+                        if e.path().join("retired").exists() {
+                            continue;
+                        }
                         out.push(n.to_string());
                     }
                 }

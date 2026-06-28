@@ -2953,6 +2953,8 @@ function ccTools(c){
       <div class="desc">Skills are small programs the agent writes to solve problems and reuses later - each one signed, sandboxed, and improved only when it measurably wins on replay.</div>
       <label class="toggle"><input type="checkbox" id="sskillauthor" ${s.disable_skill_author?'':'checked'}><span class="track"></span> Let the agent create &amp; improve its own skills</label>
       <div class="hint">When on, the agent can author a new skill (a Python/JS/shell program) and offer better versions as it works - so skills pop up from real use. Authoring is always refused on a run that read untrusted content, and a code skill only runs under your shell sandbox setting above.</div>
+      <label class="toggle" style="margin-top:14px"><input type="checkbox" id="sautodistill" ${s.auto_distill_skills?'checked':''}><span class="track"></span> Auto-distill skills after tasks <span class="badge">experimental</span></label>
+      <div class="hint">After a multi-step task, the agent reflects once on whether the work yields a reusable program and, if so, files it as a <b>proposed</b> skill (parked inactive until you activate it). Adds one model call per qualifying task - off by default to protect cost &amp; zero-idle. Also turns on a prune that retires proposed skills you never adopt.</div>
       <h3 style="margin-top:18px">Built-in tools <span class="badge set">on/off</span></h3>
       <div class="desc">Turn off any built-in capability you don't want the agent to have. A disabled tool is never offered to the model.</div>
       <div id="toollist" class="tool-grid"><div class="hint">loading…</div></div>
@@ -3323,11 +3325,12 @@ function collectSettings(){
   const has=id=>!!document.getElementById(id), patch={};
   if(has('pkind')){ patch.provider={ kind:gv('pkind'), model:gv('pmodel'), base_url:gv('pbase') }; const k=gv('pkey'); if(k) patch.provider.api_key=k; }
   if(has('ekind')) patch.embed={ kind:gv('ekind'), model_dir:gv('edir') };
-  if(has('sshell')||has('stok')||has('ssec')||has('sbackend')||has('sworktree')||has('sskillauthor')||has('toollist')){ patch.security={}; if(has('sshell')) patch.security.allow_shell=document.getElementById('sshell').checked;
+  if(has('sshell')||has('stok')||has('ssec')||has('sbackend')||has('sworktree')||has('sskillauthor')||has('sautodistill')||has('toollist')){ patch.security={}; if(has('sshell')) patch.security.allow_shell=document.getElementById('sshell').checked;
     const t=gv('stok'); if(t) patch.security.api_token=t; const s=gv('ssec'); if(s) patch.security.channel_secret=s;
     if(has('sbackend')){ patch.security.shell_backend=gv('sbackend'); patch.security.shell_target=gv('starget'); }
     if(has('sworktree')) patch.security.enable_worktree_isolation=document.getElementById('sworktree').checked;
     if(has('sskillauthor')) patch.security.disable_skill_author=!document.getElementById('sskillauthor').checked;
+    if(has('sautodistill')) patch.security.auto_distill_skills=document.getElementById('sautodistill').checked;
     if(has('toollist')) patch.security.disabled_tools=[...document.querySelectorAll('#toollist input[data-tool]')].filter(i=>!i.checked).map(i=>i.getAttribute('data-tool')); }
   if(has('cbudget')) patch.cost={ task_token_budget: Math.max(1000, parseInt(gv('cbudget'),10)||250000) };
   if(has('mvision')) patch.media={ vision_model:gv('mvision'), image_model:gv('mimage'), tts_model:gv('mtts'), stt_model:gv('mstt') };

@@ -250,6 +250,13 @@
   .msg.engram a:hover { border-bottom-color:var(--web); }
   .msg.engram code.ic { font:12.5px var(--mono); background:var(--surface-2); border:1px solid var(--border); border-radius:5px; padding:1px 5px; }
   .msg.engram strong { font-weight:650; } .msg.engram em { font-style:italic; }
+  /* Browser screenshots shown inline in a run's step trail (click to view full-size). */
+  .step-shot { margin:7px 0 2px; }
+  .step-shot img { max-width:min(440px,100%); max-height:300px; border-radius:9px; border:1px solid var(--border-strong); cursor:zoom-in; display:block; box-shadow:var(--e1); transition:border-color var(--dur-1) var(--ease-out); }
+  .step-shot img:hover { border-color:var(--ring); }
+  .img-lb { position:fixed; inset:0; z-index:200; background:rgba(6,7,9,.82); backdrop-filter:blur(7px); -webkit-backdrop-filter:blur(7px); display:flex; align-items:center; justify-content:center; padding:30px; animation:fade .12s ease-out; cursor:zoom-out; }
+  .img-lb img { max-width:95vw; max-height:92vh; border-radius:10px; box-shadow:var(--e4); }
+  .img-lb-x { position:fixed; top:16px; right:18px; width:34px; height:34px; border-radius:50%; border:1px solid var(--border-strong); background:var(--surface-2); color:var(--text-primary); font-size:20px; line-height:1; cursor:pointer; }
   /* GFM tables: a clean, bordered, rounded data table - column alignment from the md separator. */
   .msg.engram .md-table-wrap { margin:2px 0 13px; overflow-x:auto; border:1px solid var(--border); border-radius:10px; box-shadow:var(--e1); }
   .msg.engram table.md-table { border-collapse:collapse; width:100%; font-size:13px; }
@@ -1526,7 +1533,7 @@ async function runTaskLive(id){
         if(ev==='step'){ let s; try{ s=JSON.parse(data); }catch(_){ continue; }
           const stamp = s.seq ? `◇ ${s.seq} · ${(s.hash||'').slice(0,8)}` : '';
           const row=document.createElement('div'); row.className='step lr-step'+(s.ok?'':' bad');
-          row.innerHTML=`<div class="top"><span class="lr-n">${s.index}</span><span class="verb">${esc(s.tool)}</span><span class="lr-ok">${s.ok?'✓':'✕'}</span>${stamp?`<span class="stamp" title="this step's signed ledger entry" onclick="openReceipt()">${esc(stamp)}</span>`:''}</div>${s.observation?`<div class="obs">${esc(String(s.observation).slice(0,700))}</div>`:''}`;
+          row.innerHTML=`<div class="top"><span class="lr-n">${s.index}</span><span class="verb">${esc(s.tool)}</span><span class="lr-ok">${s.ok?'✓':'✕'}</span>${stamp?`<span class="stamp" title="this step's signed ledger entry" onclick="openReceipt()">${esc(stamp)}</span>`:''}</div>${s.observation?`<div class="obs">${esc(String(s.observation).slice(0,700))}</div>`:''}${stepShotHtml(s)}`;
           if(stepsEl){ stepsEl.appendChild(row); stepsEl.scrollTop=stepsEl.scrollHeight; }
           if(typeof s.tokens==='number') lrTokens=s.tokens; if(typeof s.cost==='number') lrCost=s.cost; lrMeter();
         }
@@ -1672,7 +1679,7 @@ async function openTask(id, fromPoll){
       return `<div class="step ${s.ok?'':'bad'}"><div class="top"><span class="verb">${esc(s.tool)}</span>
         <span class="${s.ok?'check':'xmark'}">${s.ok?'✓':'✕'}</span>
         <span class="stamp" onclick="navigator.clipboard.writeText('${s.ledger_hash||''}')">${stamp}</span></div>
-        ${s.ok?'':`<div class="obs">${esc(s.observation)}</div>`}</div>`;
+        ${s.ok?'':`<div class="obs">${esc(s.observation)}</div>`}${stepShotHtml(s)}</div>`;
     }).join('');
     html+=`<div class="muted" style="font-size:11px;margin-bottom:6px">audit trail - signed</div>${stepRows||'<div class="muted">no tools used</div>'}`;
     html+=`<div class="muted" style="font-size:11px;margin-top:12px;font-family:var(--mono)">head ${t.run.ledger_head_hash.slice(0,12)}</div>`;
@@ -1898,6 +1905,23 @@ function mdToHtml(raw){
   return out.join('');
 }
 const thinkingDots='<span class="thinking"><i></i><i></i><i></i></span>';
+// A browser_screenshot step carries the saved image path in its args; render it inline so a task
+// that drives the browser SHOWS what it saw, right in the run trail / chat. Served workdir-confined.
+function stepShotHtml(s){
+  if(!s || s.tool!=='browser_screenshot' || s.ok===false) return '';
+  let p=(s.args&&(s.args.path))||'screenshot.png';
+  if(typeof p!=='string') return '';
+  const u=`/v1/screenshot?path=${encodeURIComponent(p)}&t=${Date.now()}`;
+  return `<div class="step-shot"><img loading="lazy" src="${escAttr(u)}" alt="browser screenshot" onclick="imgLightbox('${escAttr(u)}')" onerror="this.closest('.step-shot').remove()"></div>`;
+}
+// Click a screenshot (or any image) to view it full-size in a dismissible overlay.
+function imgLightbox(src){
+  const ov=document.createElement('div'); ov.className='img-lb'; ov.onclick=()=>ov.remove();
+  ov.innerHTML=`<img src="${escAttr(src)}" alt=""><button class="img-lb-x" aria-label="Close">&times;</button>`;
+  document.body.appendChild(ov);
+  const esc=e=>{ if(e.key==='Escape'){ ov.remove(); document.removeEventListener('keydown',esc); } };
+  document.addEventListener('keydown',esc);
+}
 // The welcoming empty state for a fresh chat - the brand mark, what makes Engram different, and a
 // few one-tap starters. Chips send through the normal chat path.
 const CW_MARK='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="19" cy="16" r="2.9" fill="#45c8a8" stroke="none" opacity=".16"/><path d="M12 9V5.5"/><path d="M14.6 13.5 17.6 15.2"/><path d="M9.4 13.5 6.4 15.2"/><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r=".95" fill="currentColor" stroke="none"/><circle cx="12" cy="3.9" r="1.6"/><circle cx="5" cy="16" r="1.6"/><circle cx="19" cy="16" r="1.6" fill="#45c8a8" stroke="#45c8a8"/></svg>';

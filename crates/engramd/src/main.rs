@@ -659,6 +659,7 @@ async fn run(mode: RunMode) -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/memory/stats", get(memory_stats))
         .route("/v1/memory/recent", get(memory_recent))
         .route("/v1/memory/graph", get(memory_graph))
+        .route("/v1/screenshot", get(screenshot_get))
         .route("/v1/remember", post(remember))
         .route("/v1/recall", get(recall))
         .route("/v1/forget", post(forget))
@@ -988,6 +989,49 @@ async fn memory_recent(State(app): State<App>, Query(q): Query<RecentQuery>) -> 
         .recent(region, q.n.unwrap_or(20).min(100))
         .map_err(err)?;
     Ok(Json(serde_json::to_value(recs).map_err(err)?))
+}
+
+#[derive(serde::Deserialize)]
+struct ShotQuery {
+    path: String,
+}
+
+/// Serve a browser screenshot (or any image the agent saved) from the workspace so the chat/task
+/// view can show it inline. Strictly confined to the workdir and to image types - it can never read
+/// an arbitrary file off the box.
+async fn screenshot_get(State(app): State<App>, Query(q): Query<ShotQuery>) -> Response {
+    use axum::http::{header, StatusCode};
+    let lower = q.path.to_lowercase();
+    let ct = if lower.ends_with(".png") {
+        "image/png"
+    } else if lower.ends_with(".webp") {
+        "image/webp"
+    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+        "image/jpeg"
+    } else {
+        return (StatusCode::BAD_REQUEST, "not an image").into_response();
+    };
+    let base = std::path::Path::new(&app.workdir);
+    let full = base.join(&q.path);
+    // Canonicalize both and require the target to stay under the workdir (defeats ../ traversal).
+    let ok = match (base.canonicalize(), full.canonicalize()) {
+        (Ok(b), Ok(f)) => f.starts_with(&b),
+        _ => false,
+    };
+    if !ok {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
+    match tokio::fs::read(&full).await {
+        Ok(bytes) => (
+            [
+                (header::CONTENT_TYPE, ct),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Err(_) => (StatusCode::NOT_FOUND, "not found").into_response(),
+    }
 }
 
 /// Nodes for the brain-graph visualization: recent memories across every region, trimmed to the

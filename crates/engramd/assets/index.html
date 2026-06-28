@@ -38,7 +38,10 @@
   ::placeholder { color:var(--text-muted); }
   ::-webkit-scrollbar { width:9px; height:9px; } ::-webkit-scrollbar-thumb { background:var(--surface-3); border-radius:6px; }
 
-  .app { display:grid; grid-template-columns:56px 252px 1fr; height:calc(100vh - 26px); }
+  /* grid-template-rows:minmax(0,1fr) bounds the row to the app height so a tall view (e.g. the
+     Activity ledger) scrolls INSIDE .view instead of growing the grid and spilling over the
+     statusbar. The 28px reserve matches the statusbar's exact height so nothing overflows. */
+  .app { display:grid; grid-template-columns:56px 252px 1fr; grid-template-rows:minmax(0,1fr); height:calc(100vh - 28px); }
 
   /* Rail */
   .rail { background:var(--rail); border-right:1px solid var(--border); display:flex; flex-direction:column; padding:14px 8px; }
@@ -63,7 +66,7 @@
   .status .live { color:var(--accent); }
 
   /* Main */
-  .main { display:flex; flex-direction:column; min-width:0; }
+  .main { display:flex; flex-direction:column; min-width:0; min-height:0; }
   .topbar { height:44px; flex:none; display:flex; align-items:center; gap:10px; padding:0 16px;
     border-bottom:1px solid var(--border); }
   .topbar h1 { font-size:15px; font-weight:500; margin:0; }

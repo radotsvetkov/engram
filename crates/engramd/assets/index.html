@@ -234,6 +234,7 @@
   .af-chat:hover { background:var(--accent); color:#0b0d10; border-color:var(--accent); }
   .af-del:hover { background:#c0533f; color:#fff; border-color:#c0533f; }
   .af-chat svg { width:15px; height:15px; }
+  .af-del svg { width:15px; height:15px; }
   .af-thumb img { width:100%; height:100%; object-fit:cover; display:block; }
   .af-thumb.fileic { font-size:34px; opacity:.78; }
   .af-thumb.broken::after { content:'⚠'; font-size:22px; opacity:.5; }
@@ -3717,7 +3718,7 @@ async function renderArtifacts(force){
     // Jump back to the conversation that made this artifact - the task panel (its run + answer).
     const origin=i.origin||'task';
     const chat=i.task?`<button class="af-chat" title="Open the ${origin==='chat'?'chat':'task'} that created this" aria-label="Open source" onclick="afOpenTask('${escAttr(i.task)}','${origin}',event)">${ICONS.Chat}</button>`:'';
-    const del=`<button class="af-del" title="Delete artifact" aria-label="Delete artifact" onclick="afDelete(${escAttr(JSON.stringify(i.task))},${escAttr(JSON.stringify(i.path))},event)">✕</button>`;
+    const del=`<button class="af-del" title="Delete artifact" aria-label="Delete artifact" onclick="afDelete(${escAttr(JSON.stringify(i.task))},${escAttr(JSON.stringify(i.path))},event)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M6 6l1 14a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-14"/><path d="M10 11v6M14 11v6"/></svg></button>`;
     const ctrls=`<div class="af-ctrls">${chat}${del}</div>`;
     const meta=`<div class="af-name" title="${escAttr(i.name)}">${esc(i.name)}</div><div class="af-sub">${esc(i.title||origin)} · ${afSize(i.size)} · ${afAge(i.mtime)}</div>`;
     if(i.kind==='image') return `<div class="af-card" onclick="imgLightbox('${escAttr(url)}')" title="${escAttr(i.name)}"><div class="af-thumb">${ctrls}<img loading="lazy" src="${escAttr(url)}" alt="" onerror="this.closest('.af-thumb').classList.add('broken')"></div>${meta}</div>`;
@@ -3848,9 +3849,13 @@ async function waitForDaemon(maxMs){
 // origin) silently swallows target="_blank" navigations, so links in answers/tables went nowhere.
 // Route them through the daemon's OS opener; fall back to window.open in a plain browser.
 function openExternal(url){
-  fetch('/v1/open',{method:'POST',headers:{...AUTH,'content-type':'application/json'},body:JSON.stringify({url})})
+  // /v1/open (and the OS opener) need an ABSOLUTE http(s) URL. Artifact links are relative
+  // (/v1/artifact?…), so absolutize against the daemon origin — otherwise it was rejected and
+  // nothing opened.
+  const abs = /^https?:\/\//i.test(url) ? url : (location.origin + url);
+  fetch('/v1/open',{method:'POST',headers:{...AUTH,'content-type':'application/json'},body:JSON.stringify({url:abs})})
     .then(r=>{ if(!r.ok) throw new Error('open failed'); })
-    .catch(()=>{ try{ window.open(url,'_blank','noopener'); }catch(_){} });
+    .catch(()=>{ try{ window.open(abs,'_blank','noopener'); }catch(_){} });
 }
 // Delegated, capture-phase: any click on an http(s) link is opened externally. Internal links
 // (href="#", hash routes) and onclick handlers are untouched.

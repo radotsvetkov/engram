@@ -507,6 +507,22 @@
   .skills-wrap { padding:26px 30px; max-width:920px; margin:0 auto; height:100%; overflow-y:auto; }
   .skills-head h2 { margin:0; font-size:20px; }
   .skills-head .sub { margin:5px 0 18px; color:var(--text-muted); font-size:13px; line-height:1.5; max-width:700px; }
+  .skills-head .sh-row { display:flex; align-items:center; gap:12px; }
+  /* Skill pipeline (swarm) modal */
+  .pl-pool { display:flex; flex-wrap:wrap; gap:6px; margin-top:13px; }
+  .pl-chip { font-size:12px; padding:4px 10px; border-radius:8px; border:1px solid var(--border-strong); background:var(--surface-2); color:var(--text-secondary); cursor:pointer; transition:border-color var(--dur-1) var(--ease-out), color var(--dur-1); }
+  .pl-chip:hover { border-color:var(--ring); color:var(--text-primary); }
+  .pl-chain { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-top:11px; min-height:30px; padding:8px 10px; border:1px dashed var(--border-strong); border-radius:9px; }
+  .pl-empty { color:var(--text-muted); font-size:12px; }
+  .pl-step { display:inline-flex; align-items:center; gap:6px; font-size:12px; padding:3px 5px 3px 9px; border-radius:7px; background:var(--accent-soft); color:var(--accent); font-family:var(--mono); }
+  .pl-step button { background:none; border:none; color:var(--accent); cursor:pointer; font-size:14px; line-height:1; padding:0; opacity:.7; }
+  .pl-step button:hover { opacity:1; }
+  .pl-arr { color:var(--text-muted); }
+  .pl-out { margin-top:13px; border-top:1px solid var(--border); padding-top:11px; }
+  .pl-lbl { font:600 9.5px var(--mono); text-transform:uppercase; letter-spacing:.07em; color:var(--text-muted); margin-bottom:7px; }
+  .pl-pre { margin:0; font:12px/1.5 var(--mono); color:var(--text-primary); white-space:pre-wrap; word-break:break-word; max-height:200px; overflow:auto; background:var(--surface-0); border:1px solid var(--border); border-radius:8px; padding:10px 12px; }
+  .pl-running { color:var(--text-secondary); font-size:13px; display:flex; align-items:center; gap:8px; }
+  .pl-err { color:var(--danger); font-size:13px; }
   .skills-list { display:flex; flex-direction:column; gap:12px; }
   .sk-card { background:var(--surface-1); border:1px solid var(--border); border-radius:14px; padding:15px 17px; }
   .sk-head { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
@@ -2537,7 +2553,7 @@ async function renderSkills(){
     </div>`;
   }).join('') : `<div class="sk-empty"><b>No skills yet.</b><span>Skills are small, signed programs Engram grows. Each improvement is replayed against past runs and promoted only when it measurably wins - and you can verify it.</span></div>`;
   document.getElementById('view').innerHTML = `<div class="skills-wrap">
-    <div class="skills-head"><h2>Skills</h2><div class="sub">Procedural memory - expertise that improves only when it measurably wins on replay, with the before/after signed. Where there's no scored signal yet, it says so.</div></div>
+    <div class="skills-head"><div class="sh-row"><h2>Skills</h2>${skills.length?`<button class="sbtn ghost" onclick="openPipeline()" title="Chain skills so each one's output feeds the next">+ Pipeline</button>`:''}</div><div class="sub">Procedural memory - expertise that improves only when it measurably wins on replay, with the before/after signed. Where there's no scored signal yet, it says so.</div></div>
     <div class="skills-list">${cards}</div></div>`;
 }
 async function runSkill(id){ const input=document.getElementById('in_'+id).value;
@@ -2590,6 +2606,38 @@ async function skillImproveSave(id,btn){
   try{ const r=await J('/v1/skills/'+encodeURIComponent(id)+'/improve',{method:'POST',headers:MIND_JSON,body:JSON.stringify({wat})}); ov.remove();
     notify(r.promoted?('Promoted to v'+(r.to||'?')+' - it won on replay'):'Submitted - it did not beat the current version, so the active one is kept','ok'); renderSkills(); }
   catch(e){ if(ok){ ok.disabled=false; ok.textContent='Submit improvement'; } notify('Couldn\'t improve - '+((e&&e.message)||'error')); }
+}
+// Skill pipeline (swarm): chain skills so each one's output feeds the next. POSTs /v1/swarm.
+let _pipeline=[];
+async function openPipeline(){
+  _pipeline=[];
+  let ids=[]; try{ const sk=await J('/v1/skills'); ids=(sk.skills||[]).map(s=>s.id); }catch(_){}
+  const ov=document.createElement('div'); ov.className='overlay ask';
+  ov.innerHTML=`<div class="ask-card" style="width:min(560px,93vw)">
+    <div class="ask-title">Run a skill pipeline</div>
+    <div class="ask-msg">Chain skills so each one's output feeds the next. Click skills to build the chain, give it an input, and run - every step signed.</div>
+    <div class="pl-pool">${ids.length?ids.map(id=>`<button class="pl-chip" onclick="pipelineAdd('${escAttr(id)}')">${esc(id)}</button>`).join(''):'<span class="rp-empty">no skills yet</span>'}</div>
+    <div class="pl-chain" id="plChain"><span class="pl-empty">click skills above to build the chain</span></div>
+    <textarea class="ask-input" id="plInput" rows="2" placeholder="input for the first skill" style="resize:vertical;font:inherit"></textarea>
+    <div id="plOut" class="pl-out" hidden></div>
+    <div class="ask-actions"><button class="ask-ghost" onclick="this.closest('.overlay').remove()">Close</button><button class="ask-ok" onclick="pipelineRun(this)">Run pipeline</button></div>
+  </div>`;
+  document.body.appendChild(ov);
+}
+function pipelineAdd(id){ _pipeline.push(id); pipelineRender(); }
+function pipelineDel(i){ _pipeline.splice(i,1); pipelineRender(); }
+function pipelineRender(){ const c=document.getElementById('plChain'); if(!c) return;
+  c.innerHTML = _pipeline.length ? _pipeline.map((id,i)=>`<span class="pl-step">${esc(id)}<button onclick="pipelineDel(${i})" aria-label="remove">×</button></span>`).join('<span class="pl-arr">→</span>') : '<span class="pl-empty">click skills above to build the chain</span>';
+}
+async function pipelineRun(btn){
+  if(!_pipeline.length){ notify('Add at least one skill to the chain'); return; }
+  const ov=btn.closest('.overlay'); const input=ov.querySelector('#plInput').value;
+  const out=ov.querySelector('#plOut'); btn.disabled=true; btn.textContent='Running...';
+  out.hidden=false; out.innerHTML=`<div class="pl-running">${thinkingDots} running pipeline...</div>`;
+  try{ const r=await J('/v1/swarm',{method:'POST',headers:MIND_JSON,body:JSON.stringify({steps:_pipeline,input})});
+    out.innerHTML=`<div class="pl-lbl">Output after ${(_pipeline.length)} step${_pipeline.length===1?'':'s'}</div><pre class="pl-pre">${esc(String(r.output||''))}</pre>`;
+  }catch(e){ out.innerHTML=`<div class="pl-err">Pipeline failed - ${esc((e&&e.message)||'error')}</div>`; }
+  finally{ btn.disabled=false; btn.textContent='Run again'; }
 }
 
 // ---- Settings ----

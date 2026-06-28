@@ -362,6 +362,9 @@
   .brain-detail .bd-x:hover { color:var(--text-primary); }
   .brain-detail .bd-t { margin:9px 0 12px; line-height:1.55; }
   .brain-detail .bd-meta { display:flex; gap:14px; font-size:11px; color:var(--text-muted); border-top:1px solid var(--border); padding-top:10px; }
+  .brain-detail .bd-act { margin-top:10px; }
+  .brain-detail .bd-forget { width:100%; background:none; border:1px solid var(--border-strong); color:var(--text-secondary); border-radius:8px; padding:7px 10px; font-size:12px; cursor:pointer; transition:border-color var(--dur-1) var(--ease-out), color var(--dur-1), background var(--dur-1); }
+  .brain-detail .bd-forget:hover { border-color:var(--danger); color:var(--danger); background:rgba(229,72,77,.08); }
   /* consciousness panel - the always-loaded working memory, docked as a glass card over the brain */
   .mind-panel { position:absolute; left:20px; top:62px; bottom:84px; width:332px; z-index:24; display:flex; flex-direction:column;
     background:var(--surface-1); border:1px solid var(--border-strong); border-radius:14px; box-shadow:var(--e4); overflow:hidden; }
@@ -2334,10 +2337,23 @@ function brainShowDetail(n){
   d.innerHTML=`<button class="bd-x" onclick="brainCloseDetail()">×</button>
     <div class="bd-r" style="color:${reg.color}"><i style="background:${reg.color}"></i>${reg.label} · ${n.tier}</div>
     <div class="bd-t">${esc(n.text)}</div>
-    <div class="bd-meta"><span>importance ${(n.importance||0).toFixed(2)}</span><span>accessed ${n.access||0}×</span><span>#${n.id}</span></div>`;
+    <div class="bd-meta"><span>importance ${(n.importance||0).toFixed(2)}</span><span>accessed ${n.access||0}×</span><span>#${n.id}</span></div>
+    <div class="bd-act"><button class="bd-forget" onclick="brainForget(${n.id|0})">Forget this memory</button></div>`;
   d.hidden=false;
 }
 function brainCloseDetail(){ const d=document.getElementById('brainDetail'); if(d) d.remove(); if(BRAIN) BRAIN.sel=null; }
+// Forget (delete) a memory from the brain - it stops being recalled; the removal is itself signed
+// to the ledger (auditable, not a silent erase).
+async function brainForget(id){
+  if(!await askConfirm({title:'Forget this memory?',message:'It will stop being recalled. The removal is appended to the signed ledger, so it stays auditable.',ok:'Forget',danger:true})) return;
+  try{
+    await J('/v1/forget',{method:'POST',headers:MIND_JSON,body:JSON.stringify({id})});
+    brainCloseDetail();
+    if(BRAIN&&BRAIN.nodes){ BRAIN.nodes=BRAIN.nodes.filter(n=>n.id!==id); BRAIN.edges=null; }
+    notify('Forgotten · signed','ok');
+    if(typeof renderMemory==='function') renderMemory();   // refresh the graph + region counts
+  }catch(e){ notify('Couldn\'t forget - '+((e&&e.message)||'error')); }
+}
 
 // ---- Consciousness panel: the always-loaded working memory, distilled from the brain ----------
 let MIND={lines:[]};

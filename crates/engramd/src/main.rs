@@ -769,7 +769,10 @@ async fn run(mode: RunMode) -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/memory/recent", get(memory_recent))
         .route("/v1/memory/graph", get(memory_graph))
         .route("/v1/screenshot", get(screenshot_get))
-        .route("/v1/artifact", get(artifact_get))
+        .route(
+            "/v1/artifact",
+            get(artifact_get).delete(artifact_delete),
+        )
         .route("/v1/artifacts", get(artifacts_list))
         .route("/v1/remember", post(remember))
         .route("/v1/recall", get(recall))
@@ -1192,6 +1195,11 @@ async fn screenshot_get(State(app): State<App>, Query(q): Query<ShotQuery>) -> R
 struct ArtifactQuery {
     task: String,
     path: String,
+    /// When present (any value), serve the file INLINE (so opening it in the default browser RENDERS
+    /// it — e.g. an HTML page — instead of downloading the source). `Option<String>` not `bool`
+    /// because query bools only deserialize from "true"/"false", so `?view=1` would 400 the request.
+    #[serde(default)]
+    view: Option<String>,
 }
 
 /// Content type for an artifact by extension, plus whether it's safe to render inline. Only raster
@@ -1260,7 +1268,8 @@ async fn artifact_get(State(app): State<App>, Query(q): Query<ArtifactQuery>) ->
         .and_then(|s| s.to_str())
         .unwrap_or("artifact")
         .replace(['"', '\n', '\r'], "");
-    let disp = if inline {
+    // `view=1` (used only by the "open in browser" path) serves inline so the browser renders it.
+    let disp = if inline || q.view.is_some() {
         format!("inline; filename=\"{fname}\"")
     } else {
         format!("attachment; filename=\"{fname}\"")
@@ -1277,6 +1286,33 @@ async fn artifact_get(State(app): State<App>, Query(q): Query<ArtifactQuery>) ->
             .into_response(),
         Err(_) => (StatusCode::NOT_FOUND, "not found").into_response(),
     }
+}
+
+/// Delete one artifact file from a task/chat bucket. Same confinement as `artifact_get` (single-
+/// segment bucket id, canonicalized-within-root) so it can never remove anything outside the
+/// artifacts tree. Ledgered.
+async fn artifact_delete(State(app): State<App>, Query(q): Query<ArtifactQuery>) -> ApiResult {
+    if q.task.is_empty() || q.task.contains('/') || q.task.contains('\\') || q.task.contains("..") {
+        return Err(ApiError("bad task id".into()));
+    }
+    let base = std::path::Path::new(&app.home)
+        .join("artifacts")
+        .join(&q.task);
+    let full = base.join(&q.path);
+    let ok = match (base.canonicalize(), full.canonicalize()) {
+        (Ok(b), Ok(f)) => f.starts_with(&b),
+        _ => false,
+    };
+    if !ok {
+        return Err(ApiError("not found".into()));
+    }
+    std::fs::remove_file(&full).map_err(err)?;
+    let _ = app.ledger.append(
+        "artifact.delete",
+        "user",
+        json!({ "task": q.task, "path": q.path }),
+    );
+    Ok(Json(json!({ "ok": true })))
 }
 
 /// Coarse category for an artifact, by extension - drives the gallery's filter chips.
@@ -1303,7 +1339,21 @@ async fn artifacts_list(State(app): State<App>) -> ApiResult {
                 continue;
             }
             let task_id = task_dir.file_name().to_string_lossy().to_string();
-            let title = app.tasks.get(&task_id).map(|t| t.title).unwrap_or_default();
+            // The bucket id is either a task id OR a chat session id. Tag which, with the right
+            // title, so the gallery's "open the source" button routes to the task panel or the chat
+            // session correctly (previously a chat artifact tried to open a non-existent task).
+            let (title, origin) = if let Some(t) = app.tasks.get(&task_id) {
+                (t.title, "task")
+            } else if let Some(s) = app.workspace.session(&task_id) {
+                let t = if s.title.trim().is_empty() {
+                    "Chat".to_string()
+                } else {
+                    s.title
+                };
+                (t, "chat")
+            } else {
+                (String::new(), "task")
+            };
             let base = task_dir.path();
             let mut stack = vec![base.clone()];
             while let Some(dir) = stack.pop() {
@@ -1338,7 +1388,7 @@ async fn artifacts_list(State(app): State<App>) -> ApiResult {
                         .map(|d| d.as_millis() as i64)
                         .unwrap_or(0);
                     items.push(json!({
-                        "task": task_id, "title": title, "path": rel, "name": name,
+                        "task": task_id, "title": title, "origin": origin, "path": rel, "name": name,
                         "kind": artifact_kind(&name.to_lowercase()), "size": size, "mtime": mtime,
                     }));
                 }

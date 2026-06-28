@@ -226,11 +226,13 @@
     border:1px solid var(--border-strong); border-radius:12px; padding:9px; background:var(--surface-2); transition:border-color .12s, background .12s, transform .12s; }
   .af-card:hover { border-color:var(--accent-soft); background:var(--surface-3); color:var(--text); transform:translateY(-1px); }
   .af-thumb { position:relative; width:100%; aspect-ratio:4/3; border-radius:8px; overflow:hidden; background:var(--surface); display:flex; align-items:center; justify-content:center; }
-  .af-chat { position:absolute; top:6px; right:6px; width:27px; height:27px; padding:0; border:1px solid var(--border-strong); border-radius:8px;
+  .af-ctrls { position:absolute; top:6px; right:6px; display:flex; gap:5px; opacity:0; transition:opacity .12s; z-index:2; }
+  .af-card:hover .af-ctrls, .af-ctrls:focus-within { opacity:1; }
+  .af-chat, .af-del { width:27px; height:27px; padding:0; border:1px solid var(--border-strong); border-radius:8px;
     background:rgba(10,12,15,.66); color:#fff; cursor:pointer; display:flex; align-items:center; justify-content:center;
-    opacity:0; transition:opacity .12s, background .12s, color .12s, border-color .12s; backdrop-filter:blur(5px); z-index:2; }
-  .af-card:hover .af-chat, .af-chat:focus-visible { opacity:1; }
+    transition:background .12s, color .12s, border-color .12s; backdrop-filter:blur(5px); font-size:13px; line-height:1; }
   .af-chat:hover { background:var(--accent); color:#0b0d10; border-color:var(--accent); }
+  .af-del:hover { background:#c0533f; color:#fff; border-color:#c0533f; }
   .af-chat svg { width:15px; height:15px; }
   .af-thumb img { width:100%; height:100%; object-fit:cover; display:block; }
   .af-thumb.fileic { font-size:34px; opacity:.78; }
@@ -3713,18 +3715,21 @@ async function renderArtifacts(force){
   const cards=shown.map(i=>{
     const url=`/v1/artifact?task=${encodeURIComponent(i.task)}&path=${encodeURIComponent(i.path)}`;
     // Jump back to the conversation that made this artifact - the task panel (its run + answer).
-    const chat=i.task?`<button class="af-chat" title="Open the conversation that created this" aria-label="Open the conversation that created this" onclick="afOpenTask('${escAttr(i.task)}',event)">${ICONS.Chat}</button>`:'';
-    const meta=`<div class="af-name" title="${escAttr(i.name)}">${esc(i.name)}</div><div class="af-sub">${esc(i.title||'task')} · ${afSize(i.size)} · ${afAge(i.mtime)}</div>`;
-    if(i.kind==='image') return `<div class="af-card" onclick="imgLightbox('${escAttr(url)}')" title="${escAttr(i.name)}"><div class="af-thumb">${chat}<img loading="lazy" src="${escAttr(url)}" alt="" onerror="this.closest('.af-thumb').classList.add('broken')"></div>${meta}</div>`;
-    return `<div class="af-card" onclick="artOpenFile(${escAttr(JSON.stringify(i.task))},${escAttr(JSON.stringify(i.path))},${escAttr(JSON.stringify(i.name))})" title="Open ${escAttr(i.name)}"><div class="af-thumb fileic">${chat}${AF_ICON[i.kind]||'📎'}</div>${meta}</div>`;
+    const origin=i.origin||'task';
+    const chat=i.task?`<button class="af-chat" title="Open the ${origin==='chat'?'chat':'task'} that created this" aria-label="Open source" onclick="afOpenTask('${escAttr(i.task)}','${origin}',event)">${ICONS.Chat}</button>`:'';
+    const del=`<button class="af-del" title="Delete artifact" aria-label="Delete artifact" onclick="afDelete(${escAttr(JSON.stringify(i.task))},${escAttr(JSON.stringify(i.path))},event)">✕</button>`;
+    const ctrls=`<div class="af-ctrls">${chat}${del}</div>`;
+    const meta=`<div class="af-name" title="${escAttr(i.name)}">${esc(i.name)}</div><div class="af-sub">${esc(i.title||origin)} · ${afSize(i.size)} · ${afAge(i.mtime)}</div>`;
+    if(i.kind==='image') return `<div class="af-card" onclick="imgLightbox('${escAttr(url)}')" title="${escAttr(i.name)}"><div class="af-thumb">${ctrls}<img loading="lazy" src="${escAttr(url)}" alt="" onerror="this.closest('.af-thumb').classList.add('broken')"></div>${meta}</div>`;
+    return `<div class="af-card" onclick="artOpenFile(${escAttr(JSON.stringify(i.task))},${escAttr(JSON.stringify(i.path))},${escAttr(JSON.stringify(i.name))})" title="Open ${escAttr(i.name)}"><div class="af-thumb fileic">${ctrls}${AF_ICON[i.kind]||'📎'}</div>${meta}</div>`;
   }).join('');
   const body = shown.length
     ? `<div class="af-grid">${cards}</div>${truncated?'<div class="muted" style="text-align:center;padding:14px">Showing the first 400. Narrow with a filter or search.</div>':''}`
     : `<div class="muted" style="padding:52px;text-align:center">${items.length?'No artifacts match that filter or search.':'No artifacts yet. When a task creates a file - a chart, a report, data - it collects here.'}</div>`;
   view.innerHTML=`<div class="artifacts-view">
     <div class="act-title">Artifacts</div>
-    <div class="act-sub">Everything your tasks have produced, newest first. Click an image to preview it; click a file to download. Each is kept under the task that made it.</div>
-    <div class="af-bar"><input class="af-search" placeholder="Search by name or task…" value="${escAttr(_artifacts.q)}" oninput="afSearch(this.value)"><div class="af-chips">${chips}</div></div>
+    <div class="act-sub">Everything your tasks and chats have produced, newest first. Click an image to preview, an HTML file to open it in your browser, a doc to read it. Each links back to the task or chat that made it.</div>
+    <div class="af-bar"><input class="af-search" placeholder="Search by name or task…" value="${escAttr(_artifacts.q)}" oninput="afSearch(this.value)"><div class="af-chips">${chips}</div><button class="afchip af-refresh" onclick="renderArtifacts(true)" title="Reload artifacts">↻ Refresh</button></div>
     ${body}
   </div>`;
 }
@@ -3735,13 +3740,29 @@ function afSearch(v){
   renderArtifacts();
   if(focused){ const s=document.querySelector('.af-search'); if(s){ s.focus(); s.setSelectionRange(s.value.length,s.value.length); } }
 }
-// Open the task that produced an artifact - its run panel is the conversation where it was made.
-// Must not trigger the card's own action (image lightbox / file download), hence stop the event.
-async function afOpenTask(taskId, ev){
+// Open the SOURCE that produced an artifact — a chat session opens in Chat, a board task opens its
+// run panel. (Previously every artifact tried to open a task, so chat artifacts opened nothing.)
+// Stops the event so the card's own open action doesn't also fire.
+async function afOpenTask(id, origin, ev){
   if(ev){ ev.preventDefault(); ev.stopPropagation(); }
+  if(origin==='chat'){
+    if(typeof loadWorkspace==='function' && !(WS.byId&&WS.byId[id])){ try{ await loadWorkspace(); }catch(_){} }
+    try{ await openSession(id); }catch(_){ go('Chat'); }
+    return;
+  }
   go('Tasks');
-  if(!(state.tasks||[]).find(t=>t.id===taskId)){ try{ await loadTasks(); }catch(_){} }
-  openTask(taskId);
+  if(!(state.tasks||[]).find(t=>t.id===id)){ try{ await loadTasks(); }catch(_){} }
+  openTask(id);
+}
+// Delete one artifact file, then refresh the gallery. Confined + ledgered server-side.
+async function afDelete(task, path, ev){
+  if(ev){ ev.preventDefault(); ev.stopPropagation(); }
+  const name=String(path).split('/').pop();
+  if(!await askConfirm({title:'Delete artifact?',message:'Permanently delete "'+name+'"? This removes the file from disk.',ok:'Delete'})) return;
+  try{
+    await J('/v1/artifact?task='+encodeURIComponent(task)+'&path='+encodeURIComponent(path),{method:'DELETE'});
+    _artifacts.items=null; renderArtifacts(true); notify('Deleted '+name,'ok');
+  }catch(e){ notify('Couldn\'t delete — '+((e&&e.message)||'error')); }
 }
 async function renderActivity(){
   document.getElementById('viewname').textContent='Activity';
@@ -3781,7 +3802,7 @@ function renderView(){
   else if(state.route==='Schedule') renderScheduleView();
   else if(state.route==='Memory') renderMemory();
   else if(state.route==='Skills') renderSkills();
-  else if(state.route==='Artifacts') renderArtifacts();
+  else if(state.route==='Artifacts') renderArtifacts(true);
   else if(state.route==='Terminal') renderTerminal();
   else if(state.route==='Activity') renderActivity();
   voiceMaybeMountHeaderBtn();
@@ -4041,6 +4062,9 @@ async function artOpenFile(task, path, name){
   const ext = (name.split('.').pop()||'').toLowerCase();
   const url = `/v1/artifact?task=${encodeURIComponent(task)}&path=${encodeURIComponent(path)}`;
   if(_IMG_EXT.includes(ext)){ imgLightbox(url); return; }
+  // HTML/PDF are meant to be VIEWED, not read as source — open them in the default browser, served
+  // inline so they render (view=1). The desktop webview can't render them in-place safely.
+  if(ext==='html'||ext==='htm'||ext==='pdf'){ openExternal(url+'&view=1'); return; }
   let text='';
   try{ const r=await fetch(url,{headers:AUTH}); if(!r.ok) throw new Error('HTTP '+r.status); text=await r.text(); }
   catch(e){ notify('Couldn\'t open '+name+' — '+((e&&e.message)||'error')); return; }

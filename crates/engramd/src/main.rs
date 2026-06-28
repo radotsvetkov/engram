@@ -548,16 +548,20 @@ fn acquire_home_lock(home: &str) -> Result<std::fs::File, Box<dyn std::error::Er
         use std::os::unix::io::AsRawFd;
         let fd = file.as_raw_fd();
         let mut acquired = false;
-        for attempt in 0..15 {
+        // Short wait (well under the desktop supervisor's 3s "fast exit = another instance owns it"
+        // threshold), then fail FAST. Failing fast is correct: the supervisor sees the quick exit and
+        // connects to the already-running daemon (or retries the spawn itself). Hanging ~3s here flaps
+        // a redundant daemon and briefly makes the UI unable to reach :8088 ("Couldn't reach Engram").
+        for attempt in 0..6 {
             // SAFETY: flock on a valid open fd; non-blocking exclusive lock.
             if unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) } == 0 {
                 acquired = true;
                 break;
             }
             if attempt == 0 {
-                tracing::warn!(%home, "home is locked by another engramd - waiting for it to exit");
+                tracing::warn!(%home, "home is locked by another engramd - yielding to it");
             }
-            std::thread::sleep(Duration::from_millis(200));
+            std::thread::sleep(Duration::from_millis(150));
         }
         if acquired {
             Ok(file)
@@ -2723,7 +2727,7 @@ async fn converse_stream_handler(
         match run_agent_task_cb(
             &app,
             &task,
-            12,
+            24,
             engram_core::Taint::Trusted,
             false,
             Some(on_step),

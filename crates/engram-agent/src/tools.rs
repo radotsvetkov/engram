@@ -1489,12 +1489,22 @@ pub(crate) fn find_chrome() -> Option<String> {
 }
 
 const CHROME_FLAGS: &[&str] = &[
-    "--headless",
+    "--headless=new",
     "--disable-gpu",
     "--no-sandbox",
     "--no-first-run",
+    "--no-default-browser-check",
     "--disable-extensions",
 ];
+
+/// A dedicated, per-process Chrome profile dir. Without `--user-data-dir` Chrome uses the default
+/// profile, so when the user already has Chrome open our headless launch can't start (locked
+/// profile) and produces no output. A unique dir makes every Engram Chrome an independent instance.
+fn chrome_profile_dir() -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("engram-chrome-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&d);
+    d
+}
 
 /// Build a Chrome `--host-resolver-rules` flag that PINS the URL's host to the single vetted IP
 /// (and fails every other resolution), so Chrome's own resolver/redirects can't be DNS-rebound or
@@ -1513,6 +1523,7 @@ async fn chrome_dump_dom(url: &str, timeout: u64) -> Result<String, String> {
     let pin = resolver_rule(url).await?;
     let fut = tokio::process::Command::new(&chrome)
         .args(CHROME_FLAGS)
+        .arg(format!("--user-data-dir={}", chrome_profile_dir().display()))
         .arg(&pin)
         .arg("--dump-dom")
         .arg(url)
@@ -1542,6 +1553,7 @@ async fn chrome_screenshot(
     let pin = resolver_rule(url).await?;
     let fut = tokio::process::Command::new(&chrome)
         .args(CHROME_FLAGS)
+        .arg(format!("--user-data-dir={}", chrome_profile_dir().display()))
         .arg(&pin)
         .arg("--hide-scrollbars")
         .arg("--window-size=1280,1024")

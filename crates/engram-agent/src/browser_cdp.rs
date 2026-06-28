@@ -47,14 +47,22 @@ impl CdpBrowser {
 
     async fn ensure<'a>(&self, guard: &'a mut Option<Conn>) -> Result<&'a mut Conn, String> {
         if guard.is_none() {
+            // A DEDICATED profile dir is essential: without --user-data-dir, Chrome uses the default
+            // profile, so if the user already has Chrome open the debug-port instance can't start
+            // (the profile is locked) and the /json endpoint never appears → "opened browser" fails.
+            // A unique per-process dir makes our CDP Chrome an independent instance every time.
+            let udd = std::env::temp_dir().join(format!("engram-cdp-{}", std::process::id()));
+            let _ = std::fs::create_dir_all(&udd);
             let child = tokio::process::Command::new(&self.chrome)
                 .args([
-                    "--headless",
+                    "--headless=new",
                     "--disable-gpu",
                     "--no-sandbox",
                     "--no-first-run",
+                    "--no-default-browser-check",
                     "--disable-extensions",
                 ])
+                .arg(format!("--user-data-dir={}", udd.display()))
                 .arg(format!("--remote-debugging-port={}", self.port))
                 .arg("about:blank")
                 .stdout(Stdio::null())

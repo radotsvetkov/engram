@@ -98,6 +98,8 @@
     border-radius:20px; padding:6px 15px; font-weight:600; font-size:12px; cursor:pointer; transition:filter .15s, transform .1s; }
   .composer .send:active { transform:translateY(1px); }
   .composer .send:hover { filter:brightness(1.06); }
+  .composer .send.is-stop { background:#c0533f; color:#fff; }
+  .composer .send.is-stop:hover { filter:brightness(1.08); }
   .composer .send.send-icon { display:inline-flex; align-items:center; justify-content:center; width:34px; height:34px; padding:0; border-radius:50%; }
   .composer .send.send-icon:disabled { opacity:.4; cursor:default; }
 
@@ -1540,7 +1542,7 @@ function renderBoard(){
 function composerHtml(ctx){
   ctx = ctx==='tasks' ? 'tasks' : 'chat';
   const sendBtn = ctx==='chat'
-    ? `<button class="send send-icon" title="Send (Enter)" aria-label="Send" onclick="converseInline(document.getElementById('composer').value)"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M6 11l6-6 6 6"/></svg></button>`
+    ? `<button id="sendBtn" class="send send-icon" title="Send (Enter)" aria-label="Send" onclick="converseInline(document.getElementById('composer').value)"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M6 11l6-6 6 6"/></svg></button>`
     : `<button class="send" onclick="submitComposer(false)">Create task</button>`;
   const hint = ctx==='chat'
     ? `<small><kbd>↵</kbd> send <kbd>⇧↵</kbd> newline <kbd>⌘↵</kbd> task</small>`
@@ -1575,7 +1577,27 @@ function wireComposer(){
     else { if(e.metaKey||e.ctrlKey) submitComposer(true); else submitComposer(false); }
   });
 }
+// While a chat is running the send button becomes a Stop button - clicking it aborts the request.
+let _chatAbort=null, _chatBusy=false;
+function setChatBusy(busy){
+  _chatBusy=busy;
+  const b=document.getElementById('sendBtn'); if(!b) return;
+  if(busy){
+    b.classList.add('is-stop'); b.title='Stop'; b.setAttribute('aria-label','Stop the run');
+    b.innerHTML='<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" stroke="none"><rect x="6" y="6" width="12" height="12" rx="2.5"/></svg>';
+  } else {
+    b.classList.remove('is-stop'); b.title='Send (Enter)'; b.setAttribute('aria-label','Send');
+    b.innerHTML='<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M6 11l6-6 6 6"/></svg>';
+  }
+}
+function stopChat(){
+  if(_chatAbort){ try{ _chatAbort.abort(); }catch(_){} }
+  // Also tell the daemon to halt the run server-side so it stops spending, then clear the flag.
+  try{ J('/v1/halt',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({on:true})}).then(()=>setTimeout(()=>{ J('/v1/halt',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({on:false})}).catch(()=>{}); },300)); }catch(_){}
+  setChatBusy(false);
+}
 async function converseInline(text){
+  if(_chatBusy){ stopChat(); return; }   // the send button is showing Stop - clicking it aborts
   text=text.trim();
   // Snapshot any pinned context BEFORE the empty-text guard so an attachment-only send is
   // still possible, and BEFORE the re-render below clears the pills element.
@@ -2103,8 +2125,9 @@ async function chatSay(text, attachments){
   if(meta){ WS.sessions=[meta, ...WS.sessions.filter(x=>x.id!==sid)]; }   // bump to top
   renderSidebar();
   const msg={role:'engram',text:'',streaming:true}; sess.messages.push(msg); paintFeed();
+  _chatAbort=new AbortController(); setChatBusy(true);
   try {
-    const r = await fetch('/v1/converse/stream',{method:'POST',headers:{...AUTH,'content-type':'application/json'},body:JSON.stringify({text, session:sid, attachments})});
+    const r = await fetch('/v1/converse/stream',{method:'POST',headers:{...AUTH,'content-type':'application/json'},body:JSON.stringify({text, session:sid, attachments}), signal:_chatAbort.signal});
     if(!r.ok||!r.body) throw new Error('HTTP '+r.status);
     const reader=r.body.getReader(); const dec=new TextDecoder(); let buf='';
     for(;;){
@@ -2123,14 +2146,18 @@ async function chatSay(text, attachments){
         const live = WS.activeSession===sid;
         if(ev==='token'){ msg.text+=data; if(live) streamTick(msg); }
         else if(ev==='step'){ try{ const d=JSON.parse(data); (msg.steps=msg.steps||[]).push(d); if(live) paintFeed(); }catch(_){} }
-        else if(ev==='done'){ try{const d=JSON.parse(data); if(d.reply) msg.text=d.reply; msg.recalled=d.recalled; msg.recalled_refs=d.recalled_refs; msg.learned=d.learned; if(d.steps) msg.steps=d.steps;}catch(_){} if(live) paintFeed(); }
+        else if(ev==='done'){ try{const d=JSON.parse(data); if(d.reply) msg.text=d.reply; msg.recalled=d.recalled; msg.recalled_refs=d.recalled_refs; msg.learned=d.learned; if(d.steps) msg.steps=d.steps;}catch(_){} if(typeof _artifacts==='object') _artifacts.items=null; if(live) paintFeed(); }
         else if(ev==='error'){ msg.text='(couldn\'t reach Engram - '+data+')'; if(live) paintFeed(); }
       }
     }
     if(!msg.text) msg.text='(no reply)';
-    msg.streaming=false; if(WS.activeSession===sid) paintFeed();
+    msg.streaming=false; if(typeof _artifacts==='object') _artifacts.items=null; if(WS.activeSession===sid) paintFeed();
   } catch(e){
-    msg.text=msg.text||'(couldn\'t reach Engram - '+(e.message||'try again')+')'; msg.streaming=false; if(WS.activeSession===sid) paintFeed();
+    const stopped = e && e.name==='AbortError';
+    msg.text = stopped ? (msg.text || '(stopped)') : (msg.text || '(couldn\'t reach Engram - '+(e.message||'try again')+')');
+    msg.streaming=false; if(WS.activeSession===sid) paintFeed();
+  } finally {
+    setChatBusy(false); _chatAbort=null;
   }
 }
 
@@ -3689,12 +3716,24 @@ function connectEvents(){
     });
   } catch(_){}
 }
+// The desktop spawns the daemon a beat AFTER the window opens, so the very first fetches can race
+// it. Poll /health until it answers (or give up after ~25s) before booting, so a cold start doesn't
+// fire the global "Couldn't reach Engram" toast.
+async function waitForDaemon(maxMs){
+  const start=Date.now();
+  while(Date.now()-start < (maxMs||25000)){
+    try{ await J('/health'); return true; }catch(_){}
+    await new Promise(r=>setTimeout(r,400));
+  }
+  return false;
+}
 async function boot(){
   applyEngramAppearance();
   renderNav();
+  await waitForDaemon();                          // wait out the daemon's startup before first fetches
   try{ CFG=await J('/v1/config'); }catch(_){}   // for the composer's model picker
-  await loadWorkspace(); renderSidebar();        // projects + sessions from the daemon
-  await loadTasks(); lastTasksSig=JSON.stringify(state.tasks);
+  try{ await loadWorkspace(); }catch(_){} renderSidebar();   // projects + sessions (resilient on cold start)
+  try{ await loadTasks(); }catch(_){} lastTasksSig=JSON.stringify(state.tasks);
   // Deep link via #hash, else the front door is the Console (chat).
   const hv=location.hash.slice(1);
   state.route = ALL_VIEWS.includes(hv) ? hv : 'Chat';

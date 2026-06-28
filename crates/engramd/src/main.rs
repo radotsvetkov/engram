@@ -1959,6 +1959,11 @@ pub(crate) async fn run_agent_task_cb(
     for t in app.mcp_tools.read().expect("mcp lock").iter() {
         tools = tools.with(t.clone());
     }
+    // The scheduler tool lives here (needs app.sched). Now the agent can actually CREATE a recurring
+    // task ("update me every morning at 8am") instead of telling the user to set up cron themselves.
+    tools = tools.with(std::sync::Arc::new(ScheduleTool {
+        sched: app.sched.clone(),
+    }));
     // base_tools() already dropped globally-disabled built-ins; we still filter here to (a) cover the
     // MCP tools added above and (b) apply the per-agent allowed_tools scope at this chokepoint.
     if !disabled.is_empty() || allowed.is_some() {
@@ -3743,6 +3748,88 @@ async fn ledger_tail(State(app): State<App>, Query(q): Query<TailQuery>) -> ApiR
 async fn ledger_verify(State(app): State<App>) -> ApiResult {
     let n = app.ledger.verify().map_err(err)?;
     Ok(Json(json!({ "ok": true, "entries": n })))
+}
+
+/// The agent-facing tool that creates a scheduled task in Engram's OWN scheduler. Lives here (not in
+/// engram-agent) because it needs `app.sched`; it's registered on every run alongside MCP tools. This
+/// is what lets the agent answer "remind me / update me every morning" by actually scheduling it,
+/// instead of writing a script and telling the user to set up cron themselves.
+struct ScheduleTool {
+    sched: Arc<Scheduler>,
+}
+
+#[async_trait::async_trait]
+impl engram_agent::Tool for ScheduleTool {
+    fn name(&self) -> &str {
+        "schedule_task"
+    }
+    fn side_effecting(&self) -> bool {
+        true
+    }
+    fn description(&self) -> &str {
+        "Schedule a recurring or one-time task that Engram runs AUTOMATICALLY on a cadence — e.g. \
+         'every morning at 8am', 'daily at 18:00', 'every Monday 9am', 'in 2 hours'. Engram has its \
+         OWN built-in scheduler, so you do NOT need cron or any external service. When it fires, \
+         Engram runs `instruction` as a normal agent task (it can web_search, browse, summarize, \
+         send a message, etc.) and the result appears as a task card. Use this whenever the user \
+         asks to be reminded, updated, or notified on a schedule."
+    }
+    fn schema(&self) -> Value {
+        json!({ "type": "object", "properties": {
+            "instruction": { "type": "string", "description": "what to DO each time it fires, e.g. 'fetch and summarize the top 5 AI news headlines with links'" },
+            "when": { "type": "string", "description": "natural-language cadence: 'every morning at 8am', 'daily at 8:00', 'every Monday 9am', 'in 30 minutes'" },
+            "name": { "type": "string", "description": "optional short label for the schedule" }
+        }, "required": ["instruction", "when"] })
+    }
+    async fn run(
+        &self,
+        args: &Value,
+        ctx: &engram_agent::ToolCtx,
+    ) -> std::result::Result<String, String> {
+        if ctx.taint.is_untrusted() {
+            return Err("scheduling refused: this run read untrusted content (injection guard)".into());
+        }
+        let instruction = args["instruction"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or("need an 'instruction' — what to do when it fires")?;
+        let when = args["when"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or("need a 'when' — e.g. 'every morning at 8am'")?;
+        let now = chrono::Utc::now();
+        let rec = engram_sched::parse(when, now)
+            .map_err(|e| format!("couldn't understand the schedule '{when}': {e}"))?;
+        let name = args["name"]
+            .as_str()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| instruction.chars().take(48).collect());
+        if ctx.policy.dry_run {
+            return Ok(format!("[dry-run] would schedule \"{name}\" — {when}"));
+        }
+        let job = self
+            .sched
+            .add(name.clone(), json!({ "title": instruction }), rec, now)
+            .map_err(|e| e.to_string())?;
+        let _ = ctx.ledger.append(
+            "agent.schedule",
+            "agent",
+            json!({ "id": job.id, "name": name, "when": when }),
+        );
+        let next = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(job.next_fire_ms)
+            .map(|t| {
+                t.with_timezone(&chrono::Local)
+                    .format("%a %d %b %H:%M")
+                    .to_string()
+            })
+            .unwrap_or_else(|| "soon".into());
+        Ok(format!(
+            "✓ Scheduled \"{name}\" — {when}. Next run: {next} (local). It runs automatically (no cron needed); the result appears as a task card and you can manage it in the Schedule view."
+        ))
+    }
 }
 
 async fn schedule_list(State(app): State<App>) -> ApiResult {

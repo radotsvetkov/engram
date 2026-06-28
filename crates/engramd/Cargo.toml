@@ -18,6 +18,8 @@ engram-gateway = { path = "../engram-gateway" }
 engram-skills = { path = "../engram-skills" }
 engram-sched = { path = "../engram-sched" }
 engram-agent = { path = "../engram-agent" }
+# To implement the engram_agent::Tool trait (schedule_task) here, where app.sched lives.
+async-trait = "0.1"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "time", "net", "sync"] }
 axum = { version = "0.8", features = ["ws"] }
 # Advisory home lock (flock, cfg(unix)) so a second daemon on one ENGRAM_HOME can't corrupt the ledger.

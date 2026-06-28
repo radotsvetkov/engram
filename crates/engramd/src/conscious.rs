@@ -110,8 +110,12 @@ impl Consciousness {
             return None;
         }
         let mut s = String::from(
-            "Working memory - durable facts about the user, always loaded (each is a signed, \
-             user-editable line distilled from your memory):\n",
+            "Working memory - the user's CONFIRMED, current facts about themselves (signed, \
+             user-editable, distilled from durable identity/semantic memory). Treat these as \
+             AUTHORITATIVE: when answering questions about the user, use these facts, and if a \
+             recalled snippet or a past activity log conflicts with one, THIS wins (the user \
+             curated these; old captures may be stale tests). Do not 'correct' a fact here from an \
+             older recalled note.\n",
         );
         for l in &g.current.lines {
             s.push_str("- ");
@@ -176,6 +180,19 @@ impl Consciousness {
                 source: Source::Memory { id: r.id },
                 pinned: false,
             });
+        }
+
+        // Idempotent: if the distilled lines are identical to what's already current, do NOT bump the
+        // version, ledger, or rewrite the file. This makes it safe to call distill() on every memory
+        // write and at the start of every run (to keep the consciousness fresh) without bloating the
+        // ledger or churning consciousness.json when nothing changed.
+        let unchanged = lines.len() == g.current.lines.len()
+            && lines
+                .iter()
+                .zip(g.current.lines.iter())
+                .all(|(a, b)| a.text == b.text && a.region == b.region && a.source == b.source);
+        if unchanged {
+            return Ok(g.current.clone());
         }
 
         let next_version = g.current.version + 1;

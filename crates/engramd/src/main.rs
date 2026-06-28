@@ -1580,6 +1580,11 @@ async fn remember(State(app): State<App>, Json(r): Json<RememberReq>) -> ApiResu
         req = req.importance(i);
     }
     let rec = app.memory.remember(req).map_err(err)?;
+    // A new identity/semantic fact should appear in the always-loaded consciousness right away, not
+    // only after a restart. Idempotent distill: re-ledgers only if the distilled set changed.
+    if matches!(region, Region::Identity | Region::Semantic) {
+        let _ = app.consciousness.distill(&app.memory, &app.ledger);
+    }
     Ok(Json(serde_json::to_value(rec).map_err(err)?))
 }
 
@@ -1868,7 +1873,7 @@ pub(crate) async fn run_agent_task_cb(
                     .map(|h| format!("- {}", h.record.text.replace('\n', " ")))
                     .collect::<Vec<_>>()
                     .join("\n");
-                format!("Relevant memory from earlier work (use it; flag anything that now conflicts):\n{lines}")
+                format!("Possibly-relevant snippets from past activity (LOWER priority than the confirmed working-memory facts above — these are activity logs that may be stale; if any conflicts with a confirmed fact, ignore it):\n{lines}")
             })
     };
     // AUTO-SELECT: surface the skills the agent already has so it reaches for skill_run / skill_improve
@@ -1993,6 +1998,13 @@ pub(crate) async fn run_agent_task_cb(
             parts.push(a.role.clone());
         }
     }
+    // Refresh the consciousness from current memory before reading it, so identity/semantic facts
+    // the user JUST added (via the Memory view, chat identity-learning, or memory_remember) are
+    // reflected in this run. distill() is deterministic and idempotent — it only re-ledgers/persists
+    // when the facts actually changed, so this is cheap on an unchanged brain. (Previously the
+    // consciousness was only distilled at boot, so newly-added facts never appeared — "what do you
+    // know about me?" missed them entirely.)
+    let _ = app.consciousness.distill(&app.memory, &app.ledger);
     if let Some(c) = app.consciousness.prompt_block() {
         parts.push(c);
     }

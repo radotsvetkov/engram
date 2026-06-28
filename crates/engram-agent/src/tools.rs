@@ -560,7 +560,13 @@ impl Tool for WriteFileTool {
             return Err("file writing is disabled".into());
         }
         let path = confine(&ctx.workdir, arg_str(args, "path")?)?;
-        let content = arg_str(args, "content")?;
+        // Accept common synonyms a model might use for the body, and give a clear, recoverable error
+        // (the old one fired even when the model DID send content under a different key, or when a
+        // huge value got truncated — and the model just retried the same broken call until stopped).
+        let content = ["content", "text", "body", "data", "contents"]
+            .iter()
+            .find_map(|k| args[*k].as_str())
+            .ok_or("write_file needs the file text in a 'content' string argument")?;
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent)
                 .await
@@ -2118,6 +2124,55 @@ mod web {
                 .filter(|t| !t.is_empty());
             if let (Some(href), Some(title)) = (href, title) {
                 out.push(format!("- {title} :: {href}"));
+            }
+        }
+        // Brave varies its markup under bot-detection (sometimes the structured blocks don't carry a
+        // direct href). Fall back to a broad scan of external result anchors so we still return
+        // something usable instead of "(no results)".
+        if out.is_empty() {
+            out = broad_result_links(html);
+        }
+        out
+    }
+
+    /// Last-resort extractor: pull external (non-search-engine, non-asset) `<a href="https://…">Text`
+    /// links from any results HTML, deduped. Less precise than a per-engine parser but resilient to
+    /// markup changes / shell variants.
+    fn broad_result_links(html: &str) -> Vec<String> {
+        let skip = [
+            "brave.com",
+            "duckduckgo",
+            "bing.com",
+            "google.",
+            "microsoft.com",
+            "gstatic",
+            "w3.org",
+            "schema.org",
+            "/cdn",
+            "javascript:",
+        ];
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for chunk in html.split("href=\"https").skip(1) {
+            let Some((rest, after)) = chunk.split_once('"') else {
+                continue;
+            };
+            let href = format!("https{rest}");
+            if skip.iter().any(|s| href.contains(s)) || !seen.insert(href.clone()) {
+                continue;
+            }
+            // Title = the anchor's visible text (tags stripped), if any.
+            let title = after
+                .split_once('>')
+                .and_then(|(_, r)| r.split_once("</a>"))
+                .map(|(t, _)| super::html_to_text(t).trim().to_string())
+                .filter(|t| t.len() >= 8)
+                .unwrap_or_default();
+            if !title.is_empty() {
+                out.push(format!("- {title} :: {href}"));
+            }
+            if out.len() >= 10 {
+                break;
             }
         }
         out

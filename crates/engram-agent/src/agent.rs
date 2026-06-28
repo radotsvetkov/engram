@@ -226,7 +226,10 @@ impl Agent {
 
             let req = CompletionRequest::new(&self.model, messages.clone())
                 .tools(tool_defs.clone())
-                .max_tokens(2048);
+                // Headroom for a tool call that carries a whole file (e.g. write_file with an HTML
+                // page): at 2048 the content arg was truncated mid-JSON → "missing content" → the
+                // model retried the same broken call and the stuck-loop guard killed the run.
+                .max_tokens(8192);
             // Resilient model call: a transient provider failure retries with backoff
             // instead of aborting the whole run.
             let completion = self.complete_with_retry(req, ctx.taint).await?;

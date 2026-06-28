@@ -1822,7 +1822,7 @@ async function openTask(id, fromPoll){
         <div class="row" style="margin-top:8px"><button onclick="approveShell('${id}')">Allow &amp; re-run</button>
           <button class="ghost" onclick="closePanel()">Skip</button></div></div>`;
     }
-    html+=`<div class="answer">${esc(t.run.answer)}</div>`;
+    html+=`<div class="answer">${mdToHtml(String(t.run.answer||''))}</div>`;
     // Artifacts this run produced - files the agent created, copied to a persistent per-task dir so
     // they survive worktree cleanup. Images preview inline; everything else downloads.
     if(t.run.output_files && t.run.output_files.length){

@@ -1998,6 +1998,13 @@ pub(crate) async fn run_agent_task_cb(
     // consciousness working memory (facts about the user), then the global persona (style). Together
     // they replace SOUL.md as the source of truth for what the agent always knows.
     let mut parts: Vec<String> = Vec::new();
+    // Ground the agent in the current date — otherwise the model defaults to its training-cutoff year
+    // (it was searching "AI news 2024" in mid-2026). Use local wall-clock so "today"/"this morning"
+    // line up with the user.
+    parts.push(format!(
+        "Today's date is {}. Use the current year for any time-sensitive search or content.",
+        chrono::Local::now().format("%A, %-d %B %Y")
+    ));
     if let Some(a) = agent_def {
         if !a.role.trim().is_empty() {
             parts.push(a.role.clone());

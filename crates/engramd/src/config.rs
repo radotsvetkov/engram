@@ -222,6 +222,19 @@ impl Config {
 
     /// Load from `config.json`, or seed from the environment when there is none yet.
     pub fn load(home: &str) -> Self {
+        Self::load_inner(home, true)
+    }
+
+    /// Like [`load`](Self::load) but does NOT touch the OS keyring. Reading the keyring can pop a
+    /// blocking macOS Keychain password prompt (the app is adhoc-signed), which previously stalled
+    /// the daemon BEFORE it bound the HTTP port — so the desktop webview hit a dead URL and showed a
+    /// white screen. The daemon now loads with this, binds + serves immediately, then reads the
+    /// keyring in the background and hot-swaps the provider in. Env keys are still applied here.
+    pub fn load_no_keychain(home: &str) -> Self {
+        Self::load_inner(home, false)
+    }
+
+    fn load_inner(home: &str, read_keychain: bool) -> Self {
         let mut cfg = match std::fs::read_to_string(Self::path(home)) {
             Ok(text) => match serde_json::from_str::<Config>(&text) {
                 Ok(mut cfg) => {
@@ -258,7 +271,7 @@ impl Config {
                 cfg.provider.api_key = k;
             }
         }
-        if cfg.provider.api_key.is_empty() {
+        if read_keychain && cfg.provider.api_key.is_empty() {
             if let Some(k) = read_secret_key(home) {
                 cfg.provider.api_key = k;
             }
@@ -574,8 +587,9 @@ fn keyring_entry(home: &str) -> Option<keyring::Entry> {
     keyring::Entry::new("engram", &format!("provider_api_key:{home}")).ok()
 }
 
-/// Read the persisted API key (OS keyring first when built in, then the 0600 file).
-fn read_secret_key(home: &str) -> Option<String> {
+/// Read the persisted API key (OS keyring first when built in, then the 0600 file). On macOS the
+/// keyring read can show a blocking password prompt, so the daemon calls this OFF the startup path.
+pub(crate) fn read_secret_key(home: &str) -> Option<String> {
     #[cfg(feature = "keyring")]
     {
         if let Some(entry) = keyring_entry(home) {

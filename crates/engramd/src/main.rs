@@ -643,8 +643,12 @@ async fn run(mode: RunMode) -> Result<(), Box<dyn std::error::Error>> {
     // Publish the ledger's public key so anyone can run `engramd verify` offline.
     let _ = std::fs::write(format!("{home}/ledger.pub"), ledger.pubkey_hex());
 
-    // Settings: config.json wins, else seed from the environment (back-compat).
-    let cfg = config::Config::load(&home);
+    // Settings: config.json wins, else seed from the environment (back-compat). Load WITHOUT the OS
+    // keyring so a macOS Keychain password prompt can't block the HTTP bind (that stalled startup and
+    // showed the desktop a white screen). The persisted key is read in the background below, after
+    // the server is up, and hot-swapped into the provider.
+    let cfg = config::Config::load_no_keychain(&home);
+    let needs_keychain_key = cfg.provider.api_key.is_empty();
     tracing::info!(provider = %cfg.provider.kind, model = %cfg.model(), embed = %cfg.embed.kind, "settings loaded");
     let gateway = Arc::new(Gateway::new(cfg.build_provider(), ledger.clone()));
     gateway.set_default_effort(Some(cfg.provider.effort.clone()));
@@ -903,6 +907,39 @@ async fn run(mode: RunMode) -> Result<(), Box<dyn std::error::Error>> {
     // Fire scheduled jobs while the daemon is awake.
     spawn_scheduler_tick(app.clone());
     spawn_consolidation_tick(app.clone());
+
+    // Load the persisted API key OFF the startup path. Reading the OS keyring can pop a blocking
+    // macOS Keychain password prompt (adhoc-signed app); doing it before the bind stalled the server
+    // and showed the desktop a WHITE SCREEN. The server is up by the time this runs, so the prompt no
+    // longer blocks the UI — and once the key arrives we hot-swap the live provider in.
+    if needs_keychain_key {
+        let app_bg = app.clone();
+        let home_bg = home.clone();
+        tokio::spawn(async move {
+            // An env key would already be set; only consult the keyring if we still have none.
+            if !app_bg.cfg().provider.api_key.is_empty() {
+                return;
+            }
+            let key = tokio::task::spawn_blocking(move || config::read_secret_key(&home_bg))
+                .await
+                .ok()
+                .flatten();
+            if let Some(k) = key.filter(|k| !k.is_empty()) {
+                let new_cfg = {
+                    let mut c = app_bg.config.write().expect("config lock");
+                    c.provider.api_key = k;
+                    c.clone()
+                };
+                app_bg
+                    .gateway
+                    .set_provider(std::sync::Arc::from(new_cfg.build_provider()));
+                app_bg
+                    .gateway
+                    .set_default_effort(Some(new_cfg.provider.effort.clone()));
+                tracing::info!("provider key loaded from keyring (background); live provider ready");
+            }
+        });
+    }
 
     // Prefer a socket-activated listener: when systemd (or any activator) hands us a listening
     // fd via LISTEN_FDS, we inherit it instead of binding - this is what makes "0 MB resident at

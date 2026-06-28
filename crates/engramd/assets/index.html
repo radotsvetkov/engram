@@ -1414,7 +1414,17 @@ function notify(msg, kind){
   t.textContent=msg; t.style.opacity='1';
   clearTimeout(t._h); t._h=setTimeout(()=>{ t.style.opacity='0'; }, 4000);
 }
-window.addEventListener('unhandledrejection', e=>{ notify('Couldn\'t reach Engram - '+((e.reason&&e.reason.message)||'try again')); });
+// Only alarm the user when the daemon is ACTUALLY unreachable. A bare unhandled rejection (a
+// cancelled request, a poll that raced the daemon's idle-wake, a benign error) must not toast
+// "Couldn't reach Engram" - that false alarm fired on every cold start. We re-check /health and
+// only surface the toast if that also fails (and dedupe so a burst doesn't stack toasts).
+let _reachToastAt=0;
+window.addEventListener('unhandledrejection', ()=>{
+  J('/health').catch(()=>{
+    const now=Date.now(); if(now-_reachToastAt<8000) return; _reachToastAt=now;
+    notify('Couldn\'t reach Engram - try again');
+  });
+});
 // Emergency stop: halts every running task at its next step boundary; toggles to Resume.
 let halted=false;
 async function toggleHalt(){
@@ -3740,7 +3750,7 @@ async function boot(){
   document.getElementById('viewname').textContent=state.route; renderNav(); renderView();
   poll(); connectEvents();
   // Chips poll + a slow board fallback if SSE is unavailable.
-  setInterval(async()=>{ await poll(); await refreshTasks(); }, 3000);
+  setInterval(async()=>{ try{ await poll(); await refreshTasks(); }catch(_){} }, 3000);
   // First run with no live model: offer a one-screen setup wizard (once).
   engramMaybeOnboard();
 }

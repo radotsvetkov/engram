@@ -1754,9 +1754,13 @@ pub(crate) async fn run_agent_task_cb(
         gateway: gateway.clone(),
         ledger: app.ledger.clone(),
         taint,
-        // Untrusted-origin runs start sensitive; a trusted run becomes sensitive the moment we
-        // inject recalled private memory - either way the trifecta egress gate is armed correctly.
-        sensitive: taint.is_untrusted() || memory_block.is_some(),
+        // Only untrusted-origin runs start sensitive. The background auto-recall (flywheel) injects a
+        // few GENERAL memories as a convenience and must NOT, by itself, arm the trifecta - doing so
+        // made every trusted run sensitive the instant any memory existed, so the egress guard blocked
+        // ALL web access after the first page load (it broke multi-site research in chat/tasks). A
+        // DELIBERATE recall via the memory_recall tool (reads_sensitive=true) still marks the run
+        // sensitive, so genuinely-surfaced private data is still protected by the trifecta.
+        sensitive: taint.is_untrusted(),
         policy,
         // An isolated per-task workdir (a git worktree, for parallel agents on one project) when
         // provided, else the shared workspace.

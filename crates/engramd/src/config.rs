@@ -299,6 +299,33 @@ impl Config {
         {
             c.cost.task_token_budget = b;
         }
+        // Seed the rest of the env-configurable settings so a fresh env-only deploy shows its real
+        // state in the UI (otherwise the Settings panels would report these as unset while the
+        // ENGRAM_* fallbacks silently drive behaviour). All still fall back to the env var at the
+        // use-site once a config.json exists, so this only changes what the UI displays.
+        c.security.enable_worktree_isolation =
+            std::env::var("ENGRAM_WORKTREES").as_deref() == Ok("1");
+        match std::env::var("ENGRAM_SHELL_BACKEND").as_deref() {
+            Ok("docker") => {
+                c.security.shell_backend = "docker".into();
+                c.security.shell_target = std::env::var("ENGRAM_DOCKER_IMAGE").unwrap_or_default();
+            }
+            Ok("ssh") => {
+                c.security.shell_backend = "ssh".into();
+                c.security.shell_target = std::env::var("ENGRAM_SSH_HOST").unwrap_or_default();
+            }
+            _ => {}
+        }
+        c.media.vision_model = std::env::var("ENGRAM_VISION_MODEL").unwrap_or_default();
+        c.media.image_model = std::env::var("ENGRAM_IMAGE_MODEL").unwrap_or_default();
+        c.media.tts_model = std::env::var("ENGRAM_TTS_MODEL").unwrap_or_default();
+        c.media.stt_model = std::env::var("ENGRAM_STT_MODEL").unwrap_or_default();
+        c.browser.chrome_path = std::env::var("ENGRAM_CHROME").unwrap_or_default();
+        c.browser.cdp_port = std::env::var("ENGRAM_CDP_PORT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        c.channels.webhook_url = std::env::var("ENGRAM_WEBHOOK_URL").unwrap_or_default();
         c.mcp = read_mcp_json(home);
         c
     }

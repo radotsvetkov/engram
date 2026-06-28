@@ -365,6 +365,24 @@
   .brain-detail .bd-act { margin-top:10px; }
   .brain-detail .bd-forget { width:100%; background:none; border:1px solid var(--border-strong); color:var(--text-secondary); border-radius:8px; padding:7px 10px; font-size:12px; cursor:pointer; transition:border-color var(--dur-1) var(--ease-out), color var(--dur-1), background var(--dur-1); }
   .brain-detail .bd-forget:hover { border-color:var(--danger); color:var(--danger); background:rgba(229,72,77,.08); }
+  .brain-teach.ghost { background:var(--surface-2); color:var(--text-secondary); }
+  .brain-teach.ghost:hover { color:var(--text-primary); border-color:var(--border-strong); }
+  /* Recent-memories list panel (right side of the Memory view). */
+  .recent-panel { position:absolute; top:62px; right:14px; width:304px; max-height:calc(100% - 132px); background:var(--surface-1); border:1px solid var(--border-strong); border-radius:12px; box-shadow:var(--e3); display:flex; flex-direction:column; overflow:hidden; z-index:20; animation:fade .14s ease-out; pointer-events:auto; }
+  .recent-panel .rp-head { display:flex; align-items:center; justify-content:space-between; padding:11px 13px; font-size:12px; font-weight:600; color:var(--text-secondary); border-bottom:1px solid var(--border); }
+  .recent-panel .rp-x { background:none; border:none; color:var(--text-muted); font-size:18px; line-height:1; cursor:pointer; }
+  .recent-panel .rp-x:hover { color:var(--text-primary); }
+  .recent-panel .rp-tabs { display:flex; gap:3px; padding:8px; flex-wrap:wrap; border-bottom:1px solid var(--border); }
+  .recent-panel .rp-tabs button { font-size:11px; padding:3px 8px; border-radius:7px; border:1px solid transparent; background:none; color:var(--text-muted); cursor:pointer; transition:background var(--dur-1), color var(--dur-1); }
+  .recent-panel .rp-tabs button:hover { color:var(--text-secondary); }
+  .recent-panel .rp-tabs button.on { background:var(--accent-soft); color:var(--accent); }
+  .recent-panel .rp-list { overflow:auto; padding:5px 6px 8px; }
+  .recent-panel .rp-i { display:flex; align-items:center; gap:8px; padding:7px 8px; border-radius:8px; cursor:pointer; font-size:12.5px; color:var(--text-secondary); }
+  .recent-panel .rp-i:hover { background:var(--hover); color:var(--text-primary); }
+  .recent-panel .rp-dot { width:6px; height:6px; border-radius:50%; background:var(--lc,var(--accent)); flex:none; box-shadow:0 0 5px var(--lc,var(--accent)); }
+  .recent-panel .rp-t { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .recent-panel .rp-m { font:11px var(--mono); color:var(--text-muted); flex:none; }
+  .recent-panel .rp-empty { padding:16px; text-align:center; color:var(--text-muted); font-size:12px; }
   /* consciousness panel - the always-loaded working memory, docked as a glass card over the brain */
   .mind-panel { position:absolute; left:20px; top:62px; bottom:84px; width:332px; z-index:24; display:flex; flex-direction:column;
     background:var(--surface-1); border:1px solid var(--border-strong); border-radius:14px; box-shadow:var(--e4); overflow:hidden; }
@@ -2126,7 +2144,7 @@ async function renderMemory(){
     <div class="brain-overlay">
       <div class="brain-head">
         <div class="brain-title">Memory <span class="brain-count">${total} ${total===1?'memory':'memories'} · ${(stats.by_tier?.warm||0)} warm · ${(stats.by_tier?.cold||0)} cold</span></div>
-        <div class="brain-legend">${legend}<button class="brain-teach" onclick="openTeach()">+ Teach</button></div>
+        <div class="brain-legend">${legend}<button class="brain-teach ghost" onclick="brainRecentToggle()" title="Browse recent memories as a list, filter by region">Recent</button><button class="brain-teach" onclick="openTeach()">+ Teach</button></div>
       </div>
       <div class="brain-foot"><div class="brain-recall">
         <input id="brainQ" placeholder="Recall a memory - try a paraphrase..." onkeydown="if(event.key==='Enter')brainRecall()">
@@ -2342,6 +2360,33 @@ function brainShowDetail(n){
   d.hidden=false;
 }
 function brainCloseDetail(){ const d=document.getElementById('brainDetail'); if(d) d.remove(); if(BRAIN) BRAIN.sel=null; }
+// Recent-memories list: browse the brain as a filterable list (the graph shows them spatially; this
+// shows them by recency, filterable by region). Click an item to focus it on the graph.
+let _recentRegion='';
+function brainRecentToggle(){
+  const p=document.getElementById('brainRecent'); if(p){ p.remove(); return; }
+  const d=document.createElement('div'); d.id='brainRecent'; d.className='recent-panel'; document.querySelector('.brain-wrap')?.appendChild(d);
+  brainRecentLoad();
+}
+async function brainRecentLoad(){
+  const p=document.getElementById('brainRecent'); if(!p) return;
+  const regs=[['','All'],['identity','Identity'],['semantic','Semantic'],['episodic','Episodic'],['procedural','Procedural']];
+  const tabs=regs.map(([v,l])=>`<button class="${_recentRegion===v?'on':''}" onclick="_recentRegion='${v}';brainRecentLoad()">${esc(l)}</button>`).join('');
+  p.innerHTML=`<div class="rp-head"><span>Recent memories</span><button class="rp-x" onclick="document.getElementById('brainRecent').remove()">×</button></div><div class="rp-tabs">${tabs}</div><div class="rp-list" id="rpList"><div class="rp-empty">loading...</div></div>`;
+  try{
+    // The endpoint returns one region at a time; for "All" merge the four regions by recency.
+    let recs;
+    if(_recentRegion){ recs=await J('/v1/memory/recent?n=40&region='+_recentRegion); }
+    else {
+      const all=await Promise.all(['identity','semantic','episodic','procedural'].map(r=>J('/v1/memory/recent?n=15&region='+r).catch(()=>[])));
+      recs=all.flat().sort((a,b)=>(b.created_ms||b.id||0)-(a.created_ms||a.id||0)).slice(0,40);
+    }
+    const list=document.getElementById('rpList'); if(!list) return;
+    list.innerHTML = (recs&&recs.length) ? recs.map(r=>{ const reg=BRAIN_REGIONS[r.region]||BRAIN_REGIONS.semantic;
+      return `<div class="rp-i" style="--lc:${reg.color}" title="${escAttr(r.text||'')}" onclick="recallOpen(${r.id|0})"><span class="rp-dot"></span><span class="rp-t">${esc((r.text||'').replace(/\s+/g,' '))}</span><span class="rp-m">${(r.importance||0).toFixed(1)}</span></div>`; }).join('')
+      : '<div class="rp-empty">no memories in this region yet</div>';
+  }catch(e){ const list=document.getElementById('rpList'); if(list) list.innerHTML='<div class="rp-empty">could not load</div>'; }
+}
 // Forget (delete) a memory from the brain - it stops being recalled; the removal is itself signed
 // to the ledger (auditable, not a silent erase).
 async function brainForget(id){

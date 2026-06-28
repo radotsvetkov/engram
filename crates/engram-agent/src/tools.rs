@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 
 use crate::tool::{confine, Tool, ToolCtx};
 
-fn arg_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
+pub(crate) fn arg_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
     args[key]
         .as_str()
         .ok_or_else(|| format!("missing string argument '{key}'"))

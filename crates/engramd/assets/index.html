@@ -566,6 +566,14 @@
   .pl-running { color:var(--text-secondary); font-size:13px; display:flex; align-items:center; gap:8px; }
   .pl-err { color:var(--danger); font-size:13px; }
   .skills-list { display:flex; flex-direction:column; gap:12px; }
+  .sk-rt { font-size:11px; font-weight:600; padding:1px 7px; border-radius:6px; background:var(--accent-soft,rgba(120,140,255,.14)); color:var(--accent,#7b8cff); margin-left:8px; letter-spacing:.2px; }
+  .sk-desc { color:var(--text-muted); font-size:12.5px; margin:6px 0 2px; line-height:1.5; }
+  .sk-caps { color:var(--text-muted); font-size:11.5px; opacity:.85; }
+  /* Built-in tool on/off grid (Tools settings card) */
+  .tool-grid { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+  .tool-chip { display:inline-flex; align-items:center; gap:6px; padding:5px 10px; border:1px solid var(--border,#2a2c34); border-radius:8px; font-size:12.5px; cursor:pointer; user-select:none; }
+  .tool-chip input { margin:0; }
+  .tool-chip:hover { border-color:var(--accent,#7b8cff); }
   .sk-card { background:var(--surface-1); border:1px solid var(--border); border-radius:14px; padding:15px 17px; }
   .sk-head { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
   .sk-name { font-weight:600; font-size:15px; }
@@ -2653,8 +2661,12 @@ async function renderSkills(){
     }).join('');
     const evBlock = events ? `<div class="sk-events">${events}</div>`
       : (verified ? `<div class="sk-muted">No promotions yet - v${active} is the best on ${runs} run${runs===1?'':'s'}.</div>` : '');
+    const rt = s.runtime==='process' ? esc(s.interpreter||'script') : 'wasm';
+    const rtBadge = `<span class="sk-rt" title="${s.runtime==='process'?'A small program the agent wrote, run in your shell sandbox':'A WASM transform run in the fuel-bounded sandbox'}">${rt}</span>`;
+    const caps = (s.capabilities||[]).length ? `<span class="sk-caps" title="capabilities this skill is signed for">${(s.capabilities||[]).map(c=>esc(c)).join(' · ')}</span>` : '';
     return `<div class="sk-card">
-      <div class="sk-head"><span class="sk-name">${esc(s.id)}</span><span class="vladder">${ladder}</span><span class="grow"></span>${statusPill}</div>
+      <div class="sk-head"><span class="sk-name">${esc(s.id)}</span>${rtBadge}<span class="vladder">${ladder}</span><span class="grow"></span>${statusPill}</div>
+      ${s.description?`<div class="sk-desc">${esc(s.description)}${caps?' — '+caps:''}</div>`:''}
       ${evBlock}
       <div class="sk-run"><input id="in_${esc(s.id)}" placeholder="try an input..." onkeydown="if(event.key==='Enter')runSkill('${esc(s.id)}')"><button class="sbtn" onclick="runSkill('${esc(s.id)}')">Run</button><span id="out_${esc(s.id)}" class="sk-out"></span></div>
       <div class="sk-actions">
@@ -2824,8 +2836,17 @@ function renderCCBody(){
   if(CFG&&CFG._err){ body.innerHTML='<div class="offline">Couldn\'t load settings - '+esc(CFG._err)+'</div>'; return; }
   body.innerHTML = cat.render(CFG||{});
   if(ccActive==='gateways') wireProviderKind();
-  if(ccActive==='tools') renderMcpRowsV2((CFG&&CFG.mcp)||[]);
+  if(ccActive==='tools'){ renderMcpRowsV2((CFG&&CFG.mcp)||[]); renderToolToggles(); }
   if(ccActive==='cost') ccCostSync();
+}
+// Populate the built-in tool on/off grid from the authoritative /v1/tools list (never drifts from
+// the real toolset). Unchecked = the user has turned that tool off (added to disabled_tools).
+async function renderToolToggles(){
+  const el=document.getElementById('toollist'); if(!el) return;
+  let data={tools:[]}; try{ data=await J('/v1/tools'); }catch(_){ el.innerHTML='<div class="hint">couldn\'t load tools</div>'; return; }
+  const tools=data.tools||[];
+  if(!tools.length){ el.innerHTML='<div class="hint">no tools</div>'; return; }
+  el.innerHTML = tools.map(t=>`<label class="tool-chip" title="${escAttr(t.description||'')}"><input type="checkbox" data-tool="${escAttr(t.name)}" ${t.disabled?'':'checked'}><span>${esc(t.name)}</span></label>`).join('');
 }
 function renderCC(){ renderCatList(); renderCCBody(); }
 const ccHead=(t,s)=>`<h2>${t}</h2><div class="sub">${s}</div>`;
@@ -2925,6 +2946,16 @@ function ccTools(c){
       <label class="toggle" style="margin-top:14px"><input type="checkbox" id="sworktree" ${s.enable_worktree_isolation?'checked':''}><span class="track"></span> Isolate each task in its own git worktree</label>
       <div class="hint">Each task runs in a throwaway git worktree under (home)/worktrees, so parallel agents can't clobber each other's files. Needs the workspace to be a git repository; falls back to the shared workspace otherwise.</div>
       <div class="ph" style="margin-top:11px"><b>No egress</b> - on by default. Once a run reads untrusted content, tools that would send data to the web are blocked. (A visual allowlist editor lands in Phase 2.)</div>
+      <div class="sactions"><span class="grow"></span><button class="sbtn primary" onclick="saveSettings()">Save</button></div>
+    </div>
+    <div class="scard">
+      <h3>Skills &amp; capabilities</h3>
+      <div class="desc">Skills are small programs the agent writes to solve problems and reuses later - each one signed, sandboxed, and improved only when it measurably wins on replay.</div>
+      <label class="toggle"><input type="checkbox" id="sskillauthor" ${s.disable_skill_author?'':'checked'}><span class="track"></span> Let the agent create &amp; improve its own skills</label>
+      <div class="hint">When on, the agent can author a new skill (a Python/JS/shell program) and offer better versions as it works - so skills pop up from real use. Authoring is always refused on a run that read untrusted content, and a code skill only runs under your shell sandbox setting above.</div>
+      <h3 style="margin-top:18px">Built-in tools <span class="badge set">on/off</span></h3>
+      <div class="desc">Turn off any built-in capability you don't want the agent to have. A disabled tool is never offered to the model.</div>
+      <div id="toollist" class="tool-grid"><div class="hint">loading…</div></div>
       <div class="sactions"><span class="grow"></span><button class="sbtn primary" onclick="saveSettings()">Save</button></div>
     </div>`;
 }
@@ -3292,10 +3323,12 @@ function collectSettings(){
   const has=id=>!!document.getElementById(id), patch={};
   if(has('pkind')){ patch.provider={ kind:gv('pkind'), model:gv('pmodel'), base_url:gv('pbase') }; const k=gv('pkey'); if(k) patch.provider.api_key=k; }
   if(has('ekind')) patch.embed={ kind:gv('ekind'), model_dir:gv('edir') };
-  if(has('sshell')||has('stok')||has('ssec')||has('sbackend')||has('sworktree')){ patch.security={}; if(has('sshell')) patch.security.allow_shell=document.getElementById('sshell').checked;
+  if(has('sshell')||has('stok')||has('ssec')||has('sbackend')||has('sworktree')||has('sskillauthor')||has('toollist')){ patch.security={}; if(has('sshell')) patch.security.allow_shell=document.getElementById('sshell').checked;
     const t=gv('stok'); if(t) patch.security.api_token=t; const s=gv('ssec'); if(s) patch.security.channel_secret=s;
     if(has('sbackend')){ patch.security.shell_backend=gv('sbackend'); patch.security.shell_target=gv('starget'); }
-    if(has('sworktree')) patch.security.enable_worktree_isolation=document.getElementById('sworktree').checked; }
+    if(has('sworktree')) patch.security.enable_worktree_isolation=document.getElementById('sworktree').checked;
+    if(has('sskillauthor')) patch.security.disable_skill_author=!document.getElementById('sskillauthor').checked;
+    if(has('toollist')) patch.security.disabled_tools=[...document.querySelectorAll('#toollist input[data-tool]')].filter(i=>!i.checked).map(i=>i.getAttribute('data-tool')); }
   if(has('cbudget')) patch.cost={ task_token_budget: Math.max(1000, parseInt(gv('cbudget'),10)||250000) };
   if(has('mvision')) patch.media={ vision_model:gv('mvision'), image_model:gv('mimage'), tts_model:gv('mtts'), stt_model:gv('mstt') };
   if(has('bchrome')||has('bport')) patch.browser={ chrome_path:gv('bchrome'), cdp_port: Math.max(0, Math.min(65535, parseInt(gv('bport'),10)||0)) };

@@ -146,6 +146,16 @@ pub struct SecurityCfg {
     /// concurrent agents can't clobber each other's files. Off by default. Mirrors ENGRAM_WORKTREES.
     #[serde(default)]
     pub enable_worktree_isolation: bool,
+    /// Built-in tools the user has turned OFF — a deny-list of tool names (e.g. "web_fetch",
+    /// "send_message"). A disabled tool is dropped from the toolset (built-ins and MCP at the run
+    /// chokepoint, and also for delegated subagents via the global deny-list), so it is simply never
+    /// advertised to the model that run.
+    #[serde(default)]
+    pub disabled_tools: Vec<String>,
+    /// Turn OFF the agent's ability to author/improve skills. `false` (the default) = authoring is
+    /// ON, so skills pop up from real use. Inverted so the zero value keeps the on-by-default posture.
+    #[serde(default)]
+    pub disable_skill_author: bool,
 }
 
 /// Resolve a (backend, target) pair into the policy's shell-backend string the agent expects:
@@ -399,6 +409,8 @@ impl Config {
                 "shell_backend": self.security.shell_backend,
                 "shell_target": self.security.shell_target,
                 "enable_worktree_isolation": self.security.enable_worktree_isolation,
+                "disabled_tools": self.security.disabled_tools,
+                "disable_skill_author": self.security.disable_skill_author,
             },
             "cost": { "task_token_budget": self.cost.task_token_budget },
             "channels": {

@@ -17,7 +17,7 @@ use serde_json::json;
 
 use crate::capability::Capability;
 use crate::host::SkillError;
-use crate::manifest::{module_hash, Manifest, SignedSkill, SkillSigner};
+use crate::manifest::{artifact_ext, module_hash, Manifest, Runtime, SignedSkill, SkillSigner};
 
 #[derive(Debug, thiserror::Error)]
 pub enum RegistryError {
@@ -48,6 +48,35 @@ pub struct NewSkill {
     pub description: String,
     pub capabilities: Vec<Capability>,
     pub metric: String,
+    /// Substrate for this version. Defaults to `Wasm` (so existing call sites are unchanged); set to
+    /// `Process` for a polyglot script skill.
+    pub runtime: Runtime,
+    /// Interpreter for a `Process` skill (e.g. "python3"). Ignored for WASM.
+    pub interpreter: Option<String>,
+    /// Optional natural-language selection cue.
+    pub when_to_use: Option<String>,
+}
+
+impl NewSkill {
+    /// A WASM skill with no extra metadata — the back-compat constructor for existing call sites.
+    pub fn wasm(
+        id: impl Into<String>,
+        category: impl Into<String>,
+        description: impl Into<String>,
+        capabilities: Vec<Capability>,
+        metric: impl Into<String>,
+    ) -> Self {
+        NewSkill {
+            id: id.into(),
+            category: category.into(),
+            description: description.into(),
+            capabilities,
+            metric: metric.into(),
+            runtime: Runtime::Wasm,
+            interpreter: None,
+            when_to_use: None,
+        }
+    }
 }
 
 /// One recorded execution kept for replay: what went in, what output was accepted,
@@ -94,24 +123,51 @@ impl Registry {
         self.dir.join("skills").join(id)
     }
 
+    /// Locate the artifact file for a version. Skills are stored as `v{N}.<ext>` where the extension
+    /// varies by runtime (wasm/py/js/sh/...), so we match on the `v{N}.` prefix rather than a fixed
+    /// `.wasm` suffix. This is the single place the "any extension" rule is implemented.
+    fn artifact_path(&self, id: &str, version: u32) -> Option<PathBuf> {
+        let sd = self.skill_dir(id);
+        let prefix = format!("v{version}.");
+        let rd = fs::read_dir(&sd).ok()?;
+        for entry in rd.flatten() {
+            if let Some(name) = entry.file_name().to_str() {
+                // Exclude the manifest sidecar (manifest-v{N}.json) which does not start with "v{N}.".
+                if name.starts_with(&prefix) {
+                    return Some(entry.path());
+                }
+            }
+        }
+        None
+    }
+
     /// Install a new version: sign it, persist the bytes and manifest, and make it
     /// active if the skill has no active version yet. Returns the new version number.
     pub fn install(&self, new: NewSkill, wasm: &[u8]) -> Result<u32> {
         let sd = self.skill_dir(&new.id);
         fs::create_dir_all(&sd)?;
         let version = self.next_version(&new.id)?;
+        // A process skill's entry is its script filename; a WASM skill keeps the "run" export.
+        let ext = artifact_ext(new.runtime, new.interpreter.as_deref());
+        let entry = match new.runtime {
+            Runtime::Wasm => "run".to_string(),
+            Runtime::Process => format!("v{version}.{ext}"),
+        };
         let manifest = Manifest {
             id: new.id.clone(),
             version,
             category: new.category,
             description: new.description,
-            entry: "run".into(),
+            entry,
             capabilities: new.capabilities,
             metric: new.metric,
             module_hash: module_hash(wasm),
+            runtime: new.runtime,
+            interpreter: new.interpreter,
+            when_to_use: new.when_to_use,
         };
         let signed = self.signer.sign(&manifest)?;
-        fs::write(sd.join(format!("v{version}.wasm")), wasm)?;
+        fs::write(sd.join(format!("v{version}.{ext}")), wasm)?;
         fs::write(
             sd.join(format!("manifest-v{version}.json")),
             serde_json::to_vec_pretty(&signed)?,
@@ -131,12 +187,14 @@ impl Registry {
     pub fn load(&self, id: &str, version: u32) -> Result<(SignedSkill, Vec<u8>)> {
         let sd = self.skill_dir(id);
         let manifest_path = sd.join(format!("manifest-v{version}.json"));
-        let wasm_path = sd.join(format!("v{version}.wasm"));
-        if !manifest_path.exists() || !wasm_path.exists() {
+        let Some(artifact_path) = self.artifact_path(id, version) else {
+            return Err(RegistryError::NotFound(format!("{id} v{version}")));
+        };
+        if !manifest_path.exists() {
             return Err(RegistryError::NotFound(format!("{id} v{version}")));
         }
         let signed: SignedSkill = serde_json::from_slice(&fs::read(manifest_path)?)?;
-        let wasm = fs::read(wasm_path)?;
+        let wasm = fs::read(artifact_path)?;
         Ok((signed, wasm))
     }
 
@@ -163,9 +221,16 @@ impl Registry {
         if let Ok(rd) = fs::read_dir(&sd) {
             for entry in rd.flatten() {
                 if let Some(name) = entry.file_name().to_str() {
-                    if let Some(v) = name.strip_prefix('v').and_then(|s| s.strip_suffix(".wasm")) {
-                        if let Ok(n) = v.parse() {
-                            out.push(n);
+                    // Match an artifact `v{N}.<ext>` for ANY extension (wasm/py/js/sh/...). The
+                    // manifest sidecar `manifest-v{N}.json` and the `active`/`runs.jsonl` files do
+                    // not start with `v<digit>`, so they're skipped.
+                    if let Some(rest) = name.strip_prefix('v') {
+                        if let Some(num) = rest.split('.').next() {
+                            if let Ok(n) = num.parse() {
+                                if !out.contains(&n) {
+                                    out.push(n);
+                                }
+                            }
                         }
                     }
                 }
@@ -197,7 +262,7 @@ impl Registry {
 
     /// Point `active` at `version` (used by promote and revert). Records the change.
     pub fn set_active(&self, id: &str, version: u32, actor: &str, kind: &str) -> Result<()> {
-        if !self.skill_dir(id).join(format!("v{version}.wasm")).exists() {
+        if self.artifact_path(id, version).is_none() {
             return Err(RegistryError::NotFound(format!("{id} v{version}")));
         }
         let prev = self.active_version(id)?;

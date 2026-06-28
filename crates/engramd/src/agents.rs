@@ -69,6 +69,11 @@ pub struct AgentDef {
     /// Applied (model-awarely) when the agent runs through its own provider gateway.
     #[serde(default)]
     pub effort: String,
+    /// Tool scoping for this agent: `None` = inherit all (minus the global deny-list); `Some(list)`
+    /// = restrict this agent to exactly these tool names (a narrow, auditable specialist). Applied at
+    /// the run chokepoint on top of the global `disabled_tools`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_tools: Option<Vec<String>>,
     pub created_ms: i64,
     pub updated_ms: i64,
 }
@@ -125,6 +130,7 @@ impl AgentStore {
             base_url: base_url.trim().to_string(),
             api_key: api_key.trim().to_string(),
             effort: norm_effort(effort),
+            allowed_tools: None,
             created_ms: now,
             updated_ms: now,
         };
@@ -174,6 +180,17 @@ impl AgentStore {
         if let Some(e) = effort {
             a.effort = norm_effort(e);
         }
+        a.updated_ms = now_ms();
+        let out = a.clone();
+        self.persist(&g);
+        Some(out)
+    }
+
+    /// Set (or clear) an agent's tool scope. `None` clears it (inherit all); `Some(list)` restricts.
+    pub fn set_allowed_tools(&self, id: &str, tools: Option<Vec<String>>) -> Option<AgentDef> {
+        let mut g = self.agents.lock().expect("agents lock");
+        let a = g.iter_mut().find(|a| a.id == id)?;
+        a.allowed_tools = tools.filter(|t| !t.is_empty());
         a.updated_ms = now_ms();
         let out = a.clone();
         self.persist(&g);

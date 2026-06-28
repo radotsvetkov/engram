@@ -38,7 +38,7 @@ use engram_core::{run_until_idle, Activity, Bus, Ledger, Priority, Spike, VERSIO
 use engram_gateway::Gateway;
 use engram_memory::{Memory, Region, TrigramHashEmbedder, WriteReq};
 use engram_sched::{parse as parse_schedule, Scheduler};
-use engram_skills::{Registry, RunCtx, SkillHost, SkillSigner};
+use engram_skills::{Registry, SkillHost, SkillSigner};
 
 #[derive(Clone)]
 struct App {
@@ -733,6 +733,7 @@ async fn run(mode: RunMode) -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/agents/{id}", post(agents_update).delete(agents_delete))
         .route("/v1/agents/{id}/activity", get(agent_activity))
         .route("/v1/skills", get(skills))
+        .route("/v1/tools", get(tools_list))
         .route("/v1/skills/{id}/run", post(run_skill))
         .route("/v1/skills/{id}/improve", post(skill_improve))
         .route("/v1/skills/{id}/activate", post(skill_activate))
@@ -1346,8 +1347,26 @@ fn agent_redacted(a: &agents::AgentDef) -> Value {
         "id": a.id, "name": a.name, "role": a.role, "model": a.model,
         "provider": a.provider, "base_url": a.base_url,
         "api_key_set": !a.api_key.is_empty(), "effort": a.effort,
+        "allowed_tools": a.allowed_tools,
         "created_ms": a.created_ms, "updated_ms": a.updated_ms,
     })
+}
+
+/// Parse an `allowed_tools` field from an agent create/update body. Returns `None` when the key is
+/// absent (no change); `Some(None)` for an explicit null (clear scope = all tools); `Some(Some(..))`
+/// for a list (restrict to those names).
+fn parse_allowed_tools(p: &Value) -> Option<Option<Vec<String>>> {
+    match p.get("allowed_tools") {
+        None => None,
+        Some(Value::Null) => Some(None),
+        Some(Value::Array(a)) => Some(Some(
+            a.iter()
+                .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
+                .filter(|s| !s.is_empty())
+                .collect(),
+        )),
+        _ => None,
+    }
 }
 
 async fn agents_list(State(app): State<App>) -> ApiResult {
@@ -1366,9 +1385,14 @@ async fn agents_create(State(app): State<App>, Json(p): Json<Value>) -> ApiResul
     let base_url = p.get("base_url").and_then(|v| v.as_str()).unwrap_or("");
     let api_key = p.get("api_key").and_then(|v| v.as_str()).unwrap_or("");
     let effort = p.get("effort").and_then(|v| v.as_str()).unwrap_or("");
-    let def = app
+    let mut def = app
         .agents
         .create(name, role, model, provider, base_url, api_key, effort);
+    if let Some(tools) = parse_allowed_tools(&p) {
+        if let Some(updated) = app.agents.set_allowed_tools(&def.id, tools) {
+            def = updated;
+        }
+    }
     app.ledger
         .append(
             "agent.create",
@@ -1391,10 +1415,15 @@ async fn agents_update(
     let base_url = p.get("base_url").and_then(|v| v.as_str());
     let api_key = p.get("api_key").and_then(|v| v.as_str());
     let effort = p.get("effort").and_then(|v| v.as_str());
-    let def = app
+    let mut def = app
         .agents
         .update(&id, name, role, model, provider, base_url, api_key, effort)
         .ok_or_else(|| err("no such agent"))?;
+    if let Some(tools) = parse_allowed_tools(&p) {
+        if let Some(updated) = app.agents.set_allowed_tools(&id, tools) {
+            def = updated;
+        }
+    }
     app.ledger
         .append(
             "agent.update",
@@ -1707,6 +1736,9 @@ pub(crate) async fn run_agent_task_cb(
             let u = app.cfg().channels.webhook_url.trim().to_string();
             (!u.is_empty()).then_some(u)
         },
+        // Authoring/improving skills is on by default (skills pop up from use); the user can turn it
+        // off in the Tools panel (stored inverted so the zero value stays "on").
+        allow_skill_author: !app.cfg().security.disable_skill_author,
         ..Default::default()
     };
     // A named agent brings its own model (the right model per task); else the global default.
@@ -1752,6 +1784,55 @@ pub(crate) async fn run_agent_task_cb(
                 format!("Relevant memory from earlier work (use it; flag anything that now conflicts):\n{lines}")
             })
     };
+    // AUTO-SELECT: surface the skills the agent already has so it reaches for skill_run / skill_improve
+    // instead of re-solving from scratch. Ranked by track record (gold-backed runs first). Trusted
+    // runs only — don't advertise the toolbelt to an untrusted-origin run. Mirrors the memory flywheel.
+    // Don't advertise the skill toolbelt if the user curated out the tool that runs skills, or to an
+    // untrusted-origin run.
+    let skill_run_available = !app
+        .cfg()
+        .security
+        .disabled_tools
+        .iter()
+        .any(|d| d == "skill_run");
+    let skills_block: Option<String> = if taint.is_untrusted() || !skill_run_available {
+        None
+    } else {
+        app.registry.skills().ok().and_then(|ids| {
+            let mut rows: Vec<(usize, String)> = ids
+                .iter()
+                .filter_map(|id| {
+                    let (signed, _) = app.registry.load_active(id).ok()?;
+                    let m = &signed.manifest;
+                    // The gold-example count (author-asserted / taught (input,output) pairs). Call it
+                    // what it is — NOT "verified": nothing here is execution-checked, and the project
+                    // forbids presenting an unbacked trust signal.
+                    let gold = app.registry.accepted_runs(id).map(|r| r.len()).unwrap_or(0);
+                    let tag = if gold > 0 {
+                        format!(" ({gold} gold example{})", if gold == 1 { "" } else { "s" })
+                    } else {
+                        String::new()
+                    };
+                    Some((gold, format!("- {}: {}{}", m.id, m.description, tag)))
+                })
+                .collect();
+            if rows.is_empty() {
+                return None;
+            }
+            rows.sort_by_key(|r| std::cmp::Reverse(r.0));
+            let lines = rows
+                .into_iter()
+                .take(8)
+                .map(|(_, l)| l)
+                .collect::<Vec<_>>()
+                .join("\n");
+            Some(format!(
+                "Skills you can reuse (run one with skill_run, find more with skill_search, or offer a \
+                 better version with skill_improve — prefer this over redoing work; when you solve \
+                 something reusable, keep it with skill_author):\n{lines}"
+            ))
+        })
+    };
     let ctx = engram_agent::ToolCtx {
         memory: app.memory.clone(),
         skills: app.registry.clone(),
@@ -1775,9 +1856,29 @@ pub(crate) async fn run_agent_task_cb(
         depth: 0,
         browser: app.browser.clone(),
     };
+    // CURATION: drop tools the user turned off globally (disabled_tools), then, if the assigned agent
+    // is scoped (allowed_tools), keep only those — so a named specialist has exactly the toolbelt it
+    // should. The global deny-list is also pushed into engram_agent so base_tools()/sub_tools() apply
+    // it, which is what makes the curation hold for delegated SUBAGENTS (they never pass here).
+    let disabled = app.cfg().security.disabled_tools.clone();
+    let allowed = agent_def.and_then(|a| a.allowed_tools.clone());
+    engram_agent::set_global_disabled_tools(disabled.clone());
     let mut tools = engram_agent::default_tools();
     for t in app.mcp_tools.read().expect("mcp lock").iter() {
         tools = tools.with(t.clone());
+    }
+    // base_tools() already dropped globally-disabled built-ins; we still filter here to (a) cover the
+    // MCP tools added above and (b) apply the per-agent allowed_tools scope at this chokepoint.
+    if !disabled.is_empty() || allowed.is_some() {
+        tools = tools.retaining(|name| {
+            if disabled.iter().any(|d| d == name) {
+                return false;
+            }
+            match &allowed {
+                Some(list) => list.iter().any(|a| a == name),
+                None => true,
+            }
+        });
     }
     // Production runs verify before finishing (one bounded reflection pass), are bounded by
     // a token budget (runaway-cost guard), and honor the kill switch.
@@ -1810,6 +1911,9 @@ pub(crate) async fn run_agent_task_cb(
     }
     if let Some(mb) = &memory_block {
         parts.push(mb.clone());
+    }
+    if let Some(sb) = &skills_block {
+        parts.push(sb.clone());
     }
     if let Some(p) = app.persona.read().expect("persona lock").clone() {
         if !p.trim().is_empty() {
@@ -2958,9 +3062,52 @@ async fn skills(State(app): State<App>) -> ApiResult {
                 o
             })
             .collect();
-        out.push(json!({ "id": id, "active": active, "versions": versions, "runs": runs, "learn": events }));
+        // Surface the active manifest so the UI can label a skill (a process/Python skill the agent
+        // authored vs. a WASM transform) and show what it does + which capabilities it holds.
+        let (runtime, interpreter, description, when_to_use, capabilities) =
+            match app.registry.load_active(&id) {
+                Ok((signed, _)) => {
+                    let m = signed.manifest;
+                    (
+                        if m.runtime == engram_skills::Runtime::Process {
+                            "process"
+                        } else {
+                            "wasm"
+                        },
+                        m.interpreter,
+                        m.description,
+                        m.when_to_use,
+                        m.capabilities
+                            .iter()
+                            .map(|c| c.as_str())
+                            .collect::<Vec<_>>(),
+                    )
+                }
+                Err(_) => ("wasm", None, String::new(), None, vec![]),
+            };
+        out.push(json!({ "id": id, "active": active, "versions": versions, "runs": runs,
+            "runtime": runtime, "interpreter": interpreter, "description": description,
+            "when_to_use": when_to_use, "capabilities": capabilities, "learn": events }));
     }
     Ok(Json(json!({ "skills": out })))
+}
+
+/// The built-in tools and whether each is currently turned off — drives the Tools curation UI so
+/// the toggle list is authoritative (never drifts from the real toolset).
+async fn tools_list(State(app): State<App>) -> ApiResult {
+    let disabled = app.cfg().security.disabled_tools.clone();
+    let tools: Vec<Value> = engram_agent::default_tools()
+        .defs()
+        .into_iter()
+        .map(|d| {
+            json!({
+                "name": d.name,
+                "description": d.description,
+                "disabled": disabled.iter().any(|x| x == &d.name),
+            })
+        })
+        .collect();
+    Ok(Json(json!({ "tools": tools, "disable_skill_author": app.cfg().security.disable_skill_author })))
 }
 
 #[derive(Deserialize)]
@@ -2968,22 +3115,39 @@ struct RunSkillReq {
     input: String,
 }
 
+/// Build the runtime params for executing/scoring a skill from the live config. A process skill
+/// inherits the configured shell backend + the shell gate; WASM skills ignore those.
+fn skill_run_params<'a>(
+    app: &'a App,
+    backend: Option<&'a str>,
+) -> engram_agent::SkillRunParams<'a> {
+    engram_agent::SkillRunParams {
+        backend,
+        workdir: &app.workdir,
+        timeout_secs: 30,
+        taint: engram_core::Taint::Trusted,
+        allow_exec: app.allow_shell.load(std::sync::atomic::Ordering::Relaxed),
+        gateway: app.gateway.clone(),
+        memory: app.memory.clone(),
+        host: &app.host,
+        scoring: false,
+    }
+}
+
 async fn run_skill(
     State(app): State<App>,
     Path(id): Path<String>,
     Json(r): Json<RunSkillReq>,
 ) -> ApiResult {
-    let (signed, wasm) = app.registry.load_active(&id).map_err(err)?;
-    let ctx = RunCtx::pure()
-        .memory(app.memory.clone(), Region::ALL.to_vec())
-        .gateway(app.gateway.clone());
-    let vk = *app.registry.verifying();
-    // Async path so skills granted the LLM/Net capability can reach the gateway.
-    let outcome = app
-        .host
-        .run_signed_async(&signed, &wasm, &vk, r.input.as_bytes(), ctx)
+    // Dispatches WASM vs process internally; verifies the signature on both paths.
+    let backend = {
+        let c = app.cfg();
+        config::resolve_shell_backend(&c.security.shell_backend, &c.security.shell_target)
+    };
+    let p = skill_run_params(&app, backend.as_deref());
+    let outcome = engram_agent::run_active(&app.registry, &id, r.input.as_bytes(), &p)
         .await
-        .map_err(err)?;
+        .map_err(ApiError)?;
     Ok(Json(json!({
         "output": String::from_utf8_lossy(&outcome.output),
         "fuel_used": outcome.fuel_used,
@@ -2993,144 +3157,73 @@ async fn run_skill(
     })))
 }
 
-/// Replay a skill version against its recorded `(input, gold)` runs USING REAL CAPABILITIES
-/// (memory + the gateway, the same context a live run gets), scoring each output against the
-/// accepted one. `exact_match` is all-or-nothing; any other metric gives partial credit via a
-/// character-bigram similarity, so a near-correct LLM-backed skill can measurably improve. This
-/// is the async fix for the old `score_version` that replayed with no capabilities (always 0).
-async fn score_skill_async(
-    app: &App,
-    id: &str,
-    version: u32,
-    runs: &[(Vec<u8>, Vec<u8>)],
-    metric: &str,
-) -> f32 {
-    if runs.is_empty() {
-        return 0.0;
-    }
-    let Ok((signed, wasm)) = app.registry.load(id, version) else {
-        return 0.0;
-    };
-    let vk = *app.registry.verifying();
-    let exact = metric == "exact_match";
-    // Bound the replay set (an unbounded loop of live LLM calls is a cost/availability DoS) and
-    // cooperate with the kill switch so a stuck improve can be stopped. Score the most recent K.
-    const MAX_REPLAYS: usize = 50;
-    let scored: Vec<&(Vec<u8>, Vec<u8>)> = runs.iter().rev().take(MAX_REPLAYS).collect();
-    let mut total = 0.0f32;
-    let mut n = 0usize;
-    for (input, gold) in &scored {
-        if app.halt.load(std::sync::atomic::Ordering::Relaxed) {
-            break;
-        }
-        let ctx = engram_skills::RunCtx::pure()
-            .memory(app.memory.clone(), Region::ALL.to_vec())
-            .gateway(app.gateway.clone());
-        if let Ok(o) = app
-            .host
-            .run_signed_async(&signed, &wasm, &vk, input, ctx)
-            .await
-        {
-            total += if exact {
-                if &o.output == gold {
-                    1.0
-                } else {
-                    0.0
-                }
-            } else {
-                bigram_similarity(&o.output, gold)
-            };
-        }
-        n += 1;
-    }
-    if n == 0 {
-        0.0
-    } else {
-        total / n as f32
-    }
-}
-
-/// Character-bigram Jaccard similarity in [0,1] - partial credit for a near-correct output.
-fn bigram_similarity(a: &[u8], b: &[u8]) -> f32 {
-    if a == b {
-        return 1.0;
-    }
-    let grams = |s: &[u8]| -> std::collections::HashSet<(u8, u8)> {
-        s.windows(2).map(|w| (w[0], w[1])).collect()
-    };
-    let (ga, gb) = (grams(a), grams(b));
-    if ga.is_empty() && gb.is_empty() {
-        return if a == b { 1.0 } else { 0.0 };
-    }
-    let inter = ga.intersection(&gb).count() as f32;
-    let union = ga.union(&gb).count() as f32;
-    if union == 0.0 {
-        0.0
-    } else {
-        inter / union
-    }
-}
-
 #[derive(Deserialize)]
 struct ImproveReq {
-    /// WebAssembly Text source for the candidate version (compiled here with the same `wat`
-    /// crate the seed skills use). Keeps authoring data-only - no native code path.
-    wat: String,
+    /// WebAssembly Text source for a WASM-skill candidate (compiled here with the `wat` crate).
+    wat: Option<String>,
+    /// Source for a process-skill candidate (a small program; reads stdin, writes stdout).
+    source: Option<String>,
+    /// Override the interpreter for a process candidate (defaults to the active version's).
+    interpreter: Option<String>,
     description: Option<String>,
 }
 
-/// Author + A/B-gate a candidate skill version: compile the WAT, install it as a new version,
-/// replay BOTH the incumbent and the candidate against the recorded runs under real capabilities,
-/// and promote the candidate iff it measurably wins. Every outcome is signed into the ledger.
-/// This is the route that makes "self-improving skills" exist at runtime.
+/// Author + A/B-gate a candidate skill version. The candidate inherits the active version's
+/// substrate: a WASM skill takes `wat` (compiled here), a process skill takes `source`. The
+/// candidate is installed, then BOTH it and the incumbent are replayed (network-isolated) against
+/// the recorded gold runs and the candidate is promoted iff it measurably wins. Every outcome is
+/// signed into the ledger. One shared path with the agent's `skill_improve` tool, so they never
+/// diverge. This is the route that makes "self-improving skills" exist at runtime.
 async fn skill_improve(
     State(app): State<App>,
     Path(id): Path<String>,
     Json(r): Json<ImproveReq>,
 ) -> ApiResult {
     let (active_signed, _) = app.registry.load_active(&id).map_err(err)?;
-    let m = &active_signed.manifest;
-    let wasm = wat::parse_str(&r.wat).map_err(|e| err(format!("invalid WAT: {e}")))?;
+    let m = active_signed.manifest.clone();
+    // Build the candidate bytes for the active version's substrate.
+    let bytes: Vec<u8> = match m.runtime {
+        engram_skills::Runtime::Wasm => {
+            let wat = r
+                .wat
+                .as_deref()
+                .ok_or_else(|| ApiError("this is a WASM skill — provide `wat`".into()))?;
+            wat::parse_str(wat).map_err(|e| err(format!("invalid WAT: {e}")))?
+        }
+        engram_skills::Runtime::Process => r
+            .source
+            .clone()
+            .ok_or_else(|| ApiError("this is a process skill — provide `source`".into()))?
+            .into_bytes(),
+    };
     let candidate = engram_skills::NewSkill {
         id: id.clone(),
         category: m.category.clone(),
         description: r.description.unwrap_or_else(|| m.description.clone()),
         capabilities: m.capabilities.clone(),
         metric: m.metric.clone(),
+        runtime: m.runtime,
+        interpreter: r.interpreter.or_else(|| m.interpreter.clone()),
+        when_to_use: m.when_to_use.clone(),
     };
-    let candidate_version = app.registry.install(candidate, &wasm).map_err(err)?;
-    let runs = app.registry.accepted_runs(&id).map_err(err)?;
-    let active = app.registry.active_version(&id).map_err(err)?.unwrap_or(0);
-    if runs.is_empty() {
-        return Ok(Json(json!({
-            "decision": "no_data", "id": id, "candidate": candidate_version,
-            "note": "no recorded runs to judge against yet - teach it some accepted runs first"
-        })));
-    }
-    let incumbent_score = score_skill_async(&app, &id, active, &runs, &m.metric).await;
-    let candidate_score = score_skill_async(&app, &id, candidate_version, &runs, &m.metric).await;
-    // Promotion gate. exact_match is deterministic, so a strict win is sound. A fuzzy (LLM/bigram)
-    // metric is noisy, so require a real MARGIN and a minimum sample count - otherwise sampling
-    // jitter could promote an equal-or-worse candidate.
-    let exact = m.metric == "exact_match";
-    let margin = if exact { 0.0 } else { 0.05 };
-    let promoted = candidate_score > incumbent_score + margin && (exact || runs.len() >= 3);
-    if promoted {
-        app.registry
-            .set_active(&id, candidate_version, "user", "skill.promote")
-            .map_err(err)?;
-    }
-    let _ = app.ledger.append(
-        "skill.learn",
+    let backend = {
+        let c = app.cfg();
+        config::resolve_shell_backend(&c.security.shell_backend, &c.security.shell_target)
+    };
+    let p = skill_run_params(&app, backend.as_deref());
+    let decision = engram_agent::improve_skill(
+        &app.registry,
+        &id,
+        candidate,
+        &bytes,
+        true,
         "user",
-        json!({ "id": id, "promoted": promoted, "from": active, "candidate": candidate_version,
-                "incumbent_score": incumbent_score, "candidate_score": candidate_score, "replays": runs.len() }),
-    );
-    Ok(Json(json!({
-        "decision": if promoted { "promoted" } else { "rejected" },
-        "id": id, "from": active, "candidate": candidate_version,
-        "incumbent_score": incumbent_score, "candidate_score": candidate_score, "replays": runs.len(),
-    })))
+        &p,
+        Some(&app.halt),
+    )
+    .await
+    .map_err(ApiError)?;
+    Ok(Json(decision))
 }
 
 #[derive(Deserialize)]
@@ -3832,6 +3925,16 @@ fn apply_config_patch(cfg: &mut config::Config, p: &Value) {
             .and_then(|v| v.as_bool())
         {
             cfg.security.enable_worktree_isolation = b;
+        }
+        if let Some(arr) = sec.get("disabled_tools").and_then(|v| v.as_array()) {
+            cfg.security.disabled_tools = arr
+                .iter()
+                .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
+                .filter(|s| !s.is_empty())
+                .collect();
+        }
+        if let Some(b) = sec.get("disable_skill_author").and_then(|v| v.as_bool()) {
+            cfg.security.disable_skill_author = b;
         }
         if flag(sec, "clear_api_token") {
             cfg.security.api_token.clear();

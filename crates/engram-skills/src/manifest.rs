@@ -35,6 +35,52 @@ fn default_entry() -> String {
     "run".to_string()
 }
 
+/// What kind of program a skill's bytes are, and therefore which runtime executes it.
+///
+/// The moat was never WASM: [`module_hash`] and [`verify`] sign arbitrary bytes, so a skill can
+/// just as soundly be a *script* (a small Python/JS/Go/shell program — the polyglot, LLM-authorable
+/// substrate) as a WASM module. The runtime lives INSIDE the signed manifest, so you cannot swap a
+/// Python skill to run under a different interpreter without breaking the signature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Runtime {
+    /// A WASM module run in the fuel-bounded, deny-by-default wasmi sandbox. The default and the
+    /// only substrate for high-assurance pure-compute transforms (it is exact-byte replayable).
+    #[default]
+    Wasm,
+    /// A source script executed by an interpreter inside the agent's existing shell sandbox
+    /// (local / network-isolated `docker run` / ssh). The Hermes "small program" substrate.
+    Process,
+}
+
+impl Runtime {
+    /// True for the serde default (Wasm). Used by `skip_serializing_if` so that an existing signed
+    /// WASM manifest serializes byte-identically (the field is simply absent) and keeps verifying
+    /// after the new fields are added — the load-bearing back-compat rule.
+    pub fn is_default(&self) -> bool {
+        matches!(self, Runtime::Wasm)
+    }
+}
+
+/// The on-disk file extension for a skill artifact, derived from its runtime + interpreter. Purely
+/// cosmetic for readability — the registry globs `v{N}.*`, it does not depend on the extension.
+pub fn artifact_ext(runtime: Runtime, interpreter: Option<&str>) -> &'static str {
+    match runtime {
+        Runtime::Wasm => "wasm",
+        Runtime::Process => match interpreter.unwrap_or("").split_whitespace().next().unwrap_or("") {
+            "python3" | "python" => "py",
+            "node" | "deno" | "bun" => "js",
+            "bash" | "sh" | "zsh" => "sh",
+            "ruby" => "rb",
+            "go" => "go",
+            "gcc" | "cc" | "clang" => "c",
+            "perl" => "pl",
+            "php" => "php",
+            _ => "txt",
+        },
+    }
+}
+
 /// Everything known about a skill except its bytes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Manifest {
@@ -49,8 +95,19 @@ pub struct Manifest {
     pub capabilities: Vec<Capability>,
     /// The metric this skill optimises, e.g. "accept_rate".
     pub metric: String,
-    /// BLAKE3 hex of the WASM bytes this manifest authorises.
+    /// BLAKE3 hex of the skill's bytes this manifest authorises.
     pub module_hash: String,
+    /// Which substrate runs this skill. Defaults to `Wasm` and is OMITTED from the canonical bytes
+    /// when default, so existing signed WASM manifests keep verifying unchanged.
+    #[serde(default, skip_serializing_if = "Runtime::is_default")]
+    pub runtime: Runtime,
+    /// For a `Process` skill: the interpreter command (e.g. "python3", "node", "bash", "go run").
+    /// Signed, so the interpreter a skill runs under cannot be swapped post-signing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interpreter: Option<String>,
+    /// A short natural-language cue for auto-selection — when the agent should reach for this skill.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when_to_use: Option<String>,
 }
 
 impl Manifest {
@@ -61,6 +118,13 @@ impl Manifest {
 
     pub fn grants(&self, cap: Capability) -> bool {
         self.capabilities.contains(&cap)
+    }
+
+    /// True if this skill executes code outside the WASM sandbox (a process skill) or holds any
+    /// capability that demands a trusted run. Such a skill is refused on a tainted run — the central
+    /// dispatch gate only covers *egress* tools, so code-execution needs this explicit check.
+    pub fn requires_trust(&self) -> bool {
+        self.runtime == Runtime::Process || self.capabilities.iter().any(|c| c.requires_trust())
     }
 }
 
@@ -167,6 +231,9 @@ mod tests {
             capabilities: vec![Capability::MemoryRead],
             metric: "accept_rate".into(),
             module_hash: hash.into(),
+            runtime: Runtime::default(),
+            interpreter: None,
+            when_to_use: None,
         }
     }
 

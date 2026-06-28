@@ -94,8 +94,13 @@ pub struct ToolCtx {
 /// What the agent is permitted to do. Safe by default.
 #[derive(Clone, Debug)]
 pub struct Policy {
-    /// Allow the shell tool at all (off unless explicitly enabled).
+    /// Allow the shell tool at all (off unless explicitly enabled). Also gates *running* process
+    /// skills, which execute through the same shell backend.
     pub allow_shell: bool,
+    /// Allow the agent to author/improve skills (install signed skill code). On by default — this is
+    /// what lets skills "pop up" from real use. Authoring is still refused on a tainted run and the
+    /// declared capabilities are clamped to what the run is allowed.
+    pub allow_skill_author: bool,
     /// Allow writing files within the workdir.
     pub allow_write: bool,
     /// Truncate any single observation to this many bytes before feeding it back.
@@ -122,6 +127,7 @@ impl Default for Policy {
     fn default() -> Self {
         Policy {
             allow_shell: false,
+            allow_skill_author: true,
             allow_write: true,
             max_obs_len: 6000,
             timeout_secs: 30,
@@ -192,6 +198,14 @@ impl ToolRegistry {
     }
     pub fn get(&self, name: &str) -> Option<&Arc<dyn Tool>> {
         self.tools.iter().find(|t| t.name() == name)
+    }
+    /// Keep only the tools whose name satisfies `keep`. Used at the run chokepoint to apply per-user
+    /// (`disabled_tools`) and per-agent (`allowed_tools`) curation: a dropped tool isn't advertised
+    /// to the model, so it simply isn't available that run. The effective set is recorded so the
+    /// curation decision is auditable.
+    pub fn retaining(mut self, keep: impl Fn(&str) -> bool) -> Self {
+        self.tools.retain(|t| keep(t.name()));
+        self
     }
     pub fn names(&self) -> Vec<&str> {
         self.tools.iter().map(|t| t.name()).collect()

@@ -118,13 +118,7 @@ mod tests {
         let signer = Arc::new(SkillSigner::load_or_create(dir.path().join("k")).unwrap());
         let reg = Registry::open(dir.path(), signer, ledger).unwrap();
         reg.install(
-            NewSkill {
-                id: "shout".into(),
-                category: "transform".into(),
-                description: "uppercase".into(),
-                capabilities: vec![],
-                metric: "exact".into(),
-            },
+            NewSkill::wasm("shout", "transform", "uppercase", vec![], "exact"),
             &upcase(),
         )
         .unwrap();

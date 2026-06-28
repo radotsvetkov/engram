@@ -60,13 +60,13 @@ pub fn ensure_seed(registry: &Registry) -> Result<(), Box<dyn std::error::Error>
         return Ok(());
     }
     let wasm = wat::parse_str(SHOUT_WAT)?;
-    let skill = NewSkill {
-        id: "shout".into(),
-        category: "transform".into(),
-        description: "Uppercase the input text.".into(),
-        capabilities: vec![],
-        metric: "exact_match".into(),
-    };
+    let skill = NewSkill::wasm(
+        "shout",
+        "transform",
+        "Uppercase the input text.",
+        vec![],
+        "exact_match",
+    );
     let version = registry.install(skill, &wasm)?;
     for (input, gold) in [("hello", "HELLO"), ("engram", "ENGRAM"), ("rust", "RUST")] {
         registry.record_run("shout", version, input.as_bytes(), gold.as_bytes(), 1.0)?;
@@ -75,13 +75,13 @@ pub fn ensure_seed(registry: &Registry) -> Result<(), Box<dyn std::error::Error>
 
     let ask = wat::parse_str(ASK_WAT)?;
     registry.install(
-        NewSkill {
-            id: "ask".into(),
-            category: "thinking".into(),
-            description: "Forward the input to the model through the gateway.".into(),
-            capabilities: vec![Capability::Llm],
-            metric: "helpfulness".into(),
-        },
+        NewSkill::wasm(
+            "ask",
+            "thinking",
+            "Forward the input to the model through the gateway.",
+            vec![Capability::Llm],
+            "helpfulness",
+        ),
         &ask,
     )?;
     tracing::info!("seeded skill 'ask'");

@@ -192,13 +192,13 @@ mod tests {
     }
 
     fn new_skill() -> NewSkill {
-        NewSkill {
-            id: "upcase".into(),
-            category: "transform".into(),
-            description: "uppercase the input".into(),
-            capabilities: vec![Capability::MemoryRead], // declared but unused here
-            metric: "exact_match".into(),
-        }
+        NewSkill::wasm(
+            "upcase",
+            "transform",
+            "uppercase the input",
+            vec![Capability::MemoryRead], // declared but unused here
+            "exact_match",
+        )
     }
 
     fn setup() -> (SkillHost, Registry, tempfile::TempDir) {

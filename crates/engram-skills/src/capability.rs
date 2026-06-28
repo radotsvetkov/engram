@@ -34,4 +34,12 @@ impl Capability {
     pub fn is_egress(self) -> bool {
         matches!(self, Capability::Llm | Capability::Net)
     }
+
+    /// Capabilities a skill may use only on a *trusted* run. A skill that reaches the network or a
+    /// model can be steered into exfiltration or SSRF if the run has read untrusted content, so such
+    /// a skill is refused on a tainted run at the skill-tool boundary (the central dispatch gate only
+    /// covers egress *tools*, not a code-executing skill, so this is the explicit complement).
+    pub fn requires_trust(self) -> bool {
+        self.is_egress()
+    }
 }

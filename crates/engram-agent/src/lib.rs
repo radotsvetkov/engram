@@ -14,14 +14,38 @@ pub mod agent;
 #[cfg(feature = "browser-cdp")]
 pub mod browser_cdp;
 pub mod mcp;
+pub mod skills_runtime;
+pub mod skills_tools;
 pub mod tool;
 pub mod tools;
 
 pub use agent::{Agent, AgentError, AgentRun, StepCallback, StepRecord};
 pub use mcp::{connect_servers, connect_servers_reported, McpClient, McpServerSpec, McpTool};
+pub use skills_runtime::{improve_skill, run_active, score_skill, SkillRunParams};
 pub use tool::{confine, BrowserSession, NoBrowser, Policy, Tool, ToolCtx, ToolRegistry};
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
+
+/// Process-global deny-list of built-in tool names the user has turned off. The daemon has exactly
+/// one SecurityCfg, so a single global is accurate — and consulting it inside [`base_tools`] makes
+/// the curation hold for delegated SUBAGENTS too (they build their own toolset via [`sub_tools`] and
+/// never pass through the daemon's run chokepoint, so a chokepoint-only filter would leak).
+static DISABLED_TOOLS: RwLock<Vec<String>> = RwLock::new(Vec::new());
+
+/// Replace the global tool deny-list. The daemon calls this at the start of every run with the live
+/// config's `disabled_tools`, so it tracks config changes without a restart.
+pub fn set_global_disabled_tools(names: Vec<String>) {
+    if let Ok(mut g) = DISABLED_TOOLS.write() {
+        *g = names;
+    }
+}
+
+fn is_globally_disabled(name: &str) -> bool {
+    DISABLED_TOOLS
+        .read()
+        .map(|g| g.iter().any(|n| n == name))
+        .unwrap_or(false)
+}
 
 /// The common toolset (memory, files, shell, web) shared by agents and subagents.
 fn base_tools() -> ToolRegistry {
@@ -52,13 +76,20 @@ fn base_tools() -> ToolRegistry {
         .with(Arc::new(tools::VisionAnalyzeTool))
         .with(Arc::new(tools::ImageGenerateTool))
         .with(Arc::new(tools::TextToSpeechTool))
-        .with(Arc::new(tools::TranscribeTool));
+        .with(Arc::new(tools::TranscribeTool))
+        // Self-improving skills: find, run, author, and improve small reusable programs.
+        .with(Arc::new(skills_tools::SkillSearchTool))
+        .with(Arc::new(skills_tools::SkillRunTool))
+        .with(Arc::new(skills_tools::SkillAuthorTool))
+        .with(Arc::new(skills_tools::SkillImproveTool));
     #[cfg(feature = "web")]
     let reg = reg
         .with(Arc::new(tools::WebFetchTool))
         .with(Arc::new(tools::WebSearchTool))
         .with(Arc::new(tools::SendMessageTool));
-    reg
+    // Apply the user's global tool deny-list here so it covers BOTH top-level agents and delegated
+    // subagents (the chokepoint additionally filters per-agent allowed_tools + MCP tools).
+    reg.retaining(|n| !is_globally_disabled(n))
 }
 
 /// The full toolset for a top-level agent - base tools plus subagent delegation.

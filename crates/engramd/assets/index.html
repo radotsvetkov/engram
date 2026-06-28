@@ -477,7 +477,9 @@
   .sk-head { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
   .sk-name { font-weight:600; font-size:15px; }
   .vladder { display:flex; align-items:center; gap:4px; }
-  .vchip { font:600 11px var(--mono); color:var(--text-muted); background:var(--surface-2); border:1px solid var(--border); border-radius:6px; padding:2px 7px; }
+  .vchip { font:600 11px var(--mono); color:var(--text-muted); background:var(--surface-2); border:1px solid var(--border); border-radius:6px; padding:2px 7px; cursor:pointer; transition:border-color var(--dur-1) var(--ease-out), color var(--dur-1); }
+  .vchip:hover { border-color:var(--ring); color:var(--text-primary); }
+  .sk-actions { display:flex; flex-wrap:wrap; gap:7px; margin-top:10px; padding-top:10px; border-top:1px solid var(--border); }
   .vchip.active { color:var(--accent); border-color:color-mix(in srgb,var(--accent) 40%,transparent); background:var(--accent-soft); }
   .varr { color:var(--text-muted); font-size:11px; }
   .sk-pill { font:600 10.5px var(--mono); text-transform:uppercase; letter-spacing:.04em; border-radius:999px; padding:3px 10px; }
@@ -2436,7 +2438,7 @@ async function renderSkills(){
   const skills=sk.skills||[];
   const cards = skills.length ? skills.map(s=>{
     const active=s.active, runs=s.runs||0, verified=runs>0;
-    const ladder=(s.versions||[]).map(v=>`<span class="vchip${v===active?' active':''}">v${v}</span>`).join('<span class="varr">→</span>');
+    const ladder=(s.versions||[]).map(v=>`<span class="vchip${v===active?' active':''}" title="Activate v${v}" onclick="skillActivate('${esc(s.id)}',${v})">v${v}</span>`).join('<span class="varr">→</span>');
     const statusPill = verified
       ? `<span class="sk-pill ok" title="Improvements are scored by exact match against ${runs} recorded (input, accepted-output) pair${runs===1?'':'s'}.">verified · ${runs} scored run${runs===1?'':'s'}</span>`
       : `<span class="sk-pill warn" title="No recorded (input, accepted-output) pairs to score against yet - so an improvement can't be measured. Honest signal, not a guess.">unverified - no scored runs yet</span>`;
@@ -2452,6 +2454,11 @@ async function renderSkills(){
       <div class="sk-head"><span class="sk-name">${esc(s.id)}</span><span class="vladder">${ladder}</span><span class="grow"></span>${statusPill}</div>
       ${evBlock}
       <div class="sk-run"><input id="in_${esc(s.id)}" placeholder="try an input..." onkeydown="if(event.key==='Enter')runSkill('${esc(s.id)}')"><button class="sbtn" onclick="runSkill('${esc(s.id)}')">Run</button><span id="out_${esc(s.id)}" class="sk-out"></span></div>
+      <div class="sk-actions">
+        <button class="sbtn ghost" onclick="skillTeach('${esc(s.id)}')" title="Record an (input, accepted output) example so improvements can be scored">+ Teach example</button>
+        <button class="sbtn ghost" onclick="skillImprove('${esc(s.id)}')" title="Author a new version (WAT) - replayed and promoted only if it measurably wins">Improve</button>
+        ${(s.versions||[]).length>1?`<button class="sbtn ghost" onclick="skillRevert('${esc(s.id)}')" title="Revert to the previous version">Revert</button>`:''}
+      </div>
     </div>`;
   }).join('') : `<div class="sk-empty"><b>No skills yet.</b><span>Skills are small, signed programs Engram grows. Each improvement is replayed against past runs and promoted only when it measurably wins - and you can verify it.</span></div>`;
   document.getElementById('view').innerHTML = `<div class="skills-wrap">
@@ -2461,6 +2468,54 @@ async function renderSkills(){
 async function runSkill(id){ const input=document.getElementById('in_'+id).value;
   const r=await J('/v1/skills/'+encodeURIComponent(id)+'/run',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({input})});
   document.getElementById('out_'+id).textContent = r.error?('error: '+r.error):('→ '+r.output); }
+// Activate a specific version (click a version chip). Signed to the ledger.
+async function skillActivate(id,v){
+  try{ await J('/v1/skills/'+encodeURIComponent(id)+'/activate',{method:'POST',headers:MIND_JSON,body:JSON.stringify({version:v})}); notify('Activated v'+v+' · signed','ok'); renderSkills(); }
+  catch(e){ notify('Couldn\'t activate - '+((e&&e.message)||'error')); }
+}
+// Revert to the previous version - the auditable undo (appended to the ledger, not erased).
+async function skillRevert(id){
+  if(!await askConfirm({title:'Revert skill?',message:'Roll "'+id+'" back to its previous version. This is appended to the signed ledger, so it stays auditable.',ok:'Revert'})) return;
+  try{ await J('/v1/skills/'+encodeURIComponent(id)+'/revert',{method:'POST',headers:MIND_JSON,body:'{}'}); notify('Reverted · signed','ok'); renderSkills(); }
+  catch(e){ notify('Couldn\'t revert - '+((e&&e.message)||'error')); }
+}
+// Teach: record an (input, accepted-output) example so future improvements can be scored against it.
+function skillTeach(id){
+  const ov=document.createElement('div'); ov.className='overlay ask';
+  ov.innerHTML=`<div class="ask-card" style="width:min(520px,93vw)">
+    <div class="ask-title">Teach ${esc(id)} an example</div>
+    <div class="ask-msg">Record an input and the output you would accept. Improvements are scored by replaying against these examples - the more you add, the stronger the signal.</div>
+    <input class="ask-input" id="tkIn" placeholder="input" autocomplete="off">
+    <textarea class="ask-input" id="tkGold" rows="3" placeholder="accepted output" style="resize:vertical;font:inherit"></textarea>
+    <div class="ask-actions"><button class="ask-ghost" onclick="this.closest('.overlay').remove()">Cancel</button><button class="ask-ok" onclick="skillTeachSave('${escAttr(id)}',this)">Save example</button></div>
+  </div>`;
+  document.body.appendChild(ov); setTimeout(()=>{ const i=ov.querySelector('#tkIn'); if(i)i.focus(); },20);
+}
+async function skillTeachSave(id,btn){
+  const ov=btn.closest('.overlay'); const input=ov.querySelector('#tkIn').value.trim(); const gold=ov.querySelector('#tkGold').value.trim();
+  if(!input||!gold){ notify('An input and an accepted output are both needed'); return; }
+  try{ await J('/v1/skills/'+encodeURIComponent(id)+'/teach',{method:'POST',headers:MIND_JSON,body:JSON.stringify({input,gold})}); ov.remove(); notify('Example recorded · signed','ok'); renderSkills(); }
+  catch(e){ notify('Couldn\'t save - '+((e&&e.message)||'error')); }
+}
+// Improve: author a new version as WAT; the daemon compiles, replays, and promotes only on a win.
+function skillImprove(id){
+  const ov=document.createElement('div'); ov.className='overlay ask';
+  ov.innerHTML=`<div class="ask-card" style="width:min(660px,94vw)">
+    <div class="ask-title">Improve ${esc(id)}</div>
+    <div class="ask-msg">Paste a new version as WebAssembly Text (WAT). It is compiled here, replayed against the recorded examples, and promoted only if it measurably beats the current version - the before/after signed to the ledger.</div>
+    <textarea class="ask-input" id="impWat" rows="10" placeholder="(module ... )" style="resize:vertical;font:12px var(--mono);line-height:1.5"></textarea>
+    <div class="ask-actions"><button class="ask-ghost" onclick="this.closest('.overlay').remove()">Cancel</button><button class="ask-ok" onclick="skillImproveSave('${escAttr(id)}',this)">Submit improvement</button></div>
+  </div>`;
+  document.body.appendChild(ov); setTimeout(()=>{ const t=ov.querySelector('#impWat'); if(t)t.focus(); },20);
+}
+async function skillImproveSave(id,btn){
+  const ov=btn.closest('.overlay'); const wat=ov.querySelector('#impWat').value.trim();
+  if(!wat){ notify('Paste the new version as WAT source'); return; }
+  const ok=ov.querySelector('.ask-ok'); if(ok){ ok.disabled=true; ok.textContent='Replaying...'; }
+  try{ const r=await J('/v1/skills/'+encodeURIComponent(id)+'/improve',{method:'POST',headers:MIND_JSON,body:JSON.stringify({wat})}); ov.remove();
+    notify(r.promoted?('Promoted to v'+(r.to||'?')+' - it won on replay'):'Submitted - it did not beat the current version, so the active one is kept','ok'); renderSkills(); }
+  catch(e){ if(ok){ ok.disabled=false; ok.textContent='Submit improvement'; } notify('Couldn\'t improve - '+((e&&e.message)||'error')); }
+}
 
 // ---- Settings ----
 // Every non-Anthropic, non-mock backend is OpenAI-compatible and routes through the same

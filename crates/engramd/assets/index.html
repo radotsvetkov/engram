@@ -842,6 +842,12 @@
   @keyframes recall-in { from{ opacity:0; transform:translateY(4px); } to{ opacity:1; transform:none; } }
   .learned { font-size:11px; color:var(--text-muted); margin:5px 0 2px; display:flex; align-items:center; gap:6px; }
   .learned::before { content:''; width:4px; height:4px; border-radius:50%; background:var(--text-muted); opacity:.6; flex:none; }
+  .chat-steps { display:flex; flex-wrap:wrap; gap:6px; margin:2px 0 8px; align-items:center; }
+  .cstep { display:inline-flex; align-items:center; gap:5px; font-size:11px; color:var(--text-secondary);
+    background:var(--surface-2); border:1px solid var(--border-strong); border-radius:7px; padding:3px 9px; }
+  .cstep .cs-ic { color:#2e9e6b; font-size:10px; }
+  .cstep.bad { color:var(--text-muted); } .cstep.bad .cs-ic { color:#c0533f; }
+  .chat-steps .step-shot { flex-basis:100%; margin:3px 0; }
   /* finishing touches: calm focus rings, refined hovers, softer depth */
   * { -webkit-tap-highlight-color:transparent; }
   :focus { outline:none; }
@@ -2041,6 +2047,8 @@ function chatWelcome(){
     <div class="cw-chips">${CW_STARTERS.map(p=>`<button onclick="converseInline(${escAttr(JSON.stringify(p))})">${esc(p)}</button>`).join('')}</div>
   </div>`;
 }
+// Friendly labels for the agent's tool steps shown in chat (the glass box).
+const CHAT_TOOL_LABEL={browser_open:'opened browser',browser_navigate:'opened browser',browser_screenshot:'took a screenshot',browser_click:'clicked',browser_type:'typed',browser_read:'read the page',browser_extract:'extracted from page',vision_analyze:'looked at the image',image_generate:'generated an image',text_to_speech:'spoke',web_fetch:'fetched a page',web_search:'searched the web',send_message:'sent a message',shell:'ran a command',read_file:'read a file',write_file:'wrote a file',edit_file:'edited a file',list_dir:'listed files',glob:'searched files',grep:'searched text',memory_recall:'recalled memory',memory_remember:'saved to memory',update_plan:'planned',delegate:'delegated'};
 function paintFeed(){
   const f=document.getElementById('feed'); if(!f) return;
   _cbN=0; for(const k in _cbStore) delete _cbStore[k];   // rebuilt below; ids are per-paint, so clearing here bounds the store
@@ -2052,8 +2060,15 @@ function paintFeed(){
       ? `<div class="ribbon"><span class="rb-lbl">grounded on ${refs.length}</span>${refs.slice(0,6).map(r=>{const reg=BRAIN_REGIONS[r.region]||BRAIN_REGIONS.semantic; return `<span class="recall clk" style="--lc:${reg.color}" title="${escAttr(r.text)}" onclick="recallOpen(${r.id|0})"><span class="rg">◇</span> ${esc((r.text||'').replace(/\s+/g,' ').slice(0,48))}</span>`;}).join('')}</div>`
       : (m.recalled&&m.recalled.length)?`<div class="ribbon">${m.recalled.slice(0,5).map(r=>`<span class="recall" title="${escAttr(r)}"><span class="rg">◇</span> ${esc((r||'').replace(/\s+/g,' ').slice(0,54))}</span>`).join('')}</div>`:'';
     const learned=(m.learned&&m.learned.length)?`<div class="learned">learned about you · ${m.learned.map(esc).join(' · ')}</div>`:'';
+    // The agent's tool activity (browse/shell/files/vision...) - the glass box, shown above the
+    // answer with any screenshots inline. Empty for a plain conversational reply (no tools used).
+    const steps=(m.steps&&m.steps.length)?`<div class="chat-steps">${m.steps.map(st=>{
+      const lbl=CHAT_TOOL_LABEL[st.tool]||st.tool;
+      const chip=`<span class="cstep${st.ok?'':' bad'}" title="${escAttr((st.observation||'').replace(/\s+/g,' ').slice(0,180))}"><span class="cs-ic">${st.ok?'✓':'✕'}</span>${esc(lbl)}</span>`;
+      return chip+stepShotHtml(st);
+    }).join('')}</div>`:'';
     const body = m.text ? (mdToHtml(m.text) + (m.streaming?'<span class="caret"></span>':'')) : (m.streaming?thinkingDots:'...');
-    return `<div><div class="msg engram"${m.streaming?' id="streamMsg"':''}>${body}</div>${ribbon}${learned}</div>`;
+    return `<div>${steps}<div class="msg engram"${m.streaming?' id="streamMsg"':''}>${body}</div>${ribbon}${learned}</div>`;
   }).join('') || chatWelcome();
   artsAfterPaint();   // detect substantial code/doc blocks, inject "Open in canvas" chips, sync the pane
   f.scrollTop=f.scrollHeight;
@@ -2107,7 +2122,8 @@ async function chatSay(text, attachments){
         // is still on screen (so a mid-stream switch doesn't render into the wrong feed).
         const live = WS.activeSession===sid;
         if(ev==='token'){ msg.text+=data; if(live) streamTick(msg); }
-        else if(ev==='done'){ try{const d=JSON.parse(data); if(d.reply) msg.text=d.reply; msg.recalled=d.recalled; msg.recalled_refs=d.recalled_refs; msg.learned=d.learned;}catch(_){} if(live) paintFeed(); }
+        else if(ev==='step'){ try{ const d=JSON.parse(data); (msg.steps=msg.steps||[]).push(d); if(live) paintFeed(); }catch(_){} }
+        else if(ev==='done'){ try{const d=JSON.parse(data); if(d.reply) msg.text=d.reply; msg.recalled=d.recalled; msg.recalled_refs=d.recalled_refs; msg.learned=d.learned; if(d.steps) msg.steps=d.steps;}catch(_){} if(live) paintFeed(); }
         else if(ev==='error'){ msg.text='(couldn\'t reach Engram - '+data+')'; if(live) paintFeed(); }
       }
     }

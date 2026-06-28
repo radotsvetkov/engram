@@ -70,9 +70,55 @@ pub struct Attachment {
     pub r#ref: Option<String>,
 }
 
+/// The grounding "recall ribbon" for a message: the trusted memories that bear on it, for display
+/// under the chat answer. Used by the agentic chat path (which runs the tool-using agent) to keep
+/// the same memory grounding the conversational path shows. Best-effort (empty on error).
+pub(crate) fn recall_ribbon(memory: &Memory, text: &str) -> (Vec<String>, Vec<RecalledRef>) {
+    let regions = [Region::Identity, Region::Episodic, Region::Semantic];
+    let hits = memory.recall_trusted(text, &regions, 5).unwrap_or_default();
+    let recalled = hits.iter().map(|h| h.record.text.clone()).collect();
+    let refs = hits
+        .iter()
+        .map(|h| RecalledRef {
+            id: h.record.id,
+            region: h.record.region.clone(),
+            text: h.record.text.clone(),
+            score: h.score,
+        })
+        .collect();
+    (recalled, refs)
+}
+
+/// Deepen the model of the user from what they just said - extract + store identity facts the same
+/// way the conversational path does (singular attributes supersede; preferences accumulate). Returns
+/// the learned facts for the UI. Best-effort.
+pub(crate) fn learn_identity(memory: &Memory, text: &str) -> Vec<String> {
+    let learned = extract_identity(text);
+    for l in &learned {
+        let Ok(rec) = memory.remember(
+            WriteReq::new(Region::Identity, l.fact.clone())
+                .source("inferred")
+                .importance(0.8)
+                .actor("core"),
+        ) else {
+            continue;
+        };
+        if l.supersede {
+            if let Ok(olds) = memory.current_with_prefix(Region::Identity, &l.prefix) {
+                for old in olds {
+                    if old != rec.id {
+                        let _ = memory.supersede(old, rec.id);
+                    }
+                }
+            }
+        }
+    }
+    learned.into_iter().map(|l| l.fact).collect()
+}
+
 /// Render the attachments into one system message that precedes the user's turn. Kept
 /// compact and bounded so a large paste can't blow the context budget.
-fn attachments_context(attachments: &[Attachment]) -> Option<String> {
+pub(crate) fn attachments_context(attachments: &[Attachment]) -> Option<String> {
     if attachments.is_empty() {
         return None;
     }

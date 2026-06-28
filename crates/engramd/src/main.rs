@@ -2617,42 +2617,60 @@ async fn converse_stream_handler(
     use axum::response::sse::{Event, KeepAlive, Sse};
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
     tokio::spawn(async move {
-        let model = app.model();
-        let persona = r
-            .session
-            .as_ref()
-            .and_then(|sid| app.workspace.persona_for_session(sid));
-        let txd = tx.clone();
-        let mut on_delta = move |frag: String| {
-            let _ = txd.send(Event::default().event("token").data(frag));
+        // Agentic chat: the LOCAL user's chat is trusted, so it runs the SAME tool-using agent the
+        // task board does - it can browse, run shell, read/write files, see images, recall memory -
+        // and just answers when no tool is needed. (Channels stay on the tool-less converse path:
+        // an untrusted inbound message must never drive the shell/browser.)
+        // Memory features the conversational path gave are preserved: the grounding ribbon and
+        // identity learning; the agent's own flywheel recalls + captures the exchange to memory.
+        let (recalled, recalled_refs) = converse::recall_ribbon(&app.memory, &r.text);
+        let learned = converse::learn_identity(&app.memory, &r.text);
+        // Fold any pinned attachments (files, URLs, memories) into the task so the agent sees them.
+        let task = match converse::attachments_context(&r.attachments) {
+            Some(ctx) => format!("{ctx}\n\n{}", r.text),
+            None => r.text.clone(),
         };
-        match converse::converse_stream(
-            &app.memory,
-            &app.gateway,
-            &r.text,
-            &model,
-            persona.as_deref(),
-            &r.attachments,
-            &mut on_delta,
+        // Stream each tool step live as it lands - the glass box, in chat.
+        let txs = tx.clone();
+        let on_step: engram_agent::StepCallback = std::sync::Arc::new(
+            move |i, rec: &engram_agent::StepRecord| {
+                let obs: String = rec.observation.chars().take(600).collect();
+                let _ = txs.send(
+                    Event::default().event("step").data(
+                        json!({ "index": i, "tool": rec.tool, "ok": rec.ok, "observation": obs, "args": rec.args })
+                            .to_string(),
+                    ),
+                );
+            },
+        );
+        match run_agent_task_cb(
+            &app,
+            &task,
+            12,
+            engram_core::Taint::Trusted,
+            false,
+            Some(on_step),
+            None,
+            None,
         )
         .await
         {
-            Ok(turn) => {
+            Ok(run) => {
                 if let Some(sid) = &r.session {
                     app.workspace.append_turn(
                         sid,
                         &r.text,
-                        &turn.reply,
-                        turn.recalled.clone(),
-                        turn.recalled_refs
+                        &run.answer,
+                        recalled.clone(),
+                        recalled_refs
                             .iter()
                             .map(|rf| serde_json::to_value(rf).unwrap_or_default())
                             .collect(),
-                        turn.learned.clone(),
+                        learned.clone(),
                     );
                 }
                 let _ = tx.send(Event::default().event("done").data(
-                    json!({ "reply": turn.reply, "recalled": turn.recalled, "recalled_refs": turn.recalled_refs, "learned": turn.learned })
+                    json!({ "reply": run.answer, "recalled": recalled, "recalled_refs": recalled_refs, "learned": learned, "steps": run.steps })
                         .to_string(),
                 ));
             }

@@ -2940,6 +2940,21 @@ async fn converse_stream_handler(
             .map(|sid| app.workspace.recent_turns(sid, 10))
             .unwrap_or_default();
         let mut task = String::new();
+        // Chat behaviour directive (this is the live, trusted user chat). Be a proactive partner like
+        // a sharp colleague: surface clarifying questions when they'd materially change the result,
+        // but never stall on them — proceed with best-effort defaults in the same turn. Research in
+        // parallel where possible, and present a clean deliverable (brief intro → tables with real
+        // links → a concrete next step), never internal verification notes.
+        task.push_str(
+            "[Chat mode] You are Engram, talking live with your user. Be proactive and concrete. \
+             If the request is ambiguous or missing details that would materially change the result \
+             (e.g. dates, budget, one-way vs round-trip, scope), ask 1-3 crisp clarifying questions \
+             UP FRONT — but in the SAME turn still kick off the work with sensible default \
+             assumptions and state them, rather than stalling. When researching multiple things, run \
+             the searches in parallel (delegate sub-tasks). Present the result cleanly: a short \
+             intro, then well-formatted tables with real working links, and end with a concrete \
+             next step you can take. Never show internal verification checklists or meta-notes.\n\n",
+        );
         if !history.is_empty() {
             task.push_str("You are mid-conversation. Here is what was said so far - use it; do NOT re-ask for context you already have:\n");
             for (role, text) in &history {
@@ -2954,6 +2969,12 @@ async fn converse_stream_handler(
             task.push_str("\n\n");
         }
         task.push_str(&format!("User's latest message: {}", r.text));
+        // PERSIST THE USER TURN NOW, before the agent runs — so if the app is closed or the task is
+        // interrupted, the posted message survives on reopen (it was the user's #1 complaint). The
+        // reply is appended on completion. (history was read above, so it excludes this message.)
+        if let Some(sid) = &r.session {
+            app.workspace.append_user_turn(sid, &r.text);
+        }
         // Snapshot the workdir so files this turn creates (e.g. a browser screenshot) are captured as
         // downloadable artifacts in the gallery, bucketed under this chat session.
         let art_bucket = r.session.clone().unwrap_or_else(|| "chat".to_string());
@@ -2986,9 +3007,9 @@ async fn converse_stream_handler(
         {
             Ok(run) => {
                 if let Some(sid) = &r.session {
-                    app.workspace.append_turn(
+                    // The user turn was already persisted up-front; append only the reply now.
+                    app.workspace.append_reply_turn(
                         sid,
-                        &r.text,
                         &run.answer,
                         recalled.clone(),
                         recalled_refs

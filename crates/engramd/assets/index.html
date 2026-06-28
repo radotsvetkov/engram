@@ -857,7 +857,24 @@
     background:var(--surface-2); border:1px solid var(--border-strong); border-radius:7px; padding:3px 9px; }
   .cstep .cs-ic { color:#2e9e6b; font-size:10px; }
   .cstep.bad { color:var(--text-muted); } .cstep.bad .cs-ic { color:#c0533f; }
+  .cstep.clk { cursor:pointer; }
+  .cstep.clk:hover { color:var(--text-primary); border-color:var(--accent); }
+  .cstep .cs-open { margin-left:3px; opacity:.6; font-size:10px; }
   .chat-steps .step-shot { flex-basis:100%; margin:3px 0; }
+  /* File viewer modal (open an artifact/file for reading where there's no chat canvas) */
+  .fv-ov { position:fixed; inset:0; z-index:1200; background:rgba(10,14,20,.55); display:flex; align-items:center; justify-content:center; padding:5vh 4vw; backdrop-filter:blur(2px); }
+  .fv-card { background:var(--surface-1,#fff); border:1px solid var(--border,#2a2c34); border-radius:14px; width:min(900px,100%); max-height:90vh; display:flex; flex-direction:column; box-shadow:0 24px 64px rgba(0,0,0,.35); overflow:hidden; }
+  .fv-head { display:flex; align-items:center; gap:10px; padding:12px 16px; border-bottom:1px solid var(--border,#2a2c34); }
+  .fv-name { font-weight:600; font-size:13.5px; }
+  .fv-dl { font-size:12px; color:var(--accent,#45c8a8); text-decoration:none; padding:4px 10px; border:1px solid var(--border,#2a2c34); border-radius:7px; }
+  .fv-dl:hover { border-color:var(--accent,#45c8a8); }
+  .fv-x { background:none; border:none; font-size:22px; line-height:1; color:var(--text-muted); cursor:pointer; padding:0 4px; }
+  .fv-body { overflow:auto; padding:18px 22px; }
+  .fv-pre { margin:0; } .fv-body code { font:12.5px/1.6 var(--mono); white-space:pre; }
+  .md-doc { font-size:13.5px; line-height:1.65; color:var(--text-primary); }
+  .md-doc .md-table { border-collapse:collapse; width:100%; margin:8px 0; }
+  .md-doc .md-table th, .md-doc .md-table td { border:1px solid var(--border,#2a2c34); padding:6px 10px; text-align:left; }
+  .md-doc a { color:var(--accent,#45c8a8); }
   /* finishing touches: calm focus rings, refined hovers, softer depth */
   * { -webkit-tap-highlight-color:transparent; }
   :focus { outline:none; }
@@ -1810,8 +1827,8 @@ async function openTask(id, fromPoll){
       const cards=t.run.output_files.map(f=>{
         const url=`/v1/artifact?task=${encodeURIComponent(id)}&path=${encodeURIComponent(f)}`;
         const name=f.split('/').pop();
-        if(imgRe.test(f)) return `<a class="artifact" href="${url}" target="_blank" rel="noopener" title="${escAttr(f)}"><img src="${url}" alt="${escAttr(name)}" loading="lazy"><span class="aname">${esc(name)}</span></a>`;
-        return `<a class="artifact file" href="${url}" download title="${escAttr(f)}"><span class="aicon">⤓</span><span class="aname">${esc(name)}</span></a>`;
+        if(imgRe.test(f)) return `<div class="artifact" onclick="imgLightbox('${escAttr(url)}')" title="${escAttr(f)}"><img src="${url}" alt="${escAttr(name)}" loading="lazy"><span class="aname">${esc(name)}</span></div>`;
+        return `<button class="artifact file" type="button" onclick="artOpenFile(${escAttr(JSON.stringify(id))},${escAttr(JSON.stringify(f))},${escAttr(JSON.stringify(name))})" title="${escAttr('Open '+f)}"><span class="aicon">↗</span><span class="aname">${esc(name)}</span></button>`;
       }).join('');
       html+=`<div class="muted" style="font-size:11px;margin:14px 0 6px">artifacts · ${n} file${n===1?'':'s'} this run produced</div><div class="artifact-grid">${cards}</div>`;
     }
@@ -2089,7 +2106,7 @@ function chatWelcome(){
 }
 // Friendly labels for the agent's tool steps shown in chat (the glass box).
 const CHAT_TOOL_LABEL={browser_open:'opened browser',browser_navigate:'opened browser',browser_screenshot:'took a screenshot',browser_click:'clicked',browser_type:'typed',browser_read:'read the page',browser_extract:'extracted from page',vision_analyze:'looked at the image',image_generate:'generated an image',text_to_speech:'spoke',web_fetch:'fetched a page',web_search:'searched the web',send_message:'sent a message',shell:'ran a command',read_file:'read a file',write_file:'wrote a file',edit_file:'edited a file',list_dir:'listed files',glob:'searched files',grep:'searched text',memory_recall:'recalled memory',memory_remember:'saved to memory',update_plan:'planned',delegate:'delegated'};
-function paintFeed(){
+function paintFeed(toBottom=true){
   const f=document.getElementById('feed'); if(!f) return;
   _cbN=0; for(const k in _cbStore) delete _cbStore[k];   // rebuilt below; ids are per-paint, so clearing here bounds the store
   const s=WS.byId[WS.activeSession], log=s?(s.messages||[]):[];
@@ -2104,14 +2121,31 @@ function paintFeed(){
     // answer with any screenshots inline. Empty for a plain conversational reply (no tools used).
     const steps=(m.steps&&m.steps.length)?`<div class="chat-steps">${m.steps.map(st=>{
       const lbl=CHAT_TOOL_LABEL[st.tool]||st.tool;
-      const chip=`<span class="cstep${st.ok?'':' bad'}" title="${escAttr((st.observation||'').replace(/\s+/g,' ').slice(0,180))}"><span class="cs-ic">${st.ok?'✓':'✕'}</span>${esc(lbl)}</span>`;
+      // A file the agent wrote/edited is clickable: open it in the right-side canvas (like Claude).
+      const fpath=(st.args&&(st.args.path||st.args.file))||'';
+      const openable=st.ok && fpath && ['write_file','edit_file','append_file'].includes(st.tool);
+      const clk=openable?` clk" data-open="1" onclick="artOpenFile(WS.activeSession, ${escAttr(JSON.stringify(fpath))})`:'';
+      const chip=`<span class="cstep${st.ok?'':' bad'}${clk}" title="${escAttr(openable?('Open '+fpath):(st.observation||'').replace(/\s+/g,' ').slice(0,180))}"><span class="cs-ic">${st.ok?'✓':'✕'}</span>${esc(lbl)}${openable?'<span class="cs-open">↗</span>':''}</span>`;
       return chip+stepShotHtml(st);
     }).join('')}</div>`:'';
     const body = m.text ? (mdToHtml(m.text) + (m.streaming?'<span class="caret"></span>':'')) : (m.streaming?thinkingDots:'...');
     return `<div>${steps}<div class="msg engram"${m.streaming?' id="streamMsg"':''}>${body}</div>${ribbon}${learned}</div>`;
   }).join('') || chatWelcome();
   artsAfterPaint();   // detect substantial code/doc blocks, inject "Open in canvas" chips, sync the pane
-  f.scrollTop=f.scrollHeight;
+  if(toBottom) f.scrollTop=f.scrollHeight;
+}
+// A coalesced, sticky-bottom repaint for streaming step events: rebuild at most once per frame, and
+// only auto-scroll if the reader is already near the bottom — so a long multi-step run no longer
+// yanks the view up/down on every tool step (the "jumpy/klinky" chat).
+let _feedRAF=0;
+function paintFeedSticky(){
+  if(_feedRAF) return;
+  _feedRAF=requestAnimationFrame(()=>{
+    _feedRAF=0;
+    const f=document.getElementById('feed');
+    const stick = !f || (f.scrollHeight - f.scrollTop - f.clientHeight) < 160;
+    paintFeed(stick);
+  });
 }
 // During streaming we update ONLY the in-flight message node (not the whole feed) and coalesce
 // token bursts into one paint per animation frame. Rebuilding the entire feed per token - re-running
@@ -2163,7 +2197,7 @@ async function chatSay(text, attachments){
         // is still on screen (so a mid-stream switch doesn't render into the wrong feed).
         const live = WS.activeSession===sid;
         if(ev==='token'){ msg.text+=data; if(live) streamTick(msg); }
-        else if(ev==='step'){ try{ const d=JSON.parse(data); (msg.steps=msg.steps||[]).push(d); if(live) paintFeed(); }catch(_){} }
+        else if(ev==='step'){ try{ const d=JSON.parse(data); (msg.steps=msg.steps||[]).push(d); if(live) paintFeedSticky(); }catch(_){} }
         else if(ev==='done'){ try{const d=JSON.parse(data); if(d.reply) msg.text=d.reply; msg.recalled=d.recalled; msg.recalled_refs=d.recalled_refs; msg.learned=d.learned; if(d.steps) msg.steps=d.steps;}catch(_){} if(typeof _artifacts==='object') _artifacts.items=null; if(live) paintFeed(); }
         else if(ev==='error'){ msg.text='(couldn\'t reach Engram - '+data+')'; if(live) paintFeed(); }
       }
@@ -3666,7 +3700,7 @@ async function renderArtifacts(force){
     const chat=i.task?`<button class="af-chat" title="Open the conversation that created this" aria-label="Open the conversation that created this" onclick="afOpenTask('${escAttr(i.task)}',event)">${ICONS.Chat}</button>`:'';
     const meta=`<div class="af-name" title="${escAttr(i.name)}">${esc(i.name)}</div><div class="af-sub">${esc(i.title||'task')} · ${afSize(i.size)} · ${afAge(i.mtime)}</div>`;
     if(i.kind==='image') return `<div class="af-card" onclick="imgLightbox('${escAttr(url)}')" title="${escAttr(i.name)}"><div class="af-thumb">${chat}<img loading="lazy" src="${escAttr(url)}" alt="" onerror="this.closest('.af-thumb').classList.add('broken')"></div>${meta}</div>`;
-    return `<a class="af-card" href="${escAttr(url)}" download title="Download ${escAttr(i.name)}"><div class="af-thumb fileic">${chat}${AF_ICON[i.kind]||'📎'}</div>${meta}</a>`;
+    return `<div class="af-card" onclick="artOpenFile(${escAttr(JSON.stringify(i.task))},${escAttr(JSON.stringify(i.path))},${escAttr(JSON.stringify(i.name))})" title="Open ${escAttr(i.name)}"><div class="af-thumb fileic">${chat}${AF_ICON[i.kind]||'📎'}</div>${meta}</div>`;
   }).join('');
   const body = shown.length
     ? `<div class="af-grid">${cards}</div>${truncated?'<div class="muted" style="text-align:center;padding:14px">Showing the first 400. Narrow with a filter or search.</div>':''}`
@@ -3860,7 +3894,10 @@ function artMarkChip(){
 // the per-block copyCode('cbN',...) onclick id, so it survives codeBlock() regenerating ids.
 function artsAfterPaint(){
   const f=document.getElementById('feed'); if(!f) return;
-  ARTS.byKey={}; ARTS.order=[]; let artN=0;
+  // Preserve file-preview artifacts opened from a card/chip; only the in-feed CODE blocks re-derive.
+  const keepBy={}, keepOrder=[];
+  for(const k of ARTS.order){ const a=ARTS.byKey[k]; if(a&&a.isFile){ keepBy[k]=a; keepOrder.push(k); } }
+  ARTS.byKey=keepBy; ARTS.order=keepOrder; let artN=0;
   f.querySelectorAll('.cb').forEach(cb=>{
     const copyBtn=cb.querySelector('.cb-copy'); if(!copyBtn) return;
     const m=(copyBtn.getAttribute('onclick')||'').match(/copyCode\('([^']+)'/);
@@ -3929,7 +3966,7 @@ function artRenderPane(){
       </div>
     </div>
     ${tabs}
-    <div class="art-body"><pre><code>${hl(a.code, a.lang)}</code></pre></div>`;
+    <div class="art-body">${a.md ? `<div class="md-doc">${mdToHtml(a.code)}</div>` : `<pre><code>${hl(a.code, a.lang)}</code></pre>`}</div>`;
   pane.querySelector('#artX').addEventListener('click', artClose);
   pane.querySelector('#artCopy').addEventListener('click', e=>{
     const btn=e.currentTarget;
@@ -3944,13 +3981,54 @@ function artRenderPane(){
 
 function artDownload(a){
   const safe=(a.title||'artifact').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,40)||'artifact';
-  const name=safe+'.'+(a.ext||'txt');
+  const name=a.isFile&&a.title?a.title:(safe+'.'+(a.ext||'txt'));
   const blob=new Blob([a.code], {type:'text/plain;charset=utf-8'});
   const url=URL.createObjectURL(blob);
   const el=document.createElement('a'); el.href=url; el.download=name;
   document.body.appendChild(el); el.click(); el.remove();
   setTimeout(()=>URL.revokeObjectURL(url), 4000);
   notify('Downloaded '+name,'ok');
+}
+
+// ── Opening WRITTEN FILES / artifacts for READING (never a forced download) ──
+const _FILE_LANG={md:'md',markdown:'md',txt:'',text:'',log:'',csv:'',json:'json',js:'js',mjs:'js',cjs:'js',ts:'ts',tsx:'tsx',jsx:'jsx',py:'python',rs:'rust',sh:'bash',bash:'bash',zsh:'bash',html:'html',htm:'html',css:'css',yml:'yaml',yaml:'yaml',toml:'toml',sql:'sql',go:'go',rb:'ruby',c:'c',h:'c',cpp:'cpp',java:'java',php:'php',xml:'html'};
+function fileLang(ext){ ext=(ext||'').toLowerCase(); return (_FILE_LANG[ext]!=null)?_FILE_LANG[ext]:''; }
+const _IMG_EXT=['png','jpg','jpeg','gif','webp','bmp','svg','ico'];
+
+// Open an artifact/file for reading. In chat we dock it in the right-hand canvas (like Claude);
+// elsewhere (gallery, task panel — no canvas) we use a centered viewer modal. Images → lightbox.
+// Content is fetched as text and rendered (markdown as HTML, code highlighted). Replaces the old
+// behaviour where every artifact click forced a download.
+async function artOpenFile(task, path, name){
+  name = name || String(path||'').split('/').pop() || 'file';
+  const ext = (name.split('.').pop()||'').toLowerCase();
+  const url = `/v1/artifact?task=${encodeURIComponent(task)}&path=${encodeURIComponent(path)}`;
+  if(_IMG_EXT.includes(ext)){ imgLightbox(url); return; }
+  let text='';
+  try{ const r=await fetch(url,{headers:AUTH}); if(!r.ok) throw new Error('HTTP '+r.status); text=await r.text(); }
+  catch(e){ notify('Couldn\'t open '+name+' — '+((e&&e.message)||'error')); return; }
+  const lang=fileLang(ext), md=(ext==='md'||ext==='markdown');
+  const pane=document.getElementById('artPane');
+  if(pane){   // chat: dock in the canvas (persists across repaints via isFile)
+    const key='file:'+task+'::'+path;
+    if(!ARTS.order.includes(key)) ARTS.order.push(key);
+    ARTS.byKey[key]={ key, code:text, lang, ext:ext||'txt', title:name, langName:(ART_LANGNAME[lang]||(ext?ext.toUpperCase():'Text')), lines:text.replace(/\n+$/,'').split('\n').length, isFile:true, md };
+    artOpen(key);
+  } else {    // gallery / task panel: a centered viewer modal
+    fileViewer(name, ext, text, url);
+  }
+}
+
+// A dismissible centered viewer for a file's contents (used where there's no chat canvas).
+function fileViewer(name, ext, text, dlUrl){
+  const md=(ext==='md'||ext==='markdown');
+  const body = md ? `<div class="md-doc">${mdToHtml(text)}</div>` : `<pre class="fv-pre"><code>${hl(text, fileLang(ext))}</code></pre>`;
+  const ov=document.createElement('div'); ov.className='fv-ov';
+  ov.innerHTML=`<div class="fv-card"><div class="fv-head"><span class="fv-name">${esc(name)}</span><span class="grow"></span>${dlUrl?`<a class="fv-dl" href="${escAttr(dlUrl)}" download="${escAttr(name)}">Download</a>`:''}<button class="fv-x" aria-label="Close">&times;</button></div><div class="fv-body">${body}</div></div>`;
+  ov.onclick=e=>{ if(e.target===ov||e.target.classList.contains('fv-x')) ov.remove(); };
+  document.body.appendChild(ov);
+  const onkey=e=>{ if(e.key==='Escape'){ ov.remove(); document.removeEventListener('keydown',onkey); } };
+  document.addEventListener('keydown',onkey);
 }
 
 // ── Schedule: cadence + premium cards ────────────────────────────

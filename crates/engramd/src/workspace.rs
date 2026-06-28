@@ -336,6 +336,73 @@ impl WorkspaceStore {
     }
     /// Append a completed turn (the user message and Engram's reply) to a session, titling the
     /// session from the first message. Returns false if the session no longer exists.
+    /// Persist the USER's message the instant it's received — BEFORE the agent runs — so a chat that
+    /// is closed or interrupted mid-task still has the posted message on reopen. Sets the session
+    /// title from the first message. The matching reply is appended later via `append_reply_turn`.
+    pub fn append_user_turn(&self, id: &str, user_text: &str) -> bool {
+        let now = now_ms();
+        let ok = {
+            let mut d = self.data.lock().expect("ws");
+            match d.sessions.iter_mut().find(|s| s.id == id) {
+                Some(s) => {
+                    if s.title.is_empty() || s.title == "New chat" {
+                        let t: String = user_text.trim().chars().take(42).collect();
+                        s.title = if t.is_empty() { "New chat".into() } else { t };
+                    }
+                    s.messages.push(Msg {
+                        role: "user".into(),
+                        text: user_text.into(),
+                        recalled: vec![],
+                        recalled_refs: vec![],
+                        learned: vec![],
+                        ts_ms: now,
+                    });
+                    s.updated_ms = now;
+                    true
+                }
+                None => false,
+            }
+        };
+        if ok {
+            self.persist();
+        }
+        ok
+    }
+
+    /// Append the agent's REPLY to a session (paired with a prior `append_user_turn`).
+    pub fn append_reply_turn(
+        &self,
+        id: &str,
+        reply: &str,
+        recalled: Vec<String>,
+        recalled_refs: Vec<serde_json::Value>,
+        learned: Vec<String>,
+    ) -> bool {
+        let now = now_ms();
+        let ok = {
+            let mut d = self.data.lock().expect("ws");
+            match d.sessions.iter_mut().find(|s| s.id == id) {
+                Some(s) => {
+                    s.messages.push(Msg {
+                        role: "engram".into(),
+                        text: reply.into(),
+                        recalled,
+                        recalled_refs,
+                        learned,
+                        ts_ms: now,
+                    });
+                    s.updated_ms = now;
+                    true
+                }
+                None => false,
+            }
+        };
+        if ok {
+            self.persist();
+        }
+        ok
+    }
+
     pub fn append_turn(
         &self,
         id: &str,

@@ -231,9 +231,13 @@ impl Agent {
                     reflected = true;
                     messages.push(Message::assistant(completion.text.clone()));
                     messages.push(Message::user(
-                        "Before finishing, critically verify your answer fully satisfies the task. \
-                         If anything is missing, wrong, or unverified, call the tools needed to fix \
-                         it. If it is complete and correct, restate the final answer with no tool call.",
+                        "Before finishing, SILENTLY and critically verify your answer fully \
+                         satisfies the task. If anything is missing, wrong, or unverified, call the \
+                         tools needed to fix it. If it is complete, reply with ONLY the final answer \
+                         for the user — clean and well-formatted (use tables and links where \
+                         helpful). Do NOT include verification notes, checklists, status markers \
+                         (e.g. \"✅ included\"), or any meta-commentary about the task; output just \
+                         the deliverable itself.",
                     ));
                     let _ = ctx
                         .ledger

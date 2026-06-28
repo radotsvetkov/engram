@@ -3016,7 +3016,13 @@ async fn converse_stream_handler(
              you ACTUALLY retrieved with a tool this turn. Never invent or guess values, and never \
              output a link you didn't get from a real result. If a source is blocked, rate-limited, \
              or you couldn't verify something, say so plainly and give the official site to check, \
-             rather than fabricating a number or URL.\n\n",
+             rather than fabricating a number or URL.\n\
+             ACT, DON'T NARRATE: never end your turn having only DESCRIBED what you would do. If one \
+             site blocks automated access (Amazon, many aggregators do — you'll get a CAPTCHA/robot \
+             page), immediately try an accessible alternative IN THE SAME TURN (web_search for a \
+             current roundup, then web_fetch/browser the specific result pages) and return the real \
+             table. Use the tools now; only stop when you've delivered the result or have genuinely \
+             exhausted the accessible options (then say exactly what you tried).\n\n",
         );
         if !history.is_empty() {
             task.push_str("You are mid-conversation. Here is what was said so far - use it; do NOT re-ask for context you already have:\n");

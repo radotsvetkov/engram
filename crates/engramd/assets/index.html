@@ -1380,8 +1380,8 @@ async function toggleHalt(){
 const SVG = p => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
 const ICONS = {
   Chat: SVG('<path d="M20 11.5a7.5 7.5 0 0 1-10.84 6.71L4 20l1.79-5.16A7.5 7.5 0 1 1 20 11.5Z"/><path d="M8.5 10.5h7M8.5 13.5h4"/>'),
-  Tasks: SVG('<rect x="3" y="4" width="5" height="16" rx="1.4"/><rect x="9.5" y="4" width="5" height="10.5" rx="1.4"/><rect x="16" y="4" width="5" height="13" rx="1.4"/>'),
-  Schedule: SVG('<rect x="3" y="5" width="18" height="16" rx="2.5"/><path d="M3 9.5h18M8 3v3.5M16 3v3.5"/><path d="M12 13.5v3l2 1.2"/>'),
+  Tasks: SVG('<rect x="3" y="4" width="18" height="16" rx="2.2"/><path d="M9 4v16M15 4v16"/>'),
+  Schedule: SVG('<rect x="3" y="4.5" width="18" height="16" rx="2.4"/><path d="M3 9h18M8 3v3M16 3v3"/><circle cx="12" cy="14.5" r="2.8"/><path d="M12 13.2v1.5l1 .7"/>'),
   Memory: SVG('<path d="M12 5.5a3 3 0 0 0-5.6 1.5A2.8 2.8 0 0 0 5 12a2.7 2.7 0 0 0 1.4 4.6A2.6 2.6 0 0 0 9 19a3 3 0 0 0 3-1.2"/><path d="M12 5.5a3 3 0 0 1 5.6 1.5A2.8 2.8 0 0 1 19 12a2.7 2.7 0 0 1-1.4 4.6A2.6 2.6 0 0 1 15 19a3 3 0 0 1-3-1.2"/><path d="M12 5.5v12.3"/><path d="M8.2 9.5h1.4M8.2 13h1.4M14.4 9.5h1.4M14.4 13h1.4"/>'),
   Skills: SVG('<path d="M12 3.2l1.7 4.5 4.5 1.7-4.5 1.7L12 15.6l-1.7-4.5L5.8 9.4l4.5-1.7L12 3.2Z"/><path d="M18.4 14.2l.8 2.1 2.1.8-2.1.8-.8 2.1-.8-2.1-2.1-.8 2.1-.8.8-2.1Z"/>'),
   Terminal: SVG('<rect x="3" y="4.5" width="18" height="15" rx="2.6"/><path d="m7.5 9.5 2.6 2.5-2.6 2.5M13 14.5h3.6"/>'),

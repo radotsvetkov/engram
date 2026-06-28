@@ -1883,7 +1883,9 @@ mod web {
         for _hop in 0..6 {
             let target = super::resolve_guarded(&current).await?;
             let client = reqwest::Client::builder()
-                .user_agent("engram-agent/0.1")
+                // A real browser UA: search engines and many sites drop/deny a bot UA like
+                // "engram-agent/0.1", which made web_search/web_fetch silently fail.
+                .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
                 .timeout(Duration::from_secs(timeout))
                 // Follow redirects manually so each hop is SSRF-checked before we connect.
                 .redirect(reqwest::redirect::Policy::none())
@@ -1971,13 +1973,32 @@ mod web {
             let _ = ctx
                 .ledger
                 .append("agent.web_search", "agent", json!({ "query": query }));
-            let url = format!("https://html.duckduckgo.com/html/?q={}", urlencoding(query));
-            let html = get_text(&url, ctx.policy.timeout_secs).await?;
-            let results = extract_results(&html);
-            if results.is_empty() {
+            let q = urlencoding(query);
+            let to = ctx.policy.timeout_secs;
+            // Resilient search: DuckDuckGo's scrape endpoints block/timeout from many networks, which
+            // left web_search returning nothing. Try DDG, then Bing, then DDG-lite — take the first
+            // that yields results, so a single dead backend doesn't break research.
+            let attempts: [(&str, fn(&str) -> Vec<String>); 3] = [
+                ("https://search.brave.com/search?q=", extract_brave_results),
+                ("https://html.duckduckgo.com/html/?q=", extract_results),
+                ("https://lite.duckduckgo.com/lite/?q=", extract_results),
+            ];
+            let mut last_err = String::new();
+            for (base, parse) in attempts {
+                match get_text(&format!("{base}{q}"), to).await {
+                    Ok(html) => {
+                        let results = parse(&html);
+                        if !results.is_empty() {
+                            return Ok(results.into_iter().take(8).collect::<Vec<_>>().join("\n"));
+                        }
+                    }
+                    Err(e) => last_err = e,
+                }
+            }
+            if last_err.is_empty() {
                 Ok("(no results)".into())
             } else {
-                Ok(results.into_iter().take(8).collect::<Vec<_>>().join("\n"))
+                Err(format!("web search unavailable (all engines failed): {last_err}"))
             }
         }
     }
@@ -2069,6 +2090,34 @@ mod web {
                 if !title.is_empty() {
                     out.push(format!("- {title} :: {href}"));
                 }
+            }
+        }
+        out
+    }
+
+    /// Parse Brave Search HTML: each web result follows `data-type="web"` and carries an
+    /// `href="URL"` plus a `class="title…">Title`. Brave returns server-rendered results without an
+    /// API key and is the most reliable scrape target — DuckDuckGo blocks many networks outright and
+    /// Bing serves a JS-only shell with no parseable results. Titles are tag-stripped.
+    fn extract_brave_results(html: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        for block in html.split("data-type=\"web\"").skip(1) {
+            let block = &block[..block.len().min(4000)];
+            // First external (non-Brave) http link in the block is the result URL.
+            let href = block
+                .split("href=\"")
+                .skip(1)
+                .filter_map(|s| s.split_once('"').map(|(h, _)| h))
+                .find(|h| h.starts_with("http") && !h.contains("brave.com"))
+                .map(|h| h.to_string());
+            let title = block
+                .split_once("class=\"title")
+                .and_then(|(_, r)| r.split_once('>'))
+                .and_then(|(_, r)| r.split_once("</"))
+                .map(|(t, _)| super::html_to_text(t).trim().to_string())
+                .filter(|t| !t.is_empty());
+            if let (Some(href), Some(title)) = (href, title) {
+                out.push(format!("- {title} :: {href}"));
             }
         }
         out

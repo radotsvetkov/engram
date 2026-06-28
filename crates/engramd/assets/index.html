@@ -178,6 +178,14 @@
   .approval button { background:var(--accent); color:var(--accent-ink); border:none; border-radius:6px; padding:6px 12px; font-weight:500; cursor:pointer; }
   .approval button.ghost { background:var(--surface-2); color:var(--text-secondary); }
   .answer { font-family:var(--font-voice); font-size:15px; line-height:1.5; margin:14px 0; }
+  .artifact-grid { display:flex; flex-wrap:wrap; gap:9px; }
+  .artifact { display:flex; flex-direction:column; gap:5px; width:104px; text-decoration:none; color:var(--text-secondary);
+    border:1px solid var(--border-strong); border-radius:10px; padding:7px; background:var(--surface-2); transition:border-color .12s, background .12s; }
+  .artifact:hover { border-color:var(--accent-soft); background:var(--surface-3); color:var(--text); }
+  .artifact img { width:100%; height:74px; object-fit:cover; border-radius:6px; background:var(--surface); display:block; }
+  .artifact.file { align-items:center; justify-content:center; min-height:90px; }
+  .artifact .aicon { font-size:26px; line-height:1; opacity:.7; }
+  .artifact .aname { font-size:10.5px; line-height:1.25; word-break:break-word; text-align:center; max-height:26px; overflow:hidden; }
   .step { padding:8px 0; border-bottom:1px solid var(--border); }
   .step .top { display:flex; gap:8px; align-items:center; }
   .step .verb { flex:1; } .step .stamp { font-family:var(--mono); font-size:11px; color:var(--text-muted); cursor:pointer; }
@@ -1718,6 +1726,19 @@ async function openTask(id, fromPoll){
           <button class="ghost" onclick="closePanel()">Skip</button></div></div>`;
     }
     html+=`<div class="answer">${esc(t.run.answer)}</div>`;
+    // Artifacts this run produced - files the agent created, copied to a persistent per-task dir so
+    // they survive worktree cleanup. Images preview inline; everything else downloads.
+    if(t.run.output_files && t.run.output_files.length){
+      const imgRe=/\.(png|jpe?g|webp|gif)$/i;
+      const n=t.run.output_files.length;
+      const cards=t.run.output_files.map(f=>{
+        const url=`/v1/artifact?task=${encodeURIComponent(id)}&path=${encodeURIComponent(f)}`;
+        const name=f.split('/').pop();
+        if(imgRe.test(f)) return `<a class="artifact" href="${url}" target="_blank" rel="noopener" title="${escAttr(f)}"><img src="${url}" alt="${escAttr(name)}" loading="lazy"><span class="aname">${esc(name)}</span></a>`;
+        return `<a class="artifact file" href="${url}" download title="${escAttr(f)}"><span class="aicon">⤓</span><span class="aname">${esc(name)}</span></a>`;
+      }).join('');
+      html+=`<div class="muted" style="font-size:11px;margin:14px 0 6px">artifacts · ${n} file${n===1?'':'s'} this run produced</div><div class="artifact-grid">${cards}</div>`;
+    }
     // The agent's own plan (latest update_plan call), as a live checklist - glass-box intent.
     const planStep=[...(t.run.steps||[])].reverse().find(s=>s.tool==='update_plan'&&s.args&&Array.isArray(s.args.steps));
     if(planStep){

@@ -51,3 +51,6 @@ tmp/
 
 # Local preview-server config (points at a session scratchpad path)
 .claude/launch.json
+
+# stray local test binary (not part of the project)
+/test_guard

@@ -663,6 +663,7 @@ async fn run(mode: RunMode) -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/memory/recent", get(memory_recent))
         .route("/v1/memory/graph", get(memory_graph))
         .route("/v1/screenshot", get(screenshot_get))
+        .route("/v1/artifact", get(artifact_get))
         .route("/v1/remember", post(remember))
         .route("/v1/recall", get(recall))
         .route("/v1/forget", post(forget))
@@ -1037,6 +1038,97 @@ async fn screenshot_get(State(app): State<App>, Query(q): Query<ShotQuery>) -> R
             [
                 (header::CONTENT_TYPE, ct),
                 (header::CACHE_CONTROL, "no-store"),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Err(_) => (StatusCode::NOT_FOUND, "not found").into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct ArtifactQuery {
+    task: String,
+    path: String,
+}
+
+/// Content type for an artifact by extension, plus whether it's safe to render inline. Only raster
+/// images render inline (so the Artifacts view can preview them); everything else - including SVG and
+/// HTML, which can carry scripts - is sent as a download so it can't execute in the dashboard origin.
+fn artifact_type(lower: &str) -> (&'static str, bool) {
+    if lower.ends_with(".png") {
+        ("image/png", true)
+    } else if lower.ends_with(".webp") {
+        ("image/webp", true)
+    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+        ("image/jpeg", true)
+    } else if lower.ends_with(".gif") {
+        ("image/gif", true)
+    } else if lower.ends_with(".svg") {
+        ("image/svg+xml", false)
+    } else if lower.ends_with(".pdf") {
+        ("application/pdf", false)
+    } else if lower.ends_with(".csv") {
+        ("text/csv", false)
+    } else if lower.ends_with(".json") {
+        ("application/json", false)
+    } else if lower.ends_with(".html") || lower.ends_with(".htm") {
+        ("text/html", false)
+    } else if lower.ends_with(".txt") || lower.ends_with(".md") || lower.ends_with(".log") {
+        ("text/plain", false)
+    } else if lower.ends_with(".mp3") {
+        ("audio/mpeg", false)
+    } else if lower.ends_with(".wav") {
+        ("audio/wav", false)
+    } else {
+        ("application/octet-stream", false)
+    }
+}
+
+/// Serve a file the agent produced during a task run, from the persistent per-task artifacts dir
+/// (`<home>/artifacts/<task-id>/`). Strictly confined to that dir (no traversal), any type, capped in
+/// size. This is how the task's Artifacts view previews/downloads generated charts, reports, and data.
+async fn artifact_get(State(app): State<App>, Query(q): Query<ArtifactQuery>) -> Response {
+    use axum::http::{header, StatusCode};
+    // The task id is a single path segment; reject anything that could climb out of the root.
+    if q.task.is_empty() || q.task.contains('/') || q.task.contains('\\') || q.task.contains("..") {
+        return (StatusCode::BAD_REQUEST, "bad task id").into_response();
+    }
+    let base = std::path::Path::new(&app.home)
+        .join("artifacts")
+        .join(&q.task);
+    let full = base.join(&q.path);
+    // Canonicalize both and require the target to stay under the per-task root (defeats ../ traversal).
+    let ok = match (base.canonicalize(), full.canonicalize()) {
+        (Ok(b), Ok(f)) => f.starts_with(&b),
+        _ => false,
+    };
+    if !ok {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
+    const MAX: u64 = 64 * 1024 * 1024;
+    if let Ok(meta) = tokio::fs::metadata(&full).await {
+        if meta.len() > MAX {
+            return (StatusCode::PAYLOAD_TOO_LARGE, "file too large").into_response();
+        }
+    }
+    let (ct, inline) = artifact_type(&q.path.to_lowercase());
+    let fname = std::path::Path::new(&q.path)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("artifact")
+        .replace(['"', '\n', '\r'], "");
+    let disp = if inline {
+        format!("inline; filename=\"{fname}\"")
+    } else {
+        format!("attachment; filename=\"{fname}\"")
+    };
+    match tokio::fs::read(&full).await {
+        Ok(bytes) => (
+            [
+                (header::CONTENT_TYPE, ct.to_string()),
+                (header::CONTENT_DISPOSITION, disp),
+                (header::CACHE_CONTROL, "no-store".to_string()),
             ],
             bytes,
         )
@@ -1506,15 +1598,37 @@ pub(crate) async fn run_agent_task_cb(
         }
         None => app.gateway.clone(),
     };
+    // FLYWHEEL - auto-recall: surface the few most task-relevant memories into the standing context
+    // so the agent benefits from what it learned before, without being asked. Trusted runs only:
+    // injecting the user's private knowledge into an untrusted-origin run would hand it to a
+    // possibly-adversarial context. When we DO inject, the run is marked sensitive below, arming the
+    // trifecta egress gate the moment it also touches untrusted content.
+    let memory_block: Option<String> = if taint.is_untrusted() {
+        None
+    } else {
+        let regions = engram_memory::Region::for_task(task);
+        app.memory
+            .recall_trusted(task, &regions, 5)
+            .ok()
+            .filter(|h| !h.is_empty())
+            .map(|hits| {
+                let lines = hits
+                    .iter()
+                    .map(|h| format!("- {}", h.record.text.replace('\n', " ")))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                format!("Relevant memory from earlier work (use it; flag anything that now conflicts):\n{lines}")
+            })
+    };
     let ctx = engram_agent::ToolCtx {
         memory: app.memory.clone(),
         skills: app.registry.clone(),
         gateway: gateway.clone(),
         ledger: app.ledger.clone(),
         taint,
-        // A run that begins Untrusted (an inbound channel/scheduled run) is also treated as
-        // sensitive, so the trifecta egress gate is armed from step one for untrusted-origin runs.
-        sensitive: taint.is_untrusted(),
+        // Untrusted-origin runs start sensitive; a trusted run becomes sensitive the moment we
+        // inject recalled private memory - either way the trifecta egress gate is armed correctly.
+        sensitive: taint.is_untrusted() || memory_block.is_some(),
         policy,
         // An isolated per-task workdir (a git worktree, for parallel agents on one project) when
         // provided, else the shared workspace.
@@ -1558,6 +1672,9 @@ pub(crate) async fn run_agent_task_cb(
     if let Some(c) = app.consciousness.prompt_block() {
         parts.push(c);
     }
+    if let Some(mb) = &memory_block {
+        parts.push(mb.clone());
+    }
     if let Some(p) = app.persona.read().expect("persona lock").clone() {
         if !p.trim().is_empty() {
             parts.push(p);
@@ -1569,7 +1686,26 @@ pub(crate) async fn run_agent_task_cb(
     if let Some(cb) = on_step {
         agent = agent.on_step(cb);
     }
-    agent.run(task, ctx).await.map_err(|e| e.to_string())
+    let result = agent.run(task, ctx).await.map_err(|e| e.to_string());
+    // FLYWHEEL - auto-capture: on a completed, real (non-dry) trusted run, write one concise
+    // episodic memory so the next task can recall what was done. Best-effort; dedup-on-write
+    // collapses near-duplicates and consolidation demotes stale ones, so this can't bloat the brain.
+    // Untrusted-origin runs are NOT captured - their content could be adversarial.
+    if let Ok(run) = &result {
+        if !dry_run && !taint.is_untrusted() && run.stopped == "final" {
+            let answer = run.answer.trim();
+            if !answer.is_empty() {
+                let snippet: String = answer.chars().take(280).collect();
+                let text = format!("Task: {}\nOutcome: {}", task.trim(), snippet);
+                let _ = app.memory.remember(
+                    engram_memory::WriteReq::new(engram_memory::Region::Episodic, text)
+                        .taint(taint)
+                        .actor("agent"),
+                );
+            }
+        }
+    }
+    result
 }
 
 async fn agent_handler(State(app): State<App>, Json(r): Json<AgentReq>) -> ApiResult {
@@ -1941,6 +2077,79 @@ async fn tasks_delete(State(app): State<App>, Path(id): Path<String>) -> ApiResu
     Ok(Json(json!({ "removed": app.tasks.remove(&id) })))
 }
 
+/// Snapshot the set of relative file paths under `root`, skipping VCS/build/dependency dirs and the
+/// agent's own state, bounded so a large repo can't stall the run. Diffing this before/after a run
+/// isolates the files the run CREATED (its artifacts) from the rest of the workspace.
+fn snapshot_files(root: &std::path::Path) -> std::collections::HashSet<std::path::PathBuf> {
+    fn skip_dir(name: &str) -> bool {
+        name.starts_with('.')
+            || matches!(
+                name,
+                "target" | "node_modules" | "__pycache__" | "venv" | "dist" | "build"
+            )
+    }
+    let mut out = std::collections::HashSet::new();
+    let mut stack = vec![root.to_path_buf()];
+    let mut budget = 6000usize;
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for ent in rd.flatten() {
+            if budget == 0 {
+                return out;
+            }
+            budget -= 1;
+            let name = ent.file_name().to_string_lossy().to_string();
+            let is_dir = ent.file_type().map(|f| f.is_dir()).unwrap_or(false);
+            if is_dir {
+                if !skip_dir(&name) {
+                    stack.push(ent.path());
+                }
+            } else if let Ok(rel) = ent.path().strip_prefix(root) {
+                out.insert(rel.to_path_buf());
+            }
+        }
+    }
+    out
+}
+
+/// After a run, copy the files that newly appeared in `workdir` (since the `before` snapshot) into a
+/// persistent per-task artifacts dir (`<home>/artifacts/<task-id>/`), returning their relative paths.
+/// Copying out decouples artifacts from the (possibly ephemeral git-worktree) workdir so they survive
+/// cleanup, and capturing only NEW files keeps edits to existing project files out of the list.
+fn capture_artifacts(
+    home: &str,
+    task_id: &str,
+    workdir: &std::path::Path,
+    before: &std::collections::HashSet<std::path::PathBuf>,
+) -> Vec<String> {
+    let after = snapshot_files(workdir);
+    let mut new_files: Vec<_> = after.difference(before).cloned().collect();
+    new_files.sort();
+    new_files.truncate(200); // a sane cap so a runaway run can't flood the artifacts dir
+    let dest_root = std::path::Path::new(home).join("artifacts").join(task_id);
+    let mut rels = Vec::new();
+    for rel in new_files {
+        let src = workdir.join(&rel);
+        // Skip absurdly large outputs (a 64 MB ceiling matches the screenshot serving cap).
+        if std::fs::metadata(&src)
+            .map(|m| m.len() > 64 * 1024 * 1024)
+            .unwrap_or(true)
+        {
+            continue;
+        }
+        let dest = dest_root.join(&rel);
+        if let Some(parent) = dest.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if std::fs::copy(&src, &dest).is_ok() {
+            rels.push(rel.to_string_lossy().replace('\\', "/"));
+        }
+    }
+    rels
+}
+
 /// Run a task with the agent and attach a glass-box receipt: mark it doing (and fire a
 /// spike so the board shows Running), run, capture the cost delta and the signed ledger
 /// head, then mark done - or failed if the agent hit its step limit. Shared by the HTTP
@@ -2022,6 +2231,11 @@ pub(crate) async fn run_task_core(
     // OWN detached git worktree, so several agents can work the same project in parallel without
     // clobbering each other's files. The guard removes the worktree when the run finishes (any path).
     let (workdir_override, _worktree_guard) = prepare_worktree(app, &task.id);
+    // Snapshot the workdir so we can capture the files THIS run creates as downloadable artifacts.
+    let run_workdir = workdir_override
+        .clone()
+        .unwrap_or_else(|| app.workdir.clone());
+    let artifacts_before = snapshot_files(&run_workdir);
     let run = match run_agent_task_cb(
         app,
         &prompt,
@@ -2050,6 +2264,7 @@ pub(crate) async fn run_task_core(
                 ledger_head_hash: app.ledger.head().1,
                 started_ms,
                 finished_ms: engram_core::now_ms() as i64,
+                output_files: Vec::new(),
             };
             app.tasks.finish(id, receipt, "failed");
             app.bus.emit(Spike::new(
@@ -2071,6 +2286,9 @@ pub(crate) async fn run_task_core(
     } else {
         "failed"
     };
+    // Capture the files this run created (copied out to <home>/artifacts/<id>/ so they survive
+    // worktree cleanup) while the worktree guard is still alive.
+    let output_files = capture_artifacts(&app.home, id, &run_workdir, &artifacts_before);
     let receipt = tasks::TaskRun {
         answer: run.answer,
         steps: run.steps,
@@ -2081,6 +2299,7 @@ pub(crate) async fn run_task_core(
         ledger_head_hash: head,
         started_ms,
         finished_ms,
+        output_files,
     };
     let result = app
         .tasks
@@ -3776,6 +3995,44 @@ mod tests {
         // A 0 CDP port means "unset" (fall through to env/9222), not a literal port 0.
         apply_config_patch(&mut cfg, &json!({ "browser": { "cdp_port": 0 } }));
         assert_eq!(cfg.browser.cdp_port, 0);
+    }
+
+    #[test]
+    fn capture_artifacts_records_only_new_files_and_copies_them() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let n = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("engram-artifacts-test-{n}"));
+        let workdir = base.join("work");
+        let home = base.join("home");
+        std::fs::create_dir_all(&workdir).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        // A pre-existing file + a skipped dir present BEFORE the run.
+        std::fs::write(workdir.join("existing.txt"), "old").unwrap();
+        std::fs::create_dir_all(workdir.join(".git")).unwrap();
+        std::fs::write(workdir.join(".git").join("HEAD"), "ref").unwrap();
+        let before = snapshot_files(&workdir);
+
+        // The run creates new files (incl. one in a subdir) and EDITS the existing one.
+        std::fs::write(workdir.join("chart.png"), b"PNG").unwrap();
+        std::fs::create_dir_all(workdir.join("out")).unwrap();
+        std::fs::write(workdir.join("out").join("data.csv"), "a,b").unwrap();
+        std::fs::write(workdir.join("existing.txt"), "changed").unwrap();
+
+        let mut arts = capture_artifacts(home.to_str().unwrap(), "task1", &workdir, &before);
+        arts.sort();
+        // Only the NEW files are captured (the edit and the .git/ dir are not).
+        assert_eq!(
+            arts,
+            vec!["chart.png".to_string(), "out/data.csv".to_string()]
+        );
+        // And they were copied into the persistent per-task artifacts dir.
+        assert!(home.join("artifacts/task1/chart.png").exists());
+        assert!(home.join("artifacts/task1/out/data.csv").exists());
+        assert!(!home.join("artifacts/task1/existing.txt").exists());
+        std::fs::remove_dir_all(&base).ok();
     }
 
     // Regression for the audit's HIGH panic finding: String::truncate panics on a non-char-boundary

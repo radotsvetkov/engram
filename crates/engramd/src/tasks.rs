@@ -25,6 +25,11 @@ pub struct TaskRun {
     pub ledger_head_hash: String,
     pub started_ms: i64,
     pub finished_ms: i64,
+    /// Relative paths (under the run's workdir) of files the agent created or changed during this
+    /// run - the artifacts. Surfaced in the task's Artifacts view and downloadable. Empty when the
+    /// run produced no files.
+    #[serde(default)]
+    pub output_files: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

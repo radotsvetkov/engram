@@ -1885,10 +1885,11 @@ mod web {
         fn taints(&self) -> bool {
             true
         }
-        // A fetch is an outbound request whose URL can carry data out, so it is egress: refused
-        // only once the run is also sensitive (the lethal-trifecta gate), so research still works.
+        // Fetching a URL to READ its content is research/ingress (SSRF-guarded), not exfiltration,
+        // so it is NOT egress - otherwise the trifecta blocked all web research the moment the run
+        // had recalled any memory. The clear data-out channel (send_message) stays egress-gated.
         fn is_egress(&self) -> bool {
-            true
+            false
         }
         async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
             let url = arg_str(args, "url")?;
@@ -1917,9 +1918,11 @@ mod web {
         fn taints(&self) -> bool {
             true
         }
-        // The query string is itself an outbound payload, so search is egress (trifecta-gated).
+        // Searching the web to find sources is research/ingress, not exfiltration (a short query is
+        // not a meaningful data-out channel), so it is NOT egress - this is what kept blocking
+        // research tasks. The explicit send channel (send_message) remains egress-gated.
         fn is_egress(&self) -> bool {
-            true
+            false
         }
         async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
             let query = arg_str(args, "query")?;

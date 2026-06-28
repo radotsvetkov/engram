@@ -530,8 +530,59 @@ fn sd_notify_ready() {
 #[cfg(not(unix))]
 fn sd_notify_ready() {}
 
+/// Take an exclusive advisory lock on `<home>/.lock` so only one daemon ever writes a given home's
+/// signed ledger + brain. Returns the held File (keep it alive for the process lifetime). Retries
+/// briefly so a normal restart - where the previous daemon is still flushing/exiting - waits for the
+/// old lock to release instead of overlapping. flock auto-releases on fd-drop or process death (even
+/// a crash), so there is no stale-lock problem. On non-unix it's a no-op (returns the open file).
+fn acquire_home_lock(home: &str) -> Result<std::fs::File, Box<dyn std::error::Error>> {
+    std::fs::create_dir_all(home)?;
+    let path = std::path::Path::new(home).join(".lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        let fd = file.as_raw_fd();
+        let mut acquired = false;
+        for attempt in 0..15 {
+            // SAFETY: flock on a valid open fd; non-blocking exclusive lock.
+            if unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+                acquired = true;
+                break;
+            }
+            if attempt == 0 {
+                tracing::warn!(%home, "home is locked by another engramd - waiting for it to exit");
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        if acquired {
+            Ok(file)
+        } else {
+            Err(format!(
+                "another engramd already holds the lock on {home}; refusing to start a second instance \
+                 (it would corrupt the signed ledger). Quit the other instance, or set a different ENGRAM_HOME."
+            )
+            .into())
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(file)
+    }
+}
+
 async fn run(mode: RunMode) -> Result<(), Box<dyn std::error::Error>> {
     let home = std::env::var("ENGRAM_HOME").unwrap_or_else(|_| "./brain".into());
+    // CRITICAL: hold an exclusive lock on the home for this daemon's whole life. Two daemons on one
+    // ENGRAM_HOME interleave appends into the signed ledger and break the hash chain (the source of
+    // the "ledger broken / verify fails" corruption). This makes a second instance refuse to start -
+    // including a restart where the predecessor is still exiting (it waits briefly for release).
+    // `_home_lock` MUST stay in scope; flock releases when the fd drops or the process dies.
+    let _home_lock = acquire_home_lock(&home)?;
     let addr: SocketAddr = std::env::var("ENGRAM_ADDR")
         .unwrap_or_else(|_| "127.0.0.1:8088".into())
         .parse()?;

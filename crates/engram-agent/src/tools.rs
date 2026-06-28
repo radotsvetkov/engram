@@ -1546,7 +1546,7 @@ impl Tool for BrowserReadTool {
         true
     }
     fn is_egress(&self) -> bool {
-        true
+        false
     }
     async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
         let url = arg_str(args, "url")?;
@@ -1583,7 +1583,7 @@ impl Tool for BrowserScreenshotTool {
         true
     }
     fn is_egress(&self) -> bool {
-        true
+        false
     }
     async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
         let rel = args["path"].as_str().unwrap_or("screenshot.png");
@@ -1703,7 +1703,7 @@ impl Tool for BrowserOpenTool {
         true
     }
     fn is_egress(&self) -> bool {
-        true
+        false
     }
     async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
         let url = arg_str(args, "url")?;
@@ -1735,7 +1735,7 @@ impl Tool for BrowserClickTool {
         true
     }
     fn is_egress(&self) -> bool {
-        true
+        false
     }
     async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
         let _ = ctx.ledger.append("agent.browser_click", "agent", json!({}));
@@ -1765,7 +1765,7 @@ impl Tool for BrowserTypeTool {
         true
     }
     fn is_egress(&self) -> bool {
-        true
+        false
     }
     async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
         let _ = ctx.ledger.append("agent.browser_type", "agent", json!({}));
@@ -1792,7 +1792,7 @@ impl Tool for BrowserExtractTool {
         true
     }
     fn is_egress(&self) -> bool {
-        true
+        false
     }
     async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
         ctx.browser.extract(args["selector"].as_str()).await

@@ -148,11 +148,13 @@ pub trait Tool: Send + Sync {
     fn taints(&self) -> bool {
         false
     }
-    /// True if this tool can carry data *out* to an attacker-influenceable destination
-    /// (the web, a webhook, an MCP server, a browser navigation). Egress is refused only
-    /// when the run is BOTH tainted (read untrusted content) AND sensitive (read private
-    /// data) - the full lethal-trifecta rule - so pure web research (untrusted but not
-    /// sensitive) still works while exfiltration of private data is blocked by construction.
+    /// True if this tool can carry data *out* to an attacker-influenceable destination - a webhook
+    /// (`send_message`) or a raw HTTP fetch/search (`web_fetch`/`web_search`). Egress is refused only
+    /// when the run is BOTH tainted (read untrusted content) AND sensitive (read private data) - the
+    /// lethal-trifecta rule - so pure web research still works while exfiltration of private data is
+    /// blocked by construction. The interactive BROWSER is deliberately NOT egress: driving it to
+    /// VIEW pages is research/ingress (it's SSRF-guarded and visible), so the agent can recall context
+    /// AND browse the web in one run - the alternative blocked all multi-site research after a recall.
     /// Enforced centrally at the agent's dispatch boundary so every tool is covered.
     fn is_egress(&self) -> bool {
         false

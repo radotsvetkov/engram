@@ -2680,11 +2680,33 @@ async fn converse_stream_handler(
         // identity learning; the agent's own flywheel recalls + captures the exchange to memory.
         let (recalled, recalled_refs) = converse::recall_ribbon(&app.memory, &r.text);
         let learned = converse::learn_identity(&app.memory, &r.text);
+        // Conversation continuity: hand the agent the recent turns so a follow-up ("let's try again")
+        // resolves against what was already said, instead of re-asking for context it already has.
+        let history = r
+            .session
+            .as_ref()
+            .map(|sid| app.workspace.recent_turns(sid, 10))
+            .unwrap_or_default();
+        let mut task = String::new();
+        if !history.is_empty() {
+            task.push_str("You are mid-conversation. Here is what was said so far - use it; do NOT re-ask for context you already have:\n");
+            for (role, text) in &history {
+                let who = if role == "user" { "User" } else { "You" };
+                task.push_str(&format!("{who}: {text}\n"));
+            }
+            task.push('\n');
+        }
         // Fold any pinned attachments (files, URLs, memories) into the task so the agent sees them.
-        let task = match converse::attachments_context(&r.attachments) {
-            Some(ctx) => format!("{ctx}\n\n{}", r.text),
-            None => r.text.clone(),
-        };
+        if let Some(ctx) = converse::attachments_context(&r.attachments) {
+            task.push_str(&ctx);
+            task.push_str("\n\n");
+        }
+        task.push_str(&format!("User's latest message: {}", r.text));
+        // Snapshot the workdir so files this turn creates (e.g. a browser screenshot) are captured as
+        // downloadable artifacts in the gallery, bucketed under this chat session.
+        let art_bucket = r.session.clone().unwrap_or_else(|| "chat".to_string());
+        let run_workdir = app.workdir.clone();
+        let artifacts_before = snapshot_files(&run_workdir);
         // Stream each tool step live as it lands - the glass box, in chat.
         let txs = tx.clone();
         let on_step: engram_agent::StepCallback = std::sync::Arc::new(
@@ -2724,6 +2746,8 @@ async fn converse_stream_handler(
                         learned.clone(),
                     );
                 }
+                // Capture any files this turn produced into the gallery (under the session bucket).
+                let _ = capture_artifacts(&app.home, &art_bucket, &run_workdir, &artifacts_before);
                 let _ = tx.send(Event::default().event("done").data(
                     json!({ "reply": run.answer, "recalled": recalled, "recalled_refs": recalled_refs, "learned": learned, "steps": run.steps })
                         .to_string(),

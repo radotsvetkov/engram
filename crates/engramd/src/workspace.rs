@@ -176,6 +176,30 @@ impl WorkspaceStore {
         }
         out
     }
+    /// The last `n` turns of a session as (role, text), oldest-first - the conversation history the
+    /// agentic chat needs so a follow-up ("let's try again") resolves against what was already said
+    /// instead of re-asking for context. Long messages are truncated to keep the prompt bounded.
+    pub fn recent_turns(&self, session_id: &str, n: usize) -> Vec<(String, String)> {
+        let d = self.data.lock().expect("ws");
+        let Some(s) = d.sessions.iter().find(|s| s.id == session_id) else {
+            return Vec::new();
+        };
+        let mut turns: Vec<(String, String)> = s
+            .messages
+            .iter()
+            .rev()
+            .take(n)
+            .map(|m| {
+                (
+                    m.role.clone(),
+                    m.text.chars().take(2000).collect::<String>(),
+                )
+            })
+            .collect();
+        turns.reverse();
+        turns
+    }
+
     /// The standing-instructions persona for the project that owns a session (if any).
     pub fn persona_for_session(&self, session_id: &str) -> Option<String> {
         let d = self.data.lock().expect("ws");

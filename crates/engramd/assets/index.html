@@ -435,6 +435,20 @@
   .ask-ok { background:var(--accent); color:var(--accent-ink); border:none; border-radius:9px; padding:9px 18px; font-weight:600; cursor:pointer; transition:filter var(--dur-1) var(--ease-out), box-shadow var(--dur-1); box-shadow:0 1px 2px rgba(0,0,0,.2); }
   .ask-ok:hover { filter:brightness(1.06); box-shadow:0 2px 10px -2px var(--accent-soft); }
   .ask-ok.danger { background:var(--danger); color:#fff; }
+  /* Mission modal: goal + parallel-subtask runner + synthesized result. */
+  .msn-row { display:flex; align-items:center; gap:11px; margin-top:13px; font-size:12.5px; color:var(--text-secondary); }
+  .msn-row input[type=range] { flex:1; accent-color:var(--accent); }
+  .msn-row b { font:600 13px var(--mono); color:var(--accent); min-width:14px; text-align:center; }
+  .msn-result { margin-top:14px; max-height:46vh; overflow:auto; border-top:1px solid var(--border); padding-top:12px; }
+  .msn-running { color:var(--text-secondary); font-size:13px; display:flex; align-items:center; gap:9px; padding:6px 0; }
+  .msn-lbl { font:600 9.5px var(--mono); text-transform:uppercase; letter-spacing:.07em; color:var(--text-muted); margin:4px 0 8px; }
+  .msn-summary { margin-bottom:16px; }
+  .msn-sub { border:1px solid var(--border); border-radius:9px; margin-bottom:7px; background:var(--surface-0); }
+  .msn-sub > summary { cursor:pointer; padding:9px 12px; font-size:13px; font-weight:500; color:var(--text-primary); list-style:none; }
+  .msn-sub > summary::before { content:'+ '; color:var(--text-muted); }
+  .msn-sub[open] > summary::before { content:'- '; }
+  .msn-sub-a { padding:0 13px 11px; font-size:13px; color:var(--text-secondary); line-height:1.6; }
+  .msn-err { color:var(--danger); font-size:13px; padding:6px 0; }
   /* templates */
   .tmpl-chips { display:flex; flex-wrap:wrap; gap:8px; margin-top:11px; }
   .tmpl-chip { background:var(--surface-2); border:1px solid var(--border); color:var(--text-secondary); border-radius:999px; padding:7px 14px; cursor:pointer; font-size:13px; }
@@ -4282,14 +4296,21 @@ function ccCostFromRange(val){
 
 // ---- Slash-commands & shortcuts reference -----------------------------------
 const ENGRAM_SLASH = [
-  ['/ask','Send the rest of the line to chat as a question'],
+  ['/ask','Ask the rest of the line in chat'],
   ['/task','Create a task from the rest of the line'],
   ['/run','Create a task and start it immediately'],
-  ['/memory','Jump to the brain-graph memory view'],
+  ['/mission','Decompose a goal into parallel subtask agents'],
+  ['/recall','Search memory for a phrase'],
+  ['/memory','Open the brain-graph memory view'],
   ['/board','Open the kanban board'],
+  ['/model','Pick the model'],
+  ['/schedule','Open scheduled runs'],
+  ['/terminal','Open the glass-box terminal'],
   ['/verify','Re-walk and verify the signed ledger'],
-  ['/settings','Open the settings command-center'],
-  ['/stop','Emergency-halt running agents at the next step'],
+  ['/clear','Start a new chat'],
+  ['/stop','Emergency-halt running agents'],
+  ['/settings','Open settings'],
+  ['/help','List slash commands'],
 ];
 const ENGRAM_KEYS = [
   ['Command palette','⌘K'],['Settings','⌘,'],['Send / answer in chat','↵'],
@@ -4879,9 +4900,52 @@ function slashCommands(){
       run:()=>{ slashClear(); if(typeof go==='function') go('Terminal'); } },
     { cmd:'/settings', t:'Open settings',                     ic:I.Settings, arg:false,
       run:()=>{ slashClear(); if(typeof openCC==='function') openCC(); } },
+    { cmd:'/mission',  t:'Decompose a goal into parallel subtask agents',  ic:I.Tasks,  arg:true,
+      run:(a)=>{ slashClear(); openMission(a||''); } },
+    { cmd:'/ask',      t:'Ask the rest of the line in chat',  ic:I.Chat,     arg:true,
+      run:(a)=>{ slashClear(); if(a&&typeof converseInline==='function') converseInline(a); else if(typeof go==='function') go('Chat'); } },
+    { cmd:'/memory',   t:'Open the brain-graph memory view',  ic:I.Memory,   arg:false,
+      run:()=>{ slashClear(); if(typeof go==='function') go('Memory'); } },
+    { cmd:'/board',    t:'Open the kanban board',             ic:I.Tasks,    arg:false,
+      run:()=>{ slashClear(); if(typeof go==='function') go('Tasks'); } },
+    { cmd:'/verify',   t:'Re-walk and verify the signed ledger',  ic:I.Settings, arg:false,
+      run:async()=>{ slashClear(); try{ const r=await J('/v1/ledger/verify'); notify(r.ok?('Ledger intact · '+(r.entries||0)+' entries signed'):'Ledger verification FAILED','ok'); }catch(e){ notify('Could not verify the ledger','err'); } } },
+    { cmd:'/stop',     t:'Emergency-halt running agents',     ic:I.Settings, arg:false,
+      run:()=>{ slashClear(); if(typeof toggleHalt==='function') toggleHalt(); else notify('Halt unavailable here','warn'); } },
     { cmd:'/help',     t:'List slash commands',               ic:I.Chat,     arg:false,
       run:()=>{ if(typeof notify==='function') notify('Commands: '+slashCommands().map(c=>c.cmd).join('  '),'ok'); slashClear(); } },
   ];
+}
+// Mission: decompose a goal into independent subtasks, run them in PARALLEL as real, signed board
+// cards, then synthesize one answer. Surfaces the flagship /v1/mission multi-agent orchestration.
+function openMission(goal){
+  const ov=document.createElement('div'); ov.className='overlay ask';
+  ov.innerHTML=`<div class="ask-card" style="width:min(640px,94vw)">
+    <div class="ask-title">Run a mission</div>
+    <div class="ask-msg">Engram breaks the goal into independent subtasks, runs them in parallel as real board cards, then synthesizes one cohesive answer. Every step is signed to the ledger.</div>
+    <textarea class="ask-input" id="msnGoal" rows="3" placeholder="Goal - e.g. Research the top 3 Rust web frameworks and recommend one for a small team" style="resize:vertical;font:inherit;line-height:1.5">${esc(goal||'')}</textarea>
+    <label class="msn-row"><span>Max parallel subtasks</span><input type="range" id="msnMax" min="1" max="6" value="4" oninput="document.getElementById('msnMaxV').textContent=this.value"><b id="msnMaxV">4</b></label>
+    <div id="msnResult" class="msn-result" hidden></div>
+    <div class="ask-actions"><button class="ask-ghost" onclick="this.closest('.overlay').remove()">Close</button><button class="ask-ok" id="msnGo" onclick="missionGo(this)">Run mission</button></div>
+  </div>`;
+  document.body.appendChild(ov); setTimeout(()=>{ const g=ov.querySelector('#msnGoal'); if(g) g.focus(); },20);
+}
+async function missionGo(btn){
+  const ov=btn.closest('.overlay');
+  const goal=ov.querySelector('#msnGoal').value.trim();
+  const max=+ov.querySelector('#msnMax').value||4;
+  if(!goal){ notify('Enter a goal first'); return; }
+  const res=ov.querySelector('#msnResult');
+  btn.disabled=true; btn.textContent='Running...';
+  res.hidden=false; res.innerHTML=`<div class="msn-running">${thinkingDots} planning, then running subtasks in parallel...</div>`;
+  try{
+    const r=await J('/v1/mission',{method:'POST',headers:MIND_JSON,body:JSON.stringify({goal,max_subtasks:max})});
+    const subs=(r.subtasks||[]).map(s=>`<details class="msn-sub"><summary>${esc(s.title)}</summary><div class="msn-sub-a">${mdToHtml(String(s.answer||''))}</div></details>`).join('');
+    res.innerHTML=`<div class="msn-summary"><div class="msn-lbl">Synthesized result</div><div class="msg engram" style="max-width:none">${mdToHtml(String(r.summary||''))}</div></div>
+      <div class="msn-subs"><div class="msn-lbl">${(r.subtasks||[]).length} subtask${(r.subtasks||[]).length===1?'':'s'} (now on the board)</div>${subs}</div>`;
+    if(typeof loadTasks==='function') loadTasks();
+  }catch(e){ res.innerHTML=`<div class="msn-err">Mission failed - ${esc((e&&e.message)||'error')}</div>`; }
+  finally{ btn.disabled=false; btn.textContent='Run again'; }
 }
 function slashEl(){ return document.getElementById('slashMenu'); }
 function slashOpen(){ const m=slashEl(); return !!(m && !m.hidden); }

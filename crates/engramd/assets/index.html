@@ -1109,6 +1109,7 @@
 .attach-menu .am-i:hover{ background:var(--hover); }
 .attach-menu .am-i svg{ width:15px; height:15px; flex:0 0 auto; color:var(--text-secondary); }
 .attach-menu .am-i .am-sub{ margin-left:auto; color:var(--text-muted); font-size:11px; }
+.attach-menu .am-i .am-kbd{ margin-left:auto; flex:0 0 auto; font:10.5px var(--mono); color:var(--text-muted); background:var(--surface-0); border:1px solid var(--border-strong); border-radius:5px; padding:1px 6px; line-height:1.5; }
 /* pills above the textarea */
 .attach-pills{ display:flex; flex-wrap:wrap; gap:6px; padding:0 0 7px; }
 .attach-pills:empty{ display:none; }
@@ -3100,6 +3101,7 @@ window.addEventListener('keydown', e=>{
   if((e.metaKey||e.ctrlKey) && k==='k'){ e.preventDefault(); document.getElementById('palette').hidden? openPalette(): closePalette(); return; }
   if((e.metaKey||e.ctrlKey) && k===','){ e.preventDefault(); document.getElementById('cc').hidden? openCC(): closeCC(); return; }
   if((e.metaKey||e.ctrlKey) && k==='m' && document.getElementById('modelMenu')){ e.preventDefault(); toggleModelMenu(); return; }
+  if((e.metaKey||e.ctrlKey) && k==='u' && document.getElementById('attachFileInput')){ e.preventDefault(); attachPickFiles(); return; }
   if(!document.getElementById('palette').hidden){
     if(k==='escape'){ e.preventDefault(); closePalette(); }
     else if(k==='arrowdown'){ e.preventDefault(); palMove(1); }
@@ -4631,7 +4633,7 @@ function attachToggleMenu(ev){
   const btn=document.getElementById('attachBtn'); if(btn) btn.setAttribute('aria-expanded','true');
   const m=document.createElement('div'); m.id='attachMenu'; m.className='attach-menu'; m.setAttribute('role','menu');
   m.innerHTML=`
-    <button class="am-i" type="button" role="menuitem" onclick="event.stopPropagation();attachPickFiles()">${attachSvg('file')}<span>Attach files</span><span class="am-sub">PDF, image, doc, sheet, code</span></button>
+    <button class="am-i" type="button" role="menuitem" onclick="event.stopPropagation();attachPickFiles()">${attachSvg('file')}<span>Attach files</span><kbd class="am-kbd">⌘U</kbd></button>
     <button class="am-i" type="button" role="menuitem" onclick="event.stopPropagation();attachAddUrl()">${attachSvg('url')}<span>Add a URL</span></button>
     <button class="am-i" type="button" role="menuitem" onclick="event.stopPropagation();attachOpenRecall()">${attachSvg('memory')}<span>Pin a memory</span></button>`;
   wrap.appendChild(m);

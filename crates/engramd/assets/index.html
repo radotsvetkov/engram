@@ -1722,7 +1722,11 @@ function thinkingFooter(m){
   const n=(m.steps&&m.steps.length)||0;
   const label = m.text ? 'Writing the answer' : (n ? ('Working — '+n+' step'+(n===1?'':'s')+' done') : 'Thinking');
   const hint = n>=3 ? 'big task — this can take a minute, hang tight' : 'staying on it…';
-  return `<div class="cthinking ct-foot" id="thinkFoot"><span class="ct-mark">${CW_MARK}</span><span class="ct-dot"></span><span class="ct-label">${label}</span><span class="ct-secs" data-t0="${m.t0}">0s</span><span class="ct-hint">${hint}</span></div>`;
+  // Show the REAL elapsed time on every render. Hardcoding "0s" made the counter flash back to 0
+  // on each tool-step repaint until the next 1s tick — "the timer keeps going to 0s".
+  const t0 = m.t0 || Date.now();
+  const secs = Math.max(0, (Date.now()-t0)/1000|0);
+  return `<div class="cthinking ct-foot" id="thinkFoot"><span class="ct-mark">${CW_MARK}</span><span class="ct-dot"></span><span class="ct-label">${label}</span><span class="ct-secs" data-t0="${t0}">${secs}s</span><span class="ct-hint">${hint}</span></div>`;
 }
 function tickThinking(){
   let any=false;

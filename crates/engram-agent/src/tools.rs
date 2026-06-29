@@ -2250,6 +2250,50 @@ mod web {
         Err("too many redirects".into())
     }
 
+    /// Query the Brave Search API (clean JSON, no bot-detection) when `BRAVE_API_KEY` is set — the
+    /// reliable alternative to scraping search-engine HTML, which gets rate-limited/blocked. Free key
+    /// at https://api.search.brave.com. Returns formatted result lines, or Err to fall back to scrape.
+    async fn brave_api_search(query: &str, key: &str, timeout: u64) -> Result<Vec<String>, String> {
+        let url = format!(
+            "https://api.search.brave.com/res/v1/web/search?q={}&count=8",
+            urlencoding(query)
+        );
+        let target = super::resolve_guarded(&url).await?;
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(timeout))
+            .redirect(reqwest::redirect::Policy::none())
+            .resolve_to_addrs(&target.host, &target.addrs)
+            .build()
+            .map_err(|e| e.to_string())?;
+        let resp = client
+            .get(&url)
+            .header("X-Subscription-Token", key)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        if !resp.status().is_success() {
+            return Err(format!("brave api HTTP {}", resp.status().as_u16()));
+        }
+        let body = resp.text().await.map_err(|e| e.to_string())?;
+        let v: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        if let Some(results) = v["web"]["results"].as_array() {
+            for r in results {
+                let title = r["title"].as_str().unwrap_or("").trim().to_string();
+                let href = r["url"].as_str().unwrap_or("").trim().to_string();
+                let desc = r["description"]
+                    .as_str()
+                    .map(|s| super::html_to_text(s).trim().to_string())
+                    .filter(|s| !s.is_empty());
+                if !title.is_empty() && !href.is_empty() {
+                    out.push(with_snippet(&title, &href, desc));
+                }
+            }
+        }
+        Ok(out)
+    }
+
     pub struct WebFetchTool;
 
     #[async_trait]
@@ -2292,7 +2336,8 @@ mod web {
         }
         fn description(&self) -> &str {
             "Search the web and return the top results as title, URL, and an inline snippet — often \
-             enough to answer without a follow-up web_fetch."
+             enough to answer without a follow-up web_fetch. Reliable when BRAVE_API_KEY is set; \
+             otherwise it scrapes search HTML, which can be rate-limited."
         }
         fn schema(&self) -> Value {
             json!({ "type": "object", "properties": { "query": { "type": "string" } }, "required": ["query"] })
@@ -2313,9 +2358,25 @@ mod web {
                 .append("agent.web_search", "agent", json!({ "query": query }));
             let q = urlencoding(query);
             let to = ctx.policy.timeout_secs;
-            // Resilient search: DuckDuckGo's scrape endpoints block/timeout from many networks, which
-            // left web_search returning nothing. Try DDG, then Bing, then DDG-lite — take the first
-            // that yields results, so a single dead backend doesn't break research.
+            // Reliable path FIRST: the Brave Search API (clean JSON, no bot-detection) when a key is
+            // configured. Scraping search-engine HTML gets rate-limited/blocked after a burst of
+            // queries — exactly the intermittent "✕ searched the web" failures. Free key at
+            // https://api.search.brave.com; set BRAVE_API_KEY in the daemon environment.
+            if let Ok(key) =
+                std::env::var("BRAVE_API_KEY").or_else(|_| std::env::var("BRAVE_SEARCH_API_KEY"))
+            {
+                let key = key.trim().to_string();
+                if !key.is_empty() {
+                    if let Ok(results) = brave_api_search(query, &key, to).await {
+                        if !results.is_empty() {
+                            return Ok(results.into_iter().take(8).collect::<Vec<_>>().join("\n"));
+                        }
+                    }
+                }
+            }
+            // Fallback: scrape Brave/DDG HTML. DuckDuckGo's scrape endpoints block/timeout from many
+            // networks; try Brave, then DDG, then DDG-lite — first with results wins, so a single
+            // dead backend doesn't break research.
             let attempts: [(&str, fn(&str) -> Vec<String>); 3] = [
                 ("https://search.brave.com/search?q=", extract_brave_results),
                 ("https://html.duckduckgo.com/html/?q=", extract_results),

@@ -3579,7 +3579,13 @@ async fn converse_stream_handler(
              page), immediately try an accessible alternative IN THE SAME TURN (web_search for a \
              current roundup, then web_fetch/browser the specific result pages) and return the real \
              table. Use the tools now; only stop when you've delivered the result or have genuinely \
-             exhausted the accessible options (then say exactly what you tried).\n\n",
+             exhausted the accessible options (then say exactly what you tried).\n\
+             REUSE & SKILLS: if you already gathered a fact earlier in THIS conversation, use it — do \
+             NOT re-run the same search (it burns the run budget and invites rate-limits). For a task \
+             a built-in skill covers (flights → flight_search; plus weather, currency, wikipedia, \
+             etc.), reach for skill_search / skill_run before raw web scraping. To SAVE a document or \
+             webpage for the user, write it to a file with write_file (and append_file to add further \
+             parts if it is long) — don't paste a huge page inline.\n\n",
         );
         if !history.is_empty() {
             task.push_str("You are mid-conversation. Here is what was said so far - use it; do NOT re-ask for context you already have:\n");

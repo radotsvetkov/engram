@@ -38,15 +38,15 @@
   ::placeholder { color:var(--text-muted); }
   /* Thin, subtle, edge scrollbars (like Claude): transparent track, slim faint thumb that darkens
      on hover, inset via a transparent border so it reads as a hairline, not a heavy bar. */
-  ::-webkit-scrollbar { width:7px; height:7px; }
+  ::-webkit-scrollbar { width:9px; height:9px; }
   ::-webkit-scrollbar-track { background:transparent; }
-  /* Auto-hide like Claude: the thumb is invisible at rest and appears only while scrolling (JS adds
-     .sb-show to the scrolled element, removed ~0.9s after it stops) or when hovered. */
-  ::-webkit-scrollbar-thumb { background:transparent; border-radius:8px; border:2px solid transparent; background-clip:padding-box; min-height:26px; }
+  /* Always visible but subtle (so it can be SEEN); brightens while scrolling (JS adds .sb-show to the
+     scrolled element, removed ~0.9s after it stops) or on hover. ~5px thumb in a 9px track. */
+  ::-webkit-scrollbar-thumb { background:var(--border-strong); border-radius:8px; border:2px solid transparent; background-clip:padding-box; min-height:28px; }
   .sb-show::-webkit-scrollbar-thumb, :hover::-webkit-scrollbar-thumb { background:var(--text-muted); }
   ::-webkit-scrollbar-thumb:hover { background:var(--text-secondary); }
   ::-webkit-scrollbar-corner { background:transparent; }
-  * { scrollbar-width:thin; scrollbar-color:transparent transparent; }
+  * { scrollbar-width:thin; scrollbar-color:var(--border-strong) transparent; }
 
   /* grid-template-rows:minmax(0,1fr) bounds the row to the app height so a tall view (e.g. the
      Activity ledger) scrolls INSIDE .view instead of growing the grid and spilling over the
@@ -287,7 +287,7 @@
   /* Generic chat/list */
   /* Full-width column so the feed's scrollbar reaches the window's right edge; the 720px reading
      column is recreated with symmetric auto side-padding on the feed + matching composer margins. */
-  .chat { display:flex; flex-direction:column; height:100%; min-height:0; }
+  .chat { display:flex; flex-direction:column; height:100%; min-height:0; position:relative; }
   /* Only the feed scrolls in chat — stop .view from showing a second scrollbar behind it. */
   .view:has(.chat-shell) { overflow:hidden; }
   /* The feed is the ONLY scroll region in chat: flex:1 + min-height:0 lets it shrink below its
@@ -298,6 +298,27 @@
     -webkit-mask-image:linear-gradient(to bottom, transparent 0, #000 26px, #000 calc(100% - 22px), transparent 100%);
     mask-image:linear-gradient(to bottom, transparent 0, #000 26px, #000 calc(100% - 22px), transparent 100%); }
   .chat > .composer { margin:0 max(16px, calc((100% - 720px) / 2)) 24px; }
+  /* Jump-to-latest: a floating round button above the composer, shown only when scrolled up. */
+  .jump-bottom { position:absolute; right:max(18px, calc((100% - 720px) / 2)); bottom:140px; z-index:7;
+    width:34px; height:34px; border-radius:50%; background:var(--surface-2); border:1px solid var(--border-strong);
+    color:var(--text-secondary); display:none; align-items:center; justify-content:center; cursor:pointer;
+    box-shadow:var(--e2,0 4px 14px rgba(0,0,0,.3)); opacity:0; transform:translateY(6px); transition:opacity .15s, transform .15s, color .12s, border-color .12s; }
+  .jump-bottom.show { display:flex; opacity:1; transform:translateY(0); }
+  .jump-bottom:hover { color:var(--text-primary); border-color:var(--ring); }
+  .jump-bottom svg { width:18px; height:18px; }
+  /* Loading state while waiting on the model: the Engram mark spins one turn CW then one turn CCW on
+     repeat, a green dot blinks, and a live seconds counter ticks. All motion stops when the run ends
+     (the element is replaced by the answer), so nothing animates at rest. */
+  .cthinking { display:inline-flex; align-items:center; gap:9px; padding:5px 0; color:var(--text-secondary); font-size:13px; }
+  .cthinking .ct-mark { width:21px; height:21px; flex:none; display:inline-flex; color:var(--text-secondary); animation:engram-spin 2.6s ease-in-out infinite; }
+  .cthinking .ct-mark svg { width:100%; height:100%; }
+  .cthinking .ct-dot { width:7px; height:7px; flex:none; border-radius:50%; background:#45c8a8; box-shadow:0 0 8px #45c8a8; animation:ct-blink 1.05s ease-in-out infinite; }
+  .cthinking .ct-label { font-weight:500; }
+  .cthinking .ct-secs { color:var(--text-muted); font:11px/1 var(--mono); }
+  @keyframes engram-spin { 0%{transform:rotate(0deg)} 50%{transform:rotate(360deg)} 100%{transform:rotate(0deg)} }
+  @keyframes ct-blink { 0%,100%{opacity:1} 50%{opacity:.22} }
+  /* Sidebar: a blinking green dot on a chat that's still being worked on; nothing once it's done. */
+  .ses-busy { width:7px; height:7px; flex:none; border-radius:50%; background:#45c8a8; box-shadow:0 0 6px #45c8a8; animation:ct-blink 1s ease-in-out infinite; margin-right:1px; }
   /* Pin the composer: never let it shrink or scroll away when the feed fills. */
   .chat > .composer { flex:0 0 auto; }
   .msg.user { align-self:flex-end; background:var(--surface-2); border:1px solid var(--border); border-radius:13px 13px 4px 13px; padding:10px 14px; max-width:78%; line-height:1.5; white-space:pre-wrap; }
@@ -1639,9 +1660,30 @@ function wireComposer(){
   });
 }
 // While a chat is running the send button becomes a Stop button - clicking it aborts the request.
-let _chatAbort=null, _chatBusy=false;
+let _chatAbort=null, _chatBusy=false, _thinkTimer=0;
+const _busySessions=new Set();   // session ids with an in-flight run -> blinking dot in the sidebar
+// Scroll the chat feed to the newest message (the jump-to-latest button + after sending).
+function feedToBottom(){ const f=document.getElementById('feed'); if(f) f.scrollTo({top:f.scrollHeight, behavior:'smooth'}); }
+// Show the jump-to-latest button only when the reader has scrolled up away from the bottom.
+function updateJumpBtn(){
+  const f=document.getElementById('feed'), b=document.getElementById('jumpBottom'); if(!f||!b) return;
+  b.classList.toggle('show', (f.scrollHeight - f.scrollTop - f.clientHeight) > 120);
+}
+// The loading indicator shown while waiting on the model: spinning Engram mark + blinking green dot
+// + "thinking" + a live seconds counter (driven by tickThinking while a run is busy).
+function thinkingIndicator(t0){
+  t0 = t0 || Date.now();
+  return `<div class="cthinking"><span class="ct-mark">${CW_MARK}</span><span class="ct-dot"></span><span class="ct-label">thinking</span><span class="ct-secs" data-t0="${t0}">0s</span></div>`;
+}
+function tickThinking(){
+  let any=false;
+  document.querySelectorAll('.ct-secs[data-t0]').forEach(el=>{ any=true; const t0=+el.getAttribute('data-t0')||Date.now(); el.textContent=(((Date.now()-t0)/1000)|0)+'s'; });
+  if(!any && _thinkTimer){ clearInterval(_thinkTimer); _thinkTimer=0; }
+}
 function setChatBusy(busy){
   _chatBusy=busy;
+  if(busy){ if(!_thinkTimer) _thinkTimer=setInterval(tickThinking,1000); }
+  else if(_thinkTimer){ clearInterval(_thinkTimer); _thinkTimer=0; }
   const b=document.getElementById('sendBtn'); if(!b) return;
   if(busy){
     b.classList.add('is-stop'); b.title='Stop'; b.setAttribute('aria-label','Stop the run');
@@ -1994,7 +2036,7 @@ function renderSidebar(){
   const el=document.getElementById('sidebar'); if(!el) return;
   const proj=curProject(), sess=curSessions(), favs=sess.filter(s=>s.fav), rest=sess.filter(s=>!s.fav);
   const row=s=>`<div class="ses ${s.id===WS.activeSession?'active':''}" onclick="openSession('${s.id}')" title="${escAttr(s.title)}">
-    <span class="ses-t">${esc(s.title||'New chat')}</span><span class="ses-actions">
+    ${_busySessions.has(s.id)?'<span class="ses-busy" title="Working…"></span>':''}<span class="ses-t">${esc(s.title||'New chat')}</span><span class="ses-actions">
       <button class="${s.fav?'star':''}" title="${s.fav?'Unfavorite':'Favorite'}" onclick="favSession('${s.id}',event)">${s.fav?'★':'☆'}</button>
       <button title="Rename" onclick="renameSession('${s.id}',event)">✎</button>
       <button title="Delete" onclick="deleteSession('${s.id}',event)">✕</button></span></div>`;
@@ -2020,7 +2062,7 @@ async function renderChat(){
   // beside it. The pane starts collapsed (width 0); artOpen()/artClose() toggle .arts-open.
   ARTS.open=false; ARTS.current=null; ARTS._sig='';
   document.getElementById('view').innerHTML = `<div class="chat-shell"><div class="chat">${offlineNotice()}
-    <div class="feed" id="feed"></div>${composerHtml('chat')}</div><div class="art-pane" id="artPane"></div></div>`;
+    <div class="feed" id="feed"></div><button class="jump-bottom" id="jumpBottom" onclick="feedToBottom()" title="Scroll to latest" aria-label="Scroll to latest"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M19 12l-7 7-7-7"/></svg></button>${composerHtml('chat')}</div><div class="art-pane" id="artPane"></div></div>`;
   document.getElementById('composer').placeholder='Ask Engram anything...';
   wireComposer(); paintFeed();
 }
@@ -2157,11 +2199,12 @@ function paintFeed(toBottom=true){
     // The model's live "what I'm doing" commentary (narration) — shown above the tool chips so a
     // long run reads as activity, not a silent wait.
     const notes=(m.notes&&m.notes.length)?`<div class="chat-notes">${m.notes.map(n=>`<div class="cnote">${mdInline(esc(n))}</div>`).join('')}</div>`:'';
-    const body = m.text ? (mdToHtml(m.text) + (m.streaming?'<span class="caret"></span>':'')) : (m.streaming?(notes||steps?'':thinkingDots):'...');
+    const body = m.text ? (mdToHtml(m.text) + (m.streaming?'<span class="caret"></span>':'')) : (m.streaming?(notes||steps?'':thinkingIndicator(m.t0)):'...');
     return `<div>${notes}${steps}<div class="msg engram"${m.streaming?' id="streamMsg"':''}>${body}</div>${ribbon}${learned}</div>`;
   }).join('') || chatWelcome();
   artsAfterPaint();   // detect substantial code/doc blocks, inject "Open in canvas" chips, sync the pane
   if(toBottom) f.scrollTop=f.scrollHeight;
+  updateJumpBtn();
 }
 // A coalesced, sticky-bottom repaint for streaming step events: rebuild at most once per frame, and
 // only auto-scroll if the reader is already near the bottom — so a long multi-step run no longer
@@ -2193,6 +2236,7 @@ function streamTick(msg){
     const stick = !f || (f.scrollHeight - f.scrollTop - f.clientHeight) < 160;
     el.innerHTML = mdToHtml(msg.text||'') + '<span class="caret"></span>';
     if(stick && f) f.scrollTop=f.scrollHeight;
+    updateJumpBtn();
   });
 }
 async function chatSay(text, attachments){
@@ -2204,8 +2248,8 @@ async function chatSay(text, attachments){
   const meta=WS.sessions.find(x=>x.id===sid);
   if(meta && (!meta.title || meta.title==='New chat')){ meta.title=text.replace(/\s+/g,' ').slice(0,42); document.getElementById('viewname').textContent=curProject().name+' / '+meta.title; }
   if(meta){ WS.sessions=[meta, ...WS.sessions.filter(x=>x.id!==sid)]; }   // bump to top
-  renderSidebar();
-  const msg={role:'engram',text:'',streaming:true}; sess.messages.push(msg); paintFeed();
+  _busySessions.add(sid); renderSidebar();
+  const msg={role:'engram',text:'',streaming:true,t0:Date.now()}; sess.messages.push(msg); paintFeed();
   _chatAbort=new AbortController(); setChatBusy(true);
   try {
     const r = await fetch('/v1/converse/stream',{method:'POST',headers:{...AUTH,'content-type':'application/json'},body:JSON.stringify({text, session:sid, attachments}), signal:_chatAbort.signal});
@@ -2240,6 +2284,7 @@ async function chatSay(text, attachments){
     msg.streaming=false; if(WS.activeSession===sid) paintFeed();
   } finally {
     setChatBusy(false); _chatAbort=null;
+    _busySessions.delete(sid); renderSidebar();   // stop the sidebar blink once this run finishes
   }
 }
 // Turn a raw provider/transport error into a clear, actionable message instead of a scary dump.
@@ -3883,6 +3928,7 @@ document.addEventListener('scroll', (e)=>{
   const el = e.target; if(!el || !el.classList) return;
   el.classList.add('sb-show'); clearTimeout(el._sbHide);
   el._sbHide = setTimeout(()=>{ try{ el.classList.remove('sb-show'); }catch(_){} }, 900);
+  updateJumpBtn();   // recomputes from #feed directly, so it's correct regardless of scroll target
 }, true);
 // Delegated, capture-phase: any click on an http(s) link is opened externally. Internal links
 // (href="#", hash routes) and onclick handlers are untouched.

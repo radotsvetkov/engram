@@ -224,6 +224,43 @@ impl Registry {
         self.skill_dir(id).join("retired").exists()
     }
 
+    /// The user-facing on/off switch. Toggles ONLY the `retired` marker (the active pointer and all
+    /// versions stay), so a disabled skill is hidden from selection/auto-use but instantly
+    /// re-enablable and still inspectable in the UI — unlike [`retire`](Self::retire), which also
+    /// drops the active pointer (used by the prune).
+    pub fn set_enabled(&self, id: &str, enabled: bool) -> Result<()> {
+        let sd = self.skill_dir(id);
+        if !sd.exists() {
+            return Err(RegistryError::NotFound(id.to_string()));
+        }
+        let marker = sd.join("retired");
+        if enabled {
+            let _ = fs::remove_file(&marker);
+        } else {
+            fs::write(&marker, b"1")?;
+        }
+        self.ledger
+            .append("skill.toggle", "user", json!({ "id": id, "enabled": enabled }))?;
+        Ok(())
+    }
+
+    /// List ALL skills including disabled ones — for the UI, which shows a disabled skill greyed with
+    /// an on/off toggle. [`skills`](Self::skills) excludes disabled ones (selection/auto-use).
+    pub fn skills_all(&self) -> Result<Vec<String>> {
+        let mut out = Vec::new();
+        if let Ok(rd) = fs::read_dir(self.dir.join("skills")) {
+            for e in rd.flatten() {
+                if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                    if let Some(n) = e.file_name().to_str() {
+                        out.push(n.to_string());
+                    }
+                }
+            }
+        }
+        out.sort();
+        Ok(out)
+    }
+
     /// Load a specific signed version and its bytes.
     pub fn load(&self, id: &str, version: u32) -> Result<(SignedSkill, Vec<u8>)> {
         let sd = self.skill_dir(id);

@@ -58,17 +58,17 @@ const ASK_WAT: &str = r#"
 /// This is the structured-API answer to Engram's repeated web failures: consumer metasearch sites
 /// (Google Flights / Skyscanner / Ryanair) are JS SPAs behind bot detection, so scraping them fails
 /// — a flight DATA API does not. Stdlib-only Python, so it needs no `pip install` in the sandbox.
-const FLIGHT_SEARCH_PY: &str = include_str!("flight_search.py");
+const FLIGHT_SEARCH_PY: &str = include_str!("skills/flight_search.py");
 
 /// A keyless live-data skill (Open-Meteo) that also serves as the reference `http_api` skill
 /// template: stdlib-only Python, JSON-in/JSON-out, fail-soft. Because it needs no API key it works
 /// the moment it is seeded — proving the Process-skill → live-API path the flight skill also rides.
-const WEATHER_PY: &str = include_str!("weather.py");
+const WEATHER_PY: &str = include_str!("skills/weather.py");
 
 /// An email skill (wraps the `himalaya` CLI). Its `Net` capability + Process runtime mean SENDING is
 /// refused on a tainted run — a prompt-injection arriving inside an email it just read cannot drive a
 /// compose+send. The showcase for "automation you can leave running over a real inbox".
-const EMAIL_PY: &str = include_str!("email.py");
+const EMAIL_PY: &str = include_str!("skills/email.py");
 
 /// Install seed skills if the registry is empty. Idempotent.
 pub fn ensure_seed(registry: &Registry) -> Result<(), Box<dyn std::error::Error>> {

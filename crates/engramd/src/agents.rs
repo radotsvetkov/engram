@@ -80,6 +80,12 @@ pub struct AgentDef {
     /// policy fails closed to default-deny). `None` = no autonomous egress (today's gated behaviour).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub autonomy_policy: Option<engram_core::SignedAutonomyPolicy>,
+    /// A user-chosen accent color (hex, e.g. "#45c8a8") — personality in the UI. Empty = default.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub color: String,
+    /// A user-chosen emoji/glyph badge for this agent. Empty = the name's initial.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub emoji: String,
     pub created_ms: i64,
     pub updated_ms: i64,
 }
@@ -138,6 +144,8 @@ impl AgentStore {
             effort: norm_effort(effort),
             allowed_tools: None,
             autonomy_policy: None,
+            color: String::new(),
+            emoji: String::new(),
             created_ms: now,
             updated_ms: now,
         };
@@ -198,6 +206,38 @@ impl AgentStore {
         let mut g = self.agents.lock().expect("agents lock");
         let a = g.iter_mut().find(|a| a.id == id)?;
         a.allowed_tools = tools.filter(|t| !t.is_empty());
+        a.updated_ms = now_ms();
+        let out = a.clone();
+        self.persist(&g);
+        Some(out)
+    }
+
+    /// Set an agent's UI appearance — an accent color and/or emoji badge. `None` leaves a field as-is;
+    /// an empty string clears it. Personality, persisted with the agent.
+    pub fn set_appearance(
+        &self,
+        id: &str,
+        color: Option<&str>,
+        emoji: Option<&str>,
+    ) -> Option<AgentDef> {
+        let mut g = self.agents.lock().expect("agents lock");
+        let a = g.iter_mut().find(|a| a.id == id)?;
+        if let Some(c) = color {
+            // Keep it to a safe hex/rgb-ish token (no CSS injection into inline styles).
+            let c = c.trim();
+            a.color = if c.is_empty()
+                || (c.len() <= 24
+                    && c.chars()
+                        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '#' | '(' | ')' | ',' | '.' | '%' | ' ')))
+            {
+                c.to_string()
+            } else {
+                a.color.clone()
+            };
+        }
+        if let Some(e) = emoji {
+            a.emoji = e.trim().chars().take(4).collect();
+        }
         a.updated_ms = now_ms();
         let out = a.clone();
         self.persist(&g);

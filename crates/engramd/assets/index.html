@@ -641,6 +641,25 @@
   .sk-run input:focus { outline:none; border-color:var(--accent); }
   .sk-out { font:12px var(--mono); color:var(--text-secondary); flex-shrink:0; max-width:42%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .sk-empty { text-align:center; color:var(--text-muted); padding:60px 20px; display:flex; flex-direction:column; gap:8px; }
+  /* skill on/off switch + disabled state */
+  .sk-card.off { opacity:.55; }
+  .sk-toggle { position:relative; display:inline-flex; align-items:center; cursor:pointer; flex-shrink:0; }
+  .sk-toggle input { position:absolute; opacity:0; width:0; height:0; }
+  .sk-sw { width:30px; height:17px; border-radius:999px; background:var(--surface-3); border:1px solid var(--border-strong); transition:background var(--dur-1) var(--ease-out); position:relative; }
+  .sk-sw::after { content:''; position:absolute; top:1.5px; left:2px; width:12px; height:12px; border-radius:50%; background:var(--text-muted); transition:transform var(--dur-1) var(--ease-out), background var(--dur-1); }
+  .sk-toggle input:checked + .sk-sw { background:var(--accent-soft); border-color:color-mix(in srgb,var(--accent) 40%,transparent); }
+  .sk-toggle input:checked + .sk-sw::after { transform:translateX(13px); background:var(--accent); }
+  .sk-try { margin-top:13px; }
+  .sk-lbl { font:600 10.5px var(--mono); text-transform:uppercase; letter-spacing:.04em; color:var(--text-muted); margin-bottom:2px; }
+  /* Tall modals (the agent editor with its autonomy section) must scroll inside the viewport,
+     never overflow it — fixes the "modal breaks the window" bug. */
+  .ask-card { max-height:88vh; overflow-y:auto; }
+  /* agent personality: color swatches */
+  .ag-swatches { display:flex; gap:7px; flex-wrap:wrap; }
+  .ag-sw { width:20px; height:20px; border-radius:50%; cursor:pointer; box-shadow:0 0 0 1px var(--border) inset; transition:transform var(--dur-1) var(--ease-out); }
+  .ag-sw:hover { transform:scale(1.12); }
+  .ag-sw.on { box-shadow:0 0 0 2px var(--surface-1), 0 0 0 4px currentColor; }
+  .ag-dot { display:inline-block; width:8px; height:8px; border-radius:50%; flex-shrink:0; }
   .sk-empty b { color:var(--text-secondary); font-size:16px; }
   .sk-empty span { max-width:460px; margin:0 auto; line-height:1.55; font-size:13px; }
   /* auditable dissent - the grounded specialist note */
@@ -1876,7 +1895,7 @@ async function openTask(id, fromPoll){
   // Load the team once, then repaint so the picker shows the agents (lazy; cached after).
   if(!window._agentsLoaded){ window._agentsLoaded=true; J('/v1/agents').then(a=>{ AGENTS=a||[]; if(panelId===id) openTask(id,true); }).catch(()=>{}); }
   let html='';
-  { const agentOpts=['<option value="">Default agent</option>'].concat(AGENTS.map(a=>`<option value="${escAttr(a.id)}"${t.agent===a.id?' selected':''}>${esc(a.name)}</option>`)).join('');
+  { const agentOpts=['<option value="">Default agent</option>'].concat(AGENTS.map(a=>`<option value="${escAttr(a.id)}"${t.agent===a.id?' selected':''}>${a.emoji?esc(a.emoji)+' ':''}${esc(a.name)}</option>`)).join('');
     const handoffBtn = AGENTS.length ? `<button class="ghost agent-manage" onclick="handoffModal('${id}')">Hand off →</button>` : '';
     html+=`<div class="agent-row"><span class="muted" style="font-size:11px">agent</span><select class="agent-pick" onchange="assignAgent('${id}',this.value)">${agentOpts}</select><span style="flex:1"></span>${handoffBtn}<button class="ghost agent-manage" onclick="openCC('agents')">Manage team</button></div>`;
     if(t.handoffs && t.handoffs.length){
@@ -2813,26 +2832,92 @@ async function renderSkills(){
     const rt = s.runtime==='process' ? esc(s.interpreter||'script') : 'wasm';
     const rtBadge = `<span class="sk-rt" title="${s.runtime==='process'?'A small program the agent wrote, run in your shell sandbox':'A WASM transform run in the fuel-bounded sandbox'}">${rt}</span>`;
     const caps = (s.capabilities||[]).length ? `<span class="sk-caps" title="capabilities this skill is signed for">${(s.capabilities||[]).map(c=>esc(c)).join(' · ')}</span>` : '';
-    return `<div class="sk-card">
-      <div class="sk-head"><span class="sk-name">${esc(s.id)}</span>${rtBadge}<span class="vladder">${ladder}</span><span class="grow"></span>${statusPill}</div>
+    const enabled = s.enabled !== false;
+    const toggle = `<label class="sk-toggle" title="${enabled?'On — the agent can use this skill':'Off — hidden from the agent'}"><input type="checkbox" ${enabled?'checked':''} onchange="skillToggle('${esc(s.id)}',this.checked)"><span class="sk-sw"></span></label>`;
+    const body = enabled ? `
+      <div class="sk-try">
+        <div class="sk-lbl" title="Run the skill on an input to see what it returns">Try it</div>
+        <div class="sk-run"><input id="in_${esc(s.id)}" placeholder="give it an input and press Run..." onkeydown="if(event.key==='Enter')runSkill('${esc(s.id)}')"><button class="sbtn" onclick="runSkill('${esc(s.id)}')">Run</button><span id="out_${esc(s.id)}" class="sk-out"></span></div>
+      </div>
+      <div class="sk-actions">
+        <button class="sbtn ghost" onclick="skillTeach('${esc(s.id)}')" title="Record a correct input→output example. These become the gold set the agent measures improvements against.">+ Add example</button>
+        <button class="sbtn ghost" onclick="skillImprove('${esc(s.id)}')" title="Let the agent rewrite the skill. The new version is replayed against your examples and kept ONLY if it scores better — every change signed.">Improve ↑</button>
+        ${(s.versions||[]).length>1?`<button class="sbtn ghost" onclick="skillRevert('${esc(s.id)}')" title="Roll back to the previous version">Revert</button>`:''}
+      </div>` : `<div class="sk-muted">Disabled — turn it on to use, test, or improve it.</div>`;
+    return `<div class="sk-card${enabled?'':' off'}">
+      <div class="sk-head">${toggle}<span class="sk-name">${esc(s.id)}</span>${rtBadge}<span class="vladder">${ladder}</span><span class="grow"></span>${statusPill}</div>
       ${s.description?`<div class="sk-desc">${esc(s.description)}${caps?' — '+caps:''}</div>`:''}
       ${evBlock}
-      <div class="sk-run"><input id="in_${esc(s.id)}" placeholder="try an input..." onkeydown="if(event.key==='Enter')runSkill('${esc(s.id)}')"><button class="sbtn" onclick="runSkill('${esc(s.id)}')">Run</button><span id="out_${esc(s.id)}" class="sk-out"></span></div>
-      <div class="sk-actions">
-        <button class="sbtn ghost" onclick="skillTeach('${esc(s.id)}')" title="Record an (input, accepted output) example so improvements can be scored">+ Teach example</button>
-        <button class="sbtn ghost" onclick="skillImprove('${esc(s.id)}')" title="Author a new version (WAT) - replayed and promoted only if it measurably wins">Improve</button>
-        ${(s.versions||[]).length>1?`<button class="sbtn ghost" onclick="skillRevert('${esc(s.id)}')" title="Revert to the previous version">Revert</button>`:''}
-      </div>
+      ${body}
     </div>`;
-  }).join('') : `<div class="sk-empty"><b>No skills yet.</b><span>Skills are small, signed programs Engram grows. Each improvement is replayed against past runs and promoted only when it measurably wins - and you can verify it.</span></div>`;
+  }).join('') : `<div class="sk-empty"><b>No skills yet.</b><span>Skills are small, signed programs Engram runs and improves. Add your own, or download the template to start.</span><div class="row" style="justify-content:center;margin-top:6px"><button class="sbtn ghost" onclick="downloadBoilerplate()">↓ Template</button><button class="sbtn" onclick="skillUpload()">+ New skill</button></div></div>`;
   document.getElementById('view').innerHTML = `<div class="skills-wrap">
-    <div class="skills-head"><div class="sh-row"><h2>Skills</h2>${skills.length?`<button class="sbtn ghost" onclick="openPipeline()" title="Chain skills so each one's output feeds the next">+ Pipeline</button>`:''}</div><div class="sub">Procedural memory - expertise that improves only when it measurably wins on replay, with the before/after signed. Where there's no scored signal yet, it says so.</div></div>
+    <div class="skills-head"><div class="sh-row"><h2>Skills</h2><span class="grow"></span>
+        <button class="sbtn ghost" onclick="downloadBoilerplate()" title="Download a ready-to-edit skill template">↓ Template</button>
+        <button class="sbtn" onclick="skillUpload()" title="Write or upload your own skill">+ New skill</button>
+        ${skills.length?`<button class="sbtn ghost" onclick="openPipeline()" title="Chain skills so each one's output feeds the next">+ Pipeline</button>`:''}</div>
+      <div class="sub"><b>Try</b> a skill with an input · <b>Add examples</b> of the right input→output · <b>Improve</b> lets the agent rewrite it and keep the new version only when it scores better on your examples. Every program and every change is signed and verifiable. Toggle one off to hide it from the agent.</div></div>
     <div class="skills-list">${cards}</div></div>`;
 }
 async function runSkill(id){ const input=document.getElementById('in_'+id).value;
   const r=await J('/v1/skills/'+encodeURIComponent(id)+'/run',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({input})});
   document.getElementById('out_'+id).textContent = r.error?('error: '+r.error):('→ '+r.output); }
 // Activate a specific version (click a version chip). Signed to the ledger.
+// Turn a skill on/off (hide it from the agent without losing it). Re-render on failure to resync.
+async function skillToggle(id, enabled){
+  try{ await J('/v1/skills/'+encodeURIComponent(id)+'/enabled',{method:'POST',headers:MIND_JSON,body:JSON.stringify({enabled})});
+    notify(enabled?'Skill on':'Skill off','ok');
+    if(state.route==='Skills') renderSkills();
+  }catch(e){ notify('Couldn\'t toggle - '+e.message); if(state.route==='Skills') renderSkills(); }
+}
+// Write or upload your own skill — a small program that reads JSON on stdin and writes JSON on stdout.
+function skillUpload(){
+  const ov=document.createElement('div'); ov.className='overlay ask';
+  ov.innerHTML=`<div class="ask-card" style="width:min(620px,95vw)">
+    <div class="ask-title">New skill</div>
+    <div class="ask-msg">A skill is a small program that reads a JSON request on stdin and writes a JSON result on stdout. Paste your code or load a file — need a starting point? <a href="#" onclick="downloadBoilerplate();return false">download the template</a>.</div>
+    <input class="ask-input" id="suId" placeholder="id — e.g. stock_quote (letters, digits, _ and -)" autocomplete="off">
+    <input class="ask-input" id="suDesc" placeholder="what it does (shown to you and the agent)" autocomplete="off">
+    <div class="row" style="gap:8px;align-items:center">
+      <input class="ask-input" id="suInterp" placeholder="interpreter" value="python3" style="flex:1" autocomplete="off">
+      <label style="font-size:13px;white-space:nowrap"><input type="checkbox" id="suNet"> needs network</label>
+    </div>
+    <input class="ask-input" id="suWhen" placeholder="when to use it — a cue for the agent (optional)" autocomplete="off">
+    <textarea class="ask-input" id="suSrc" rows="9" placeholder="paste the skill source here…" style="font-family:var(--mono,monospace);font-size:12px;line-height:1.45;resize:vertical"></textarea>
+    <div class="row" style="align-items:center;gap:8px"><label class="sbtn ghost" style="cursor:pointer">Load a file<input type="file" accept=".py,.js,.sh,.rb,.txt" style="display:none" onchange="skillLoadFile(this)"></label><span class="sub" id="suFileName"></span></div>
+    <div class="ask-actions"><button class="ask-ghost" onclick="this.closest('.overlay').remove()">Cancel</button><button class="ask-ok" onclick="skillUploadSave(this)">Install · sign</button></div>
+  </div>`;
+  document.body.appendChild(ov);
+  setTimeout(()=>ov.querySelector('#suId').focus(),20);
+}
+function skillLoadFile(input){
+  const f=input.files&&input.files[0]; if(!f) return;
+  const r=new FileReader();
+  r.onload=()=>{ const ov=input.closest('.overlay');
+    ov.querySelector('#suSrc').value=r.result;
+    ov.querySelector('#suFileName').textContent=f.name;
+    if(!ov.querySelector('#suId').value) ov.querySelector('#suId').value=f.name.replace(/\.[^.]+$/,'').replace(/[^a-zA-Z0-9_-]/g,'_').slice(0,64);
+    const ext=(f.name.split('.').pop()||'').toLowerCase(), map={py:'python3',js:'node',sh:'bash',rb:'ruby',php:'php',pl:'perl'};
+    if(map[ext]) ov.querySelector('#suInterp').value=map[ext];
+  };
+  r.readAsText(f);
+}
+async function skillUploadSave(btn){
+  const ov=btn.closest('.overlay'), g=q=>ov.querySelector(q).value.trim();
+  const source=ov.querySelector('#suSrc').value;
+  if(!g('#suId')){ notify('Give the skill an id'); return; }
+  if(!source.trim()){ notify('The skill source is empty'); return; }
+  const body=JSON.stringify({ id:g('#suId'), interpreter:g('#suInterp'), source, description:g('#suDesc'), when_to_use:g('#suWhen'), capabilities: ov.querySelector('#suNet').checked?['net']:[] });
+  try{ await J('/v1/skills',{method:'POST',headers:MIND_JSON,body}); ov.remove(); notify('Skill installed · signed','ok'); if(state.route==='Skills') renderSkills(); }
+  catch(e){ notify('Couldn\'t install - '+e.message); }
+}
+async function downloadBoilerplate(){
+  try{ const r=await J('/v1/skills/boilerplate');
+    const blob=new Blob([r.source||''],{type:'text/plain'}); const url=URL.createObjectURL(blob);
+    const a=document.createElement('a'); a.href=url; a.download=r.filename||'my_skill.py'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    notify('Template downloaded · '+(r.filename||'my_skill.py'),'ok');
+  }catch(e){ notify('Couldn\'t get the template - '+e.message); }
+}
 async function skillActivate(id,v){
   try{ await J('/v1/skills/'+encodeURIComponent(id)+'/activate',{method:'POST',headers:MIND_JSON,body:JSON.stringify({version:v})}); notify('Activated v'+v+' · signed','ok'); renderSkills(); }
   catch(e){ notify('Couldn\'t activate - '+((e&&e.message)||'error')); }
@@ -3239,8 +3324,10 @@ function agentsGridHtml(){
   return AGENTS.map(a=>{
     const model = a.model ? esc(a.model) : '<span style="opacity:.65">default model</span>';
     const role = (a.role||'').replace(/\s+/g,' ').trim();
+    const av = a.emoji ? `<span style="font-size:16px;margin-right:5px">${esc(a.emoji)}</span>`
+              : (a.color ? `<span class="ag-dot" style="background:${escAttr(a.color)};margin-right:7px"></span>` : '');
     return `<div class="integ-card">
-      <div class="ih"><span class="it">${esc(a.name)}</span><span class="badge">${model}</span></div>
+      <div class="ih"><span class="it">${av}${esc(a.name)}</span><span class="badge">${model}</span></div>
       <div class="id">${role?esc(role.slice(0,130)):'<span style="opacity:.6">No role set - runs with the default behaviour.</span>'}</div>
       <div class="integ-act"><button class="sbtn" onclick="agentEdit('${escAttr(a.id)}')">Edit</button><button class="sbtn ghost" onclick="agentActivity('${escAttr(a.id)}')">Experience</button><span style="flex:1"></span><button class="sbtn ghost" onclick="agentDelete('${escAttr(a.id)}')">Delete</button></div>
     </div>`;
@@ -3276,6 +3363,14 @@ function agentEdit(id){
   const models = Object.keys(MODEL_META).map(m=>`<option value="${escAttr(m)}">`).join('');
   const provOpts = ['<option value="">Global provider (just override the model)</option>']
     .concat(Object.keys(PROVIDERS).filter(k=>k!=='mock').map(k=>`<option value="${k}"${a.provider===k?' selected':''}>${esc(PROVIDERS[k].label)}</option>`)).join('');
+  // Personality: an emoji badge + an accent color swatch, to give the agent a face in the UI.
+  const AG_COLORS=['#45c8a8','#85b7eb','#e0a23c','#e2675f','#b98be8','#8bd17c','#e88bc0','#9aa0ab'];
+  const aColor=a.color||'';
+  const swatches=AG_COLORS.map(c=>`<span class="ag-sw${aColor===c?' on':''}" style="background:${c};color:${c}" onclick="agPickColor(this,'${c}')" title="${c}"></span>`).join('');
+  const personaRow=`<div class="row" style="gap:10px;align-items:center;margin:2px 0 6px">
+    <input class="ask-input" id="agEmoji" placeholder="🛰️" value="${escAttr(a.emoji||'')}" maxlength="4" style="width:60px;text-align:center;font-size:18px;flex:none" title="An emoji badge (optional)" autocomplete="off">
+    <div class="ag-swatches" id="agSwatches" data-color="${escAttr(aColor)}" title="Accent color (optional)">${swatches}</div>
+  </div>`;
   // Autonomy policy section — the "approve once, ahead of time" surface. Only meaningful for a saved
   // agent (the signed policy is keyed by agent id), so a new agent gets a hint instead.
   const ap = a.autonomy || null;
@@ -3287,7 +3382,7 @@ function agentEdit(id){
   const actChk = c => apActs.includes(c) ? ' checked' : '';
   const autoSection = !a.id
     ? `<div class="muted" style="margin-top:10px;border-top:1px solid var(--border);padding-top:10px;font-size:12px">Autonomy (let this agent act unattended within signed limits) becomes available once you save it.</div>`
-    : `<details class="auto-policy" style="margin-top:12px;border-top:1px solid var(--border);padding-top:10px"${ap?' open':''}>
+    : `<details class="auto-policy" style="margin-top:12px;border-top:1px solid var(--border);padding-top:10px">
         <summary style="cursor:pointer;font-size:12px;color:var(--text-secondary)">Autonomy — act unattended within signed limits${ap?' · <span style="color:var(--accent)">active</span>':''}</summary>
         <div class="sub" style="margin:6px 0">Destinations the scheduler may send to <b>without asking you</b>. One host or recipient per line — exact, <code>*.domain.com</code>, or an email.</div>
         <textarea class="ask-input" id="apAllow" rows="3" placeholder="*.mycompany.com&#10;boss@co.com" style="resize:vertical;font:inherit">${esc(apAllow)}</textarea>
@@ -3309,6 +3404,7 @@ function agentEdit(id){
     <div class="ask-title">${a.id?'Edit agent':'New agent'}</div>
     <div class="ask-msg">A specialist with a narrow role drifts less and hallucinates less. It signs every step it runs as itself. Give it its own model (and provider) to match the model to the task: a cheap one for triage, a frontier one for hard reasoning.</div>
     <input class="ask-input" id="agName" placeholder="Name - e.g. Scout, Reviewer, Researcher" value="${escAttr(a.name)}" autocomplete="off">
+    ${personaRow}
     <textarea class="ask-input" id="agRole" rows="4" placeholder="Role / system prompt - what this agent specializes in and how it behaves." style="resize:vertical;font:inherit;line-height:1.5">${esc(a.role)}</textarea>
     <input class="ask-input" id="agModel" list="agModels" placeholder="Model (optional) - blank uses the default" value="${escAttr(a.model)}" autocomplete="off"><datalist id="agModels">${models}</datalist>
     <select class="ask-input" id="agProvider">${provOpts}</select>
@@ -3323,6 +3419,13 @@ function agentEdit(id){
   document.body.appendChild(ov);
   setTimeout(()=>{ const n=ov.querySelector('#agName'); n.focus(); n.select(); },20);
 }
+// Toggle an accent-color swatch in the agent editor (click the active one again to clear).
+function agPickColor(el, color){
+  const box=el.closest('.ag-swatches');
+  box.dataset.color = (box.dataset.color===color ? '' : color);
+  box.querySelectorAll('.ag-sw').forEach(s=>s.classList.remove('on'));
+  if(box.dataset.color) el.classList.add('on');
+}
 async function agentSave(id, btn){
   const ov=btn.closest('.overlay');
   const name=ov.querySelector('#agName').value.trim();
@@ -3332,9 +3435,11 @@ async function agentSave(id, btn){
   const base_url=ov.querySelector('#agBase').value.trim();
   const api_key=ov.querySelector('#agKey').value.trim();
   const effort=ov.querySelector('#agEffort').value;
+  const emoji=ov.querySelector('#agEmoji').value.trim();
+  const color=ov.querySelector('#agSwatches').dataset.color||'';
   if(!name){ notify('An agent needs a name'); return; }
   try{
-    const body=JSON.stringify({name,role,model,provider,base_url,api_key,effort});
+    const body=JSON.stringify({name,role,model,provider,base_url,api_key,effort,color,emoji});
     if(id) await J('/v1/agents/'+id,{method:'POST',headers:MIND_JSON,body});
     else await J('/v1/agents',{method:'POST',headers:MIND_JSON,body});
     ov.remove(); notify('Agent saved · signed','ok'); if(ccActive==='agents') renderCC();
@@ -3442,7 +3547,7 @@ async function assignAgent(id, agentId){
 }
 // Hand a card to another agent with a signed note - the auditable team collaborating on one mission.
 function handoffModal(id){
-  const opts=['<option value="">Default agent</option>'].concat((AGENTS||[]).map(a=>`<option value="${escAttr(a.id)}">${esc(a.name)}</option>`)).join('');
+  const opts=['<option value="">Default agent</option>'].concat((AGENTS||[]).map(a=>`<option value="${escAttr(a.id)}">${a.emoji?esc(a.emoji)+' ':''}${esc(a.name)}</option>`)).join('');
   const ov=document.createElement('div'); ov.className='overlay ask';
   ov.innerHTML=`<div class="ask-card" style="width:min(540px,93vw)">
     <div class="ask-title">Hand off this card</div>

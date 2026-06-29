@@ -861,10 +861,12 @@ async fn run(mode: RunMode) -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/egress/approve", post(egress_approve))
         .route("/v1/egress/deny", post(egress_deny))
         .route("/v1/autonomy/report", get(autonomy_report_handler))
-        .route("/v1/skills", get(skills))
+        .route("/v1/skills", get(skills).post(skill_create))
+        .route("/v1/skills/boilerplate", get(skill_boilerplate))
         .route("/v1/open", post(open_url))
         .route("/v1/tools", get(tools_list))
         .route("/v1/skills/{id}/run", post(run_skill))
+        .route("/v1/skills/{id}/enabled", post(skill_toggle))
         .route("/v1/skills/{id}/improve", post(skill_improve))
         .route("/v1/skills/{id}/activate", post(skill_activate))
         .route("/v1/skills/{id}/revert", post(skill_revert))
@@ -1558,6 +1560,7 @@ fn agent_redacted(a: &agents::AgentDef) -> Value {
         "provider": a.provider, "base_url": a.base_url,
         "api_key_set": !a.api_key.is_empty(), "effort": a.effort,
         "allowed_tools": a.allowed_tools,
+        "color": a.color, "emoji": a.emoji,
         // The standing autonomy grant (allowlist + budget), without the signature, so the editor can
         // display and re-author it. Absent = no autonomous egress (today's gated behaviour).
         "autonomy": a.autonomy_policy.as_ref().map(|s| &s.policy),
@@ -1606,6 +1609,15 @@ async fn agents_create(State(app): State<App>, Json(p): Json<Value>) -> ApiResul
             def = updated;
         }
     }
+    if p.get("color").is_some() || p.get("emoji").is_some() {
+        if let Some(updated) = app.agents.set_appearance(
+            &def.id,
+            p.get("color").and_then(|v| v.as_str()),
+            p.get("emoji").and_then(|v| v.as_str()),
+        ) {
+            def = updated;
+        }
+    }
     app.ledger
         .append(
             "agent.create",
@@ -1634,6 +1646,15 @@ async fn agents_update(
         .ok_or_else(|| err("no such agent"))?;
     if let Some(tools) = parse_allowed_tools(&p) {
         if let Some(updated) = app.agents.set_allowed_tools(&id, tools) {
+            def = updated;
+        }
+    }
+    if p.get("color").is_some() || p.get("emoji").is_some() {
+        if let Some(updated) = app.agents.set_appearance(
+            &id,
+            p.get("color").and_then(|v| v.as_str()),
+            p.get("emoji").and_then(|v| v.as_str()),
+        ) {
             def = updated;
         }
     }
@@ -3823,7 +3844,10 @@ async fn skills(State(app): State<App>) -> ApiResult {
         })
         .collect();
     let mut out = Vec::new();
-    for id in app.registry.skills().map_err(err)? {
+    // List ALL skills (incl. disabled) so the UI can show a disabled skill greyed with an on/off
+    // toggle; the `enabled` flag distinguishes them. Selection/auto-use still uses `skills()`.
+    for id in app.registry.skills_all().map_err(err)? {
+        let enabled = !app.registry.is_retired(&id);
         let active = app.registry.active_version(&id).map_err(err)?;
         let versions = app.registry.versions(&id).map_err(err)?;
         // The gold-signal size: recorded (input, accepted-output) pairs a candidate is scored
@@ -3868,9 +3892,148 @@ async fn skills(State(app): State<App>) -> ApiResult {
             };
         out.push(json!({ "id": id, "active": active, "versions": versions, "runs": runs,
             "runtime": runtime, "interpreter": interpreter, "description": description,
-            "when_to_use": when_to_use, "capabilities": capabilities, "learn": events }));
+            "when_to_use": when_to_use, "capabilities": capabilities, "learn": events,
+            "enabled": enabled }));
     }
     Ok(Json(json!({ "skills": out })))
+}
+
+fn valid_skill_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+fn valid_skill_interp(s: &str) -> bool {
+    let s = s.trim();
+    !s.is_empty()
+        && s.len() <= 64
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '/' | '.' | '_' | '-'))
+}
+
+#[derive(Deserialize)]
+struct SkillCreateReq {
+    id: String,
+    #[serde(default)]
+    interpreter: String,
+    source: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    when_to_use: String,
+    #[serde(default)]
+    category: String,
+    #[serde(default)]
+    capabilities: Vec<String>,
+}
+
+/// Upload (author) a new Process skill from source — the user-facing "add your own skill". Installs a
+/// signed Process skill; the interpreter is sanitized (it is interpolated into the sandbox command).
+async fn skill_create(State(app): State<App>, Json(r): Json<SkillCreateReq>) -> ApiResult {
+    let id = r.id.trim().to_string();
+    if !valid_skill_id(&id) {
+        return Err(err("invalid id (letters, digits, _ and - only, ≤64 chars)"));
+    }
+    if app.registry.skills_all().map_err(err)?.iter().any(|s| s == &id) {
+        return Err(err("a skill with that id already exists — pick another, or Improve the existing one"));
+    }
+    if r.source.trim().is_empty() {
+        return Err(err("the skill source is empty"));
+    }
+    let interpreter = if r.interpreter.trim().is_empty() {
+        "python3".to_string()
+    } else {
+        r.interpreter.trim().to_string()
+    };
+    if !valid_skill_interp(&interpreter) {
+        return Err(err("invalid interpreter (letters, digits, space, /._- only)"));
+    }
+    let mut capabilities = Vec::new();
+    for c in &r.capabilities {
+        let cap = match c.to_ascii_lowercase().as_str() {
+            "net" => Some(engram_skills::Capability::Net),
+            "llm" => Some(engram_skills::Capability::Llm),
+            _ => None,
+        };
+        if let Some(cap) = cap {
+            if !capabilities.contains(&cap) {
+                capabilities.push(cap);
+            }
+        }
+    }
+    let when_to_use = {
+        let w = r.when_to_use.trim();
+        (!w.is_empty()).then(|| w.to_string())
+    };
+    let new = engram_skills::NewSkill {
+        id: id.clone(),
+        category: if r.category.trim().is_empty() {
+            "problem_solving".into()
+        } else {
+            r.category.trim().to_string()
+        },
+        description: r.description.trim().to_string(),
+        capabilities,
+        metric: "helpfulness".into(),
+        runtime: engram_skills::Runtime::Process,
+        interpreter: Some(interpreter),
+        when_to_use,
+    };
+    let version = app.registry.install(new, r.source.as_bytes()).map_err(err)?;
+    let _ = app
+        .ledger
+        .append("skill.upload", "user", json!({ "id": id, "version": version }));
+    Ok(Json(json!({ "ok": true, "id": id, "version": version })))
+}
+
+#[derive(Deserialize)]
+struct SkillToggleReq {
+    enabled: bool,
+}
+
+/// Turn a skill on or off (the on/off switch). Off = hidden from selection/auto-use but kept and
+/// instantly re-enablable.
+async fn skill_toggle(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Json(r): Json<SkillToggleReq>,
+) -> ApiResult {
+    app.registry.set_enabled(&id, r.enabled).map_err(err)?;
+    Ok(Json(json!({ "ok": true, "id": id, "enabled": r.enabled })))
+}
+
+/// A ready-to-edit Process-skill template (stdlib-only Python): JSON in on stdin, JSON out on stdout —
+/// the shape every Engram skill follows. Downloaded as a starting point for "write your own".
+async fn skill_boilerplate() -> ApiResult {
+    const TEMPLATE: &str = r#"#!/usr/bin/env python3
+"""my_skill — an Engram Process skill.
+
+Reads a JSON request from stdin, writes a JSON result to stdout. Stdlib only
+(there is no `pip install` in the sandbox). If it must reach the network,
+declare the Net capability when you upload it; secrets come from the daemon's
+environment via os.environ (never hard-code them).
+"""
+import json
+import sys
+
+
+def main():
+    try:
+        req = json.loads(sys.stdin.read() or "{}")
+    except Exception as e:
+        print(json.dumps({"error": "invalid JSON request: %s" % e}))
+        return 0
+
+    # --- your skill's work goes here ---
+    result = {"echo": req, "note": "replace this with what your skill does"}
+
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+"#;
+    Ok(Json(json!({ "filename": "my_skill.py", "source": TEMPLATE })))
 }
 
 /// The built-in tools and whether each is currently turned off — drives the Tools curation UI so

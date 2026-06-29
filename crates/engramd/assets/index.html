@@ -31,7 +31,7 @@
     --sans:-apple-system,'Inter',system-ui,sans-serif; --mono:'JetBrains Mono',ui-monospace,Menlo,monospace;
   }
   * { box-sizing:border-box; }
-  html,body { margin:0; height:100%; }
+  html,body { margin:0; height:100%; overflow:hidden; }
   body { background:var(--surface-0); color:var(--text-primary); font:13px/1.5 var(--sans);
     -webkit-font-smoothing:antialiased; }
   button,input,textarea { font:inherit; color:inherit; }
@@ -40,15 +40,18 @@
      on hover, inset via a transparent border so it reads as a hairline, not a heavy bar. */
   ::-webkit-scrollbar { width:7px; height:7px; }
   ::-webkit-scrollbar-track { background:transparent; }
-  ::-webkit-scrollbar-thumb { background:var(--border-strong); border-radius:8px; border:2px solid transparent; background-clip:padding-box; min-height:28px; }
-  ::-webkit-scrollbar-thumb:hover { background:var(--text-muted); }
+  /* Auto-hide like Claude: the thumb is invisible at rest and appears only while scrolling (JS adds
+     .sb-show to the scrolled element, removed ~0.9s after it stops) or when hovered. */
+  ::-webkit-scrollbar-thumb { background:transparent; border-radius:8px; border:2px solid transparent; background-clip:padding-box; min-height:26px; }
+  .sb-show::-webkit-scrollbar-thumb, :hover::-webkit-scrollbar-thumb { background:var(--text-muted); }
+  ::-webkit-scrollbar-thumb:hover { background:var(--text-secondary); }
   ::-webkit-scrollbar-corner { background:transparent; }
-  * { scrollbar-width:thin; scrollbar-color:var(--border-strong) transparent; }
+  * { scrollbar-width:thin; scrollbar-color:transparent transparent; }
 
   /* grid-template-rows:minmax(0,1fr) bounds the row to the app height so a tall view (e.g. the
      Activity ledger) scrolls INSIDE .view instead of growing the grid and spilling over the
      statusbar. The 28px reserve matches the statusbar's exact height so nothing overflows. */
-  .app { display:grid; grid-template-columns:56px 252px 1fr; grid-template-rows:minmax(0,1fr); height:calc(100vh - 28px); }
+  .app { display:grid; grid-template-columns:56px 252px 1fr; grid-template-rows:minmax(0,1fr); height:calc(100vh - 28px); overflow:hidden; }
 
   /* Rail */
   .rail { background:var(--rail); display:flex; flex-direction:column; padding:14px 8px; }
@@ -284,18 +287,16 @@
   /* Generic chat/list */
   /* Full-width column so the feed's scrollbar reaches the window's right edge; the 720px reading
      column is recreated with symmetric auto side-padding on the feed + matching composer margins. */
-  .chat { display:flex; flex-direction:column; height:100%; min-height:0; position:relative; }
+  .chat { display:flex; flex-direction:column; height:100%; min-height:0; }
   /* Only the feed scrolls in chat — stop .view from showing a second scrollbar behind it. */
   .view:has(.chat-shell) { overflow:hidden; }
-  /* Fade content into the background at the very top edge as it scrolls up (like Claude). The
-     overlay stops 7px short of the right so it never tints the scrollbar; clicks pass through. */
-  .chat::before { content:''; position:absolute; top:0; left:0; right:7px; height:34px; z-index:6;
-    pointer-events:none; background:linear-gradient(to bottom, var(--surface-0) 22%, transparent); }
   /* The feed is the ONLY scroll region in chat: flex:1 + min-height:0 lets it shrink below its
      content (a flex child defaults to min-height:auto, which floors it at content height and makes
      the whole .chat overflow -> .view scrolls feed+composer together, the "everything scrolls" bug).
      overscroll-behavior:contain stops a feed scroll from chaining out to the page. */
-  .feed { flex:1 1 0; min-height:0; overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain; display:flex; flex-direction:column; gap:14px; padding:24px max(16px, calc((100% - 720px) / 2)) 14px; }
+  .feed { flex:1 1 0; min-height:0; overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain; display:flex; flex-direction:column; gap:14px; padding:24px max(16px, calc((100% - 720px) / 2)) 14px;
+    -webkit-mask-image:linear-gradient(to bottom, transparent 0, #000 26px, #000 calc(100% - 22px), transparent 100%);
+    mask-image:linear-gradient(to bottom, transparent 0, #000 26px, #000 calc(100% - 22px), transparent 100%); }
   .chat > .composer { margin:0 max(16px, calc((100% - 720px) / 2)) 24px; }
   /* Pin the composer: never let it shrink or scroll away when the feed fills. */
   .chat > .composer { flex:0 0 auto; }
@@ -3875,6 +3876,14 @@ function openExternal(url){
     .then(r=>{ if(!r.ok) throw new Error('open failed'); })
     .catch(()=>{ try{ window.open(abs,'_blank','noopener'); }catch(_){} });
 }
+// Auto-hide scrollbars (Claude-style): reveal the thumb on whatever element is being scrolled, then
+// fade it ~0.9s after scrolling stops. Capture-phase + on document so it covers dynamically-created
+// scrollers (the chat feed, gallery, etc.). The thumb is transparent by default in CSS.
+document.addEventListener('scroll', (e)=>{
+  const el = e.target; if(!el || !el.classList) return;
+  el.classList.add('sb-show'); clearTimeout(el._sbHide);
+  el._sbHide = setTimeout(()=>{ try{ el.classList.remove('sb-show'); }catch(_){} }, 900);
+}, true);
 // Delegated, capture-phase: any click on an http(s) link is opened externally. Internal links
 // (href="#", hash routes) and onclick handlers are untouched.
 let _extLinksWired=false;

@@ -303,12 +303,36 @@ fn retire_stale_daemon() {
             b"POST /v1/shutdown HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
         );
     }
-    for _ in 0..80 {
-        // ~4s ceiling
+    for _ in 0..60 {
+        // ~3s for a clean /v1/shutdown
         if std::net::TcpStream::connect(ADDR).is_err() {
             return; // port freed — our bundled daemon can now take it
         }
         std::thread::sleep(Duration::from_millis(50));
+    }
+    // Fallback: a daemon from BEFORE /v1/shutdown existed (or a hung one) won't exit politely. Kill
+    // whatever owns the port so the update still lands this time. Best-effort, never fatal.
+    kill_port_owner();
+    for _ in 0..40 {
+        if std::net::TcpStream::connect(ADDR).is_err() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Kill the process holding the daemon port (best-effort, Unix). Used only as a fallback when a stale
+/// daemon won't shut down politely. Resolved via `lsof` and a TERM signal.
+fn kill_port_owner() {
+    let port = ADDR.rsplit(':').next().unwrap_or("8088");
+    let Ok(out) = Command::new("lsof")
+        .args(["-ti", &format!("tcp:{port}")])
+        .output()
+    else {
+        return;
+    };
+    for pid in String::from_utf8_lossy(&out.stdout).split_whitespace() {
+        let _ = Command::new("kill").arg(pid).status();
     }
 }
 

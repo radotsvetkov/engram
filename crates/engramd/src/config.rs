@@ -189,7 +189,10 @@ pub struct CostCfg {
 impl Default for CostCfg {
     fn default() -> Self {
         Self {
-            task_token_budget: 250_000,
+            // Generous enough for a real multi-tool research task to finish (the old 250k cut sprawling
+            // trip-planning/research runs off mid-way); still a runaway-cost ceiling (~$1.80 at $3/M).
+            // Users can raise it in Settings › Cost, and a hit budget now ends with a useful summary.
+            task_token_budget: 600_000,
         }
     }
 }
@@ -587,29 +590,51 @@ fn keyring_entry(home: &str) -> Option<keyring::Entry> {
     keyring::Entry::new("engram", &format!("provider_api_key:{home}")).ok()
 }
 
-/// Read the persisted API key (OS keyring first when built in, then the 0600 file). On macOS the
-/// keyring read can show a blocking password prompt, so the daemon calls this OFF the startup path.
+/// Whether to use the OS keyring for the API key. **Opt-in** (default off): the 0600 `secret.key`
+/// file is the default store because it never pops a macOS Keychain authorization prompt. The
+/// adhoc-signed desktop app can't persist a Keychain ACL ("Always Allow"), so the keyring otherwise
+/// re-prompts for the login password on EVERY launch. Power users can set `ENGRAM_USE_KEYCHAIN=1`.
+#[cfg(feature = "keyring")]
+fn use_keychain() -> bool {
+    std::env::var("ENGRAM_USE_KEYCHAIN")
+        .map(|v| !v.is_empty() && v != "0")
+        .unwrap_or(false)
+}
+
+/// Read the persisted API key. The 0600 file is the default store and is read FIRST — it's
+/// prompt-free. Only if the file is empty do we consult the OS keyring (an existing/opt-in install);
+/// when found outside keychain mode we migrate it to the file so future launches never touch the
+/// Keychain again (the one-time prompt for that read happens OFF the startup path).
 pub(crate) fn read_secret_key(home: &str) -> Option<String> {
+    if let Some(k) = std::fs::read_to_string(secret_path(home))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    {
+        return Some(k);
+    }
     #[cfg(feature = "keyring")]
     {
         if let Some(entry) = keyring_entry(home) {
             if let Ok(k) = entry.get_password() {
                 if !k.is_empty() {
+                    // Migrate to the prompt-free file unless the user explicitly wants the keyring.
+                    if !use_keychain() {
+                        let _ = write_owner_only(&secret_path(home), k.as_bytes());
+                    }
                     return Some(k);
                 }
             }
         }
     }
-    std::fs::read_to_string(secret_path(home))
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+    None
 }
 
-/// Persist (non-empty) or clear (empty) the API key in the local secret store. Best-effort.
+/// Persist (non-empty) or clear (empty) the API key. Default: the 0600 file (no Keychain prompt,
+/// ever). Only with `ENGRAM_USE_KEYCHAIN=1` does it go to the OS keyring. Best-effort.
 fn write_secret_key(home: &str, key: &str) {
     #[cfg(feature = "keyring")]
-    {
+    if use_keychain() {
         if let Some(entry) = keyring_entry(home) {
             if key.is_empty() {
                 let _ = entry.delete_credential();
@@ -618,12 +643,10 @@ fn write_secret_key(home: &str, key: &str) {
             }
             match entry.set_password(key) {
                 Ok(()) => {
-                    // Keyring owns the secret now: keep the file path clean.
                     let _ = std::fs::remove_file(secret_path(home));
                     return;
                 }
                 Err(e) => {
-                    // Don't silently lose the key: fall through to the 0600 file fallback.
                     tracing::warn!(error = %e, "OS keyring write failed - falling back to the 0600 secret file");
                 }
             }

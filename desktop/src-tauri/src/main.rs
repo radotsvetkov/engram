@@ -122,6 +122,7 @@ fn main() {
                 .build(),
         )
         .setup(|app| {
+            retire_stale_daemon(); // replace a daemon left over from a previous app version
             supervise_daemon();
             wait_for_daemon();
 
@@ -283,6 +284,31 @@ fn toggle_main(app: &AppHandle) {
         }
     } else {
         show_main(app);
+    }
+}
+
+/// On a COLD launch, retire any daemon left running from a previous app version BEFORE we spawn our
+/// own. Without this, `wait_for_daemon`/`supervise_daemon` happily reuse the stale daemon, so after an
+/// update the user keeps running the OLD binary (old crashes, old dashboard with no new UI) until it
+/// idle-sleeps. We ask it to cleanly EXIT (`/v1/shutdown` — not `/v1/restart`, which would just
+/// re-exec the same old binary) and wait, bounded, for the port to free so our freshly bundled daemon
+/// can bind. Best-effort: if it doesn't free in time we fall through to the normal spawn/reuse path.
+fn retire_stale_daemon() {
+    if std::net::TcpStream::connect(ADDR).is_err() {
+        return; // clean first launch — nothing is running, nothing to retire
+    }
+    if let Ok(mut s) = std::net::TcpStream::connect(ADDR) {
+        use std::io::Write;
+        let _ = s.write_all(
+            b"POST /v1/shutdown HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        );
+    }
+    for _ in 0..80 {
+        // ~4s ceiling
+        if std::net::TcpStream::connect(ADDR).is_err() {
+            return; // port freed — our bundled daemon can now take it
+        }
+        std::thread::sleep(Duration::from_millis(50));
     }
 }
 

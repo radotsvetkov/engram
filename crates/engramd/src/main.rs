@@ -927,6 +927,7 @@ async fn run(mode: RunMode) -> Result<(), Box<dyn std::error::Error>> {
         )
         .route("/v1/persona", get(persona_get).post(persona_set))
         .route("/v1/restart", post(restart_handler))
+        .route("/v1/shutdown", post(shutdown_handler))
         .route("/v1/halt", post(halt_set))
         .route("/v1/events", get(events))
         .layer(axum::middleware::from_fn_with_state(
@@ -3662,6 +3663,21 @@ async fn converse_stream_handler(
                 ));
             }
             Err(e) => {
+                // Persist the failure as a reply too — the user turn was already saved up-front, so
+                // without this a stopped/errored run left the chat showing the question with no answer,
+                // which reads as "the chat vanished" after reopening the app.
+                if let Some(sid) = &r.session {
+                    app.workspace.append_reply_turn(
+                        sid,
+                        &format!("⚠️ This run didn't finish: {e}"),
+                        recalled.clone(),
+                        recalled_refs
+                            .iter()
+                            .map(|rf| serde_json::to_value(rf).unwrap_or_default())
+                            .collect(),
+                        learned.clone(),
+                    );
+                }
                 let _ = tx.send(Event::default().event("error").data(e));
             }
         }
@@ -5172,6 +5188,26 @@ async fn restart_handler(State(app): State<App>) -> ApiResult {
         std::process::exit(0);
     });
     Ok(Json(json!({ "ok": true, "restarting": true })))
+}
+
+/// Cleanly EXIT the process (no re-exec), so a supervisor can spawn a *different* binary in our
+/// place. The desktop shell calls this on a cold launch to retire a stale daemon left running from a
+/// previous app version (re-exec wouldn't help — it would relaunch the old binary), then starts its
+/// freshly bundled daemon. Latched so a flood can't spawn an exit storm; behind the API-token gate.
+async fn shutdown_handler(State(app): State<App>) -> ApiResult {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static STOPPING: AtomicBool = AtomicBool::new(false);
+    if STOPPING.swap(true, Ordering::SeqCst) {
+        return Ok(Json(json!({ "ok": true, "stopping": true, "already": true })));
+    }
+    app.ledger.append("core.shutdown", "user", json!({})).ok();
+    tokio::spawn(async move {
+        // Let the HTTP response flush before the process exits and frees the port.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        tracing::info!("shutdown requested - exiting so a newer daemon can take the port");
+        std::process::exit(0);
+    });
+    Ok(Json(json!({ "ok": true, "stopping": true })))
 }
 
 // --- workspace: projects + sessions (the desktop sidebar) ---

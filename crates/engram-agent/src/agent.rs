@@ -212,8 +212,34 @@ impl Agent {
                         self.actor.as_str(),
                         json!({ "spent_tokens": spent, "budget": budget }),
                     );
+                    // Graceful stop: don't throw away the work. Spend ONE last tool-free call so the
+                    // model turns everything it gathered into the best answer it can — a capped run
+                    // still delivers a useful table/summary instead of a bare "(stopped...)".
+                    messages.push(Message::user(
+                        "You have reached this run's work budget, so you can no longer call tools. \
+                         Using ONLY what you have already gathered above, write the best and most \
+                         complete final answer NOW. Present the concrete findings you DID obtain \
+                         (tables with the real links/prices/names you found). Briefly note anything \
+                         you could not finish. Do not apologize at length."
+                            .to_string(),
+                    ));
+                    self.maybe_compact(&mut messages, &ctx).await;
+                    let req = CompletionRequest::new(&self.model, messages.clone()).max_tokens(4096);
+                    let answer = match self.complete_with_retry(req, ctx.taint).await {
+                        Ok(c) if !c.text.trim().is_empty() => format!(
+                            "{}\n\n---\n_This run reached its work budget ({budget} tokens) and \
+                             stopped here. To let big research tasks run longer, raise \
+                             **Settings › Cost › Per-task token budget**._",
+                            c.text.trim()
+                        ),
+                        _ => format!(
+                            "(stopped: token budget of {budget} reached after {} steps — raise it in \
+                             Settings › Cost)",
+                            steps.len()
+                        ),
+                    };
                     return Ok(AgentRun {
-                        answer: format!("(stopped: token budget of {budget} reached)"),
+                        answer,
                         steps,
                         stopped: "budget",
                     });

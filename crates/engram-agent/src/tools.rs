@@ -2294,6 +2294,89 @@ mod web {
         Ok(out)
     }
 
+    /// Query a SearXNG instance (keyless, free, self-hostable metasearch) at `base` — the same keyless
+    /// option Hermes uses. Point it at your own instance or a public one that allows the JSON API.
+    async fn searxng_search(base: &str, query: &str, timeout: u64) -> Result<Vec<String>, String> {
+        let url = format!(
+            "{}/search?q={}&format=json&safesearch=1",
+            base.trim_end_matches('/'),
+            urlencoding(query)
+        );
+        let target = super::resolve_guarded(&url).await?;
+        let client = reqwest::Client::builder()
+            .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            .timeout(Duration::from_secs(timeout))
+            .redirect(reqwest::redirect::Policy::none())
+            .resolve_to_addrs(&target.host, &target.addrs)
+            .build()
+            .map_err(|e| e.to_string())?;
+        let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
+        if !resp.status().is_success() {
+            return Err(format!("searxng HTTP {}", resp.status().as_u16()));
+        }
+        let body = resp.text().await.map_err(|e| e.to_string())?;
+        let v: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        if let Some(results) = v["results"].as_array() {
+            for r in results {
+                let title = r["title"].as_str().unwrap_or("").trim().to_string();
+                let href = r["url"].as_str().unwrap_or("").trim().to_string();
+                let desc = r["content"]
+                    .as_str()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty());
+                if !title.is_empty() && !href.is_empty() {
+                    out.push(with_snippet(&title, &href, desc));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Query the Tavily API (POST JSON) — a reliable search with a FREE, no-credit-card tier
+    /// (1000 queries/month). Used when `TAVILY_API_KEY` is set. Returns lines, or Err to fall back.
+    async fn tavily_search(query: &str, key: &str, timeout: u64) -> Result<Vec<String>, String> {
+        let url = "https://api.tavily.com/search";
+        let target = super::resolve_guarded(url).await?;
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(timeout))
+            .redirect(reqwest::redirect::Policy::none())
+            .resolve_to_addrs(&target.host, &target.addrs)
+            .build()
+            .map_err(|e| e.to_string())?;
+        let payload = serde_json::json!({
+            "api_key": key, "query": query, "max_results": 8, "search_depth": "basic"
+        })
+        .to_string();
+        let resp = client
+            .post(url)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(payload)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        if !resp.status().is_success() {
+            return Err(format!("tavily HTTP {}", resp.status().as_u16()));
+        }
+        let text = resp.text().await.map_err(|e| e.to_string())?;
+        let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        if let Some(results) = v["results"].as_array() {
+            for r in results {
+                let title = r["title"].as_str().unwrap_or("").trim().to_string();
+                let href = r["url"].as_str().unwrap_or("").trim().to_string();
+                let desc = r["content"]
+                    .as_str()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty());
+                if !title.is_empty() && !href.is_empty() {
+                    out.push(with_snippet(&title, &href, desc));
+                }
+            }
+        }
+        Ok(out)
+    }
+
     pub struct WebFetchTool;
 
     #[async_trait]
@@ -2358,19 +2441,36 @@ mod web {
                 .append("agent.web_search", "agent", json!({ "query": query }));
             let q = urlencoding(query);
             let to = ctx.policy.timeout_secs;
-            // Reliable path FIRST: the Brave Search API (clean JSON, no bot-detection) when a key is
-            // configured. Scraping search-engine HTML gets rate-limited/blocked after a burst of
-            // queries — exactly the intermittent "✕ searched the web" failures. Free key at
-            // https://api.search.brave.com; set BRAVE_API_KEY in the daemon environment.
-            if let Ok(key) =
-                std::env::var("BRAVE_API_KEY").or_else(|_| std::env::var("BRAVE_SEARCH_API_KEY"))
-            {
-                let key = key.trim().to_string();
-                if !key.is_empty() {
-                    if let Ok(results) = brave_api_search(query, &key, to).await {
-                        if !results.is_empty() {
-                            return Ok(results.into_iter().take(8).collect::<Vec<_>>().join("\n"));
-                        }
+            // Reliable providers FIRST when configured (these are the FREE options Hermes uses too —
+            // scraping search HTML gets rate-limited after a burst of queries, the intermittent
+            // "✕ searched the web"). In order: Tavily (free, no credit card), Brave API, then a
+            // SearXNG instance (keyless). Each is tried only if its key/URL is set; on miss we fall
+            // through to keyless HTML scraping below.
+            let envv = |k: &str| {
+                std::env::var(k)
+                    .ok()
+                    .map(|v| v.trim().to_string())
+                    .filter(|v| !v.is_empty())
+            };
+            let join8 = |r: Vec<String>| r.into_iter().take(8).collect::<Vec<_>>().join("\n");
+            if let Some(key) = envv("TAVILY_API_KEY") {
+                if let Ok(r) = tavily_search(query, &key, to).await {
+                    if !r.is_empty() {
+                        return Ok(join8(r));
+                    }
+                }
+            }
+            if let Some(key) = envv("BRAVE_API_KEY").or_else(|| envv("BRAVE_SEARCH_API_KEY")) {
+                if let Ok(r) = brave_api_search(query, &key, to).await {
+                    if !r.is_empty() {
+                        return Ok(join8(r));
+                    }
+                }
+            }
+            if let Some(base) = envv("SEARXNG_URL") {
+                if let Ok(r) = searxng_search(&base, query, to).await {
+                    if !r.is_empty() {
+                        return Ok(join8(r));
                     }
                 }
             }

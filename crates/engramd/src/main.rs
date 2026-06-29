@@ -715,6 +715,7 @@ async fn run(mode: RunMode) -> Result<(), Box<dyn std::error::Error>> {
     // showed the desktop a white screen). The persisted key is read in the background below, after
     // the server is up, and hot-swapped into the provider.
     let cfg = config::Config::load_no_keychain(&home);
+    apply_web_env(&cfg); // make the configured search-provider keys visible to the web_search tool
     let needs_keychain_key = cfg.provider.api_key.is_empty();
     tracing::info!(provider = %cfg.provider.kind, model = %cfg.model(), embed = %cfg.embed.kind, "settings loaded");
     let gateway = Arc::new(Gateway::new(cfg.build_provider(), ledger.clone()));
@@ -4778,6 +4779,7 @@ async fn config_set(State(app): State<App>, Json(patch): Json<Value>) -> ApiResu
     let before = app.cfg().clone();
     let mut cfg = before.clone();
     apply_config_patch(&mut cfg, &patch);
+    apply_web_env(&cfg); // make a just-saved search key/URL live for web_search without a restart
 
     cfg.save(&app.home)
         .map_err(|e| err(format!("could not save settings: {e}")))?;
@@ -4933,6 +4935,22 @@ async fn config_mcp_test(Json(body): Json<Value>) -> ApiResult {
     }
 }
 
+/// Inject the configured web-search provider keys/URL into the process environment so the
+/// `web_search` tool (which reads env vars) picks them up — bridging the GUI (no way to set env
+/// vars) to the env-based tool. Only sets non-empty values, so a power user's env-set key survives a
+/// blank config field. Called at boot and after every settings save.
+fn apply_web_env(cfg: &config::Config) {
+    if !cfg.web.tavily_api_key.is_empty() {
+        std::env::set_var("TAVILY_API_KEY", &cfg.web.tavily_api_key);
+    }
+    if !cfg.web.brave_api_key.is_empty() {
+        std::env::set_var("BRAVE_API_KEY", &cfg.web.brave_api_key);
+    }
+    if !cfg.web.searxng_url.is_empty() {
+        std::env::set_var("SEARXNG_URL", &cfg.web.searxng_url);
+    }
+}
+
 /// Merge a settings patch (the shape the UI posts) into a config. Secret fields are only
 /// overwritten when a non-empty value is supplied; a `clear_*` flag wipes them.
 fn apply_config_patch(cfg: &mut config::Config, p: &Value) {
@@ -5027,6 +5045,29 @@ fn apply_config_patch(cfg: &mut config::Config, p: &Value) {
     if let Some(c) = p.get("cost") {
         if let Some(n) = c.get("task_token_budget").and_then(|v| v.as_u64()) {
             cfg.cost.task_token_budget = n.max(1_000);
+        }
+    }
+    if let Some(w) = p.get("web") {
+        // Secret keys follow the "blank keeps it" rule (they're masked in the UI), with an explicit
+        // clear flag. The SearXNG URL is not a secret, so it's set/replaced on any value.
+        if let Some(x) = s(w, "tavily_api_key") {
+            if !x.trim().is_empty() {
+                cfg.web.tavily_api_key = x.trim().to_string();
+            }
+        }
+        if flag(w, "clear_tavily_api_key") {
+            cfg.web.tavily_api_key.clear();
+        }
+        if let Some(x) = s(w, "brave_api_key") {
+            if !x.trim().is_empty() {
+                cfg.web.brave_api_key = x.trim().to_string();
+            }
+        }
+        if flag(w, "clear_brave_api_key") {
+            cfg.web.brave_api_key.clear();
+        }
+        if let Some(x) = s(w, "searxng_url") {
+            cfg.web.searxng_url = x.trim().to_string();
         }
     }
     if let Some(m) = p.get("media") {

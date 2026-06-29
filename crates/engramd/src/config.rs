@@ -26,6 +26,24 @@ pub struct Config {
     /// Interactive-browser settings (Chrome path + CDP port). Applied at boot.
     #[serde(default)]
     pub browser: BrowserCfg,
+    /// Web-search provider keys/URL (Tavily / Brave / SearXNG). Injected into the tool environment.
+    #[serde(default)]
+    pub web: WebCfg,
+}
+
+/// Web-search provider configuration. `web_search` tries these (when set) before falling back to
+/// keyless HTML scraping. Tavily has a FREE, no-credit-card tier; SearXNG is keyless (point it at an
+/// instance you trust). Surfaced in Settings › Keys & security. Values are injected into the daemon
+/// environment at boot and on save, where the search tool reads them.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WebCfg {
+    /// Tavily API key (free tier, no credit card — tavily.com). Saved to disk; masked in the UI view.
+    pub tavily_api_key: String,
+    /// Brave Search API key (api.search.brave.com). Saved to disk; masked in the UI view.
+    pub brave_api_key: String,
+    /// SearXNG instance base URL, e.g. https://searx.example.org (keyless). A URL, so not masked.
+    pub searxng_url: String,
 }
 
 /// Model overrides for the non-text modalities. Each empty string keeps the built-in default
@@ -451,6 +469,12 @@ impl Config {
             "browser": {
                 "chrome_path": self.browser.chrome_path,
                 "cdp_port": self.browser.cdp_port,
+            },
+            "web": {
+                // Mask the secret keys (presence only); the SearXNG URL is not a secret.
+                "tavily_key_set": !self.web.tavily_api_key.is_empty(),
+                "brave_key_set": !self.web.brave_api_key.is_empty(),
+                "searxng_url": self.web.searxng_url,
             },
             // Mask per-server env VALUES (they hold secrets) - the UI shows which keys are set,
             // never their values, exactly like the provider api_key.

@@ -61,40 +61,53 @@ pub(crate) async fn guard_url(url: &str) -> Result<(), String> {
 }
 
 fn is_blocked_ip(ip: &std::net::IpAddr) -> bool {
+    is_blocked_ip_ex(ip, false)
+}
+
+/// SSRF address classifier. With `allow_local` it permits loopback/private/link-local/CGNAT ranges —
+/// used ONLY for a URL the USER explicitly configured (e.g. a self-hosted SearXNG at localhost or a
+/// LAN box), which is trusted, unlike a URL that came from the model or a fetched web page. The
+/// always-blocked set (unspecified/broadcast/multicast/0.x) stays blocked either way.
+fn is_blocked_ip_ex(ip: &std::net::IpAddr, allow_local: bool) -> bool {
     use std::net::IpAddr;
     // CRITICAL: unmap IPv4-mapped/-compatible IPv6 BEFORE classifying, so a literal like
     // ::ffff:169.254.169.254 (which parses as V6) is routed through the V4 checks instead of
     // sneaking past them straight to cloud metadata or the loopback control plane.
     if let IpAddr::V6(v6) = ip {
         if let Some(v4) = v6.to_ipv4_mapped().or_else(|| v6.to_ipv4()) {
-            return is_blocked_ip(&IpAddr::V4(v4));
+            return is_blocked_ip_ex(&IpAddr::V4(v4), allow_local);
         }
     }
     match ip {
         IpAddr::V4(v4) => {
-            v4.is_loopback()
-                || v4.is_private()
-                || v4.is_link_local()
-                || v4.is_unspecified()
-                || v4.is_broadcast()
-                || v4.is_multicast()
-                || v4.octets()[0] == 0
-                // CGNAT 100.64.0.0/10, benchmark 198.18.0.0/15, IETF protocol 192.0.0.0/24.
-                || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xc0) == 0x40)
-                || (v4.octets()[0] == 198 && (v4.octets()[1] & 0xfe) == 18)
-                || (v4.octets()[0] == 192 && v4.octets()[1] == 0 && v4.octets()[2] == 0)
+            // Never reachable, even for a trusted local URL.
+            if v4.is_unspecified() || v4.is_broadcast() || v4.is_multicast() || v4.octets()[0] == 0 {
+                return true;
+            }
+            !allow_local
+                && (v4.is_loopback()
+                    || v4.is_private()
+                    || v4.is_link_local()
+                    // CGNAT 100.64.0.0/10, benchmark 198.18.0.0/15, IETF protocol 192.0.0.0/24.
+                    || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xc0) == 0x40)
+                    || (v4.octets()[0] == 198 && (v4.octets()[1] & 0xfe) == 18)
+                    || (v4.octets()[0] == 192 && v4.octets()[1] == 0 && v4.octets()[2] == 0))
         }
         IpAddr::V6(v6) if v6.is_multicast() => true,
         IpAddr::V6(v6) => {
             let s = v6.segments();
-            v6.is_loopback() || v6.is_unspecified()
-                || (s[0] & 0xffc0) == 0xfe80 // link-local fe80::/10
-                || (s[0] & 0xfe00) == 0xfc00 // unique-local fc00::/7
-                // Block the v4-embedding transition prefixes outright (they could wrap a private/
-                // metadata v4 that to_ipv4_mapped/to_ipv4 don't unwrap): 6to4 2002::/16 and the
-                // NAT64 well-known prefix 64:ff9b::/96.
-                || s[0] == 0x2002
-                || (s[0] == 0x0064 && s[1] == 0xff9b)
+            if v6.is_unspecified() {
+                return true;
+            }
+            !allow_local
+                && (v6.is_loopback()
+                    || (s[0] & 0xffc0) == 0xfe80 // link-local fe80::/10
+                    || (s[0] & 0xfe00) == 0xfc00 // unique-local fc00::/7
+                    // Block the v4-embedding transition prefixes outright (they could wrap a private/
+                    // metadata v4 that to_ipv4_mapped/to_ipv4 don't unwrap): 6to4 2002::/16 and the
+                    // NAT64 well-known prefix 64:ff9b::/96.
+                    || s[0] == 0x2002
+                    || (s[0] == 0x0064 && s[1] == 0xff9b))
         }
     }
 }
@@ -110,6 +123,18 @@ pub(crate) struct GuardedTarget {
 /// to. Like [`guard_url`] but it hands back the resolved IPs so the caller connects to exactly
 /// those, closing the gap where reqwest/Chrome would re-resolve the hostname after the check.
 pub(crate) async fn resolve_guarded(url: &str) -> Result<GuardedTarget, String> {
+    resolve_guarded_ex(url, false).await
+}
+
+/// Like [`resolve_guarded`] but permits loopback/private/LAN addresses. ONLY for a URL the user
+/// explicitly configured (e.g. a self-hosted SearXNG at `http://localhost:8080`) — that's a trusted
+/// endpoint, not a URL supplied by the model or a fetched page, so the SSRF block would only get in
+/// the way. The hostname is still pinned to the resolved IP (no DNS-rebinding) and stays http(s).
+pub(crate) async fn resolve_trusted(url: &str) -> Result<GuardedTarget, String> {
+    resolve_guarded_ex(url, true).await
+}
+
+async fn resolve_guarded_ex(url: &str, allow_local: bool) -> Result<GuardedTarget, String> {
     let u = url.trim();
     let scheme = if u.starts_with("https://") {
         "https"
@@ -149,10 +174,19 @@ pub(crate) async fn resolve_guarded(url: &str) -> Result<GuardedTarget, String> 
     }
     let mut addrs = Vec::new();
     for ip in ips {
-        if is_blocked_ip(&ip) {
+        if is_blocked_ip_ex(&ip, allow_local) {
+            // Public guard: reject if ANY resolved address is internal — a domain resolving to both a
+            // public and a private IP is a DNS-rebinding vector. Trusted (user-set) URL: just skip a
+            // blocked address (e.g. localhost's ::1 alongside 127.0.0.1) and keep the usable ones.
+            if allow_local {
+                continue;
+            }
             return Err(format!("refusing to reach non-public address {ip}"));
         }
         addrs.push(std::net::SocketAddr::new(ip, port));
+    }
+    if addrs.is_empty() {
+        return Err(format!("no usable address for '{host}'"));
     }
     Ok(GuardedTarget { host, addrs })
 }
@@ -451,7 +485,7 @@ pub fn shell_command(
 
 #[cfg(test)]
 mod ssrf_guard_tests {
-    use super::{absolutize, guard_url, resolve_guarded};
+    use super::{absolutize, guard_url, resolve_guarded, resolve_trusted};
 
     #[tokio::test]
     async fn blocks_internal_and_non_http_targets() {
@@ -516,6 +550,23 @@ mod ssrf_guard_tests {
         // Explicit port is honored (so the pin connects to the right port).
         let p = resolve_guarded("http://1.1.1.1:8080/").await.unwrap();
         assert_eq!(p.addrs[0].port(), 8080);
+    }
+
+    // resolve_trusted is used only for the user-configured SearXNG URL: it must ALLOW a self-hosted
+    // instance on localhost / a LAN box (which resolve_guarded rejects), while still refusing the
+    // always-invalid targets and keeping http(s)-only.
+    #[tokio::test]
+    async fn resolve_trusted_allows_local_but_not_invalid() {
+        // The whole point: a self-hosted SearXNG on localhost / LAN is reachable.
+        let lh = resolve_trusted("http://127.0.0.1:8080/search")
+            .await
+            .expect("localhost must pass for a trusted, user-set URL");
+        assert_eq!(lh.addrs[0].port(), 8080);
+        assert!(resolve_trusted("http://192.168.1.50:8080/").await.is_ok());
+        // Still rejected even when trusted: never-valid targets and non-http schemes.
+        assert!(resolve_trusted("http://0.0.0.0/").await.is_err());
+        assert!(resolve_trusted("http://255.255.255.255/").await.is_err());
+        assert!(resolve_trusted("ftp://localhost/").await.is_err());
     }
 
     #[test]
@@ -2302,7 +2353,9 @@ mod web {
             base.trim_end_matches('/'),
             urlencoding(query)
         );
-        let target = super::resolve_guarded(&url).await?;
+        // The user configured this SearXNG URL, so it's trusted — allow localhost / LAN instances
+        // (the common self-hosted setup) that the public-only SSRF guard would otherwise refuse.
+        let target = super::resolve_trusted(&url).await?;
         let client = reqwest::Client::builder()
             .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
             .timeout(Duration::from_secs(timeout))

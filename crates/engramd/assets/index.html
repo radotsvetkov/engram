@@ -38,9 +38,9 @@
   ::placeholder { color:var(--text-muted); }
   /* Thin, subtle, edge scrollbars (like Claude): transparent track, slim faint thumb that darkens
      on hover, inset via a transparent border so it reads as a hairline, not a heavy bar. */
-  ::-webkit-scrollbar { width:10px; height:10px; }
+  ::-webkit-scrollbar { width:7px; height:7px; }
   ::-webkit-scrollbar-track { background:transparent; }
-  ::-webkit-scrollbar-thumb { background:var(--border-strong); border-radius:8px; border:3px solid transparent; background-clip:padding-box; min-height:30px; }
+  ::-webkit-scrollbar-thumb { background:var(--border-strong); border-radius:8px; border:2px solid transparent; background-clip:padding-box; min-height:28px; }
   ::-webkit-scrollbar-thumb:hover { background:var(--text-muted); }
   ::-webkit-scrollbar-corner { background:transparent; }
   * { scrollbar-width:thin; scrollbar-color:var(--border-strong) transparent; }
@@ -284,7 +284,13 @@
   /* Generic chat/list */
   /* Full-width column so the feed's scrollbar reaches the window's right edge; the 720px reading
      column is recreated with symmetric auto side-padding on the feed + matching composer margins. */
-  .chat { display:flex; flex-direction:column; height:100%; min-height:0; }
+  .chat { display:flex; flex-direction:column; height:100%; min-height:0; position:relative; }
+  /* Only the feed scrolls in chat — stop .view from showing a second scrollbar behind it. */
+  .view:has(.chat-shell) { overflow:hidden; }
+  /* Fade content into the background at the very top edge as it scrolls up (like Claude). The
+     overlay stops 7px short of the right so it never tints the scrollbar; clicks pass through. */
+  .chat::before { content:''; position:absolute; top:0; left:0; right:7px; height:34px; z-index:6;
+    pointer-events:none; background:linear-gradient(to bottom, var(--surface-0) 22%, transparent); }
   /* The feed is the ONLY scroll region in chat: flex:1 + min-height:0 lets it shrink below its
      content (a flex child defaults to min-height:auto, which floors it at content height and makes
      the whole .chat overflow -> .view scrolls feed+composer together, the "everything scrolls" bug).

@@ -215,8 +215,10 @@
   .lr-none { font-size:12px; color:var(--text-muted); padding:6px 0; }
   .lr-answer:not(:empty) { margin-top:6px; padding-top:12px; border-top:1px solid var(--border); font-size:14px; line-height:1.6; color:var(--text-primary); }
   /* activity - the signed ledger */
-  .activity { max-width:840px; margin:0 auto; padding:22px 24px 60px; height:100%; overflow-y:auto; }
-  .artifacts-view { max-width:980px; margin:0 auto; padding:22px 24px 60px; height:100%; overflow-y:auto; }
+  /* No inner scroll: the full-width .view scrolls, so the scrollbar sits at the window's right edge
+     (not inset at the right of this centered column). Content stays centered via max-width + auto. */
+  .activity { max-width:840px; margin:0 auto; padding:22px 24px 60px; }
+  .artifacts-view { max-width:980px; margin:0 auto; padding:22px 24px 60px; }
   .af-bar { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin:4px 0 18px; }
   .af-search { flex:1; min-width:200px; height:36px; padding:0 13px; border-radius:9px; border:1px solid var(--border-strong);
     background:var(--surface-2); color:var(--text); font-size:13px; outline:none; }
@@ -280,12 +282,15 @@
   .act-hash:hover { color:var(--accent); }
 
   /* Generic chat/list */
-  .chat { max-width:720px; margin:0 auto; padding:24px 16px; display:flex; flex-direction:column; gap:14px; height:100%; min-height:0; }
+  /* Full-width column so the feed's scrollbar reaches the window's right edge; the 720px reading
+     column is recreated with symmetric auto side-padding on the feed + matching composer margins. */
+  .chat { display:flex; flex-direction:column; height:100%; min-height:0; }
   /* The feed is the ONLY scroll region in chat: flex:1 + min-height:0 lets it shrink below its
      content (a flex child defaults to min-height:auto, which floors it at content height and makes
      the whole .chat overflow -> .view scrolls feed+composer together, the "everything scrolls" bug).
      overscroll-behavior:contain stops a feed scroll from chaining out to the page. */
-  .feed { flex:1 1 0; min-height:0; overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain; display:flex; flex-direction:column; gap:14px; }
+  .feed { flex:1 1 0; min-height:0; overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain; display:flex; flex-direction:column; gap:14px; padding:24px max(16px, calc((100% - 720px) / 2)) 14px; }
+  .chat > .composer { margin:0 max(16px, calc((100% - 720px) / 2)) 24px; }
   /* Pin the composer: never let it shrink or scroll away when the feed fills. */
   .chat > .composer { flex:0 0 auto; }
   .msg.user { align-self:flex-end; background:var(--surface-2); border:1px solid var(--border); border-radius:13px 13px 4px 13px; padding:10px 14px; max-width:78%; line-height:1.5; white-space:pre-wrap; }

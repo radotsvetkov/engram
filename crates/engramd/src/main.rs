@@ -5007,6 +5007,9 @@ fn apply_web_env(cfg: &config::Config) {
     if !cfg.web.searxng_url.is_empty() {
         std::env::set_var("SEARXNG_URL", &cfg.web.searxng_url);
     }
+    if !cfg.web.travelpayouts_token.is_empty() {
+        std::env::set_var("TRAVELPAYOUTS_TOKEN", &cfg.web.travelpayouts_token);
+    }
 }
 
 /// Merge a settings patch (the shape the UI posts) into a config. Secret fields are only
@@ -5126,6 +5129,14 @@ fn apply_config_patch(cfg: &mut config::Config, p: &Value) {
         }
         if let Some(x) = s(w, "searxng_url") {
             cfg.web.searxng_url = x.trim().to_string();
+        }
+        if let Some(x) = s(w, "travelpayouts_token") {
+            if !x.trim().is_empty() {
+                cfg.web.travelpayouts_token = x.trim().to_string();
+            }
+        }
+        if flag(w, "clear_travelpayouts_token") {
+            cfg.web.travelpayouts_token.clear();
         }
     }
     if let Some(m) = p.get("media") {

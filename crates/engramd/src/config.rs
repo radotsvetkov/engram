@@ -31,10 +31,9 @@ pub struct Config {
     pub web: WebCfg,
 }
 
-/// Web-search provider configuration. `web_search` tries these (when set) before falling back to
-/// keyless HTML scraping. Tavily has a FREE, no-credit-card tier; SearXNG is keyless (point it at an
-/// instance you trust). Surfaced in Settings › Keys & security. Values are injected into the daemon
-/// environment at boot and on save, where the search tool reads them.
+/// Web/data API configuration. The keys here are injected into the daemon environment at boot and on
+/// save, where the search tool and the flight_search skill read them. All are free, no-credit-card
+/// options. Surfaced in Settings › Keys & security; secret keys are masked in the redacted UI view.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WebCfg {
@@ -44,6 +43,9 @@ pub struct WebCfg {
     pub brave_api_key: String,
     /// SearXNG instance base URL, e.g. https://searx.example.org (keyless). A URL, so not masked.
     pub searxng_url: String,
+    /// Travelpayouts data-API token (free affiliate token, no credit card — travelpayouts.com). Lets
+    /// the `flight_search` skill return real cheapest fares + booking links instead of scraping. Masked.
+    pub travelpayouts_token: String,
 }
 
 /// Model overrides for the non-text modalities. Each empty string keeps the built-in default
@@ -475,6 +477,7 @@ impl Config {
                 "tavily_key_set": !self.web.tavily_api_key.is_empty(),
                 "brave_key_set": !self.web.brave_api_key.is_empty(),
                 "searxng_url": self.web.searxng_url,
+                "travelpayouts_set": !self.web.travelpayouts_token.is_empty(),
             },
             // Mask per-server env VALUES (they hold secrets) - the UI shows which keys are set,
             // never their values, exactly like the provider api_key.

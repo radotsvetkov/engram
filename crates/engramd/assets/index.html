@@ -3231,6 +3231,11 @@ function ccKeys(c){
       <div class="field"><label>SearXNG instance URL <span style="opacity:.6">— keyless</span></label>
         <input type="text" id="wsearx" value="${escAttr(w.searxng_url||'')}" placeholder="https://searx.example.org" autocomplete="off">
         <div class="hint">A self-hosted or public SearXNG that allows the JSON API.</div></div>
+      <h3 style="margin-top:18px">Flight prices</h3>
+      <div class="desc">Lets the <code>flight_search</code> skill return real cheapest fares + booking links instead of slowly scraping flight sites. Free affiliate token, no credit card.</div>
+      <div class="field"><label>Travelpayouts token ${w.travelpayouts_set?'<span class="badge set">saved</span>':''}</label>
+        <input type="password" id="wtp" placeholder="${w.travelpayouts_set?'•••••••• - blank keeps it':'data-API token'}" autocomplete="off">
+        <div class="hint">${w.travelpayouts_set?'<a href="#" onclick="clearSecret(\'web\',\'clear_travelpayouts_token\');return false">remove</a> · ':''}free, no card: <a href="https://www.travelpayouts.com">travelpayouts.com</a> → Tools › Data API</div></div>
       <div class="sactions"><span class="grow"></span><button class="sbtn primary" onclick="saveSettings()">Save</button></div>
     </div>`;
 }
@@ -3805,9 +3810,10 @@ function collectSettings(){
     if(has('sautodistill')) patch.security.auto_distill_skills=document.getElementById('sautodistill').checked;
     if(has('toollist')) patch.security.disabled_tools=[...document.querySelectorAll('#toollist input[data-tool]')].filter(i=>!i.checked).map(i=>i.getAttribute('data-tool')); }
   if(has('cbudget')) patch.cost={ task_token_budget: Math.max(1000, parseInt(gv('cbudget'),10)||250000) };
-  if(has('wtav')||has('wbrave')||has('wsearx')){ patch.web={};
+  if(has('wtav')||has('wbrave')||has('wsearx')||has('wtp')){ patch.web={};
     const tv=gv('wtav'); if(tv) patch.web.tavily_api_key=tv;
     const bv=gv('wbrave'); if(bv) patch.web.brave_api_key=bv;
+    const tp=gv('wtp'); if(tp) patch.web.travelpayouts_token=tp;
     if(has('wsearx')) patch.web.searxng_url=gv('wsearx'); }
   if(has('mvision')) patch.media={ vision_model:gv('mvision'), image_model:gv('mimage'), tts_model:gv('mtts'), stt_model:gv('mstt') };
   if(has('bchrome')||has('bport')) patch.browser={ chrome_path:gv('bchrome'), cdp_port: Math.max(0, Math.min(65535, parseInt(gv('bport'),10)||0)) };

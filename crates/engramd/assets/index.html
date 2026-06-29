@@ -315,6 +315,9 @@
   .cthinking .ct-dot { width:7px; height:7px; flex:none; border-radius:50%; background:#45c8a8; box-shadow:0 0 8px #45c8a8; animation:ct-blink 1.05s ease-in-out infinite; }
   .cthinking .ct-label { font-weight:500; }
   .cthinking .ct-secs { color:var(--text-muted); font:11px/1 var(--mono); }
+  .cthinking .ct-hint { color:var(--text-muted); font-size:11px; opacity:.7; font-style:italic; }
+  /* the persistent run footer sits just under the in-flight reply, set apart with a hairline */
+  .cthinking.ct-foot { margin-top:8px; padding-top:9px; border-top:1px solid var(--border); width:100%; }
   @keyframes engram-spin { 0%{transform:rotate(0deg)} 50%{transform:rotate(360deg)} 100%{transform:rotate(0deg)} }
   @keyframes ct-blink { 0%,100%{opacity:1} 50%{opacity:.22} }
   /* Sidebar: a blinking green dot on a chat that's still being worked on; nothing once it's done. */
@@ -1711,6 +1714,16 @@ function thinkingIndicator(t0){
   t0 = t0 || Date.now();
   return `<div class="cthinking"><span class="ct-mark">${CW_MARK}</span><span class="ct-dot"></span><span class="ct-label">thinking</span><span class="ct-secs" data-t0="${t0}">0s</span></div>`;
 }
+// A persistent "still working" footer kept under the in-flight reply for the ENTIRE run — through the
+// tool phase, not just the opening wait. Unlike thinkingIndicator it does NOT vanish when tool pills
+// or narration appear, so a long agentic run never looks stalled. The spinning mark + blinking dot +
+// live seconds + a phase-aware label + a calm reassurance keep the user company until the run ends.
+function thinkingFooter(m){
+  const n=(m.steps&&m.steps.length)||0;
+  const label = m.text ? 'Writing the answer' : (n ? ('Working — '+n+' step'+(n===1?'':'s')+' done') : 'Thinking');
+  const hint = n>=3 ? 'big task — this can take a minute, hang tight' : 'staying on it…';
+  return `<div class="cthinking ct-foot" id="thinkFoot"><span class="ct-mark">${CW_MARK}</span><span class="ct-dot"></span><span class="ct-label">${label}</span><span class="ct-secs" data-t0="${m.t0}">0s</span><span class="ct-hint">${hint}</span></div>`;
+}
 function tickThinking(){
   let any=false;
   document.querySelectorAll('.ct-secs[data-t0]').forEach(el=>{ any=true; const t0=+el.getAttribute('data-t0')||Date.now(); el.textContent=(((Date.now()-t0)/1000)|0)+'s'; });
@@ -2262,8 +2275,11 @@ function paintFeed(toBottom=true){
     // The model's live "what I'm doing" commentary (narration) — shown above the tool chips so a
     // long run reads as activity, not a silent wait.
     const notes=(m.notes&&m.notes.length)?`<div class="chat-notes">${m.notes.map(n=>`<div class="cnote">${mdInline(esc(n))}</div>`).join('')}</div>`:'';
-    const body = m.text ? (mdToHtml(m.text) + (m.streaming?'<span class="caret"></span>':'')) : (m.streaming?(notes||steps?'':thinkingIndicator(m.t0)):'...');
-    return `<div>${notes}${steps}<div class="msg engram"${m.streaming?' id="streamMsg"':''}>${body}</div>${ribbon}${learned}</div>`;
+    const body = m.text ? (mdToHtml(m.text) + (m.streaming?'<span class="caret"></span>':'')) : (m.streaming?'':'...');
+    // The spinning Engram mark + live seconds stay for the whole run (sibling of the reply node so
+    // streamTick's token repaints never wipe it) — fixes the logo vanishing once tool pills appear.
+    const foot = m.streaming ? thinkingFooter(m) : '';
+    return `<div>${notes}${steps}<div class="msg engram"${m.streaming?' id="streamMsg"':''}>${body}</div>${foot}${ribbon}${learned}</div>`;
   }).join('') || chatWelcome();
   artsAfterPaint();   // detect substantial code/doc blocks, inject "Open in canvas" chips, sync the pane
   if(toBottom) f.scrollTop=f.scrollHeight;
@@ -2298,6 +2314,9 @@ function streamTick(msg){
     // doesn't yank them back down while they've scrolled up to read.
     const stick = !f || (f.scrollHeight - f.scrollTop - f.clientHeight) < 160;
     el.innerHTML = mdToHtml(msg.text||'') + '<span class="caret"></span>';
+    // The run footer is a sibling of #streamMsg so it survives token repaints; just keep its label
+    // current as the answer starts streaming (its seconds tick independently via tickThinking).
+    if(msg.text){ const lb=document.querySelector('#thinkFoot .ct-label'); if(lb) lb.textContent='Writing the answer'; }
     if(stick && f) f.scrollTop=f.scrollHeight;
     updateJumpBtn();
   });

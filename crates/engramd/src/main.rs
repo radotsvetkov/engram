@@ -3867,7 +3867,7 @@ async fn skills(State(app): State<App>) -> ApiResult {
             .collect();
         // Surface the active manifest so the UI can label a skill (a process/Python skill the agent
         // authored vs. a WASM transform) and show what it does + which capabilities it holds.
-        let (runtime, interpreter, description, when_to_use, capabilities) =
+        let (runtime, interpreter, description, when_to_use, capabilities, category) =
             match app.registry.load_active(&id) {
                 Ok((signed, _)) => {
                     let m = signed.manifest;
@@ -3884,14 +3884,15 @@ async fn skills(State(app): State<App>) -> ApiResult {
                             .iter()
                             .map(|c| c.as_str())
                             .collect::<Vec<_>>(),
+                        m.category,
                     )
                 }
-                Err(_) => ("wasm", None, String::new(), None, vec![]),
+                Err(_) => ("wasm", None, String::new(), None, vec![], String::new()),
             };
         out.push(json!({ "id": id, "active": active, "versions": versions, "runs": runs,
             "runtime": runtime, "interpreter": interpreter, "description": description,
-            "when_to_use": when_to_use, "capabilities": capabilities, "learn": events,
-            "enabled": enabled }));
+            "when_to_use": when_to_use, "capabilities": capabilities, "category": category,
+            "learn": events, "enabled": enabled }));
     }
     Ok(Json(json!({ "skills": out })))
 }

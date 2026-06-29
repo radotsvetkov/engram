@@ -47,6 +47,9 @@ calamine = { version = "0.26", optional = true }
 zip = { version = "2", optional = true, default-features = false, features = ["deflate"] }
 pdf-extract = { version = "0.7", optional = true }
 
+[dev-dependencies]
+tempfile = "3"
+
 [features]
 default = []
 # Enable a real network LLM provider (otherwise the offline mock is used).

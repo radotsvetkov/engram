@@ -15,7 +15,7 @@ use engram_gateway::{
     ToolCall,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use tokio::task::JoinSet;
 
 use crate::tool::{ToolCtx, ToolRegistry};
@@ -308,14 +308,18 @@ impl Agent {
             if batch_sensitive {
                 ctx.sensitive = true;
             }
-            let egress_blocked = ctx.taint.is_untrusted() && ctx.sensitive;
-            let outcomes = self
-                .run_tools(&completion.tool_calls, &ctx, egress_blocked)
-                .await;
+            // The lethal trifecta: untrusted content + private data in one run. When armed, each
+            // egress action is decided PER-DESTINATION inside run_tools by egress_decision(), which
+            // consults — in order — a one-time human approval (`policy.approved`), then the signed
+            // AUTONOMY policy (allowlist + budget, for unattended runs), then the attended/unattended
+            // default. Every outcome is ledgered with a reason code, so authority is auditable.
+            let trifecta = ctx.taint.is_untrusted() && ctx.sensitive;
+            let outcomes = self.run_tools(&completion.tool_calls, &ctx, trifecta).await;
 
             // Record results in call order: deterministic ledger chain and message order.
             for (call, (observation, ok, _executed)) in completion.tool_calls.iter().zip(outcomes) {
-                let truncated = truncate(&observation, ctx.policy.max_obs_len);
+                let truncated =
+                    spill_if_large(&observation, ctx.policy.max_obs_len, &ctx.workdir, &call.id).await;
                 let (ledger_seq, ledger_hash) = ctx
                     .ledger
                     .append(
@@ -423,7 +427,7 @@ impl Agent {
         &self,
         calls: &[ToolCall],
         ctx: &ToolCtx,
-        egress_blocked: bool,
+        trifecta: bool,
     ) -> Vec<(String, bool, bool)> {
         let mut set = JoinSet::new();
         for (i, call) in calls.iter().enumerate() {
@@ -442,14 +446,17 @@ impl Agent {
                         true,
                         false,
                     ),
-                    // The no-egress half of the taint rule - refuse an egress tool once the run
-                    // holds BOTH private data and untrusted content (the exfiltration risk).
-                    // Covers native and MCP tools alike.
-                    Some(t) if egress_blocked && t.is_egress() => (
-                        "error: egress refused - this run holds private data and has read untrusted content (exfiltration guard)".to_string(),
-                        false,
-                        false,
-                    ),
+                    // The no-egress half of the taint rule. Once the run holds BOTH private data and
+                    // untrusted content, each egress action is decided per-destination: a one-time
+                    // human approval or a signed autonomy policy may permit it, otherwise it is
+                    // refused (attended) or staged (unattended). Covers native and MCP tools alike.
+                    Some(t) if trifecta && t.is_egress() => match egress_decision(&ctx, &name, &args) {
+                        Ok(()) => match t.run(&args, &ctx).await {
+                            Ok(o) => (o, true, true),
+                            Err(e) => (format!("error: {e}"), false, true),
+                        },
+                        Err(msg) => (msg, false, false),
+                    },
                     Some(t) => match t.run(&args, &ctx).await {
                         Ok(o) => (o, true, true),
                         Err(e) => (format!("error: {e}"), false, true),
@@ -556,6 +563,141 @@ impl Agent {
     }
 }
 
+/// Decide whether an egress tool call may proceed when the trifecta is armed, and audit the outcome.
+/// Order: (1) a one-time human approval (the interactive "Approve once" escape) clears egress for the
+/// run; (2) a signed AUTONOMY policy is consulted per-destination — allowlisted + in-budget proceeds,
+/// everything else stages; (3) with no policy, an attended run refuses (the UI then shows the approval
+/// card) while an unattended run stages the action for async review. Returns `Ok` to run the tool, or
+/// `Err(observation)` to refuse/stage it. The model can never reach the policy/approval state — it is
+/// fixed at run construction (the bypass is frozen).
+fn egress_decision(ctx: &ToolCtx, tool_name: &str, args: &Value) -> Result<(), String> {
+    use engram_core::EgressDecision;
+    // The policy scope (the agent id) rides every audit entry, so a staged action can later be
+    // resolved against the right agent's allowlist by the daemon's approve-queue.
+    let scope = ctx
+        .policy
+        .autonomy
+        .as_ref()
+        .map(|p| p.scope.clone())
+        .unwrap_or_default();
+    let ledger = |kind: &str, reason: &str, dest: &str| {
+        let _ = ctx.ledger.append(
+            kind,
+            "agent",
+            json!({ "tool": tool_name, "reason": reason, "dest": dest, "scope": scope }),
+        );
+    };
+    // 1) One-time human approval (interactive "Approve once") clears egress for this whole run.
+    if ctx.policy.approved {
+        ledger("agent.egress_approved", "user_approved", tool_name);
+        return Ok(());
+    }
+    let dest = egress_destination(args);
+    let class = action_class(tool_name);
+    let dest_label = dest.as_deref().unwrap_or("(opaque)");
+    // 2) Signed standing autonomy policy: deterministic, no human in the loop.
+    if let Some(p) = &ctx.policy.autonomy {
+        // An opaque/unresolvable destination (e.g. an MCP tool with no host arg) CANNOT be matched
+        // against the allowlist or the floor — so it must never auto-allow (a `*` allowlist would
+        // otherwise "match" the tool name and the floor would miss it). Fail closed: refuse when a
+        // floor is set, otherwise stage for human review.
+        let Some(d) = dest.as_deref() else {
+            return if p.hardline_floor.is_empty() {
+                ledger("agent.egress_staged", "unresolved_dest", dest_label);
+                Err(stage_observation("unresolved_dest"))
+            } else {
+                ledger("agent.egress_refused", "unresolved_dest_floor", dest_label);
+                Err(refuse_observation("unresolved_dest"))
+            };
+        };
+        return match p.resolve(d, class, engram_core::now_ms()) {
+            EgressDecision::Refuse(r) => {
+                ledger("agent.egress_refused", r, d);
+                Err(refuse_observation(r))
+            }
+            EgressDecision::Stage(r) => {
+                ledger("agent.egress_staged", r, d);
+                Err(stage_observation(r))
+            }
+            EgressDecision::Allow => {
+                // Atomically claim a budget slot; the prior count is the slot index. Losing the race
+                // (claimed >= max) means the shared budget is spent — stage, don't overspend.
+                let claimed = ctx
+                    .policy
+                    .egress_consumed
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if claimed >= p.max_actions() {
+                    ledger("agent.egress_staged", "budget_exhausted", d);
+                    Err(stage_observation("budget_exhausted"))
+                } else {
+                    ledger("agent.egress_autonomous", "allowlisted", d);
+                    Ok(())
+                }
+            }
+        };
+    }
+    // 3) No standing policy.
+    if ctx.policy.attended {
+        // Keep the EXACT phrase the desktop UI detects to render the "Approve once" card.
+        Err("error: egress refused - this run holds private data and has read untrusted content (exfiltration guard)".into())
+    } else {
+        ledger("agent.egress_staged", "no_policy", dest_label);
+        Err(stage_observation("no_policy"))
+    }
+}
+
+fn refuse_observation(reason: &str) -> String {
+    format!("error: egress refused ({reason}) - this destination is on the policy's hardline floor and may not be contacted")
+}
+fn stage_observation(reason: &str) -> String {
+    format!("error: egress staged for review ({reason}) - parked for the user to approve out of band; continue with other work and do not retry this action")
+}
+
+/// Best-effort destination for an egress call: the host of a URL, or a recipient/channel string.
+/// Returns `None` when the call carries no recognizable destination (e.g. an opaque MCP tool) — the
+/// gate must NOT fall back to the tool NAME as a host (a `*` allowlist would "match" it while the
+/// floor would miss it), so an unresolved destination is staged/refused, never auto-allowed.
+fn egress_destination(args: &Value) -> Option<String> {
+    for key in ["url", "to", "recipient", "email", "webhook_url", "channel", "host"] {
+        if let Some(s) = args.get(key).and_then(|v| v.as_str()) {
+            let s = s.trim();
+            if !s.is_empty() {
+                return Some(host_of(s));
+            }
+        }
+    }
+    None
+}
+
+/// Extract a bare host from a URL; otherwise return the value as-is (e.g. an email/recipient). The
+/// trailing FQDN dot is stripped so `paste.evil.com.` and `paste.evil.com` compare identically.
+fn host_of(s: &str) -> String {
+    let host = match s.split_once("://") {
+        Some((_, rest)) => {
+            let host = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+            let host = host.rsplit('@').next().unwrap_or(host); // strip userinfo
+            host.split(':').next().unwrap_or(host) // strip port
+        }
+        None => s,
+    };
+    host.trim_end_matches('.').to_string()
+}
+
+/// Map a tool name to its action class for policy matching.
+fn action_class(tool_name: &str) -> engram_core::ActionClass {
+    use engram_core::ActionClass::*;
+    let n = tool_name.to_ascii_lowercase();
+    if n.contains("pay") || n.contains("transfer") || n.contains("checkout") {
+        Pay
+    } else if n.contains("post") || n.contains("tweet") || n.contains("publish") {
+        Post
+    } else if n.contains("send") || n.contains("email") || n.contains("message") || n.contains("mail") {
+        Send
+    } else {
+        Other
+    }
+}
+
 fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
         return s.to_string();
@@ -565,6 +707,50 @@ fn truncate(s: &str, max: usize) -> String {
         end -= 1;
     }
     format!("{}… [truncated {} bytes]", &s[..end], s.len() - end)
+}
+
+/// Truncate an observation to the policy limit, but when it OVERFLOWS, spill the full text to a
+/// re-readable file in the workdir and point the model at it. A single huge tool output (a long log,
+/// a big file, a verbose API response) otherwise blows the context window or is silently truncated —
+/// a mid-run death mode. Spilling makes it recoverable: the model can `read_file` the rest on demand.
+/// Best-effort — if the write fails, falls back to plain truncation (never worse than before).
+async fn spill_if_large(
+    observation: &str,
+    max: usize,
+    workdir: &std::path::Path,
+    call_id: &str,
+) -> String {
+    if observation.len() <= max {
+        return observation.to_string();
+    }
+    let mut end = max;
+    while !observation.is_char_boundary(end) {
+        end -= 1;
+    }
+    let head = &observation[..end];
+    let safe: String = call_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+        .take(48)
+        .collect();
+    let safe = if safe.is_empty() { "obs".to_string() } else { safe };
+    let rel = format!(".engram_overflow/obs-{safe}.txt");
+    let abs = workdir.join(&rel);
+    let spilled = match abs.parent() {
+        Some(parent) => {
+            tokio::fs::create_dir_all(parent).await.is_ok()
+                && tokio::fs::write(&abs, observation).await.is_ok()
+        }
+        None => false,
+    };
+    if spilled {
+        format!(
+            "{head}…\n[output truncated: full {} bytes saved to {rel} — use read_file with that path to see the rest]",
+            observation.len()
+        )
+    } else {
+        truncate(observation, max)
+    }
 }
 
 /// Rough token footprint of one message - its text plus any tool-call names/arguments.
@@ -615,6 +801,26 @@ mod tests {
     use engram_gateway::{Completion, ScriptedProvider, ToolCall};
     use engram_memory::{Memory, TrigramHashEmbedder};
     use engram_skills::{Registry, SkillSigner};
+
+    #[tokio::test]
+    async fn large_observation_spills_full_text_to_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let big = "x".repeat(5000);
+        let out = spill_if_large(&big, 100, dir.path(), "toolu_abc123").await;
+        assert!(out.len() < big.len(), "head is truncated");
+        assert!(out.contains("read_file"), "points the model at the spill: {out}");
+        // The pointed-at file exists in the workdir and holds the COMPLETE observation.
+        let rel = dir.path().join(".engram_overflow/obs-toolu_abc123.txt");
+        assert_eq!(std::fs::read_to_string(rel).unwrap(), big);
+    }
+
+    #[tokio::test]
+    async fn small_observation_is_returned_verbatim() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = spill_if_large("hello", 100, dir.path(), "id").await;
+        assert_eq!(out, "hello");
+        assert!(!dir.path().join(".engram_overflow").exists(), "no spill for small output");
+    }
 
     fn call(id: &str, name: &str, args: serde_json::Value) -> Completion {
         Completion {
@@ -956,7 +1162,7 @@ mod tests {
 
     // Build a ctx + run an agent over a scripted reader-then-exfil sequence. Returns
     // (run, did_exfil_execute). `reader` declares which provenance dimensions the read raises.
-    async fn trifecta_run(reader: TaintTool, same_batch: bool) -> (AgentRun, bool) {
+    async fn trifecta_run(reader: TaintTool, same_batch: bool, approved: bool) -> (AgentRun, bool) {
         use std::sync::atomic::AtomicBool;
         let dir = tempfile::tempdir().unwrap();
         let ledger = Arc::new(Ledger::open(dir.path()).unwrap());
@@ -997,7 +1203,10 @@ mod tests {
             ledger,
             taint: Taint::Trusted,
             sensitive: false,
-            policy: Policy::default(),
+            policy: Policy {
+                approved,
+                ..Policy::default()
+            },
             workdir: dir.path().to_path_buf(),
             model: "test".into(),
             depth: 0,
@@ -1021,6 +1230,7 @@ mod tests {
                 taints: true,
                 sensitive: true,
             },
+            false,
             false,
         )
         .await;
@@ -1049,6 +1259,7 @@ mod tests {
                 sensitive: false,
             },
             false,
+            false,
         )
         .await;
         assert!(
@@ -1074,11 +1285,205 @@ mod tests {
                 sensitive: true,
             },
             true,
+            false,
         )
         .await;
         assert!(
             !executed,
             "egress in the same batch as a sensitive+untrusted read must be refused"
+        );
+    }
+
+    #[tokio::test]
+    async fn egress_allowed_after_explicit_user_approval_deescalates_taint() {
+        // The escape valve: the SAME trifecta (untrusted + sensitive) that refuses egress above is
+        // permitted once the daemon resumes the run with explicit user approval — and the override is
+        // recorded as `agent.egress_approved`, so de-escalation is auditable, never a silent hole.
+        let (run, executed) = trifecta_run(
+            TaintTool {
+                nm: "read_inbox",
+                taints: true,
+                sensitive: true,
+            },
+            false,
+            true, // user approved
+        )
+        .await;
+        assert!(executed, "approved egress must execute despite the trifecta");
+        assert!(run.steps[1].observation.contains("sent"), "got: {}", run.steps[1].observation);
+    }
+
+    // An egress tool that records every URL it actually ran with, so a test can see which calls the
+    // autonomy gate let through vs staged. Named "send_message" so action_class() classes it as Send.
+    struct RecordEgress(Arc<std::sync::Mutex<Vec<String>>>);
+    #[async_trait::async_trait]
+    impl crate::tool::Tool for RecordEgress {
+        fn name(&self) -> &str {
+            "send_message"
+        }
+        fn description(&self) -> &str {
+            "sends a message"
+        }
+        fn schema(&self) -> serde_json::Value {
+            json!({ "type": "object" })
+        }
+        fn is_egress(&self) -> bool {
+            true
+        }
+        async fn run(&self, args: &serde_json::Value, _: &ToolCtx) -> Result<String, String> {
+            self.0.lock().unwrap().push(args["url"].as_str().unwrap_or("").to_string());
+            Ok("sent".into())
+        }
+    }
+
+    // Run an UNATTENDED batch that reads untrusted+sensitive content then fires three sends (two to an
+    // allowlisted host, one not) under a signed autonomy policy. Returns the URLs that actually went.
+    async fn run_autonomy(policy: engram_core::AutonomyPolicy) -> Vec<String> {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Arc::new(Ledger::open(dir.path()).unwrap());
+        let memory = Arc::new(
+            Memory::open(
+                dir.path().join("b.db"),
+                Arc::new(TrigramHashEmbedder::default()),
+                ledger.clone(),
+            )
+            .unwrap(),
+        );
+        let signer = Arc::new(SkillSigner::load_or_create(dir.path().join("k")).unwrap());
+        let skills = Arc::new(Registry::open(dir.path(), signer, ledger.clone()).unwrap());
+        let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let script = vec![
+            multi_call(vec![
+                ("1", "read_inbox", json!({})),
+                ("2", "send_message", json!({"url":"https://mail.example.com/x"})),
+                ("3", "send_message", json!({"url":"https://other.org/y"})),
+                ("4", "send_message", json!({"url":"https://mail.example.com/z"})),
+            ]),
+            final_answer("done"),
+        ];
+        let gateway = Arc::new(Gateway::new(Box::new(ScriptedProvider::new(script)), ledger.clone()));
+        let tools = ToolRegistry::new()
+            .with(Arc::new(TaintTool {
+                nm: "read_inbox",
+                taints: true,
+                sensitive: true,
+            }))
+            .with(Arc::new(RecordEgress(sent.clone())));
+        let ctx = ToolCtx {
+            memory,
+            skills,
+            gateway: gateway.clone(),
+            ledger,
+            taint: Taint::Trusted,
+            sensitive: false,
+            // Unattended run carrying a signed standing policy — no human in the loop.
+            policy: Policy {
+                autonomy: Some(policy),
+                attended: false,
+                ..Policy::default()
+            },
+            workdir: dir.path().to_path_buf(),
+            model: "test".into(),
+            depth: 0,
+            browser: Arc::new(crate::tool::NoBrowser),
+        };
+        Agent::new(gateway, tools, "test").run("go", ctx).await.unwrap();
+        let v = sent.lock().unwrap().clone();
+        v
+    }
+
+    #[tokio::test]
+    async fn autonomy_policy_allows_allowlisted_and_stages_the_rest_unattended() {
+        use engram_core::{ActionClass, AutonomyPolicy, EgressBudget, EgressRule};
+        let sent = run_autonomy(AutonomyPolicy {
+            scope: "agent:test".into(),
+            allowed_egress: vec![EgressRule::new("*.example.com")],
+            allowed_actions: vec![ActionClass::Send],
+            budget: EgressBudget { max_actions: 10, max_spend_cents: 0, expires_at_ms: 0 },
+            hardline_floor: vec![],
+        })
+        .await;
+        // Both allowlisted sends went through autonomously; the non-allowlisted one staged (never ran).
+        assert!(sent.iter().any(|u| u.contains("mail.example.com/x")), "sent: {sent:?}");
+        assert!(sent.iter().any(|u| u.contains("mail.example.com/z")), "sent: {sent:?}");
+        assert!(!sent.iter().any(|u| u.contains("other.org")), "non-allowlisted must stage: {sent:?}");
+        assert_eq!(sent.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn autonomy_budget_caps_autonomous_egress() {
+        use engram_core::{ActionClass, AutonomyPolicy, EgressBudget, EgressRule};
+        let sent = run_autonomy(AutonomyPolicy {
+            scope: "agent:test".into(),
+            allowed_egress: vec![EgressRule::new("*.example.com")],
+            allowed_actions: vec![ActionClass::Send],
+            budget: EgressBudget { max_actions: 1, max_spend_cents: 0, expires_at_ms: 0 },
+            hardline_floor: vec![],
+        })
+        .await;
+        // A signed budget of 1 caps it: exactly one allowlisted send proceeds, the rest stage —
+        // even though the two sends ran concurrently (the atomic budget claim is race-correct).
+        assert_eq!(sent.len(), 1, "budget must cap autonomous egress: {sent:?}");
+        assert!(sent[0].contains("mail.example.com"));
+    }
+
+    #[tokio::test]
+    async fn autonomy_opaque_egress_never_auto_allows_even_under_star() {
+        use engram_core::{ActionClass, AutonomyPolicy, EgressBudget, EgressRule};
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Arc::new(Ledger::open(dir.path()).unwrap());
+        let memory = Arc::new(
+            Memory::open(
+                dir.path().join("b.db"),
+                Arc::new(TrigramHashEmbedder::default()),
+                ledger.clone(),
+            )
+            .unwrap(),
+        );
+        let signer = Arc::new(SkillSigner::load_or_create(dir.path().join("k")).unwrap());
+        let skills = Arc::new(Registry::open(dir.path(), signer, ledger.clone()).unwrap());
+        let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
+        // An egress call with NO recognizable destination arg (opaque, like an MCP tool).
+        let script = vec![
+            multi_call(vec![
+                ("1", "read_inbox", json!({})),
+                ("2", "send_message", json!({"body":"no destination here"})),
+            ]),
+            final_answer("done"),
+        ];
+        let gateway = Arc::new(Gateway::new(Box::new(ScriptedProvider::new(script)), ledger.clone()));
+        let tools = ToolRegistry::new()
+            .with(Arc::new(TaintTool { nm: "read_inbox", taints: true, sensitive: true }))
+            .with(Arc::new(RecordEgress(sent.clone())));
+        let ctx = ToolCtx {
+            memory,
+            skills,
+            gateway: gateway.clone(),
+            ledger,
+            taint: Taint::Trusted,
+            sensitive: false,
+            policy: Policy {
+                autonomy: Some(AutonomyPolicy {
+                    scope: "agent:test".into(),
+                    allowed_egress: vec![EgressRule::new("*")], // broadest allow
+                    allowed_actions: vec![ActionClass::Send],
+                    budget: EgressBudget { max_actions: 10, max_spend_cents: 0, expires_at_ms: 0 },
+                    hardline_floor: vec![],
+                }),
+                attended: false,
+                ..Policy::default()
+            },
+            workdir: dir.path().to_path_buf(),
+            model: "test".into(),
+            depth: 0,
+            browser: Arc::new(crate::tool::NoBrowser),
+        };
+        Agent::new(gateway, tools, "test").run("go", ctx).await.unwrap();
+        // `*` must NOT "match" an unresolvable destination — the opaque egress stages, never sends.
+        assert!(
+            sent.lock().unwrap().is_empty(),
+            "opaque egress must stage, not auto-allow under *: {:?}",
+            sent.lock().unwrap()
         );
     }
 
@@ -1399,8 +1804,9 @@ mod tests {
 
         assert_eq!(run.steps.len(), 1);
         assert_eq!(run.steps[0].tool, "update_plan");
+        // The plan tool now echoes the full rendered checklist (so it survives compaction).
         assert!(
-            run.steps[0].observation.contains("plan updated"),
+            run.steps[0].observation.contains("plan (") && run.steps[0].observation.contains('['),
             "got: {}",
             run.steps[0].observation
         );

@@ -179,6 +179,15 @@ impl SkillSigner {
             sig: hex::encode(sig.to_bytes()),
         })
     }
+
+    /// Sign an autonomy policy with the SAME key the registry publishes, so an agent's standing
+    /// egress grant rides the existing signed-skill trust root (verified with the same public key).
+    pub fn sign_policy(
+        &self,
+        policy: &engram_core::AutonomyPolicy,
+    ) -> engram_core::SignedAutonomyPolicy {
+        engram_core::sign_policy(policy, &self.signing)
+    }
 }
 
 /// Verify a signed skill against its bytes and a trusted public key. Checks both that

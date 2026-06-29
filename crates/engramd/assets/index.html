@@ -1539,10 +1539,15 @@ window.addEventListener('hashchange',()=>{ const v=location.hash.slice(1); if(AL
 let _lastLedgerN=null;
 async function poll(){
   try {
-    const [v,m,h] = await Promise.all([J('/v1/ledger/verify'),J('/v1/meter'),J('/health')]);
+    const [v,m,h,pe] = await Promise.all([J('/v1/ledger/verify'),J('/v1/meter'),J('/health'),J('/v1/egress/pending').catch(()=>({pending:[]}))]);
     const lc=document.getElementById('ledgerChip'), spine=document.getElementById('sbSpine');
     if(v.ok){
-      lc.className='chip ok'; lc.innerHTML='<span class="seal"></span>ledger verified · <b>'+v.entries+'</b>'; document.getElementById('banner').innerHTML='';
+      lc.className='chip ok'; lc.innerHTML='<span class="seal"></span>ledger verified · <b>'+v.entries+'</b>';
+      // Unattended agents that staged an out-of-policy egress surface here for async approval.
+      const np = (pe&&pe.pending)?pe.pending.length:0;
+      document.getElementById('banner').innerHTML = np>0
+        ? `<div class="banner" role="alert" style="cursor:pointer;background:rgba(224,162,60,.12);border-color:rgba(224,162,60,.4);color:var(--warning)" onclick="openApprovals()">${np} egress action${np===1?'':'s'} awaiting your approval — click to review</div>`
+        : '';
       // a single teal breath when a new entry chains - confidence shown, never claimed
       if(_lastLedgerN!==null && v.entries!==_lastLedgerN && spine){ spine.classList.remove('flash'); void spine.offsetWidth; spine.classList.add('flash'); }
       _lastLedgerN=v.entries;
@@ -1720,15 +1725,16 @@ async function submitComposer(run){
   await loadTasks(); if(state.route==='Tasks') renderBoard();
   if(run){ runTask(t.id); }
 }
-async function runTask(id){
+async function runTask(id, approved){
   await loadTasks(); if(state.route==='Tasks') renderBoard();
-  J('/v1/tasks/'+id+'/run',{method:'POST'}).then(async()=>{ await loadTasks(); if(state.route==='Tasks') renderBoard(); if(panelId===id) openTask(id, true); });
+  const q = approved ? '?approved=1' : '';   // one-time egress approval, this run only
+  J('/v1/tasks/'+id+'/run'+q,{method:'POST'}).then(async()=>{ await loadTasks(); if(state.route==='Tasks') renderBoard(); if(panelId===id) openTask(id, true); });
   setTimeout(async()=>{ await loadTasks(); if(state.route==='Tasks') renderBoard(); }, 600);
 }
 // Watch the agent work: stream each tool step into the detail panel live (the glass box filling
 // in), then settle into the finished receipt. Falls back gracefully if streaming isn't available.
 let liveRunId=null;
-async function runTaskLive(id){
+async function runTaskLive(id, approved){
   openTask(id);                          // make sure the panel is open and focused on this task
   liveRunId=id;
   const body=document.getElementById('pBody'); if(!body){ liveRunId=null; return; }
@@ -1744,7 +1750,7 @@ async function runTaskLive(id){
   let lrEnded=false;
   const finish=async()=>{ if(lrEnded) return; lrEnded=true; clearInterval(tick); lrMeter(); liveRunId=null; await loadTasks(); if(state.route==='Tasks') renderBoard(); };
   try{
-    const r=await fetch('/v1/tasks/'+encodeURIComponent(id)+'/run/stream',{method:'POST',headers:{...AUTH}});
+    const r=await fetch('/v1/tasks/'+encodeURIComponent(id)+'/run/stream'+(approved?'?approved=1':''),{method:'POST',headers:{...AUTH}});
     if(!r.ok||!r.body) throw new Error('HTTP '+r.status);
     const reader=r.body.getReader(), dec=new TextDecoder(); let buf='';
     for(;;){
@@ -1886,6 +1892,29 @@ async function openTask(id, fromPoll){
         <div class="row" style="margin-top:8px"><button onclick="approveShell('${id}')">Allow &amp; re-run</button>
           <button class="ghost" onclick="closePanel()">Skip</button></div></div>`;
     }
+    // Egress de-escalation: the run hit the trifecta guard (read untrusted content + holds private
+    // data, so an outbound action was refused) OR the agent explicitly asked. One-time approval
+    // re-runs with egress permitted for THIS run only — never persisted.
+    const egressBlocked=(t.run.steps||[]).find(s=>!s.ok && /egress refused/i.test(s.observation||''));
+    const wantsApproval=[...(t.run.steps||[])].reverse().find(s=>s.tool==='request_approval');
+    if(egressBlocked||wantsApproval){
+      const a=(wantsApproval&&wantsApproval.args)||{};
+      const what=a.action?esc(String(a.action)):'Send data out / take an external action';
+      const why=a.reason?esc(String(a.reason)):'This run read untrusted content while holding private data, so the trifecta guard blocked the outbound action. Approve to allow it once.';
+      html+=`<div class="approval"><b>Needs your approval</b>
+        <div style="margin:4px 0">${what}</div><div class="sub">${why}</div>
+        <div class="row" style="margin-top:8px"><button onclick="approveEgress('${id}')">Approve once &amp; continue</button>
+          <button class="ghost" onclick="closePanel()">Deny</button></div></div>`;
+    }
+    // Clarification: the agent asked a focused question and stopped rather than guess. Surface it.
+    const askStep=[...(t.run.steps||[])].reverse().find(s=>s.tool==='clarify');
+    if(askStep&&askStep.args&&askStep.args.question){
+      const opts=Array.isArray(askStep.args.options)?askStep.args.options.map(o=>`<span class="chip">${esc(String(o))}</span>`).join(' '):'';
+      html+=`<div class="approval" style="background:rgba(133,183,235,.1);border-color:rgba(133,183,235,.35)"><b style="color:var(--web)">Needs clarification</b>
+        <div style="margin:4px 0">${esc(String(askStep.args.question))}</div>
+        ${opts?`<div class="row" style="flex-wrap:wrap;gap:6px;margin-top:6px">${opts}</div>`:''}
+        <div class="sub" style="margin-top:6px">Reply in chat to continue.</div></div>`;
+    }
     html+=`<div class="answer">${mdToHtml(String(t.run.answer||''))}</div>`;
     // Artifacts this run produced - files the agent created, copied to a persistent per-task dir so
     // they survive worktree cleanup. Images preview inline; everything else downloads.
@@ -1956,6 +1985,9 @@ async function approveShell(id){
   await J('/v1/policy',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({allow_shell:true})});
   runTask(id);
 }
+// One-time egress approval: re-run the task with the trifecta egress guard de-escalated for THIS run
+// only (no persistent policy change). Streams live so the user watches the approved action proceed.
+async function approveEgress(id){ runTaskLive(id, true); }
 
 // ---- workspace: projects -> sessions -> favorites (daemon-backed, survives reload) ----
 let WS={ projects:[{id:'personal',name:'Personal'}], activeProject:'personal', sessions:[], activeSession:null, byId:{} }, projMenuOpen=false;
@@ -3244,6 +3276,34 @@ function agentEdit(id){
   const models = Object.keys(MODEL_META).map(m=>`<option value="${escAttr(m)}">`).join('');
   const provOpts = ['<option value="">Global provider (just override the model)</option>']
     .concat(Object.keys(PROVIDERS).filter(k=>k!=='mock').map(k=>`<option value="${k}"${a.provider===k?' selected':''}>${esc(PROVIDERS[k].label)}</option>`)).join('');
+  // Autonomy policy section — the "approve once, ahead of time" surface. Only meaningful for a saved
+  // agent (the signed policy is keyed by agent id), so a new agent gets a hint instead.
+  const ap = a.autonomy || null;
+  const apAllow = ap ? ap.allowed_egress.map(r=>r.pattern).join('\n') : '';
+  const apFloor = ap && ap.hardline_floor ? ap.hardline_floor.map(r=>r.pattern).join('\n') : '';
+  const apActs = ap && ap.allowed_actions && ap.allowed_actions.length ? ap.allowed_actions : ['send'];
+  const apMax = ap ? ap.budget.max_actions : 20;
+  const apExp = ap && ap.budget.expires_at_ms ? Math.max(1, Math.round((ap.budget.expires_at_ms - Date.now())/86400000)) : 7;
+  const actChk = c => apActs.includes(c) ? ' checked' : '';
+  const autoSection = !a.id
+    ? `<div class="muted" style="margin-top:10px;border-top:1px solid var(--border);padding-top:10px;font-size:12px">Autonomy (let this agent act unattended within signed limits) becomes available once you save it.</div>`
+    : `<details class="auto-policy" style="margin-top:12px;border-top:1px solid var(--border);padding-top:10px"${ap?' open':''}>
+        <summary style="cursor:pointer;font-size:12px;color:var(--text-secondary)">Autonomy — act unattended within signed limits${ap?' · <span style="color:var(--accent)">active</span>':''}</summary>
+        <div class="sub" style="margin:6px 0">Destinations the scheduler may send to <b>without asking you</b>. One host or recipient per line — exact, <code>*.domain.com</code>, or an email.</div>
+        <textarea class="ask-input" id="apAllow" rows="3" placeholder="*.mycompany.com&#10;boss@co.com" style="resize:vertical;font:inherit">${esc(apAllow)}</textarea>
+        <div class="row" style="gap:14px;margin:8px 2px;font-size:13px">
+          <label><input type="checkbox" id="apAct_send"${actChk('send')}> Send</label>
+          <label><input type="checkbox" id="apAct_post"${actChk('post')}> Post</label>
+          <label><input type="checkbox" id="apAct_pay"${actChk('pay')}> Pay</label>
+        </div>
+        <div class="row" style="gap:8px">
+          <input class="ask-input" id="apMax" type="number" min="1" placeholder="Max actions" value="${apMax}" style="flex:1" title="Total egress actions this signed grant authorizes (the budget).">
+          <input class="ask-input" id="apExp" type="number" min="0" placeholder="Expires (days, 0 = never)" value="${apExp}" style="flex:1" title="The grant expires after this many days; 0 = no expiry.">
+        </div>
+        <div class="sub" style="margin:8px 0 6px">Never allowed (hardline floor) — no policy can lift these. One per line.</div>
+        <textarea class="ask-input" id="apFloor" rows="2" placeholder="*.payments.example" style="resize:vertical;font:inherit">${esc(apFloor)}</textarea>
+        <div class="row" style="margin-top:8px"><button class="ask-ok" onclick="agentSavePolicy('${escAttr(a.id)}',this)">Sign &amp; save policy</button>${ap?`<button class="ask-ghost" onclick="agentRevokePolicy('${escAttr(a.id)}',this)">Revoke</button>`:''}</div>
+      </details>`;
   const ov=document.createElement('div'); ov.className='overlay ask';
   ov.innerHTML=`<div class="ask-card" style="width:min(560px,93vw)">
     <div class="ask-title">${a.id?'Edit agent':'New agent'}</div>
@@ -3257,6 +3317,7 @@ function agentEdit(id){
     <select class="ask-input" id="agEffort" title="How hard this agent's model thinks. Applied when the agent runs through its own provider; ignored by models that don't support it.">
       ${[['','Reasoning effort - Auto (model default)'],['low','Reasoning effort - Low'],['medium','Reasoning effort - Medium'],['high','Reasoning effort - High']].map(([v,l])=>`<option value="${v}"${(a.effort||'')===v?' selected':''}>${esc(l)}</option>`).join('')}
     </select>
+    ${autoSection}
     <div class="ask-actions"><button class="ask-ghost" onclick="this.closest('.overlay').remove()">Cancel</button><button class="ask-ok" onclick="agentSave('${escAttr(a.id)}',this)">Save</button></div>
   </div>`;
   document.body.appendChild(ov);
@@ -3278,6 +3339,93 @@ async function agentSave(id, btn){
     else await J('/v1/agents',{method:'POST',headers:MIND_JSON,body});
     ov.remove(); notify('Agent saved · signed','ok'); if(ccActive==='agents') renderCC();
   }catch(e){ notify('Couldn\'t save - '+e.message); }
+}
+// Author this agent's signed standing autonomy policy — the allowlist + budget it may egress within
+// while running unattended. Signed server-side with the brain key; thereafter scheduled runs need no
+// live approval for allowlisted destinations.
+async function agentSavePolicy(id, btn){
+  const ov=btn.closest('.overlay');
+  const lines = sel => ov.querySelector(sel).value.split('\n').map(s=>s.trim()).filter(Boolean);
+  const body = JSON.stringify({
+    enabled: true,
+    allowed_egress: lines('#apAllow'),
+    hardline_floor: lines('#apFloor'),
+    allowed_actions: ['send','post','pay'].filter(c=>ov.querySelector('#apAct_'+c).checked),
+    max_actions: parseInt(ov.querySelector('#apMax').value,10)||0,
+    expires_days: parseInt(ov.querySelector('#apExp').value,10)||0,
+  });
+  try{
+    const r = await J('/v1/agents/'+id+'/policy',{method:'POST',headers:MIND_JSON,body});
+    const i=AGENTS.findIndex(x=>x.id===id); if(i>=0) AGENTS[i]=r;
+    notify('Autonomy policy signed · saved','ok');
+  }catch(e){ notify('Couldn\'t save policy - '+e.message); }
+}
+async function agentRevokePolicy(id, btn){
+  try{
+    const r = await J('/v1/agents/'+id+'/policy',{method:'POST',headers:MIND_JSON,body:JSON.stringify({enabled:false})});
+    const i=AGENTS.findIndex(x=>x.id===id); if(i>=0) AGENTS[i]=r;
+    notify('Autonomy revoked','ok'); btn.closest('.overlay').remove();
+  }catch(e){ notify('Couldn\'t revoke - '+e.message); }
+}
+// The async approve-queue: actions unattended agents STAGED for review (out-of-policy egress). The
+// list is derived from the signed ledger. Allowing a destination adds it to that agent's signed
+// policy (so it sends there from now on); denying just records the decision.
+async function openApprovals(){
+  let data={pending:[]}; try{ data=await J('/v1/egress/pending'); }catch(_){}
+  const ov=document.createElement('div'); ov.className='overlay ask';
+  const row = p => `<div class="row pend-row" style="align-items:center;gap:8px;border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin-bottom:6px">
+      <div style="flex:1;min-width:0">
+        <div style="font-size:13px;font-family:var(--mono,monospace)">${esc(p.dest)}</div>
+        <div class="sub" style="font-size:11px">${esc(String(p.scope||'').replace(/^agent:/,'agent '))} · ${esc(p.tool||'')} · ${esc(p.reason||'')}</div>
+      </div>
+      <button class="ask-ok" style="padding:5px 10px" onclick="approvePending(${escAttr(JSON.stringify(p.scope))},${escAttr(JSON.stringify(p.dest))},this)">Allow</button>
+      <button class="ask-ghost" style="padding:5px 10px" onclick="denyPending(${escAttr(JSON.stringify(p.scope))},${escAttr(JSON.stringify(p.dest))},this)">Deny</button>
+    </div>`;
+  const items = (data.pending||[]).map(row).join('');
+  ov.innerHTML=`<div class="ask-card" style="width:min(580px,93vw)">
+    <div class="ask-title">Pending approvals</div>
+    <div class="ask-msg">Egress your unattended agents staged for review. <b>Allow</b> adds the destination to that agent's signed policy, so it sends there from now on — no re-approval. <b>Deny</b> records the decision and leaves the policy unchanged.</div>
+    <div id="pendList" style="max-height:52vh;overflow:auto">${items||'<div class="muted" style="padding:10px">Nothing waiting — your agents are acting within their signed limits.</div>'}</div>
+    <div class="ask-actions"><button class="ask-ghost" onclick="this.closest('.overlay').remove()">Close</button></div>
+  </div>`;
+  document.body.appendChild(ov);
+}
+async function approvePending(scope, dest, btn){
+  try{ await J('/v1/egress/approve',{method:'POST',headers:MIND_JSON,body:JSON.stringify({scope,dest})});
+    notify('Allowed · added to '+String(scope||'').replace(/^agent:/,'agent ')+' policy · signed','ok');
+    btn.closest('.pend-row').remove();
+  }catch(e){ notify('Couldn\'t allow - '+e.message); }
+}
+async function denyPending(scope, dest, btn){
+  try{ await J('/v1/egress/deny',{method:'POST',headers:MIND_JSON,body:JSON.stringify({scope,dest})});
+    notify('Denied','ok'); btn.closest('.pend-row').remove();
+  }catch(e){ notify('Couldn\'t deny - '+e.message); }
+}
+// The autonomy report: every autonomous action your agents took, reconstructed from the signed
+// ledger and offline-verifiable against the published key (same data as `engramd verify-autonomy`).
+async function openAutonomyReport(){
+  let r={scopes:[],totals:{},one_time_approvals:0}; try{ r=await J('/v1/autonomy/report'); }catch(_){}
+  const t=r.totals||{};
+  const polTxt = p => p===null||p===undefined ? 'none' : (typeof p==='object' ? ('max '+(p.max_actions||0)+' · '+(p.rules||0)+' rules') : String(p));
+  const scopeRows=(r.scopes||[]).map(s=>`<div class="row" style="border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin-bottom:6px">
+      <div style="flex:1;min-width:0"><div style="font-size:13px;font-family:var(--mono,monospace)">${esc(String(s.scope))}</div>
+      <div class="sub" style="font-size:11px">policy: ${esc(polTxt(s.policy))} · sends ${s.autonomous_sends} · staged ${s.staged} · refused ${s.refused} · allowlisted ${s.allowlisted} · denied ${s.denied}</div></div></div>`).join('');
+  const ov=document.createElement('div'); ov.className='overlay ask';
+  ov.innerHTML=`<div class="ask-card" style="width:min(600px,93vw)">
+    <div class="ask-title">Autonomy report</div>
+    <div class="ask-msg">Reconstructed from the signed ledger — every autonomous action your agents took, offline-verifiable against the published key. Run <code>engramd verify-autonomy</code> in a terminal for the same report without trusting the app.</div>
+    <div class="row" style="gap:14px;margin:4px 0 10px;font-size:13px;flex-wrap:wrap">
+      <span>autonomous sends <b>${t.autonomous_sends||0}</b></span>
+      <span>staged <b>${t.staged||0}</b></span>
+      <span>refused <b>${t.refused||0}</b></span>
+      <span>allowlisted <b>${t.allowlisted||0}</b></span>
+      <span>denied <b>${t.denied||0}</b></span>
+      <span>one-time approvals <b>${r.one_time_approvals||0}</b></span>
+    </div>
+    <div style="max-height:48vh;overflow:auto">${scopeRows||'<div class="muted" style="padding:8px">No autonomous activity recorded yet.</div>'}</div>
+    <div class="ask-actions"><button class="ask-ghost" onclick="this.closest('.overlay').remove()">Close</button></div>
+  </div>`;
+  document.body.appendChild(ov);
 }
 async function agentDelete(id){
   const a=AGENTS.find(x=>x.id===id);
@@ -3595,6 +3743,8 @@ function paletteCommands(){
   cmds.push({group:a, t:'Ask Engram', sub:'open chat', ic:ICONS.Chat, run:()=>go('Chat')});
   cmds.push({group:a, t:'Verify ledger', sub:'re-check the signed chain', run:verifyLedgerNow});
   cmds.push({group:a, t:halted?'Resume agents':'Emergency stop', sub:'halt running tasks at the next step', run:toggleHalt});
+  cmds.push({group:a, t:'Pending approvals', sub:'review what unattended agents staged to send', run:openApprovals});
+  cmds.push({group:a, t:'Autonomy report', sub:'what your agents did unattended · signed, verifiable', run:openAutonomyReport});
   cmds.push({group:s, t:'Open settings', key:'⌘,', ic:ICONS.Settings, run:()=>openCC()});
   CC_CATS.forEach(c=>cmds.push({group:s, t:c.name, sub:'settings', ic:c.icon, run:()=>openCC(c.key)}));
   return cmds;

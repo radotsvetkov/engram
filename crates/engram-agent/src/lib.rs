@@ -51,8 +51,14 @@ fn is_globally_disabled(name: &str) -> bool {
 fn base_tools() -> ToolRegistry {
     let reg = ToolRegistry::new()
         .with(Arc::new(tools::UpdatePlanTool))
+        // Ask the user a focused question instead of guessing on an ambiguous request.
+        .with(Arc::new(tools::ClarifyTool))
+        // Request user authorization for a risky/irreversible/egress action (model asks, never grants).
+        .with(Arc::new(tools::RequestApprovalTool))
         .with(Arc::new(tools::MemoryRecallTool))
         .with(Arc::new(tools::MemoryRememberTool))
+        // Verifiable receipts from the signed audit ledger — "prove what you did" (read-only).
+        .with(Arc::new(tools::ProofOfActionTool))
         .with(Arc::new(tools::ReadFileTool))
         .with(Arc::new(tools::WriteFileTool))
         .with(Arc::new(tools::EditFileTool))

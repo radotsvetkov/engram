@@ -74,6 +74,12 @@ pub struct AgentDef {
     /// the run chokepoint on top of the global `disabled_tools`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_tools: Option<Vec<String>>,
+    /// A signed standing AUTONOMY policy: when set, this agent may egress UNATTENDED within its
+    /// allowlist + budget (scheduled runs no longer need a live human to approve each send). Signed
+    /// with the skill key when the user authors it; verified at run construction (a forged/unsigned
+    /// policy fails closed to default-deny). `None` = no autonomous egress (today's gated behaviour).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autonomy_policy: Option<engram_core::SignedAutonomyPolicy>,
     pub created_ms: i64,
     pub updated_ms: i64,
 }
@@ -131,6 +137,7 @@ impl AgentStore {
             api_key: api_key.trim().to_string(),
             effort: norm_effort(effort),
             allowed_tools: None,
+            autonomy_policy: None,
             created_ms: now,
             updated_ms: now,
         };
@@ -191,6 +198,22 @@ impl AgentStore {
         let mut g = self.agents.lock().expect("agents lock");
         let a = g.iter_mut().find(|a| a.id == id)?;
         a.allowed_tools = tools.filter(|t| !t.is_empty());
+        a.updated_ms = now_ms();
+        let out = a.clone();
+        self.persist(&g);
+        Some(out)
+    }
+
+    /// Set (or clear) an agent's signed standing autonomy policy. `None` revokes it (back to gated /
+    /// no autonomous egress). The signed policy is persisted verbatim so it stays verifiable on load.
+    pub fn set_autonomy_policy(
+        &self,
+        id: &str,
+        policy: Option<engram_core::SignedAutonomyPolicy>,
+    ) -> Option<AgentDef> {
+        let mut g = self.agents.lock().expect("agents lock");
+        let a = g.iter_mut().find(|a| a.id == id)?;
+        a.autonomy_policy = policy;
         a.updated_ms = now_ms();
         let out = a.clone();
         self.persist(&g);

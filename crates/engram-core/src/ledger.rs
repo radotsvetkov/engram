@@ -253,6 +253,13 @@ fn read_entries(path: &Path) -> Result<Vec<Entry>, LedgerError> {
     Ok(out)
 }
 
+/// Read every entry from a ledger file WITHOUT a signing key — for offline auditing/tooling that has
+/// only the JSONL (and, separately, the public key for [`verify_file`]). Does not verify; pair with
+/// [`verify_file`] when integrity matters.
+pub fn entries_from_file(path: &Path) -> Result<Vec<Entry>, LedgerError> {
+    read_entries(path)
+}
+
 /// Build a public key from its hex encoding - for offline, third-party verification.
 pub fn verifying_key_from_hex(s: &str) -> Result<VerifyingKey, LedgerError> {
     let bytes = hex::decode(s.trim()).map_err(|_| LedgerError::Key)?;

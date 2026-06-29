@@ -119,6 +119,15 @@ impl Registry {
         &self.signer.verifying
     }
 
+    /// Sign an autonomy policy with the registry's key — used when a human authors a durable agent's
+    /// standing egress grant, so it verifies under [`verifying`](Self::verifying) at run construction.
+    pub fn sign_autonomy(
+        &self,
+        policy: &engram_core::AutonomyPolicy,
+    ) -> engram_core::SignedAutonomyPolicy {
+        self.signer.sign_policy(policy)
+    }
+
     fn skill_dir(&self, id: &str) -> PathBuf {
         self.dir.join("skills").join(id)
     }

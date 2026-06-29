@@ -61,6 +61,10 @@ impl CdpBrowser {
                     "--no-first-run",
                     "--no-default-browser-check",
                     "--disable-extensions",
+                    // Remove the most blatant automation tell at the source: this drops the
+                    // `navigator.webdriver` flag Cloudflare/DataDome key on. The init script below is
+                    // belt-and-braces for the other headless fingerprints.
+                    "--disable-blink-features=AutomationControlled",
                 ])
                 .arg(format!("--user-data-dir={}", udd.display()))
                 .arg(format!("--remote-debugging-port={}", self.port))
@@ -79,8 +83,56 @@ impl CdpBrowser {
                 ws,
                 next_id: 1,
             });
+            // Apply anti-detection ONCE at session creation so every later navigation inherits it.
+            Self::apply_stealth(guard.as_mut().unwrap()).await;
         }
         Ok(guard.as_mut().unwrap())
+    }
+
+    /// Minimal anti-detection so the headless session isn't instantly flagged by Cloudflare/DataDome
+    /// on the JS-heavy, bot-walled sites real data lives on (flights, prices, listings). Without this,
+    /// the session ships a `HeadlessChrome` User-Agent and `navigator.webdriver===true`, so it reads a
+    /// bot-wall/consent page and "answers" from it — the core reason web tasks silently fail.
+    ///
+    /// Best-effort by design: every command is fire-and-forget so a quirk degrades to the prior
+    /// (fingerprintable) behaviour rather than breaking navigation. Three cheap, high-impact masks:
+    ///   1. a real Chrome User-Agent (the default headless UA contains "HeadlessChrome"),
+    ///   2. an on-new-document script hiding `navigator.webdriver` and the other headless tells,
+    ///   3. a stable locale + timezone so the environment doesn't look blank/inconsistent.
+    ///
+    /// This is the in-tree minimum-viable stealth; a Camoufox-class sidecar is the heavier follow-up.
+    async fn apply_stealth(conn: &mut Conn) {
+        const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+            (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36";
+        // Runs before any page script on every new document, so the page never observes the tells.
+        const STEALTH_JS: &str = "\
+            Object.defineProperty(navigator,'webdriver',{get:()=>undefined});\
+            Object.defineProperty(navigator,'languages',{get:()=>['en-US','en']});\
+            Object.defineProperty(navigator,'plugins',{get:()=>[1,2,3,4,5]});\
+            window.chrome=window.chrome||{runtime:{}};\
+            const q=navigator.permissions&&navigator.permissions.query;\
+            if(q){navigator.permissions.query=p=>p&&p.name==='notifications'?\
+            Promise.resolve({state:Notification.permission}):q(p);}";
+        // Page must be enabled for addScriptToEvaluateOnNewDocument; idempotent with open()'s enable.
+        let _ = Self::cmd(conn, "Page.enable", json!({})).await;
+        let _ = Self::cmd(
+            conn,
+            "Page.addScriptToEvaluateOnNewDocument",
+            json!({ "source": STEALTH_JS }),
+        )
+        .await;
+        let _ = Self::cmd(
+            conn,
+            "Emulation.setUserAgentOverride",
+            json!({ "userAgent": UA, "acceptLanguage": "en-US,en;q=0.9", "platform": "Win32" }),
+        )
+        .await;
+        let _ = Self::cmd(
+            conn,
+            "Emulation.setTimezoneOverride",
+            json!({ "timezoneId": "Europe/Berlin" }),
+        )
+        .await;
     }
 
     async fn discover_ws(&self) -> Result<String, String> {

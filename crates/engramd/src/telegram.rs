@@ -98,6 +98,8 @@ pub fn spawn(app: App, token: String) -> tokio::task::AbortHandle {
                     None,
                     None,
                     None,
+                    false, // approved: inbound message never auto-approves its own egress
+                    false, // attended: unattended inbound surface
                 )
                 .await
                 {

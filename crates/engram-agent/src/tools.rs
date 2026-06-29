@@ -177,40 +177,200 @@ pub(crate) fn absolutize(base: &str, loc: &str) -> String {
     format!("{scheme}://{authority}{dir}{loc}")
 }
 
-/// Strip HTML to roughly readable text (drops script/style, collapses whitespace).
+/// Tags whose *contents* are boilerplate we never want as readable text.
+const SKIP_TAGS: &[&str] = &[
+    "script", "style", "nav", "header", "footer", "aside", "form", "noscript", "svg", "iframe",
+    "template", "button", "select", "option",
+];
+/// Block-level tags: emit a newline at their boundary so document structure survives the flatten
+/// (otherwise headings, list items and paragraphs run together into one wall of text).
+const BLOCK_TAGS: &[&str] = &[
+    "p", "div", "br", "li", "ul", "ol", "tr", "table", "section", "article", "main", "h1", "h2",
+    "h3", "h4", "h5", "h6", "blockquote", "pre", "figcaption", "hr", "dd", "dt",
+];
+
+/// Strip HTML to readable text — a dependency-free "readability" pass: prefer the page's main content
+/// region, drop boilerplate (nav/header/footer/script/style/forms), preserve block structure as
+/// newlines, decode HTML entities, and lead with the page title. A large upgrade over a bare
+/// tag-stripper for the JS-light pages `web_fetch` handles, with ZERO new dependencies (the build
+/// stays small — see the footprint constraint in Cargo.toml).
 ///
-/// Iterates by CHARACTER, not raw bytes. The old version sliced a separately-lowercased copy at a
-/// byte index and did `bytes[i] as char`; on real web content a byte index lands inside a multibyte
-/// char (e.g. the curly apostrophe '’', 3 bytes) and the slice PANICKED — which, with panic=abort,
-/// took the whole daemon down and surfaced as "Couldn't reach Engram / Load failed". `char_indices`
-/// gives valid boundaries, and pushing the real `char` also stops multibyte text being mangled.
+/// Iterates by CHARACTER, never a raw byte index. On real web content a byte index lands inside a
+/// multibyte char (e.g. the curly apostrophe '’', 3 bytes) and slicing there PANICKED — which, with
+/// panic=abort, took the daemon down and surfaced as "Couldn't reach Engram / Load failed".
 pub(crate) fn html_to_text(html: &str) -> String {
+    let region = main_region(html).unwrap_or(html);
+    let body = collapse(&decode_entities(&strip_tags(region)));
+    // Lead with the <title> for context, unless the body already opens with it.
+    match extract_tag_text(html, "title") {
+        Some(t) if !t.is_empty() && !body.starts_with(&t) => {
+            if body.is_empty() {
+                t
+            } else {
+                format!("{t}\n\n{body}")
+            }
+        }
+        _ => body,
+    }
+}
+
+/// Streaming tag-stripper: drop SKIP_TAGS' contents, newline at BLOCK_TAGS, space at inline tags,
+/// keep everything else. The single hot loop the whole extractor is built on.
+fn strip_tags(html: &str) -> String {
     let mut s = String::with_capacity(html.len() / 2);
     let mut in_tag = false;
     let mut skip_depth = 0i32;
     for (i, c) in html.char_indices() {
         if c == '<' {
-            // `html[i..]` is always a valid boundary here; lowercase a tiny ASCII lookahead (tag
-            // names are ASCII, so this never shifts byte positions) for case-insensitive detection.
-            let look = html[i..]
-                .chars()
-                .take(8)
-                .collect::<String>()
-                .to_ascii_lowercase();
-            if look.starts_with("<script") || look.starts_with("<style") {
-                skip_depth += 1;
-            } else if look.starts_with("</script") || look.starts_with("</style") {
-                skip_depth = (skip_depth - 1).max(0);
-            }
             in_tag = true;
+            // Tag names are ASCII; a short lowercase lookahead is enough and never shifts boundaries.
+            let look: String = html[i..].chars().take(12).collect::<String>().to_ascii_lowercase();
+            if let Some((close, name)) = parse_tag(&look) {
+                if SKIP_TAGS.contains(&name.as_str()) {
+                    if close {
+                        skip_depth = (skip_depth - 1).max(0);
+                    } else {
+                        skip_depth += 1;
+                    }
+                } else if skip_depth == 0 {
+                    s.push(if BLOCK_TAGS.contains(&name.as_str()) { '\n' } else { ' ' });
+                }
+            } else if skip_depth == 0 {
+                s.push(' '); // comment / doctype / stray '<' — its body is consumed as in_tag
+            }
         } else if c == '>' {
             in_tag = false;
-            s.push(' ');
         } else if !in_tag && skip_depth == 0 {
             s.push(c);
         }
     }
-    s.split_whitespace().collect::<Vec<_>>().join(" ")
+    s
+}
+
+/// Parse the start of a tag from a short lowercase lookahead beginning at '<'. Returns
+/// `(is_closing, name)`, or `None` for comments/doctypes/stray '<'.
+fn parse_tag(look: &str) -> Option<(bool, String)> {
+    let rest = look.strip_prefix('<')?;
+    let (close, rest) = match rest.strip_prefix('/') {
+        Some(r) => (true, r),
+        None => (false, rest),
+    };
+    let name: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
+    if name.is_empty() {
+        None
+    } else {
+        Some((close, name))
+    }
+}
+
+/// Return the inner HTML of the page's main content region (`<main>` or `<article>`) when it is
+/// clearly present and substantial, so nav/sidebars/boilerplate outside it are dropped wholesale.
+/// Byte offsets come from an ASCII-lowercased copy whose byte layout matches `html` exactly, and the
+/// boundaries are at ASCII `<`/`>`, so slicing `html` is always valid.
+fn main_region(html: &str) -> Option<&str> {
+    let lower = html.to_ascii_lowercase();
+    for (open, close) in [("<main", "</main>"), ("<article", "</article>")] {
+        if let Some(s) = lower.find(open) {
+            if let Some(rel_gt) = lower[s..].find('>') {
+                let start = s + rel_gt + 1;
+                if let Some(e) = lower.rfind(close) {
+                    if e > start && e - start > 200 {
+                        return Some(&html[start..e]);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Extract the text inside the FIRST `<tag>…</tag>` (used for `<title>`).
+fn extract_tag_text(html: &str, tag: &str) -> Option<String> {
+    let lower = html.to_ascii_lowercase();
+    let s = lower.find(&format!("<{tag}"))?;
+    let gt = lower[s..].find('>')? + s + 1;
+    let e = lower[gt..].find(&format!("</{tag}>"))? + gt;
+    let t = collapse(&decode_entities(&strip_tags(&html[gt..e])));
+    if t.is_empty() {
+        None
+    } else {
+        Some(t)
+    }
+}
+
+/// Decode the HTML entities that actually appear in body text; unknown entities are left verbatim.
+/// Cursor sits on a char boundary throughout ('&' and ';' are ASCII), so every slice is valid.
+fn decode_entities(s: &str) -> String {
+    if !s.contains('&') {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut idx = 0usize;
+    while idx < s.len() {
+        let rest = &s[idx..];
+        let c = rest.chars().next().unwrap();
+        if c == '&' {
+            let window = &rest[1..rest.len().min(1 + 12)];
+            if let Some(semi) = window.find(';') {
+                if let Some(d) = decode_one(&window[..semi]) {
+                    out.push_str(&d);
+                    idx += 1 + semi + 1; // '&' + entity + ';'
+                    continue;
+                }
+            }
+            out.push('&');
+            idx += 1;
+        } else {
+            out.push(c);
+            idx += c.len_utf8();
+        }
+    }
+    out
+}
+
+/// Map one entity body (between '&' and ';') to its character. Handles the common named entities and
+/// numeric forms `&#123;` / `&#xAB;`.
+fn decode_one(ent: &str) -> Option<String> {
+    let named = match ent {
+        "amp" => "&", "lt" => "<", "gt" => ">", "quot" => "\"", "apos" => "'", "nbsp" => " ",
+        "mdash" => "—", "ndash" => "–", "hellip" => "…", "copy" => "©", "reg" => "®",
+        "trade" => "™", "rsquo" => "’", "lsquo" => "‘", "ldquo" => "“", "rdquo" => "”",
+        "deg" => "°", "eacute" => "é", "egrave" => "è", "agrave" => "à", "ccedil" => "ç",
+        "uuml" => "ü", "ouml" => "ö", "auml" => "ä", "szlig" => "ß", "euro" => "€",
+        "pound" => "£", "cent" => "¢", "middot" => "·", "bull" => "•",
+        _ => "",
+    };
+    if !named.is_empty() {
+        return Some(named.to_string());
+    }
+    let num = ent.strip_prefix('#')?;
+    let code = match num.strip_prefix(['x', 'X']) {
+        Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+        None => num.parse::<u32>().ok()?,
+    };
+    char::from_u32(code).map(|c| c.to_string())
+}
+
+/// Collapse intra-line whitespace and limit blank lines to one, preserving paragraph breaks.
+fn collapse(s: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut prev_blank = false;
+    for line in s.split('\n') {
+        let joined = line.split_whitespace().collect::<Vec<_>>().join(" ");
+        if joined.is_empty() {
+            if !prev_blank && !out.is_empty() {
+                out.push(String::new());
+            }
+            prev_blank = true;
+        } else {
+            out.push(joined);
+            prev_blank = false;
+        }
+    }
+    while out.last().map(|l| l.is_empty()).unwrap_or(false) {
+        out.pop();
+    }
+    out.join("\n")
 }
 
 // ---------------------------------------------------------------------------
@@ -373,6 +533,35 @@ mod html_text_tests {
     fn drops_script_and_style_keeps_text() {
         let h = "<style>body{color:red}</style><p>Hello</p><script>alert(1)</script>";
         assert_eq!(html_to_text(h), "Hello");
+    }
+
+    #[test]
+    fn prefers_main_region_and_drops_chrome() {
+        // Nav/footer boilerplate must NOT survive when a <main> region is present.
+        let h = "<html><head><title>Doc</title></head><body>\
+                 <nav><a href='/'>Home</a><a href='/x'>Pricing</a></nav>\
+                 <main><h1>Real Heading</h1><p>The actual content lives here and is long enough \
+                 to clear the main-region threshold so the extractor trusts it.</p></main>\
+                 <footer>© 2026 BoilerCorp · Privacy · Terms</footer></body></html>";
+        let out = html_to_text(h);
+        assert!(out.starts_with("Doc"), "title leads: {out:?}");
+        assert!(out.contains("Real Heading") && out.contains("actual content"));
+        assert!(!out.contains("Pricing"), "nav dropped: {out:?}");
+        assert!(!out.contains("BoilerCorp"), "footer dropped: {out:?}");
+    }
+
+    #[test]
+    fn decodes_entities_and_keeps_block_structure() {
+        let h = "<h1>Title</h1><p>caf&eacute; &amp; tea &#8364;5 &#x2014; nice</p><p>Second</p>";
+        let out = html_to_text(h);
+        assert!(out.contains("café & tea €5 — nice"), "entities decoded: {out:?}");
+        // Distinct paragraphs are separated by a blank line, not run together into one wall.
+        assert!(out.contains("nice\n\nSecond"), "block structure preserved: {out:?}");
+    }
+
+    #[test]
+    fn unknown_entity_and_stray_ampersand_survive() {
+        assert_eq!(html_to_text("<p>AT&T R&D &unknownthing;</p>"), "AT&T R&D &unknownthing;");
     }
 }
 
@@ -631,15 +820,16 @@ impl Tool for EditFileTool {
         true
     }
     fn description(&self) -> &str {
-        "Replace an exact unique substring in a file inside the working directory. `old` must \
-         match verbatim (including whitespace) and occur exactly once, else the edit is refused. \
-         This is the safe way to change part of a file without re-sending the whole thing."
+        "Replace a unique substring in a file inside the working directory. `old` should match \
+         verbatim; if it doesn't match exactly, a whitespace-tolerant per-line match is tried as a \
+         fallback (so indentation/trailing-space drift doesn't fail the edit). The match must still \
+         be UNIQUE or the edit is refused. The safe way to change part of a file without re-sending it."
     }
     fn schema(&self) -> Value {
         json!({ "type": "object",
             "properties": {
                 "path": { "type": "string" },
-                "old": { "type": "string", "description": "exact text to replace (must be unique)" },
+                "old": { "type": "string", "description": "text to replace (verbatim preferred; must resolve to a unique location)" },
                 "new": { "type": "string", "description": "replacement text" }
             },
             "required": ["path", "old", "new"] })
@@ -648,7 +838,8 @@ impl Tool for EditFileTool {
         if !ctx.policy.allow_write {
             return Err("file writing is disabled".into());
         }
-        let path = confine(&ctx.workdir, arg_str(args, "path")?)?;
+        let rel = arg_str(args, "path")?;
+        let path = confine(&ctx.workdir, rel)?;
         let old = arg_str(args, "old")?;
         let new = args["new"].as_str().unwrap_or("");
         if old.is_empty() {
@@ -658,30 +849,122 @@ impl Tool for EditFileTool {
             .await
             .map_err(|e| e.to_string())?;
         let count = text.matches(old).count();
-        if count == 0 {
-            return Err("'old' text was not found in the file".into());
-        }
-        if count > 1 {
+        let (updated, how) = if count == 1 {
+            (text.replacen(old, new, 1), "exact")
+        } else if count > 1 {
             return Err(format!(
                 "'old' matched {count} times - include more surrounding context so it is unique"
             ));
-        }
-        let updated = text.replacen(old, new, 1);
+        } else {
+            // Exact match failed — the dominant cause is whitespace/indent drift in `old`. Try a
+            // whitespace-tolerant block match that STILL requires a unique location before writing.
+            match fuzzy_locate(&text, old) {
+                FuzzyMatch::Unique { start, end } => {
+                    let mut u = String::with_capacity(text.len() + new.len());
+                    u.push_str(&text[..start]);
+                    u.push_str(new);
+                    u.push_str(&text[end..]);
+                    (u, "whitespace-insensitive")
+                }
+                FuzzyMatch::Ambiguous(n) => {
+                    return Err(format!(
+                        "'old' was not found verbatim and matched {n} places ignoring whitespace - \
+                         add more surrounding context so it is unique"
+                    ))
+                }
+                FuzzyMatch::NotFound(hint) => {
+                    return Err(match hint {
+                        Some(h) => format!("'old' text was not found in the file. Did you mean:\n{h}"),
+                        None => "'old' text was not found in the file".into(),
+                    })
+                }
+            }
+        };
         tokio::fs::write(&path, &updated)
             .await
             .map_err(|e| e.to_string())?;
         let _ = ctx.ledger.append(
             "agent.edit",
             "agent",
-            json!({ "path": path.to_string_lossy(), "removed": old.len(), "added": new.len() }),
+            json!({ "path": path.to_string_lossy(), "removed": old.len(), "added": new.len(), "match": how }),
         );
-        Ok(format!(
-            "edited {} (−{} +{} bytes)",
-            arg_str(args, "path")?,
-            old.len(),
-            new.len()
-        ))
+        Ok(format!("edited {rel} ({how} match, −{} +{} bytes)", old.len(), new.len()))
     }
+}
+
+/// Outcome of fuzzy-locating `old` within a file.
+enum FuzzyMatch {
+    /// A unique block; replace exactly `text[start..end]`.
+    Unique { start: usize, end: usize },
+    /// Matched in `n` places — too risky to guess.
+    Ambiguous(usize),
+    /// No block matched; carries an optional "did you mean" hint.
+    NotFound(Option<String>),
+}
+
+/// Byte spans `(start, end_excluding_newline)` of each line in `text`, mirroring `str::lines()`
+/// (no trailing empty line when the file ends in `\n`).
+fn line_spans(text: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let bytes = text.as_bytes();
+    let mut start = 0;
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'\n' {
+            spans.push((start, i));
+            start = i + 1;
+        }
+    }
+    if start < bytes.len() {
+        spans.push((start, bytes.len()));
+    }
+    spans
+}
+
+/// Locate `old` in `text` tolerating per-line leading/trailing whitespace differences — the dominant
+/// reason an otherwise-correct `old` fails to match (indentation or trailing-space drift). Matches a
+/// contiguous block of lines and returns the EXACT byte range to replace, but ONLY if that block
+/// occurs exactly once: fuzzy matching never sacrifices edit_file's uniqueness safety.
+fn fuzzy_locate(text: &str, old: &str) -> FuzzyMatch {
+    let spans = line_spans(text);
+    let file_trim: Vec<&str> = spans.iter().map(|&(s, e)| text[s..e].trim()).collect();
+    let old_trim: Vec<&str> = old.lines().map(str::trim).collect();
+    let k = old_trim.len();
+    if k == 0 || k > file_trim.len() {
+        return FuzzyMatch::NotFound(None);
+    }
+    let hits: Vec<usize> = (0..=file_trim.len() - k)
+        .filter(|&i| (0..k).all(|j| file_trim[i + j] == old_trim[j]))
+        .collect();
+    match hits.len() {
+        1 => {
+            let i = hits[0];
+            FuzzyMatch::Unique {
+                start: spans[i].0,
+                end: spans[i + k - 1].1,
+            }
+        }
+        0 => FuzzyMatch::NotFound(closest_hint(&spans, &file_trim, text, old_trim[0])),
+        n => FuzzyMatch::Ambiguous(n),
+    }
+}
+
+/// A "did you mean" pointer: the file line that best matches `old`'s first line, by trimmed equality
+/// then containment. Helps the model fix a near-miss without re-reading the whole file.
+fn closest_hint(
+    spans: &[(usize, usize)],
+    file_trim: &[&str],
+    text: &str,
+    needle: &str,
+) -> Option<String> {
+    if needle.is_empty() {
+        return None;
+    }
+    let idx = file_trim
+        .iter()
+        .position(|l| *l == needle)
+        .or_else(|| file_trim.iter().position(|l| l.contains(needle)))?;
+    let (s, e) = spans[idx];
+    Some(format!("  line {}: {}", idx + 1, &text[s..e]))
 }
 
 /// Append text to a file (creating it if needed) - cheaper than read+rewrite for logs/notes.
@@ -1154,9 +1437,10 @@ impl Tool for UpdatePlanTool {
         "update_plan"
     }
     fn description(&self) -> &str {
-        "Record or update your step-by-step plan for a multi-step task. Call it early to \
-         outline the steps, then again to mark progress as you go - it keeps you on track and \
-         shows the user your plan. Each step has a 'title' and a 'status' (todo, doing, done)."
+        "Record or update your step-by-step plan for a multi-step task. Call it early to outline \
+         the steps, then again to mark progress - it echoes the full checklist back so it stays in \
+         context through long runs, and shows the user your plan. Each step has a 'title' and a \
+         'status' (todo, doing, done)."
     }
     fn schema(&self) -> Value {
         json!({
@@ -1186,7 +1470,19 @@ impl Tool for UpdatePlanTool {
             "agent",
             json!({ "steps": steps, "total": total, "done": done }),
         );
-        Ok(format!("plan updated: {done}/{total} steps done"))
+        // Render the FULL checklist as the observation (not just a count): on every update the plan
+        // is re-stated into the live context, so it survives transcript compaction on long tasks.
+        let mut out = format!("plan ({done}/{total} done):");
+        for s in steps {
+            let title = s["title"].as_str().unwrap_or("").trim();
+            let mark = match s["status"].as_str().unwrap_or("todo") {
+                "done" => 'x',
+                "doing" => '~',
+                _ => ' ',
+            };
+            out.push_str(&format!("\n  [{mark}] {title}"));
+        }
+        Ok(out)
     }
 }
 
@@ -1960,7 +2256,8 @@ mod web {
             "web_search"
         }
         fn description(&self) -> &str {
-            "Search the web and return the top result titles and URLs."
+            "Search the web and return the top results as title, URL, and an inline snippet — often \
+             enough to answer without a follow-up web_fetch."
         }
         fn schema(&self) -> Value {
             json!({ "type": "object", "properties": { "query": { "type": "string" } }, "required": ["query"] })
@@ -2080,7 +2377,9 @@ mod web {
         out
     }
 
-    /// Pull `result__a` anchors (title + href) out of DuckDuckGo's HTML results.
+    /// Pull `result__a` anchors (title + href) AND the `result__snippet` description out of
+    /// DuckDuckGo's HTML. Returning the snippet inline is what lets the model judge relevance without
+    /// a `web_fetch` per result — the single biggest lever on research budget/latency.
     fn extract_results(html: &str) -> Vec<String> {
         let mut out = Vec::new();
         for chunk in html.split("result__a").skip(1) {
@@ -2092,13 +2391,48 @@ mod web {
                 .split_once('>')
                 .and_then(|(_, r)| r.split_once('<'))
                 .map(|(t, _)| t.trim().to_string());
+            // The snippet anchor (`result__snippet`) follows the title within the same chunk.
+            let snippet = snippet_after(chunk, "result__snippet");
             if let (Some(href), Some(title)) = (href, title) {
                 if !title.is_empty() {
-                    out.push(format!("- {title} :: {href}"));
+                    out.push(with_snippet(&title, &href, snippet));
                 }
             }
         }
         out
+    }
+
+    /// Extract and clean the text of the element whose opening tag follows `marker`, capped for the
+    /// result list. Cuts at the element's OWN closing tag (anchor/div/span/p) so inner `<b>`/`<em>`
+    /// emphasis inside the snippet isn't mistaken for the end. Returns `None` when absent or empty.
+    fn snippet_after(block: &str, marker: &str) -> Option<String> {
+        let inner = block
+            .split_once(marker)
+            .and_then(|(_, r)| r.split_once('>'))
+            .map(|(_, r)| r)?;
+        let end = ["</a>", "</div>", "</p>", "</span>"]
+            .iter()
+            .filter_map(|t| inner.find(t))
+            .min()
+            .unwrap_or_else(|| inner.len().min(500));
+        let s = super::html_to_text(&inner[..end])
+            .trim()
+            .chars()
+            .take(240)
+            .collect::<String>();
+        if s.is_empty() {
+            None
+        } else {
+            Some(s)
+        }
+    }
+
+    /// Format one search result as `- Title :: URL` with the snippet on an indented next line.
+    fn with_snippet(title: &str, href: &str, snippet: Option<String>) -> String {
+        match snippet {
+            Some(s) => format!("- {title} :: {href}\n    {s}"),
+            None => format!("- {title} :: {href}"),
+        }
     }
 
     /// Parse Brave Search HTML: each web result follows `data-type="web"` and carries an
@@ -2122,8 +2456,10 @@ mod web {
                 .and_then(|(_, r)| r.split_once("</"))
                 .map(|(t, _)| super::html_to_text(t).trim().to_string())
                 .filter(|t| !t.is_empty());
+            // Brave's per-result description carries a `class="snippet…"`; surface it inline.
+            let snippet = snippet_after(block, "class=\"snippet");
             if let (Some(href), Some(title)) = (href, title) {
-                out.push(format!("- {title} :: {href}"));
+                out.push(with_snippet(&title, &href, snippet));
             }
         }
         // Brave varies its markup under bot-detection (sometimes the structured blocks don't carry a
@@ -2190,6 +2526,20 @@ mod web {
             assert!(!text.contains("bad") && !text.contains('{'));
         }
 
+        #[test]
+        fn ddg_results_carry_inline_snippets() {
+            // Two results; the second has no snippet element — must degrade to title :: url only.
+            let html = "\
+                <a class=\"result__a\" href=\"https://a.example/p\">Alpha Title</a>\
+                <a class=\"result__snippet\" href=\"x\">Alpha is the first <b>described</b> result.</a>\
+                <a class=\"result__a\" href=\"https://b.example/q\">Beta Title</a>";
+            let r = extract_results(html);
+            assert_eq!(r.len(), 2, "got: {r:?}");
+            assert!(r[0].contains("Alpha Title :: https://a.example/p"));
+            assert!(r[0].contains("Alpha is the first described result."), "snippet inline: {:?}", r[0]);
+            assert!(r[1].ends_with("Beta Title :: https://b.example/q"), "no-snippet degrades: {:?}", r[1]);
+        }
+
         #[tokio::test]
         #[ignore = "network"]
         async fn fetches_a_real_page() {
@@ -2209,6 +2559,262 @@ mod web {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// proof_of_action — verifiable receipts from the signed audit ledger
+// ---------------------------------------------------------------------------
+
+/// Produce a tamper-evident RECEIPT of what the agent actually did, verified against the signed,
+/// hash-chained audit ledger. A capability Hermes structurally cannot offer: its actions are
+/// unattested, so "prove what you did" has no honest answer. Here every consequential action is a
+/// signed ledger entry, and this tool (a) re-verifies the whole chain — every content hash and
+/// Ed25519 signature — so tampering is detected, then (b) returns the matching entries with their
+/// content hashes and the public key needed to verify them OFFLINE.
+///
+/// Read-only and intentionally a RECEIPT, not a data dump: payloads are hard-truncated so it can
+/// never become a bulk private-memory egress channel (the private content lives in `memory_recall`,
+/// which is sensitive-gated). Hence `reads_sensitive` stays false.
+pub struct ProofOfActionTool;
+
+#[async_trait]
+impl Tool for ProofOfActionTool {
+    fn name(&self) -> &str {
+        "proof_of_action"
+    }
+    fn description(&self) -> &str {
+        "Produce a tamper-evident, cryptographically verifiable receipt of actions the agent has \
+         taken, checked against the signed audit ledger (re-verifies every hash + signature). Use \
+         when the user asks to prove, audit, show a record of, or get receipts for what was done. \
+         Optional filters: kind (e.g. \"send\", \"skill\", \"memory\"), actor, since_ms, limit."
+    }
+    fn schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "kind": { "type": "string", "description": "substring filter on the action kind (e.g. send, skill, memory, web_fetch)" },
+                "actor": { "type": "string", "description": "substring filter on who acted (e.g. user, agent, skill:...)" },
+                "since_ms": { "type": "integer", "description": "only entries at/after this Unix-epoch-millisecond time" },
+                "limit": { "type": "integer", "description": "max entries to show (default 20, max 200)" }
+            }
+        })
+    }
+    async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
+        let kind_f = args["kind"].as_str().map(|s| s.to_lowercase());
+        let actor_f = args["actor"].as_str().map(|s| s.to_lowercase());
+        let since = args["since_ms"].as_u64();
+        let limit = args["limit"].as_u64().unwrap_or(20).clamp(1, 200) as usize;
+
+        // Integrity proof FIRST — the entire point is that the record cannot be quietly rewritten.
+        let integrity = ctx.ledger.verify();
+        let entries = ctx.ledger.read_all().map_err(|e| e.to_string())?;
+        let total = entries.len();
+        let matched: Vec<_> = entries
+            .into_iter()
+            .filter(|e| {
+                kind_f.as_ref().map_or(true, |k| e.kind.to_lowercase().contains(k))
+                    && actor_f.as_ref().map_or(true, |a| e.actor.to_lowercase().contains(a))
+                    && since.map_or(true, |s| e.ts_ms >= s)
+            })
+            .collect();
+        let (tip_seq, tip_hash) = ctx.ledger.head();
+
+        let mut out = String::new();
+        match integrity {
+            Ok(n) => out.push_str(&format!(
+                "✔ Verifiable action receipt — audit chain intact ({n} entries re-verified: every hash + signature checks out, tamper-evident).\n"
+            )),
+            Err(e) => out.push_str(&format!(
+                "✗ LEDGER INTEGRITY CHECK FAILED ({e}). The record below may have been tampered with — treat with suspicion.\n"
+            )),
+        }
+        out.push_str(&format!("Public key (verify offline): {}\n", ctx.ledger.pubkey_hex()));
+        out.push_str(&format!("Chain tip: seq {tip_seq}, hash {}…\n\n", short_hash(&tip_hash)));
+
+        let shown: Vec<_> = matched.iter().rev().take(limit).collect();
+        out.push_str(&format!(
+            "Showing {} of {} matching action(s) ({} total ledger entries):\n",
+            shown.len(),
+            matched.len(),
+            total
+        ));
+        for e in &shown {
+            let preview: String = e.payload.get().chars().take(140).collect();
+            out.push_str(&format!(
+                "#{:<6} {}  {:<18} by {:<16} hash={}…  {}\n",
+                e.seq,
+                fmt_ts_utc(e.ts_ms),
+                e.kind,
+                e.actor,
+                short_hash(&e.hash),
+                preview.replace('\n', " ")
+            ));
+        }
+        if shown.is_empty() {
+            out.push_str("(no matching actions recorded yet)\n");
+        }
+        Ok(out)
+    }
+    // Read-only audit metadata: not side-effecting, not egress, doesn't taint. Payloads are
+    // truncated so it stays a receipt, never a private-data egress channel.
+}
+
+/// First 10 hex chars of a content hash, for compact display.
+fn short_hash(h: &str) -> &str {
+    &h[..h.len().min(10)]
+}
+
+/// Epoch milliseconds -> "YYYY-MM-DDTHH:MM:SSZ" (UTC). Dependency-free (Hinnant civil-from-days), so
+/// the small build doesn't gain a date crate just to label a receipt.
+fn fmt_ts_utc(ms: u64) -> String {
+    let secs = (ms / 1000) as i64;
+    let days = secs.div_euclid(86_400);
+    let tod = secs.rem_euclid(86_400);
+    let (h, mi, s) = (tod / 3600, (tod % 3600) / 60, tod % 60);
+    let z = days + 719_468;
+    let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
+}
+
+// ---------------------------------------------------------------------------
+// clarify — ask the user a focused question instead of guessing
+// ---------------------------------------------------------------------------
+
+/// Ask the user ONE focused question when the request is ambiguous, before doing work that might be
+/// wrong. The original failure that motivated this whole effort — "cheapest flight Hamburg OR Weeze,
+/// some time in July" — had two possible origins and no firm dates; the agent should have asked, not
+/// guessed. Presenting ≤4 concrete options makes the question machine-renderable (buttons) and the
+/// request is recorded to the ledger. The tool registers + audits the question and instructs the
+/// model to stop and present it; the daemon surfaces it and a later turn carries the answer.
+pub struct ClarifyTool;
+
+#[async_trait]
+impl Tool for ClarifyTool {
+    fn name(&self) -> &str {
+        "clarify"
+    }
+    fn description(&self) -> &str {
+        "Ask the user ONE focused clarifying question when the request is ambiguous or \
+         under-specified, BEFORE doing work that could be wrong. Provide up to 4 concrete options \
+         when there's a small choice set. After calling this, STOP and present the question — do \
+         not guess or call more tools until the user answers."
+    }
+    fn schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "question": { "type": "string", "description": "the single, specific question to ask" },
+                "options": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "up to 4 concrete choices the user can pick from (optional)"
+                }
+            },
+            "required": ["question"]
+        })
+    }
+    async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
+        let question = arg_str(args, "question")?.trim().to_string();
+        if question.is_empty() {
+            return Err("'question' must not be empty".into());
+        }
+        let options: Vec<String> = args["options"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .take(4) // ≤4 keeps it renderable as a tidy choice set
+                    .collect()
+            })
+            .unwrap_or_default();
+        let _ = ctx.ledger.append(
+            "agent.clarify",
+            "agent",
+            json!({ "question": question, "options": options }),
+        );
+        let mut out = String::from(
+            "Clarification requested and logged. Reply to the user with this question now and STOP \
+             — call no further tools until they answer:\n\nQ: ",
+        );
+        out.push_str(&question);
+        if !options.is_empty() {
+            out.push_str("\nOptions:");
+            for (i, o) in options.iter().enumerate() {
+                out.push_str(&format!("\n  {}. {o}", i + 1));
+            }
+        }
+        Ok(out)
+    }
+    // Asking a question changes nothing in the world: not side-effecting, not egress, not tainting.
+}
+
+// ---------------------------------------------------------------------------
+// request_approval — ask the user to authorize a risky/irreversible action
+// ---------------------------------------------------------------------------
+
+/// Ask the user to authorize a risky, irreversible, or data-sending action BEFORE it runs —
+/// especially when the run has read untrusted content and the trifecta has blocked egress. The model
+/// can only REQUEST approval; it can never grant its own (only the daemon sets `policy.approved`, and
+/// only after a real human approval). The request is recorded to the ledger; the daemon surfaces it
+/// and, on approval, resumes the run with egress de-escalated — so the gate protects without
+/// becoming "refuses everything". The counterpart to [`ClarifyTool`] for *authorization* rather than
+/// *information*.
+pub struct RequestApprovalTool;
+
+#[async_trait]
+impl Tool for RequestApprovalTool {
+    fn name(&self) -> &str {
+        "request_approval"
+    }
+    fn description(&self) -> &str {
+        "Request the user's explicit approval before an irreversible or data-sending action (send a \
+         message/email, post, pay, delete, overwrite) — especially when this run has read untrusted \
+         content and egress is blocked. Describe exactly what you want to do and why. After calling \
+         this, STOP; the action stays blocked until the user approves. You cannot approve your own request."
+    }
+    fn schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "action": { "type": "string", "description": "the exact action to authorize" },
+                "reason": { "type": "string", "description": "why it is needed (optional)" }
+            },
+            "required": ["action"]
+        })
+    }
+    async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
+        let action = arg_str(args, "action")?.trim().to_string();
+        if action.is_empty() {
+            return Err("'action' must not be empty".into());
+        }
+        let reason = args["reason"].as_str().unwrap_or("").trim().to_string();
+        let _ = ctx.ledger.append(
+            "agent.approval_request",
+            "agent",
+            json!({ "action": action, "reason": reason }),
+        );
+        let mut out = String::from(
+            "Approval requested and logged. Present this to the user and STOP — the action stays \
+             blocked until they approve (you cannot approve it yourself):\n\nAction: ",
+        );
+        out.push_str(&action);
+        if !reason.is_empty() {
+            out.push_str("\nWhy: ");
+            out.push_str(&reason);
+        }
+        Ok(out)
+    }
+    // Requesting approval changes nothing and grants nothing: not side-effecting, not egress.
 }
 
 #[cfg(test)]
@@ -2247,6 +2853,152 @@ mod file_tools_tests {
             depth: 0,
             browser: Arc::new(crate::tool::NoBrowser),
         }
+    }
+
+    #[tokio::test]
+    async fn clarify_caps_options_audits_and_tells_model_to_stop() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ctx_in(dir.path());
+        let out = ClarifyTool
+            .run(
+                &json!({
+                    "question": "Depart from Hamburg or Weeze?",
+                    "options": ["Hamburg (HAM)", "Weeze (NRN)", "", "c", "d", "e"]
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(out.contains("Depart from Hamburg or Weeze?"));
+        assert!(out.contains("STOP"), "instructs the model to wait: {out}");
+        // Empties dropped, capped at 4 options.
+        assert!(out.contains("1. Hamburg (HAM)") && out.contains("2. Weeze (NRN)"));
+        assert!(out.matches("\n  ").count() == 4, "≤4 options rendered: {out}");
+        // The question is recorded to the audit ledger.
+        let recorded = ctx.ledger.read_all().unwrap().iter().any(|e| e.kind == "agent.clarify");
+        assert!(recorded, "clarify must be auditable");
+    }
+
+    #[tokio::test]
+    async fn update_plan_renders_full_checklist() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ctx_in(dir.path());
+        let out = UpdatePlanTool
+            .run(
+                &json!({"steps":[
+                    {"title":"scout","status":"done"},
+                    {"title":"build","status":"doing"},
+                    {"title":"verify","status":"todo"}
+                ]}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(out.contains("plan (1/3 done)"), "count: {out}");
+        assert!(
+            out.contains("[x] scout") && out.contains("[~] build") && out.contains("[ ] verify"),
+            "full checklist rendered: {out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn clarify_rejects_empty_question() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ctx_in(dir.path());
+        assert!(ClarifyTool.run(&json!({"question":"   "}), &ctx).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn request_approval_audits_and_tells_model_to_stop_without_granting() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ctx_in(dir.path());
+        let out = RequestApprovalTool
+            .run(
+                &json!({"action":"email the report to boss@co.com","reason":"the user asked"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(out.contains("STOP") && out.contains("email the report to boss@co.com"));
+        // The boundary: the model is told it cannot grant its own approval.
+        assert!(out.contains("cannot approve it yourself"), "states the boundary: {out}");
+        let logged = ctx
+            .ledger
+            .read_all()
+            .unwrap()
+            .iter()
+            .any(|e| e.kind == "agent.approval_request");
+        assert!(logged, "approval request must be auditable");
+        assert!(RequestApprovalTool.run(&json!({"action":"  "}), &ctx).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn edit_file_fuzzy_matches_whitespace_drift() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ctx_in(dir.path());
+        // File is 4-space indented; the model sends `old` with NO indentation (the classic miss).
+        std::fs::write(
+            dir.path().join("f.rs"),
+            "fn main() {\n    let x = 1;\n    println!(\"{}\", x);\n}\n",
+        )
+        .unwrap();
+        let r = EditFileTool
+            .run(
+                &json!({
+                    "path": "f.rs",
+                    "old": "let x = 1;\nprintln!(\"{}\", x);",
+                    "new": "    let x = 2;\n    println!(\"{}\", x * 2);"
+                }),
+                &ctx,
+            )
+            .await;
+        assert!(r.is_ok(), "fuzzy edit should match despite indentation: {r:?}");
+        assert!(r.unwrap().contains("whitespace-insensitive"));
+        let out = std::fs::read_to_string(dir.path().join("f.rs")).unwrap();
+        assert!(out.contains("let x = 2;") && out.contains("x * 2"), "got: {out}");
+        assert!(out.starts_with("fn main() {\n") && out.ends_with("}\n"), "surroundings kept: {out}");
+    }
+
+    #[tokio::test]
+    async fn edit_file_fuzzy_refuses_ambiguous_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ctx_in(dir.path());
+        // Two identical-when-trimmed blocks => fuzzy must refuse, not guess.
+        std::fs::write(dir.path().join("f.txt"), "  a\n  b\nmid\n    a\n    b\n").unwrap();
+        let e = EditFileTool
+            .run(&json!({"path":"f.txt","old":"a\nb","new":"X"}), &ctx)
+            .await
+            .unwrap_err();
+        assert!(e.contains("matched 2"), "ambiguous fuzzy refused: {e}");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("f.txt")).unwrap(),
+            "  a\n  b\nmid\n    a\n    b\n",
+            "file must be untouched on refusal"
+        );
+    }
+
+    #[tokio::test]
+    async fn proof_of_action_verifies_and_filters() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ctx_in(dir.path());
+        ctx.ledger
+            .append("send_message", "agent", json!({"url":"https://hooks.example/x","ok":true}))
+            .unwrap();
+        ctx.ledger
+            .append("memory.write", "core", json!({"fact":"private-ish detail"}))
+            .unwrap();
+
+        // Unfiltered: the chain verifies and both recorded actions show up with the public key.
+        let out = ProofOfActionTool.run(&json!({}), &ctx).await.unwrap();
+        assert!(out.contains("audit chain intact"), "integrity line: {out}");
+        assert!(out.contains("Public key"), "pubkey present: {out}");
+        assert!(out.contains("send_message") && out.contains("memory.write"), "actions: {out}");
+        assert!(out.contains("2025") || out.contains("2026"), "human timestamp: {out}");
+
+        // Filtering by kind narrows to just the matching action.
+        let only = ProofOfActionTool.run(&json!({"kind":"send"}), &ctx).await.unwrap();
+        assert!(only.contains("send_message"), "kept send: {only}");
+        assert!(!only.contains("memory.write"), "filtered out memory: {only}");
     }
 
     #[tokio::test]

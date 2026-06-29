@@ -115,6 +115,11 @@ async fn main() {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
         Some("verify") => std::process::exit(verify_cmd(args.get(2).map(String::as_str))),
+        // `engramd verify-autonomy [HOME]` - replay the ledger and reconstruct every autonomous
+        // egress against the signed policy that authorized it (the offline "prove it" report).
+        Some("verify-autonomy") => {
+            std::process::exit(verify_autonomy_cmd(args.get(2).map(String::as_str)))
+        }
         // `engramd doctor [HOME]` - a self-diagnostic of the local setup (config, provider,
         // ledger, embedder, channels, port, build features), the way `claude-desktop --doctor`
         // checks an install. Exits 0 when nothing is broken, 1 when a hard problem is found.
@@ -213,6 +218,67 @@ fn verify_cmd(home_arg: Option<&str>) -> i32 {
             1
         }
     }
+}
+
+/// `engramd verify-autonomy [HOME]` - replay the ledger and reconstruct the autonomy story (policies
+/// granted, autonomous sends, staged/refused actions, async approvals), checking the signed chain
+/// first. The offline, third-party "prove what the agent did unattended" report. Exit 1 if the chain
+/// is broken, 0 otherwise.
+fn verify_autonomy_cmd(home_arg: Option<&str>) -> i32 {
+    let home = home_arg
+        .map(String::from)
+        .or_else(|| std::env::var("ENGRAM_HOME").ok())
+        .unwrap_or_else(|| "./brain".into());
+    let dir = std::path::Path::new(&home);
+    let ledger_path = dir.join("ledger.jsonl");
+    let pub_path = dir.join("ledger.pub");
+    // Integrity first (same as `verify`), if the public key is present.
+    let chain = std::fs::read_to_string(&pub_path)
+        .ok()
+        .and_then(|h| engram_core::verifying_key_from_hex(h.trim()).ok())
+        .map(|vk| engram_core::verify_file(&ledger_path, &vk));
+    let entries = match engram_core::entries_from_file(&ledger_path) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("cannot read ledger {}: {e}", ledger_path.display());
+            return 2;
+        }
+    };
+    match &chain {
+        Some(Ok(n)) => println!("Chain: OK - {n} entries, signed hash-chain intact."),
+        Some(Err(e)) => println!("Chain: TAMPER / BROKEN - {e}"),
+        None => println!(
+            "Chain: not checked (no public key at {})",
+            pub_path.display()
+        ),
+    }
+    let report = autonomy_report(&entries);
+    let t = &report["totals"];
+    println!("\nAutonomous egress (reconstructed from the signed ledger):");
+    println!("  autonomous sends  : {}", t["autonomous_sends"]);
+    println!("  staged for review : {}", t["staged"]);
+    println!("  floor refusals    : {}", t["refused"]);
+    println!("  later allowlisted : {}", t["allowlisted"]);
+    println!("  denied            : {}", t["denied"]);
+    println!("  one-time approvals: {}", report["one_time_approvals"]);
+    if let Some(scopes) = report["scopes"].as_array() {
+        if !scopes.is_empty() {
+            println!("\nPer agent:");
+            for s in scopes {
+                println!(
+                    "  {}  policy={}  sends={} staged={} refused={} allowlisted={} denied={}",
+                    s["scope"].as_str().unwrap_or(""),
+                    s["policy"],
+                    s["autonomous_sends"],
+                    s["staged"],
+                    s["refused"],
+                    s["allowlisted"],
+                    s["denied"],
+                );
+            }
+        }
+    }
+    matches!(chain, Some(Err(_))) as i32
 }
 
 /// `engramd doctor [HOME]` - a plain-language health check of the local install, so a user
@@ -457,6 +523,7 @@ USAGE:
     engramd                 Start the daemon and serve the dashboard (default)
     engramd doctor [HOME]   Health-check the local install (config, provider, ledger, ports)
     engramd verify [HOME]   Verify the signed audit ledger offline, without trusting the daemon
+    engramd verify-autonomy [HOME]  Reconstruct every autonomous egress from the signed ledger
     engramd help            Show this help
     engramd --version       Print the version
 
@@ -708,6 +775,9 @@ async fn run(mode: RunMode) -> Result<(), Box<dyn std::error::Error>> {
     ))?);
     let registry = Arc::new(Registry::open(&home, signer, ledger.clone())?);
     seed::ensure_seed(&registry)?;
+    seed::ensure_flight_skill(&registry)?;
+    seed::ensure_weather_skill(&registry)?;
+    seed::ensure_email_skill(&registry)?;
     let sched = Arc::new(Scheduler::open(&home, ledger.clone())?);
     let bus = Bus::new(1024);
     let activity = Activity::new();
@@ -785,7 +855,12 @@ async fn run(mode: RunMode) -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/consciousness/revert", post(consciousness_revert))
         .route("/v1/agents", get(agents_list).post(agents_create))
         .route("/v1/agents/{id}", post(agents_update).delete(agents_delete))
+        .route("/v1/agents/{id}/policy", post(agent_set_policy))
         .route("/v1/agents/{id}/activity", get(agent_activity))
+        .route("/v1/egress/pending", get(egress_pending))
+        .route("/v1/egress/approve", post(egress_approve))
+        .route("/v1/egress/deny", post(egress_deny))
+        .route("/v1/autonomy/report", get(autonomy_report_handler))
         .route("/v1/skills", get(skills))
         .route("/v1/open", post(open_url))
         .route("/v1/tools", get(tools_list))
@@ -899,7 +974,7 @@ async fn run(mode: RunMode) -> Result<(), Box<dyn std::error::Error>> {
                 .to_string();
             let task = app.tasks.create(title, String::new(), "schedule".into());
             let _ = app.sched.set_last_task(&job.id, &task.id);
-            let _ = run_task_core(&app, &task.id, None).await;
+            let _ = run_task_core(&app, &task.id, None, false, false).await;
             let _ = app.sched.mark_fired(&job.id, now);
             fired += 1;
         }
@@ -1483,6 +1558,9 @@ fn agent_redacted(a: &agents::AgentDef) -> Value {
         "provider": a.provider, "base_url": a.base_url,
         "api_key_set": !a.api_key.is_empty(), "effort": a.effort,
         "allowed_tools": a.allowed_tools,
+        // The standing autonomy grant (allowlist + budget), without the signature, so the editor can
+        // display and re-author it. Absent = no autonomous egress (today's gated behaviour).
+        "autonomy": a.autonomy_policy.as_ref().map(|s| &s.policy),
         "created_ms": a.created_ms, "updated_ms": a.updated_ms,
     })
 }
@@ -1577,6 +1655,287 @@ async fn agents_delete(State(app): State<App>, Path(id): Path<String>) -> ApiRes
         .append("agent.delete", "user", json!({ "id": id }))
         .map_err(err)?;
     Ok(Json(json!({ "ok": true })))
+}
+
+/// Author (or revoke) a durable agent's signed standing AUTONOMY policy — the "approve once, ahead of
+/// time" surface. The human is present here, so this is the moment authority is captured and SIGNED;
+/// thereafter SCHEDULED runs of this agent egress unattended within the allowlist + budget, with no
+/// live approval. Body: `{ enabled?, allowed_egress: [str], allowed_actions: [str], max_actions,
+/// max_spend_cents?, expires_days?, hardline_floor?: [str] }`. `enabled:false` (or an empty allowlist
+/// with no budget) revokes it.
+async fn agent_set_policy(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Json(p): Json<Value>,
+) -> ApiResult {
+    if app.agents.get(&id).is_none() {
+        return Err(err("no such agent"));
+    }
+    let strs = |key: &str| -> Vec<String> {
+        p.get(key)
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let enabled = p.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+    let allowed_egress = strs("allowed_egress");
+    let max_actions = p.get("max_actions").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    // Revoke when explicitly disabled, or when nothing meaningful was provided.
+    if !enabled || (allowed_egress.is_empty() && max_actions == 0) {
+        let def = app
+            .agents
+            .set_autonomy_policy(&id, None)
+            .ok_or_else(|| err("no such agent"))?;
+        let _ = app
+            .ledger
+            .append("autonomy.policy.revoked", "user", json!({ "id": id }));
+        return Ok(Json(agent_redacted(&def)));
+    }
+    let actions: Vec<engram_core::ActionClass> = strs("allowed_actions")
+        .iter()
+        .filter_map(|s| match s.to_ascii_lowercase().as_str() {
+            "send" => Some(engram_core::ActionClass::Send),
+            "post" => Some(engram_core::ActionClass::Post),
+            "pay" => Some(engram_core::ActionClass::Pay),
+            "other" => Some(engram_core::ActionClass::Other),
+            _ => None,
+        })
+        .collect();
+    let expires_days = p.get("expires_days").and_then(|v| v.as_u64()).unwrap_or(0);
+    let expires_at_ms = if expires_days > 0 {
+        engram_core::now_ms().saturating_add(expires_days.saturating_mul(86_400_000))
+    } else {
+        0
+    };
+    let policy = engram_core::AutonomyPolicy {
+        scope: format!("agent:{id}"),
+        allowed_egress: allowed_egress
+            .into_iter()
+            .map(engram_core::EgressRule::new)
+            .collect(),
+        allowed_actions: actions,
+        budget: engram_core::EgressBudget {
+            max_actions,
+            max_spend_cents: p.get("max_spend_cents").and_then(|v| v.as_u64()).unwrap_or(0),
+            expires_at_ms,
+        },
+        hardline_floor: strs("hardline_floor")
+            .into_iter()
+            .map(engram_core::EgressRule::new)
+            .collect(),
+    };
+    // Sign it NOW, while the human is present — the captured, frozen authority.
+    let signed = app.registry.sign_autonomy(&policy);
+    let def = app
+        .agents
+        .set_autonomy_policy(&id, Some(signed))
+        .ok_or_else(|| err("no such agent"))?;
+    let _ = app.ledger.append(
+        "autonomy.policy.set",
+        "user",
+        json!({ "id": id, "scope": policy.scope, "rules": policy.allowed_egress.len(),
+                "max_actions": max_actions, "expires_at_ms": expires_at_ms }),
+    );
+    Ok(Json(agent_redacted(&def)))
+}
+
+// ---------------------------------------------------------------------------
+// Async approve-queue for staged egress — the ledger IS the durable, signed queue
+// ---------------------------------------------------------------------------
+
+/// Derive the pending-egress queue from ledger entries: actions an unattended run STAGED
+/// (`agent.egress_staged`) minus those a human later resolved (`egress.allowlisted`/`egress.denied`),
+/// deduped by (scope, dest), most-recent first. Pure, so it is unit-tested directly.
+fn pending_from_entries(entries: &[engram_core::Entry]) -> Vec<Value> {
+    use std::collections::HashSet;
+    let field = |e: &engram_core::Entry, k: &str| -> String {
+        serde_json::from_str::<Value>(e.payload.get())
+            .ok()
+            .and_then(|p| p.get(k).and_then(|v| v.as_str()).map(String::from))
+            .unwrap_or_default()
+    };
+    let mut resolved: HashSet<(String, String)> = HashSet::new();
+    for e in entries {
+        if e.kind == "egress.allowlisted" || e.kind == "egress.denied" {
+            resolved.insert((field(e, "scope"), field(e, "dest")));
+        }
+    }
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    let mut pending = Vec::new();
+    for e in entries.iter().rev() {
+        if e.kind != "agent.egress_staged" {
+            continue;
+        }
+        let (scope, dest) = (field(e, "scope"), field(e, "dest"));
+        if dest.is_empty() {
+            continue;
+        }
+        let key = (scope.clone(), dest.clone());
+        if resolved.contains(&key) || !seen.insert(key) {
+            continue;
+        }
+        pending.push(json!({
+            "scope": scope, "dest": dest,
+            "tool": field(e, "tool"), "reason": field(e, "reason"),
+            "ts_ms": e.ts_ms, "seq": e.seq,
+        }));
+    }
+    pending
+}
+
+/// Add `dest` to a policy's allowlist (idempotent), returning the extended policy to re-sign.
+fn extend_allowlist(
+    mut policy: engram_core::AutonomyPolicy,
+    dest: &str,
+) -> engram_core::AutonomyPolicy {
+    if !policy
+        .allowed_egress
+        .iter()
+        .any(|r| r.pattern.eq_ignore_ascii_case(dest))
+    {
+        policy.allowed_egress.push(engram_core::EgressRule::new(dest));
+    }
+    policy
+}
+
+async fn egress_pending(State(app): State<App>) -> ApiResult {
+    let entries = app.ledger.tail(2000).map_err(err)?;
+    Ok(Json(json!({ "pending": pending_from_entries(&entries) })))
+}
+
+#[derive(serde::Deserialize)]
+struct EgressResolve {
+    scope: String,
+    dest: String,
+}
+
+/// Approve a staged egress destination: add it to the scoped agent's SIGNED allowlist (re-signing the
+/// policy) so future unattended runs send there without asking — the approval moment captured once,
+/// out of band. Ledger `egress.allowlisted`.
+async fn egress_approve(State(app): State<App>, Json(r): Json<EgressResolve>) -> ApiResult {
+    let dest = r.dest.trim().to_string();
+    if dest.is_empty() {
+        return Err(err("dest required"));
+    }
+    let id = r.scope.strip_prefix("agent:").unwrap_or(&r.scope).to_string();
+    let def = app
+        .agents
+        .get(&id)
+        .ok_or_else(|| err("no such agent for this staged action"))?;
+    let policy = def
+        .autonomy_policy
+        .as_ref()
+        .and_then(|s| engram_core::verify_policy(s, app.registry.verifying()).ok())
+        // Only extend a policy that belongs to this exact agent (re-bind scope to the holder).
+        .filter(|p| p.scope == format!("agent:{id}"))
+        .ok_or_else(|| err("agent has no valid autonomy policy to extend"))?;
+    let signed = app.registry.sign_autonomy(&extend_allowlist(policy, &dest));
+    app.agents
+        .set_autonomy_policy(&id, Some(signed))
+        .ok_or_else(|| err("no such agent"))?;
+    let _ = app.ledger.append(
+        "egress.allowlisted",
+        "user",
+        json!({ "scope": r.scope, "dest": dest }),
+    );
+    Ok(Json(json!({ "ok": true, "allowlisted": dest })))
+}
+
+async fn egress_deny(State(app): State<App>, Json(r): Json<EgressResolve>) -> ApiResult {
+    let _ = app.ledger.append(
+        "egress.denied",
+        "user",
+        json!({ "scope": r.scope, "dest": r.dest }),
+    );
+    Ok(Json(json!({ "ok": true, "denied": r.dest })))
+}
+
+/// Reconstruct the autonomy story from the signed ledger: per agent scope, the policy granted and a
+/// tally of every autonomous send, staged action, floor-refusal, and async approve/deny — so a
+/// multi-day unattended run is offline-verifiable against the chain. Pure (unit-tested); reused by the
+/// HTTP report endpoint and the `verify-autonomy` CLI.
+fn autonomy_report(entries: &[engram_core::Entry]) -> Value {
+    use std::collections::BTreeMap;
+    let pget = |e: &engram_core::Entry| serde_json::from_str::<Value>(e.payload.get()).unwrap_or(json!({}));
+    #[derive(Default)]
+    struct Agg {
+        autonomous: u64,
+        staged: u64,
+        refused: u64,
+        allowlisted: u64,
+        denied: u64,
+        policy_max: u64,
+        policy_rules: u64,
+        has_policy: bool,
+        revoked: bool,
+    }
+    let mut scopes: BTreeMap<String, Agg> = BTreeMap::new();
+    let mut one_time = 0u64;
+    for e in entries {
+        let p = pget(e);
+        let scope = p["scope"].as_str().unwrap_or("").to_string();
+        match e.kind.as_str() {
+            "autonomy.policy.set" => {
+                let a = scopes.entry(scope).or_default();
+                a.has_policy = true;
+                a.revoked = false;
+                a.policy_max = p["max_actions"].as_u64().unwrap_or(0);
+                a.policy_rules = p["rules"].as_u64().unwrap_or(0);
+            }
+            // The revoke entry carries {id}; normalise to the "agent:<id>" scope key.
+            "autonomy.policy.revoked" => {
+                let key = format!("agent:{}", p["id"].as_str().unwrap_or(""));
+                scopes.entry(key).or_default().revoked = true;
+            }
+            "agent.egress_autonomous" => scopes.entry(scope).or_default().autonomous += 1,
+            "agent.egress_staged" => scopes.entry(scope).or_default().staged += 1,
+            "agent.egress_refused" => scopes.entry(scope).or_default().refused += 1,
+            "egress.allowlisted" => scopes.entry(scope).or_default().allowlisted += 1,
+            "egress.denied" => scopes.entry(scope).or_default().denied += 1,
+            "agent.egress_approved" => one_time += 1,
+            _ => {}
+        }
+    }
+    let scope_list: Vec<Value> = scopes
+        .iter()
+        .map(|(scope, a)| {
+            let policy = if a.revoked {
+                json!("revoked")
+            } else if a.has_policy {
+                json!({ "max_actions": a.policy_max, "rules": a.policy_rules })
+            } else {
+                Value::Null
+            };
+            json!({
+                "scope": if scope.is_empty() { "(unscoped)" } else { scope.as_str() },
+                "policy": policy,
+                "autonomous_sends": a.autonomous, "staged": a.staged, "refused": a.refused,
+                "allowlisted": a.allowlisted, "denied": a.denied,
+            })
+        })
+        .collect();
+    json!({
+        "scopes": scope_list,
+        "one_time_approvals": one_time,
+        "totals": {
+            "autonomous_sends": scopes.values().map(|a| a.autonomous).sum::<u64>(),
+            "staged": scopes.values().map(|a| a.staged).sum::<u64>(),
+            "refused": scopes.values().map(|a| a.refused).sum::<u64>(),
+            "allowlisted": scopes.values().map(|a| a.allowlisted).sum::<u64>(),
+            "denied": scopes.values().map(|a| a.denied).sum::<u64>(),
+        }
+    })
+}
+
+async fn autonomy_report_handler(State(app): State<App>) -> ApiResult {
+    let entries = app.ledger.read_all().map_err(err)?;
+    Ok(Json(autonomy_report(&entries)))
 }
 
 /// An agent's accumulated track record: every signed action it has taken (ledger actor == its name),
@@ -1717,6 +2076,8 @@ pub(crate) async fn run_agent_task(
         None,
         None,
         None,
+        false, // approved
+        true,  // attended (this wrapper backs interactive conversation)
     )
     .await
 }
@@ -1844,7 +2205,33 @@ pub(crate) async fn run_agent_task_cb(
     on_narration: Option<engram_agent::NarrationCallback>,
     agent_def: Option<&agents::AgentDef>,
     workdir_override: Option<std::path::PathBuf>,
+    // One-time user approval for this run only (the UI's "Approve & continue"): de-escalates the
+    // egress trifecta for this run. NEVER persisted — the next run starts gated again.
+    approved: bool,
+    // Whether a human is watching this run (interactive) vs scheduled/inbound (unattended). An
+    // unattended run with no autonomy policy STAGES novel egress for async review instead of refusing.
+    attended: bool,
 ) -> Result<engram_agent::AgentRun, String> {
+    // A named agent may carry a signed standing AutonomyPolicy that lets it egress unattended within
+    // an allowlist + budget. Verify the signature with the skill key before honoring it; an
+    // unsigned/forged/tampered policy fails closed (treated as no policy = default-deny).
+    let autonomy = agent_def.and_then(|a| {
+        a.autonomy_policy.as_ref().and_then(|signed| {
+            match engram_core::verify_policy(signed, app.registry.verifying()) {
+                // Re-bind the signed policy to THIS agent: a valid signature for a different scope must
+                // not be honored here (defense-in-depth beyond the signature).
+                Ok(p) if p.scope == format!("agent:{}", a.id) => Some(p),
+                Ok(p) => {
+                    tracing::warn!(agent = %a.id, policy_scope = %p.scope, "autonomy policy scope mismatch, ignoring");
+                    None
+                }
+                Err(e) => {
+                    tracing::warn!(agent = %a.id, "autonomy policy failed verification, ignoring: {e}");
+                    None
+                }
+            }
+        })
+    });
     let policy = engram_agent::Policy {
         allow_shell: app.allow_shell.load(std::sync::atomic::Ordering::Relaxed),
         dry_run,
@@ -1881,6 +2268,12 @@ pub(crate) async fn run_agent_task_cb(
         // Authoring/improving skills is on by default (skills pop up from use); the user can turn it
         // off in the Tools panel (stored inverted so the zero value stays "on").
         allow_skill_author: !app.cfg().security.disable_skill_author,
+        // Egress de-escalation, this run only — set when the user clicked "Approve & continue".
+        approved,
+        // Run surface + standing autonomy grant: an unattended run consults the signed policy
+        // instead of a live human; with no policy it stages novel egress rather than refusing.
+        attended,
+        autonomy,
         ..Default::default()
     };
     // A named agent brings its own model (the right model per task); else the global default.
@@ -2181,6 +2574,8 @@ async fn agent_handler(State(app): State<App>, Json(r): Json<AgentReq>) -> ApiRe
         None,
         None,
         None,
+        false, // approved
+        true,  // attended (interactive /v1/agent call)
     )
     .await
     .map_err(ApiError)?;
@@ -2617,11 +3012,40 @@ fn capture_artifacts(
 /// spike so the board shows Running), run, capture the cost delta and the signed ledger
 /// head, then mark done - or failed if the agent hit its step limit. Shared by the HTTP
 /// endpoint and the in-process scheduler.
+/// Best-effort POST of `text` to a channel webhook (Slack/Discord/generic). Lets an UNATTENDED run
+/// tell the user, asynchronously, that it staged an action for approval — so they learn without
+/// watching the app. No-op when the url is empty. The url is the user's own configured channel
+/// (trusted), so a plain post is fine.
+async fn post_webhook(url: &str, text: &str) {
+    let url = url.trim();
+    if url.is_empty() {
+        return;
+    }
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+    else {
+        return;
+    };
+    // "text" for Slack/Mattermost, "content" for Discord — send both for compatibility.
+    let _ = client
+        .post(url)
+        .json(&json!({ "text": text, "content": text }))
+        .send()
+        .await;
+}
+
 pub(crate) async fn run_task_core(
     app: &App,
     id: &str,
     // When set, each completed step is streamed here as JSON for the live "watch the agent" view.
     step_tx: Option<tokio::sync::mpsc::UnboundedSender<serde_json::Value>>,
+    // One-time user approval (the UI's "Approve & continue") — de-escalates the egress trifecta for
+    // THIS run only. Never persisted.
+    approved: bool,
+    // Whether a human is watching: a user-initiated run (true) vs a scheduled/inbound one (false).
+    attended: bool,
 ) -> Result<tasks::Task, String> {
     let task = app.tasks.get(id).ok_or("task not found")?;
     // Atomically claim the task so two concurrent runs (double-click, HTTP + scheduler)
@@ -2709,6 +3133,8 @@ pub(crate) async fn run_task_core(
         None,
         agent_def.as_ref(),
         workdir_override,
+        approved,
+        attended,
     )
     .await
     {
@@ -2753,6 +3179,9 @@ pub(crate) async fn run_task_core(
     // Capture the files this run created (copied out to <home>/artifacts/<id>/ so they survive
     // worktree cleanup) while the worktree guard is still alive.
     let output_files = capture_artifacts(&app.home, id, &run_workdir, &artifacts_before);
+    // Did THIS unattended run park an egress for approval? (checked before run.steps is moved)
+    let staged_here =
+        !attended && run.steps.iter().any(|s| s.observation.contains("egress staged for review"));
     let receipt = tasks::TaskRun {
         answer: run.answer,
         steps: run.steps,
@@ -2774,11 +3203,43 @@ pub(crate) async fn run_task_core(
         Priority::Normal,
         json!({ "id": id, "status": status }),
     ));
+    // Async approve-queue notify: an unattended run that parked an action tells the user out of band
+    // (channel webhook), so they learn there's something to approve without watching the app.
+    if staged_here {
+        let pending = pending_from_entries(&app.ledger.tail(500).unwrap_or_default());
+        let dests: Vec<String> = pending
+            .iter()
+            .filter_map(|p| p.get("dest").and_then(|v| v.as_str()).map(String::from))
+            .take(3)
+            .collect();
+        let msg = format!(
+            "Engram staged an action needing your approval (task: {}). {} pending{}. Open the app → Pending approvals.",
+            task.title,
+            pending.len(),
+            if dests.is_empty() { String::new() } else { format!(": {}", dests.join(", ")) }
+        );
+        let url = app.cfg().channels.webhook_url.clone();
+        tokio::spawn(async move { post_webhook(&url, &msg).await; });
+    }
     result
 }
 
-async fn tasks_run(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
-    let updated = run_task_core(&app, &id, None).await.map_err(ApiError)?;
+/// Query for a task run: `?approved=1` carries the user's one-time "Approve & continue" so the run
+/// may egress despite the trifecta. Defaults to false — a plain run stays gated.
+#[derive(serde::Deserialize, Default)]
+struct RunQuery {
+    #[serde(default)]
+    approved: bool,
+}
+
+async fn tasks_run(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Query(q): Query<RunQuery>,
+) -> ApiResult {
+    let updated = run_task_core(&app, &id, None, q.approved, true) // user-initiated run → attended
+        .await
+        .map_err(ApiError)?;
     Ok(Json(serde_json::to_value(updated).map_err(err)?))
 }
 
@@ -2788,6 +3249,7 @@ async fn tasks_run(State(app): State<App>, Path(id): Path<String>) -> ApiResult 
 async fn tasks_run_stream(
     State(app): State<App>,
     Path(id): Path<String>,
+    Query(q): Query<RunQuery>,
 ) -> axum::response::sse::Sse<
     impl futures_core::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>,
 > {
@@ -2795,8 +3257,9 @@ async fn tasks_run_stream(
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
     let (done_tx, done_rx) = tokio::sync::oneshot::channel::<Result<tasks::Task, String>>();
     let app2 = app.clone();
+    let approved = q.approved;
     tokio::spawn(async move {
-        let result = run_task_core(&app2, &id, Some(tx)).await;
+        let result = run_task_core(&app2, &id, Some(tx), approved, true).await; // streamed UI run → attended
         let _ = done_tx.send(result);
     });
     let stream = async_stream::stream! {
@@ -2903,7 +3366,7 @@ fn spawn_scheduler_tick(app: App) {
                 // Record the task on the job before running so a crash mid-run still leaves a
                 // pointer to the (failed) receipt for the UI's "last run" affordance.
                 let _ = app.sched.set_last_task(&job.id, &task.id);
-                let _ = run_task_core(&app, &task.id, None).await;
+                let _ = run_task_core(&app, &task.id, None, false, false).await;
                 let _ = app.sched.mark_fired(&job.id, now);
             }
         }
@@ -3153,6 +3616,8 @@ async fn converse_stream_handler(
             Some(on_narration),
             None,
             None,
+            false, // approved
+            true,  // attended (interactive streaming conversation)
         )
         .await
         {
@@ -3742,7 +4207,7 @@ async fn run_mission(State(app): State<App>, Json(r): Json<MissionReq>) -> ApiRe
         let sem = sem.clone();
         handles.push(tokio::spawn(async move {
             let _permit = sem.acquire().await;
-            let answer = match run_task_core(&appc, &cid, None).await {
+            let answer = match run_task_core(&appc, &cid, None, false, false).await { // channel run → unattended
                 Ok(t) => t.run.map(|r| r.answer).unwrap_or_default(),
                 Err(e) => format!("(failed: {e})"),
             };
@@ -3956,7 +4421,7 @@ async fn schedule_run(State(app): State<App>, Path(id): Path<String>) -> ApiResu
     // Record the task on the job before running so a crash mid-run still leaves a pointer to
     // the (failed) receipt for the UI's "last run" affordance.
     let _ = app.sched.set_last_task(&job.id, &task.id);
-    let updated = run_task_core(&app, &task.id, None)
+    let updated = run_task_core(&app, &task.id, None, false, false) // scheduled run → unattended
         .await
         .map_err(ApiError)?;
     Ok(Json(
@@ -4653,6 +5118,91 @@ fn init_tracing() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_egress_excludes_resolved_and_dedupes() {
+        let dir = tempfile::tempdir().unwrap();
+        let l = engram_core::Ledger::open(dir.path()).unwrap();
+        let stage = |dest: &str| {
+            l.append(
+                "agent.egress_staged",
+                "agent",
+                json!({"scope":"agent:1","dest":dest,"tool":"send_message","reason":"destination_not_allowlisted"}),
+            )
+            .unwrap();
+        };
+        stage("a.com");
+        stage("b.com");
+        stage("b.com"); // duplicate staging of the same destination
+        l.append("egress.allowlisted", "user", json!({"scope":"agent:1","dest":"a.com"}))
+            .unwrap();
+        let pending = pending_from_entries(&l.read_all().unwrap());
+        let dests: Vec<&str> = pending.iter().map(|p| p["dest"].as_str().unwrap()).collect();
+        // a.com was resolved (allowlisted) and b.com is deduped -> only one pending item.
+        assert_eq!(dests, vec!["b.com"], "got: {dests:?}");
+    }
+
+    #[tokio::test]
+    async fn post_webhook_delivers_the_message_and_noops_on_empty() {
+        // Empty url: a clean no-op (no panic, no connection attempt).
+        post_webhook("", "ignored").await;
+        // Configured url: the message body reaches the endpoint.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let got = std::sync::Arc::new(tokio::sync::Mutex::new(String::new()));
+        let g2 = got.clone();
+        let server = tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = vec![0u8; 8192];
+                let n = sock.read(&mut buf).await.unwrap_or(0);
+                *g2.lock().await = String::from_utf8_lossy(&buf[..n]).to_string();
+                let _ = sock.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n").await;
+            }
+        });
+        post_webhook(&format!("http://{addr}/hook"), "2 actions awaiting approval").await;
+        let _ = server.await;
+        assert!(
+            got.lock().await.contains("2 actions awaiting approval"),
+            "the webhook endpoint must receive the staged-action message"
+        );
+    }
+
+    #[test]
+    fn autonomy_report_tallies_per_scope_and_resolutions() {
+        let dir = tempfile::tempdir().unwrap();
+        let l = engram_core::Ledger::open(dir.path()).unwrap();
+        l.append("autonomy.policy.set", "user", json!({"id":"1","scope":"agent:1","rules":2,"max_actions":50})).unwrap();
+        l.append("agent.egress_autonomous", "agent", json!({"scope":"agent:1","dest":"a.com"})).unwrap();
+        l.append("agent.egress_autonomous", "agent", json!({"scope":"agent:1","dest":"a.com"})).unwrap();
+        l.append("agent.egress_staged", "agent", json!({"scope":"agent:1","dest":"b.com"})).unwrap();
+        l.append("egress.denied", "user", json!({"scope":"agent:1","dest":"b.com"})).unwrap();
+        l.append("agent.egress_approved", "agent", json!({"tool":"send_message"})).unwrap();
+        let r = autonomy_report(&l.read_all().unwrap());
+        assert_eq!(r["totals"]["autonomous_sends"], 2);
+        assert_eq!(r["totals"]["staged"], 1);
+        assert_eq!(r["totals"]["denied"], 1);
+        assert_eq!(r["one_time_approvals"], 1);
+        let s = &r["scopes"][0];
+        assert_eq!(s["scope"], "agent:1");
+        assert_eq!(s["policy"]["max_actions"], 50);
+        assert_eq!(s["autonomous_sends"], 2);
+    }
+
+    #[test]
+    fn extend_allowlist_is_idempotent_and_case_insensitive() {
+        let p = engram_core::AutonomyPolicy {
+            scope: "agent:1".into(),
+            allowed_egress: vec![engram_core::EgressRule::new("x.com")],
+            allowed_actions: vec![],
+            budget: engram_core::EgressBudget { max_actions: 5, max_spend_cents: 0, expires_at_ms: 0 },
+            hardline_floor: vec![],
+        };
+        let p = extend_allowlist(p, "y.com");
+        assert_eq!(p.allowed_egress.len(), 2);
+        let p = extend_allowlist(p, "Y.COM"); // already present (case-insensitive) -> no duplicate
+        assert_eq!(p.allowed_egress.len(), 2);
+    }
 
     // The newly-surfaced env-only settings (worktrees, media models, browser, webhook) must
     // round-trip through apply_config_patch, and the webhook URL must be masked in redacted().

@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use engram_core::{Ledger, Taint};
+use engram_core::{AutonomyPolicy, Ledger, Taint};
 use engram_gateway::{Gateway, ToolDef};
 use engram_memory::Memory;
 use engram_skills::Registry;
@@ -121,6 +121,24 @@ pub struct Policy {
     /// default (the tool then needs an explicit url or the ENGRAM_WEBHOOK_URL env var). The
     /// SSRF guard still validates whatever URL is finally used.
     pub webhook_url: Option<String>,
+    /// EXPLICIT user approval to perform egress even on an untrusted+sensitive ("trifecta") run — the
+    /// escape valve that keeps the gate from collapsing into "refuses everything". A human approves a
+    /// specific blocked action and the daemon resumes the run with this set. CRITICAL boundary: ONLY
+    /// the daemon sets this, and only after a real user approval; the model can *request* approval
+    /// (`request_approval` tool) but can never grant its own. Every approved egress is ledgered.
+    pub approved: bool,
+    /// Whether a human is watching THIS run (interactive UI/HTTP) vs scheduled/unattended. Decides
+    /// what happens to an egress action that isn't pre-authorized: attended → the live approval
+    /// prompt (today's behaviour); unattended → stage it for async review, never block the run.
+    pub attended: bool,
+    /// A signed standing AUTONOMY policy for this run (from the durable agent / scheduled job). When
+    /// present, the egress gate consults it instead of demanding a live human approval — allowlisted
+    /// destinations proceed within budget, everything else stages. Loaded + verified out-of-band at
+    /// run construction; never settable by the model or tainted content (the bypass is frozen).
+    pub autonomy: Option<AutonomyPolicy>,
+    /// Shared, monotonic count of egress actions consumed this run — the live half of the policy's
+    /// budget. An `Arc` so delegated sub-agents share ONE pool (fan-out can't escape the budget).
+    pub egress_consumed: std::sync::Arc<std::sync::atomic::AtomicU32>,
 }
 
 impl Default for Policy {
@@ -135,6 +153,11 @@ impl Default for Policy {
             dry_run: false,
             vision_model: None,
             webhook_url: None,
+            approved: false,
+            // Interactive is the safe default; the scheduler explicitly marks unattended runs.
+            attended: true,
+            autonomy: None,
+            egress_consumed: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
         }
     }
 }

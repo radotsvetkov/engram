@@ -74,6 +74,8 @@ pub async fn channel_handler(
         None,
         None,
         None,
+        false, // approved: inbound message never auto-approves its own egress
+        false, // attended: unattended inbound surface
     )
     .await
     {

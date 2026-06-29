@@ -66,6 +66,10 @@ struct App {
     allow_shell: Arc<std::sync::atomic::AtomicBool>,
     /// Kill switch: set true to stop in-flight agent runs at their next step boundary.
     halt: Arc<std::sync::atomic::AtomicBool>,
+    /// Per-session halt flags so one chat can be stopped WITHOUT killing other concurrent chats.
+    /// A chat run registers its flag under its session id; `/v1/halt {session}` flips just that one.
+    /// The global `halt` above is the emergency "stop everything".
+    run_halts: Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<std::sync::atomic::AtomicBool>>>>,
     /// Live settings (provider, model, security, cost, MCP), editable from the desktop's
     /// Settings panel and persisted to `config.json`.
     config: Arc<std::sync::RwLock<config::Config>>,
@@ -818,6 +822,7 @@ async fn run(mode: RunMode) -> Result<(), Box<dyn std::error::Error>> {
         workspace: Arc::new(workspace::WorkspaceStore::open(std::path::Path::new(&home))),
         allow_shell: Arc::new(std::sync::atomic::AtomicBool::new(cfg.security.allow_shell)),
         halt: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        run_halts: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         config: Arc::new(std::sync::RwLock::new(cfg)),
         home: home.clone(),
         telegram: Arc::new(std::sync::Mutex::new(None)),
@@ -2099,6 +2104,7 @@ pub(crate) async fn run_agent_task(
         None,
         false, // approved
         true,  // attended (this wrapper backs interactive conversation)
+        app.halt.clone(),
     )
     .await
 }
@@ -2232,6 +2238,9 @@ pub(crate) async fn run_agent_task_cb(
     // Whether a human is watching this run (interactive) vs scheduled/inbound (unattended). An
     // unattended run with no autonomy policy STAGES novel egress for async review instead of refusing.
     attended: bool,
+    // The halt flag THIS run checks at each step boundary. Pass a per-session flag so one chat can be
+    // stopped without killing others; pass `app.halt` for the global emergency-stop behavior.
+    halt: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<engram_agent::AgentRun, String> {
     // A named agent may carry a signed standing AutonomyPolicy that lets it egress unattended within
     // an allowlist + budget. Verify the signature with the skill key before honoring it; an
@@ -2453,7 +2462,7 @@ pub(crate) async fn run_agent_task_cb(
         .max_steps(max_steps)
         .reflect(true)
         .token_budget(budget)
-        .halt(app.halt.clone());
+        .halt(halt.clone());
     // A named agent signs its steps as itself, so a multi-agent run is auditable per actor.
     if let Some(a) = agent_def {
         agent = agent.actor(a.name.clone());
@@ -2597,6 +2606,7 @@ async fn agent_handler(State(app): State<App>, Json(r): Json<AgentReq>) -> ApiRe
         None,
         false, // approved
         true,  // attended (interactive /v1/agent call)
+        app.halt.clone(),
     )
     .await
     .map_err(ApiError)?;
@@ -2740,12 +2750,35 @@ async fn policy_get(State(app): State<App>) -> ApiResult {
 struct HaltReq {
     #[serde(default)]
     on: bool,
+    /// Stop JUST this chat session's run (leaving other concurrent chats running). Omit for the
+    /// GLOBAL emergency stop that halts every in-flight run.
+    #[serde(default)]
+    session: Option<String>,
 }
 
-/// Emergency stop. `{"on":true}` halts every in-flight agent run at its next step boundary
-/// (and keeps new runs halted until released); `{"on":false}` releases. Ledgered.
+/// Stop a run at its next step boundary. `{"on":true,"session":"<id>"}` halts only that chat;
+/// `{"on":true}` (no session) is the global emergency stop (every run). `{"on":false}` releases.
 async fn halt_set(State(app): State<App>, Json(r): Json<HaltReq>) -> ApiResult {
-    app.halt.store(r.on, std::sync::atomic::Ordering::Relaxed);
+    use std::sync::atomic::Ordering;
+    if let Some(sid) = &r.session {
+        // Per-session: flip just that run's flag (a no-op if the run already finished/deregistered).
+        if let Ok(g) = app.run_halts.lock() {
+            if let Some(h) = g.get(sid) {
+                h.store(r.on, Ordering::Relaxed);
+            }
+        }
+        let _ = app
+            .ledger
+            .append("halt.set", "user", json!({ "on": r.on, "session": sid }));
+        return Ok(Json(json!({ "halted": r.on, "session": sid })));
+    }
+    // Global emergency stop: the shared flag AND every registered per-session run.
+    app.halt.store(r.on, Ordering::Relaxed);
+    if let Ok(g) = app.run_halts.lock() {
+        for h in g.values() {
+            h.store(r.on, Ordering::Relaxed);
+        }
+    }
     let _ = app.ledger.append("halt.set", "user", json!({ "on": r.on }));
     Ok(Json(json!({ "halted": r.on })))
 }
@@ -3156,6 +3189,7 @@ pub(crate) async fn run_task_core(
         workdir_override,
         approved,
         attended,
+        app.halt.clone(),
     )
     .await
     {
@@ -3590,7 +3624,13 @@ async fn converse_stream_handler(
              SPEED: each model step is slow, so do as much as possible per step. When you need \
              several web searches, pass them ALL to ONE web_search call as a `queries` array (they \
              run concurrently) instead of firing them one at a time across many turns — this is the \
-             single biggest thing that makes a run fast.\n\n",
+             single biggest thing that makes a run fast.\n\
+             TOOL CHOICE: do NOT drive the browser to click through flight/booking sites (Google \
+             Flights, Skyscanner, Kayak, Momondo) — they are slow JS apps that block bots, so \
+             clicking element-by-element wastes minutes. For flight prices use the flight_search \
+             skill; for everything else use web_search to find sources then web_fetch to read them \
+             (web_fetch falls back to a reader that handles JS pages). Reach for the interactive \
+             browser ONLY as a last resort for one specific page that has no API, skill, or feed.\n\n",
         );
         if !history.is_empty() {
             task.push_str("You are mid-conversation. Here is what was said so far - use it; do NOT re-ask for context you already have:\n");
@@ -3637,7 +3677,15 @@ async fn converse_stream_handler(
             let note: String = note.chars().take(600).collect();
             let _ = txn.send(Event::default().event("narration").data(json!({ "text": note }).to_string()));
         });
-        match run_agent_task_cb(
+        // Per-session halt: register before the run so `/v1/halt {session}` stops THIS chat only,
+        // then deregister after — so concurrent chats run independently and Stop targets just one.
+        let run_halt = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        if let Some(sid) = r.session.clone() {
+            if let Ok(mut g) = app.run_halts.lock() {
+                g.insert(sid, run_halt.clone());
+            }
+        }
+        let res = run_agent_task_cb(
             &app,
             &task,
             24,
@@ -3649,9 +3697,15 @@ async fn converse_stream_handler(
             None,
             false, // approved
             true,  // attended (interactive streaming conversation)
+            run_halt,
         )
-        .await
-        {
+        .await;
+        if let Some(sid) = &r.session {
+            if let Ok(mut g) = app.run_halts.lock() {
+                g.remove(sid);
+            }
+        }
+        match res {
             Ok(run) => {
                 if let Some(sid) = &r.session {
                     // The user turn was already persisted up-front; append only the reply now.

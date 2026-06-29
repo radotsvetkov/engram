@@ -2458,9 +2458,33 @@ mod web {
             let _ = ctx
                 .ledger
                 .append("agent.web_fetch", "agent", json!({ "url": url }));
-            let html = get_text(url, ctx.policy.timeout_secs).await?;
-            Ok(super::html_to_text(&html))
+            let to = ctx.policy.timeout_secs;
+            // Direct fetch first (fast, no third party). If it errors or yields almost no readable
+            // text (a JS-only shell or a bot-block page), fall back to the Jina reader proxy, which
+            // renders the page server-side and returns clean markdown — reliable for SPA/JS pages
+            // WITHOUT slow, brittle browser automation. Reader fallback only on a poor direct result.
+            let direct = get_text(url, to).await.map(|h| super::html_to_text(&h));
+            if let Ok(text) = &direct {
+                if text.trim().len() >= 200 {
+                    return Ok(text.clone());
+                }
+            }
+            if let Ok(read) = jina_read(url, to).await {
+                if read.trim().len() >= 200 {
+                    return Ok(read);
+                }
+            }
+            direct // the (possibly thin) direct result, or its original error
         }
+    }
+
+    /// Read a page via the Jina reader proxy (r.jina.ai) — renders JS server-side and returns clean
+    /// markdown. Free, no key, no browser. A reliable fallback for pages a raw fetch can't read.
+    async fn jina_read(url: &str, timeout: u64) -> Result<String, String> {
+        // r.jina.ai/<full-url>: the proxy is a public host (SSRF-vetted by get_text); the target URL
+        // was already guard_url'd by the caller.
+        let proxied = format!("https://r.jina.ai/{url}");
+        get_text(&proxied, timeout).await
     }
 
     pub struct WebSearchTool;

@@ -937,6 +937,8 @@
   .cstep.clk { cursor:pointer; }
   .cstep.clk:hover { color:var(--text-primary); border-color:var(--accent); }
   .cstep .cs-open { margin-left:3px; opacity:.6; font-size:10px; }
+  /* a short summary of what the step actually found/did, inline so the user sees substance not just "✓ searched the web" */
+  .cstep .cs-obs { color:var(--text-muted); opacity:.85; margin-left:4px; max-width:min(60vw,340px); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .chat-steps .step-shot { flex-basis:100%; margin:3px 0; }
   /* Live narration: the model's "what I'm doing" commentary while it works */
   .chat-notes { display:flex; flex-direction:column; gap:4px; margin:2px 0 8px; }
@@ -1699,7 +1701,8 @@ function wireComposer(){
   });
 }
 // While a chat is running the send button becomes a Stop button - clicking it aborts the request.
-let _chatAbort=null, _chatBusy=false, _thinkTimer=0;
+let _thinkTimer=0;
+const _chatAborts=new Map();   // session_id -> AbortController, so chats run + stop independently
 const _busySessions=new Set();   // session ids with an in-flight run -> blinking dot in the sidebar
 // Scroll the chat feed to the newest message (the jump-to-latest button + after sending).
 function feedToBottom(){ const f=document.getElementById('feed'); if(f) f.scrollTo({top:f.scrollHeight, behavior:'smooth'}); }
@@ -1733,27 +1736,33 @@ function tickThinking(){
   document.querySelectorAll('.ct-secs[data-t0]').forEach(el=>{ any=true; const t0=+el.getAttribute('data-t0')||Date.now(); el.textContent=(((Date.now()-t0)/1000)|0)+'s'; });
   if(!any && _thinkTimer){ clearInterval(_thinkTimer); _thinkTimer=0; }
 }
-function setChatBusy(busy){
-  _chatBusy=busy;
-  if(busy){ if(!_thinkTimer) _thinkTimer=setInterval(tickThinking,1000); }
+// The Stop/Send button reflects whether the ACTIVE session has an in-flight run; the thinking timer
+// ticks while ANY session is busy. State is per-session (_busySessions / _chatAborts), so multiple
+// chats run at once and the button + sidebar dots track each independently.
+function refreshSendBtn(){
+  if(_busySessions.size){ if(!_thinkTimer) _thinkTimer=setInterval(tickThinking,1000); }
   else if(_thinkTimer){ clearInterval(_thinkTimer); _thinkTimer=0; }
   const b=document.getElementById('sendBtn'); if(!b) return;
-  if(busy){
-    b.classList.add('is-stop'); b.title='Stop'; b.setAttribute('aria-label','Stop the run');
+  if(_busySessions.has(WS.activeSession)){
+    b.classList.add('is-stop'); b.title='Stop this chat'; b.setAttribute('aria-label','Stop the run');
     b.innerHTML='<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" stroke="none"><rect x="6" y="6" width="12" height="12" rx="2.5"/></svg>';
   } else {
     b.classList.remove('is-stop'); b.title='Send (Enter)'; b.setAttribute('aria-label','Send');
     b.innerHTML='<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M6 11l6-6 6 6"/></svg>';
   }
 }
-function stopChat(){
-  if(_chatAbort){ try{ _chatAbort.abort(); }catch(_){} }
-  // Also tell the daemon to halt the run server-side so it stops spending, then clear the flag.
-  try{ J('/v1/halt',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({on:true})}).then(()=>setTimeout(()=>{ J('/v1/halt',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({on:false})}).catch(()=>{}); },300)); }catch(_){}
-  setChatBusy(false);
+// Stop ONE session's run — abort its request + halt just that run server-side. Other chats keep going.
+function stopChat(sid){
+  sid = sid || WS.activeSession;
+  const ac=_chatAborts.get(sid); if(ac){ try{ ac.abort(); }catch(_){} }
+  try{ J('/v1/halt',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({session:sid, on:true})})
+    .then(()=>setTimeout(()=>{ J('/v1/halt',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({session:sid, on:false})}).catch(()=>{}); },300)); }catch(_){}
+  _busySessions.delete(sid); _chatAborts.delete(sid); refreshSendBtn(); renderSidebar();
 }
 async function converseInline(text){
-  if(_chatBusy){ stopChat(); return; }   // the send button is showing Stop - clicking it aborts
+  // The button is "Stop" only when the ACTIVE session is running; clicking it stops THAT chat. A send
+  // into any OTHER (idle) session starts a concurrent run without touching the busy one.
+  if(_busySessions.has(WS.activeSession)){ stopChat(WS.activeSession); return; }
   text=text.trim();
   // Snapshot any pinned context BEFORE the empty-text guard so an attachment-only send is
   // still possible, and BEFORE the re-render below clears the pills element.
@@ -2060,6 +2069,7 @@ async function openSession(id){
   WS.activeSession=id;
   if(!WS.byId[id]){ try{ WS.byId[id]=await J('/v1/sessions/'+encodeURIComponent(id)); }catch(_){ WS.byId[id]={id,messages:[]}; } }
   renderSidebar(); if(state.route!=='Chat') go('Chat'); else renderChat();
+  refreshSendBtn();   // the Send/Stop button tracks the now-active session's run state
 }
 async function favSession(id,e){ if(e) e.stopPropagation(); const s=WS.sessions.find(x=>x.id===id); if(!s) return; const fav=!s.fav;
   s.fav=fav; if(WS.byId[id]) WS.byId[id].fav=fav; renderSidebar();
@@ -2273,7 +2283,11 @@ function paintFeed(toBottom=true){
       const fpath=(st.args&&(st.args.path||st.args.file))||'';
       const openable=st.ok && fpath && ['write_file','edit_file','append_file'].includes(st.tool);
       const clk=openable?` clk" data-open="1" onclick="artOpenFile(WS.activeSession, ${escAttr(JSON.stringify(fpath))})`:'';
-      const chip=`<span class="cstep${st.ok?'':' bad'}${clk}" title="${escAttr(openable?('Open '+fpath):(st.observation||'').replace(/\s+/g,' ').slice(0,180))}"><span class="cs-ic">${st.ok?'✓':'✕'}</span>${esc(lbl)}${openable?'<span class="cs-open">↗</span>':''}</span>`;
+      // Surface a short summary of what the step actually returned, inline — so the trail reads as
+      // real progress ("✓ searched the web — Ryanair NRN→TNG €24…") instead of opaque tool names.
+      const obsFull=(st.observation||'').replace(/\s+/g,' ').trim();
+      const obsText=(!openable && obsFull) ? obsFull.slice(0,110) : '';
+      const chip=`<span class="cstep${st.ok?'':' bad'}${clk}" title="${escAttr(openable?('Open '+fpath):obsFull.slice(0,400))}"><span class="cs-ic">${st.ok?'✓':'✕'}</span>${esc(lbl)}${openable?'<span class="cs-open">↗</span>':''}${obsText?`<span class="cs-obs">— ${esc(obsText)}</span>`:''}</span>`;
       return chip+stepShotHtml(st);
     }).join('')}</div>`:'';
     // The model's live "what I'm doing" commentary (narration) — shown above the tool chips so a
@@ -2336,9 +2350,9 @@ async function chatSay(text, attachments){
   if(meta){ WS.sessions=[meta, ...WS.sessions.filter(x=>x.id!==sid)]; }   // bump to top
   _busySessions.add(sid); renderSidebar();
   const msg={role:'engram',text:'',streaming:true,t0:Date.now()}; sess.messages.push(msg); paintFeed();
-  _chatAbort=new AbortController(); setChatBusy(true);
+  const ac=new AbortController(); _chatAborts.set(sid, ac); refreshSendBtn();
   try {
-    const r = await fetch('/v1/converse/stream',{method:'POST',headers:{...AUTH,'content-type':'application/json'},body:JSON.stringify({text, session:sid, attachments}), signal:_chatAbort.signal});
+    const r = await fetch('/v1/converse/stream',{method:'POST',headers:{...AUTH,'content-type':'application/json'},body:JSON.stringify({text, session:sid, attachments}), signal:ac.signal});
     if(!r.ok||!r.body) throw new Error('HTTP '+r.status);
     const reader=r.body.getReader(); const dec=new TextDecoder(); let buf='';
     for(;;){
@@ -2369,8 +2383,8 @@ async function chatSay(text, attachments){
     msg.text = stopped ? (msg.text || '(stopped)') : (msg.text || friendlyChatError(e.message||'try again'));
     msg.streaming=false; if(WS.activeSession===sid) paintFeed();
   } finally {
-    setChatBusy(false); _chatAbort=null;
-    _busySessions.delete(sid); renderSidebar();   // stop the sidebar blink once this run finishes
+    _chatAborts.delete(sid); _busySessions.delete(sid);
+    refreshSendBtn(); renderSidebar();   // stop the sidebar blink + reset the button for this session
   }
 }
 // Turn a raw provider/transport error into a clear, actionable message instead of a scary dump.

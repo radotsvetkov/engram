@@ -2471,12 +2471,18 @@ mod web {
             "web_search"
         }
         fn description(&self) -> &str {
-            "Search the web and return the top results as title, URL, and an inline snippet — often \
-             enough to answer without a follow-up web_fetch. Reliable when BRAVE_API_KEY is set; \
-             otherwise it scrapes search HTML, which can be rate-limited."
+            "Search the web; returns the top results as title, URL, and an inline snippet — often \
+             enough to answer without a follow-up web_fetch. To look up SEVERAL things, pass them all \
+             in ONE call as a `queries` array — they run concurrently, which is much faster than many \
+             separate searches. Reliable when a Tavily/Brave key or SearXNG URL is set; otherwise it \
+             scrapes search HTML (can be rate-limited)."
         }
         fn schema(&self) -> Value {
-            json!({ "type": "object", "properties": { "query": { "type": "string" } }, "required": ["query"] })
+            json!({ "type": "object", "properties": {
+                "query": { "type": "string", "description": "a single search query" },
+                "queries": { "type": "array", "items": { "type": "string" },
+                    "description": "OR a batch of queries to run AT ONCE — prefer this whenever you need to look up several things, so it's one fast round-trip instead of many" }
+            } })
         }
         fn taints(&self) -> bool {
             true
@@ -2488,70 +2494,124 @@ mod web {
             false
         }
         async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
-            let query = arg_str(args, "query")?;
-            let _ = ctx
-                .ledger
-                .append("agent.web_search", "agent", json!({ "query": query }));
-            let q = urlencoding(query);
-            let to = ctx.policy.timeout_secs;
-            // Reliable providers FIRST when configured (these are the FREE options Hermes uses too —
-            // scraping search HTML gets rate-limited after a burst of queries, the intermittent
-            // "✕ searched the web"). In order: Tavily (free, no credit card), Brave API, then a
-            // SearXNG instance (keyless). Each is tried only if its key/URL is set; on miss we fall
-            // through to keyless HTML scraping below.
-            let envv = |k: &str| {
-                std::env::var(k)
-                    .ok()
-                    .map(|v| v.trim().to_string())
-                    .filter(|v| !v.is_empty())
-            };
-            let join8 = |r: Vec<String>| r.into_iter().take(8).collect::<Vec<_>>().join("\n");
-            if let Some(key) = envv("TAVILY_API_KEY") {
-                if let Ok(r) = tavily_search(query, &key, to).await {
-                    if !r.is_empty() {
-                        return Ok(join8(r));
-                    }
-                }
-            }
-            if let Some(key) = envv("BRAVE_API_KEY").or_else(|| envv("BRAVE_SEARCH_API_KEY")) {
-                if let Ok(r) = brave_api_search(query, &key, to).await {
-                    if !r.is_empty() {
-                        return Ok(join8(r));
-                    }
-                }
-            }
-            if let Some(base) = envv("SEARXNG_URL") {
-                if let Ok(r) = searxng_search(&base, query, to).await {
-                    if !r.is_empty() {
-                        return Ok(join8(r));
-                    }
-                }
-            }
-            // Fallback: scrape Brave/DDG HTML. DuckDuckGo's scrape endpoints block/timeout from many
-            // networks; try Brave, then DDG, then DDG-lite — first with results wins, so a single
-            // dead backend doesn't break research.
-            let attempts: [(&str, fn(&str) -> Vec<String>); 3] = [
-                ("https://search.brave.com/search?q=", extract_brave_results),
-                ("https://html.duckduckgo.com/html/?q=", extract_results),
-                ("https://lite.duckduckgo.com/lite/?q=", extract_results),
-            ];
-            let mut last_err = String::new();
-            for (base, parse) in attempts {
-                match get_text(&format!("{base}{q}"), to).await {
-                    Ok(html) => {
-                        let results = parse(&html);
-                        if !results.is_empty() {
-                            return Ok(results.into_iter().take(8).collect::<Vec<_>>().join("\n"));
+            // Accept a single `query` OR a batch of `queries`. Running several searches in ONE call
+            // (concurrently) collapses a multi-lookup research task from N model round-trips into one
+            // — the biggest agent-side speedup, especially on a slow model.
+            let mut queries: Vec<String> = Vec::new();
+            if let Some(arr) = args.get("queries").and_then(|v| v.as_array()) {
+                for v in arr {
+                    if let Some(s) = v.as_str() {
+                        let s = s.trim();
+                        if !s.is_empty() {
+                            queries.push(s.to_string());
                         }
                     }
-                    Err(e) => last_err = e,
                 }
             }
-            if last_err.is_empty() {
-                Ok("(no results)".into())
-            } else {
-                Err(format!("web search unavailable (all engines failed): {last_err}"))
+            if queries.is_empty() {
+                if let Ok(q) = arg_str(args, "query") {
+                    let q = q.trim();
+                    if !q.is_empty() {
+                        queries.push(q.to_string());
+                    }
+                }
             }
+            if queries.is_empty() {
+                return Err("web_search needs a 'query' string or a non-empty 'queries' array".into());
+            }
+            let to = ctx.policy.timeout_secs;
+            if queries.len() == 1 {
+                return search_one(queries.pop().unwrap(), to, ctx.ledger.clone()).await;
+            }
+            // Batch: run up to 10 queries concurrently, label each result block by its query.
+            queries.truncate(10);
+            let mut set = tokio::task::JoinSet::new();
+            for (i, qq) in queries.into_iter().enumerate() {
+                let ledger = ctx.ledger.clone();
+                set.spawn(async move {
+                    let res = search_one(qq.clone(), to, ledger)
+                        .await
+                        .unwrap_or_else(|e| format!("(failed: {e})"));
+                    (i, format!("### {qq}\n{res}"))
+                });
+            }
+            let mut blocks: Vec<(usize, String)> = Vec::new();
+            while let Some(r) = set.join_next().await {
+                if let Ok(pair) = r {
+                    blocks.push(pair);
+                }
+            }
+            blocks.sort_by_key(|(i, _)| *i);
+            Ok(blocks
+                .into_iter()
+                .map(|(_, b)| b)
+                .collect::<Vec<_>>()
+                .join("\n\n"))
+        }
+    }
+
+    /// A scrape-fallback search engine: a results-page URL prefix + the parser for its HTML.
+    type ScrapeEngine = (&'static str, fn(&str) -> Vec<String>);
+
+    /// Run ONE web_search query: the provider cascade (Tavily → Brave → SearXNG when configured),
+    /// then keyless HTML scraping. Owned args (so it can be `spawn`ed to run a batch concurrently).
+    async fn search_one(
+        query: String,
+        timeout: u64,
+        ledger: std::sync::Arc<engram_core::Ledger>,
+    ) -> Result<String, String> {
+        let _ = ledger.append("agent.web_search", "agent", json!({ "query": query }));
+        let q = urlencoding(&query);
+        let envv = |k: &str| {
+            std::env::var(k)
+                .ok()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+        };
+        let join8 = |r: Vec<String>| r.into_iter().take(8).collect::<Vec<_>>().join("\n");
+        if let Some(key) = envv("TAVILY_API_KEY") {
+            if let Ok(r) = tavily_search(&query, &key, timeout).await {
+                if !r.is_empty() {
+                    return Ok(join8(r));
+                }
+            }
+        }
+        if let Some(key) = envv("BRAVE_API_KEY").or_else(|| envv("BRAVE_SEARCH_API_KEY")) {
+            if let Ok(r) = brave_api_search(&query, &key, timeout).await {
+                if !r.is_empty() {
+                    return Ok(join8(r));
+                }
+            }
+        }
+        if let Some(base) = envv("SEARXNG_URL") {
+            if let Ok(r) = searxng_search(&base, &query, timeout).await {
+                if !r.is_empty() {
+                    return Ok(join8(r));
+                }
+            }
+        }
+        // Fallback: scrape Brave/DDG HTML — Brave, then DDG, then DDG-lite; first with results wins.
+        let attempts: [ScrapeEngine; 3] = [
+            ("https://search.brave.com/search?q=", extract_brave_results),
+            ("https://html.duckduckgo.com/html/?q=", extract_results),
+            ("https://lite.duckduckgo.com/lite/?q=", extract_results),
+        ];
+        let mut last_err = String::new();
+        for (base, parse) in attempts {
+            match get_text(&format!("{base}{q}"), timeout).await {
+                Ok(html) => {
+                    let results = parse(&html);
+                    if !results.is_empty() {
+                        return Ok(results.into_iter().take(8).collect::<Vec<_>>().join("\n"));
+                    }
+                }
+                Err(e) => last_err = e,
+            }
+        }
+        if last_err.is_empty() {
+            Ok("(no results)".into())
+        } else {
+            Err(format!("web search unavailable (all engines failed): {last_err}"))
         }
     }
 

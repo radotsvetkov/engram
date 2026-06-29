@@ -3586,7 +3586,11 @@ async fn converse_stream_handler(
              a built-in skill covers (flights → flight_search; plus weather, currency, wikipedia, \
              etc.), reach for skill_search / skill_run before raw web scraping. To SAVE a document or \
              webpage for the user, write it to a file with write_file (and append_file to add further \
-             parts if it is long) — don't paste a huge page inline.\n\n",
+             parts if it is long) — don't paste a huge page inline.\n\
+             SPEED: each model step is slow, so do as much as possible per step. When you need \
+             several web searches, pass them ALL to ONE web_search call as a `queries` array (they \
+             run concurrently) instead of firing them one at a time across many turns — this is the \
+             single biggest thing that makes a run fast.\n\n",
         );
         if !history.is_empty() {
             task.push_str("You are mid-conversation. Here is what was said so far - use it; do NOT re-ask for context you already have:\n");

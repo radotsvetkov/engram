@@ -299,22 +299,42 @@ fn extract_tag_text(html: &str, tag: &str) -> Option<String> {
 }
 
 /// Decode the HTML entities that actually appear in body text; unknown entities are left verbatim.
-/// Cursor sits on a char boundary throughout ('&' and ';' are ASCII), so every slice is valid.
+///
+/// Entity bodies are ASCII (`&name;` or `&#123;`), so we scan the bytes after `&` for the closing
+/// `;` instead of slicing a fixed-width window — a byte-width cap can land *inside* a multibyte char
+/// (e.g. between the two bytes of `ä`) and panic. Because the daemon is built `panic = "abort"`, that
+/// panic took the whole process down mid-run and surfaced in the browser only as "Load failed".
 fn decode_entities(s: &str) -> String {
     if !s.contains('&') {
         return s.to_string();
     }
+    let bytes = s.as_bytes();
     let mut out = String::with_capacity(s.len());
     let mut idx = 0usize;
     while idx < s.len() {
         let rest = &s[idx..];
         let c = rest.chars().next().unwrap();
         if c == '&' {
-            let window = &rest[1..rest.len().min(1 + 12)];
-            if let Some(semi) = window.find(';') {
-                if let Some(d) = decode_one(&window[..semi]) {
+            // Scan up to 12 bytes after '&' for ';', stopping at anything that can't be part of an
+            // entity name (notably any byte >= 0x80 — a multibyte lead/continuation). Everything we
+            // step over is ASCII, so the eventual `&s[idx + 1..semi]` slice is always valid.
+            let cap = s.len().min(idx + 1 + 12);
+            let mut semi = None;
+            let mut j = idx + 1;
+            while j < cap {
+                match bytes[j] {
+                    b';' => {
+                        semi = Some(j);
+                        break;
+                    }
+                    b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'#' => j += 1,
+                    _ => break, // not an entity (whitespace, a multibyte char, etc.)
+                }
+            }
+            if let Some(semi) = semi {
+                if let Some(d) = decode_one(&s[idx + 1..semi]) {
                     out.push_str(&d);
-                    idx += 1 + semi + 1; // '&' + entity + ';'
+                    idx = semi + 1; // consume '&' .. ';'
                     continue;
                 }
             }
@@ -515,7 +535,7 @@ mod ssrf_guard_tests {
 
 #[cfg(test)]
 mod html_text_tests {
-    use super::html_to_text;
+    use super::{decode_entities, html_to_text};
     #[test]
     fn multibyte_content_does_not_panic_and_is_preserved() {
         // The exact crash class that aborted the daemon ("Couldn't reach Engram"): a multibyte char
@@ -562,6 +582,21 @@ mod html_text_tests {
     #[test]
     fn unknown_entity_and_stray_ampersand_survive() {
         assert_eq!(html_to_text("<p>AT&T R&D &unknownthing;</p>"), "AT&T R&D &unknownthing;");
+    }
+
+    // Regression: a '&' followed by 11+ entity-ish bytes then a multibyte char (no ';') used to slice
+    // the look-ahead window mid-codepoint and panic — which, under `panic = "abort"`, killed the whole
+    // daemon mid-run and showed up in the browser only as "Load failed". Must not panic; '&' survives.
+    #[test]
+    fn ampersand_before_multibyte_does_not_panic() {
+        // 'ä' starts right after 11 ASCII chars past '&', exactly the byte offset that crashed before.
+        assert_eq!(decode_entities("&abcdefghijkä"), "&abcdefghijkä");
+        // Real German/Tangier-style text with accents around stray ampersands stays intact.
+        assert_eq!(decode_entities("Tangerä & Café"), "Tangerä & Café");
+        // Valid entities still decode even when multibyte text surrounds them.
+        assert_eq!(decode_entities("Über caf&eacute; &amp; thé"), "Über café & thé");
+        // A numeric entity butting against a multibyte char.
+        assert_eq!(decode_entities("5&#8364;ä"), "5€ä");
     }
 }
 

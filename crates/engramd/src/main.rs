@@ -775,9 +775,7 @@ async fn run(mode: RunMode) -> Result<(), Box<dyn std::error::Error>> {
     ))?);
     let registry = Arc::new(Registry::open(&home, signer, ledger.clone())?);
     seed::ensure_seed(&registry)?;
-    seed::ensure_flight_skill(&registry)?;
-    seed::ensure_weather_skill(&registry)?;
-    seed::ensure_email_skill(&registry)?;
+    seed::ensure_seed_skills(&registry)?;
     let sched = Arc::new(Scheduler::open(&home, ledger.clone())?);
     let bus = Bus::new(1024);
     let activity = Activity::new();

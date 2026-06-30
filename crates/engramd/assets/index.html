@@ -633,6 +633,7 @@
   .tool-chip input { margin:0; }
   .tool-chip:hover { border-color:var(--accent,#7b8cff); }
   .sk-card { background:var(--surface-1); border:1px solid var(--border); border-radius:14px; padding:15px 17px; }
+  .sk-card.proposed { border-left:3px solid var(--accent); background:linear-gradient(90deg,var(--accent-soft),transparent 60%); }
   .sk-head { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
   .sk-name { font-weight:600; font-size:15px; }
   .vladder { display:flex; align-items:center; gap:4px; }
@@ -2862,9 +2863,11 @@ async function saveTeach(){
 // ---- Skills ----
 let _skills=[], _skFilter={q:'',cat:'all'};
 function skillCardHTML(s){
-    const active=s.active, runs=s.runs||0, verified=runs>0;
+    const active=s.active, runs=s.runs||0, verified=runs>0, proposed=!!s.proposed;
     const ladder=(s.versions||[]).map(v=>`<span class="vchip${v===active?' active':''}" title="Activate v${v}" onclick="skillActivate('${esc(s.id)}',${v})">v${v}</span>`).join('<span class="varr">→</span>');
-    const statusPill = verified
+    const statusPill = proposed
+      ? `<span class="sk-pill warn" title="Engram distilled this skill from real use. It is NOT active yet — Adopt replays it against its recorded examples and activates it only if it reproduces them.">proposed · not active</span>`
+      : verified
       ? `<span class="sk-pill ok" title="Improvements are scored by exact match against ${runs} recorded (input, accepted-output) pair${runs===1?'':'s'}.">verified · ${runs} scored run${runs===1?'':'s'}</span>`
       : `<span class="sk-pill warn" title="No recorded (input, accepted-output) pairs to score against yet - so an improvement can't be measured. Honest signal, not a guess.">unverified - no scored runs yet</span>`;
     const events=(s.learn||[]).slice().reverse().map(e=>{
@@ -2881,7 +2884,13 @@ function skillCardHTML(s){
     const caps = (s.capabilities||[]).length ? `<span class="sk-caps" title="capabilities this skill is signed for">${(s.capabilities||[]).map(c=>esc(c)).join(' · ')}</span>` : '';
     const enabled = s.enabled !== false;
     const toggle = `<label class="sk-toggle" title="${enabled?'On — the agent can use this skill':'Off — hidden from the agent'}"><input type="checkbox" ${enabled?'checked':''} onchange="skillToggle('${esc(s.id)}',this.checked)"><span class="sk-sw"></span></label>`;
-    const body = enabled ? `
+    const body = !enabled ? `<div class="sk-muted">Disabled — turn it on to use, test, or improve it.</div>`
+      : proposed ? `
+      <div class="sk-actions">
+        <button class="sbtn" onclick="skillAdopt('${esc(s.id)}')" title="Replay this skill against its recorded examples and activate it ONLY if it reproduces them — the verified way to put a proposed skill into use.">✓ Adopt</button>
+        <button class="sbtn ghost" onclick="skillTeach('${esc(s.id)}')" title="Record a correct input→output example to verify against before adopting.">+ Add example</button>
+      </div>
+      <div class="sk-muted">${runs?`Has ${runs} recorded example${runs===1?'':'s'} — Adopt replays them, then activates if they all pass.`:'No examples recorded — add one, then Adopt.'}</div>` : `
       <div class="sk-try">
         <div class="sk-lbl" title="Run the skill on an input to see what it returns">Try it</div>
         <div class="sk-run"><input id="in_${esc(s.id)}" placeholder="give it an input and press Run..." onkeydown="if(event.key==='Enter')runSkill('${esc(s.id)}')"><button class="sbtn" onclick="runSkill('${esc(s.id)}')">Run</button><span id="out_${esc(s.id)}" class="sk-out"></span></div>
@@ -2890,8 +2899,8 @@ function skillCardHTML(s){
         <button class="sbtn ghost" onclick="skillTeach('${esc(s.id)}')" title="Record a correct input→output example. These become the gold set the agent measures improvements against.">+ Add example</button>
         <button class="sbtn ghost" onclick="skillImprove('${esc(s.id)}')" title="Let the agent rewrite the skill. The new version is replayed against your examples and kept ONLY if it scores better — every change signed.">Improve ↑</button>
         ${(s.versions||[]).length>1?`<button class="sbtn ghost" onclick="skillRevert('${esc(s.id)}')" title="Roll back to the previous version">Revert</button>`:''}
-      </div>` : `<div class="sk-muted">Disabled — turn it on to use, test, or improve it.</div>`;
-    return `<div class="sk-card${enabled?'':' off'}">
+      </div>`;
+    return `<div class="sk-card${enabled?'':' off'}${proposed?' proposed':''}">
       <div class="sk-head">${toggle}<span class="sk-name">${esc(s.id)}</span>${rtBadge}${catBadge}<span class="vladder">${ladder}</span><span class="grow"></span>${statusPill}</div>
       ${s.description?`<div class="sk-desc">${esc(s.description)}${caps?' — '+caps:''}</div>`:''}
       ${evBlock}
@@ -2935,6 +2944,9 @@ function renderSkillList(){
     return (s.id||'').toLowerCase().includes(q) || (s.description||'').toLowerCase().includes(q)
         || (s.category||'').toLowerCase().includes(q) || (s.when_to_use||'').toLowerCase().includes(q);
   });
+  // Surface PROPOSED (distilled, not-yet-active) skills first so they don't get lost — they're the
+  // ones waiting on a decision (Adopt / add an example).
+  list.sort((a,b)=>(b.proposed?1:0)-(a.proposed?1:0));
   const el=document.getElementById('skills-list'); if(!el) return;
   el.innerHTML = list.length ? list.map(skillCardHTML).join('')
     : `<div class="sk-none">No skills match <b>${esc(_skFilter.q||cat)}</b>.</div>`;
@@ -3006,6 +3018,20 @@ async function downloadBoilerplate(){
 async function skillActivate(id,v){
   try{ await J('/v1/skills/'+encodeURIComponent(id)+'/activate',{method:'POST',headers:MIND_JSON,body:JSON.stringify({version:v})}); notify('Activated v'+v+' · signed','ok'); renderSkills(); }
   catch(e){ notify('Couldn\'t activate - '+((e&&e.message)||'error')); }
+}
+// Adopt a proposed (distilled) skill: the daemon replays it against its recorded examples and
+// activates it ONLY if it reproduces them — the verified alternative to a raw activate.
+async function skillAdopt(id){
+  try{
+    const r=await J('/v1/skills/'+encodeURIComponent(id)+'/adopt',{method:'POST',headers:MIND_JSON,body:'{}'});
+    const d=r&&r.decision;
+    if(d==='adopted') notify('Adopted "'+id+'" · verified & active · signed','ok');
+    else if(d==='no_data') notify('Add at least one example first, then Adopt');
+    else if(d==='already_active') notify('"'+id+'" is already active','ok');
+    else notify('Not adopted — it didn\'t reproduce its examples'+(r&&r.score!=null?' (score '+(+r.score).toFixed(2)+')':''));
+    renderSkills();
+  }
+  catch(e){ notify('Couldn\'t adopt - '+((e&&e.message)||'error')); }
 }
 // Revert to the previous version - the auditable undo (appended to the ledger, not erased).
 async function skillRevert(id){

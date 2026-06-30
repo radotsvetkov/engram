@@ -21,7 +21,9 @@ pub mod tools;
 
 pub use agent::{Agent, AgentError, AgentRun, NarrationCallback, StepCallback, StepRecord};
 pub use mcp::{connect_servers, connect_servers_reported, McpClient, McpServerSpec, McpTool};
-pub use skills_runtime::{improve_skill, run_active, score_skill, SkillRunParams};
+pub use skills_runtime::{
+    improve_skill, run_active, score_skill, verify_and_adopt, SkillRunParams,
+};
 pub use tool::{confine, BrowserSession, NoBrowser, Policy, Tool, ToolCtx, ToolRegistry};
 
 use std::sync::{Arc, RwLock};

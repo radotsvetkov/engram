@@ -873,6 +873,7 @@ async fn run(mode: RunMode) -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/skills/{id}/enabled", post(skill_toggle))
         .route("/v1/skills/{id}/improve", post(skill_improve))
         .route("/v1/skills/{id}/activate", post(skill_activate))
+        .route("/v1/skills/{id}/adopt", post(skill_adopt))
         .route("/v1/skills/{id}/revert", post(skill_revert))
         .route("/v1/skills/{id}/teach", post(skill_teach))
         .route("/v1/swarm", post(run_swarm))
@@ -2517,15 +2518,18 @@ pub(crate) async fn run_agent_task_cb(
     // FLYWHEEL - auto-capture: on a completed, real (non-dry) trusted run, write one concise
     // episodic memory so the next task can recall what was done. Best-effort; dedup-on-write
     // collapses near-duplicates and consolidation demotes stale ones, so this can't bloat the brain.
-    // Untrusted-origin runs are NOT captured - their content could be adversarial.
     if let Ok(run) = &result {
-        if !dry_run && !taint.is_untrusted() && run.stopped == "final" {
+        if !dry_run && run.stopped == "final" {
             let answer = run.answer.trim();
             // Capture only SUBSTANTIVE runs — ones that actually used tools or produced a real
             // result. A tool-less, short conversational reply ("try again" → "I'd be happy to
             // help!") is filler: capturing it bloated the brain and polluted the recall ribbon.
             let substantive = !run.steps.is_empty() || answer.chars().count() > 200;
-            if !answer.is_empty() && substantive {
+            // EPISODIC CAPTURE stays TRUSTED-ONLY: untrusted-origin content could be adversarial and
+            // must not enter durable memory. (The skill reflection below is safe on a tainted run
+            // because it is a separate Trusted model call and nothing it proposes becomes active
+            // until it passes the verification gate.)
+            if !taint.is_untrusted() && !answer.is_empty() && substantive {
                 // Record the user's ACTUAL request, not the full constructed prompt (which carries
                 // the chat-mode directive + history + a "User's latest message:" prefix). Capturing
                 // the whole prompt made huge, everything-matching episodic memories.
@@ -2543,54 +2547,137 @@ pub(crate) async fn run_agent_task_cb(
                         .actor("agent"),
                 );
             }
-            // AUTONOMOUS DISTILLATION (opt-in, off by default): after a task that did real multi-step
-            // work, reflect once on whether it yielded a reusable program and, if so, park it as an
-            // INACTIVE proposed skill (signed + ledgered). One bounded model call, gated by the flag
-            // AND a tool-step threshold, so a daemon that opts out pays nothing and zero-idle holds.
+            // SELF-IMPROVEMENT REFLECTION (opt-in via auto_distill_skills): after a task that did
+            // real multi-step work, reflect once on whether it yielded a reusable program — a NEW
+            // skill or an IMPROVEMENT to an existing one — and verify it before it can become active.
+            // Runs REGARDLESS of taint (unlike the episodic capture above): the reflection is a
+            // separate Trusted model call, and the verification gate (replay against gold, sandboxed,
+            // capability-clamped) is what protects activation. One bounded model call, gated by the
+            // flag AND a tool-step threshold, so a daemon that opts out pays nothing.
             const MIN_STEPS_TO_DISTILL: usize = 3;
             if app.cfg().security.auto_distill_skills
                 && run.steps.len() >= MIN_STEPS_TO_DISTILL
                 && !app.cfg().security.disable_skill_author
             {
-                let existing = app.registry.skills().unwrap_or_default();
-                if let Some(p) =
-                    distill::propose(&gateway, &model, task, &run.answer, &existing).await
-                {
-                    let new = engram_skills::NewSkill {
-                        id: p.id.clone(),
-                        category: "problem_solving".into(),
-                        description: p.description.clone(),
-                        capabilities: vec![], // distilled skills are pure by default — no egress
-                        metric: "exact_match".into(),
-                        runtime: engram_skills::Runtime::Process,
-                        interpreter: Some(p.interpreter.clone()),
-                        when_to_use: p.when_to_use.clone(),
-                    };
-                    // Installed INACTIVE: invisible to skill_search/auto-select until it earns
-                    // activation (taught + improved, or explicitly activated from the dashboard).
-                    if let Ok(version) = app.registry.install_inactive(new, p.source.as_bytes()) {
-                        for (inp, out) in &p.examples {
-                            let _ = app.registry.record_run(
-                                &p.id,
-                                version,
-                                inp.as_bytes(),
-                                out.as_bytes(),
-                                1.0,
-                            );
-                        }
-                        let _ = app.ledger.append(
-                            "skill.distill",
-                            "distiller",
-                            json!({ "id": p.id, "version": version, "active": false,
-                                    "examples": p.examples.len(), "steps": run.steps.len() }),
-                        );
-                        tracing::info!(id = %p.id, version, "distilled a proposed skill (inactive)");
-                    }
-                }
+                reflect_on_skills(app, &gateway, &model, task, &run.answer, run.steps.len()).await;
             }
         }
     }
     result
+}
+
+/// The reflection half of the self-improvement loop. Asks the model (a Trusted call) whether the
+/// finished task yields a reusable program; then either improves an existing skill (A/B-gated promote)
+/// or installs a NEW proposed skill and tries to EARN its activation by replaying it against its own
+/// asserted gold. Nothing here trusts the proposal on faith — a new skill activates only if it (a) is
+/// pure (no egress) and (b) reproduces every gold example in the sandbox; otherwise it is left
+/// proposed for a human to adopt. Best-effort: any failure is logged and dropped.
+async fn reflect_on_skills(
+    app: &App,
+    gateway: &engram_gateway::Gateway,
+    model: &str,
+    task: &str,
+    answer: &str,
+    steps: usize,
+) {
+    let existing = app.registry.skills().unwrap_or_default();
+    // A human-readable catalog (id — description) so the model can pick an improvement target.
+    let catalog = existing
+        .iter()
+        .filter_map(|id| {
+            app.registry
+                .load_active(id)
+                .ok()
+                .map(|(s, _)| format!("{id} — {}", s.manifest.description))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let Some(p) = distill::propose(gateway, model, task, answer, &existing, &catalog).await else {
+        return;
+    };
+    let backend = {
+        let c = app.cfg();
+        config::resolve_shell_backend(&c.security.shell_backend, &c.security.shell_target)
+    };
+    let params = skill_run_params(app, backend.as_deref());
+
+    if p.improves {
+        // IMPROVEMENT to an existing skill: A/B-replay the candidate against the incumbent's gold and
+        // promote it only if it measurably wins (shared path with the agent tool + HTTP endpoint).
+        let Ok((active_signed, _)) = app.registry.load_active(&p.id) else {
+            return;
+        };
+        let m = active_signed.manifest;
+        if m.runtime != engram_skills::Runtime::Process {
+            return; // WASM skills are improved from the dashboard (WAT), not autonomously
+        }
+        let description = if p.description.trim().is_empty() {
+            m.description.clone()
+        } else {
+            p.description.clone()
+        };
+        let candidate = engram_skills::NewSkill {
+            id: p.id.clone(),
+            category: m.category.clone(),
+            description,
+            capabilities: m.capabilities.clone(),
+            metric: m.metric.clone(),
+            runtime: engram_skills::Runtime::Process,
+            interpreter: Some(p.interpreter.clone()),
+            when_to_use: m.when_to_use.clone(),
+        };
+        match engram_agent::improve_skill(
+            &app.registry,
+            &p.id,
+            candidate,
+            p.source.as_bytes(),
+            true,
+            "distiller",
+            &params,
+            Some(&app.halt),
+        )
+        .await
+        {
+            Ok(d) => tracing::info!(id = %p.id, decision = %d["decision"], "reflection: improvement attempt"),
+            Err(e) => tracing::warn!(id = %p.id, "reflection: improve failed: {e}"),
+        }
+        return;
+    }
+
+    // NEW skill: install inactive, seed the gold with the asserted examples, then try to earn
+    // activation by replaying it against that gold.
+    let new = engram_skills::NewSkill {
+        id: p.id.clone(),
+        category: "problem_solving".into(),
+        description: p.description.clone(),
+        capabilities: vec![], // distilled skills are pure by default — no egress
+        metric: "exact_match".into(),
+        runtime: engram_skills::Runtime::Process,
+        interpreter: Some(p.interpreter.clone()),
+        when_to_use: p.when_to_use.clone(),
+    };
+    let Ok(version) = app.registry.install_inactive(new, p.source.as_bytes()) else {
+        return;
+    };
+    for (inp, out) in &p.examples {
+        let _ = app
+            .registry
+            .record_run(&p.id, version, inp.as_bytes(), out.as_bytes(), 1.0);
+    }
+    let _ = app.ledger.append(
+        "skill.distill",
+        "distiller",
+        json!({ "id": p.id, "version": version, "active": false,
+                "examples": p.examples.len(), "steps": steps }),
+    );
+    // EARN ACTIVATION: a pure skill that reproduces all its gold in the sandbox is adopted; otherwise
+    // it stays proposed for a human to adopt from the dashboard.
+    match engram_agent::verify_and_adopt(&app.registry, &p.id, "distiller", true, &params, Some(&app.halt))
+        .await
+    {
+        Ok(d) => tracing::info!(id = %p.id, version, decision = %d["decision"], "reflection: new skill"),
+        Err(e) => tracing::warn!(id = %p.id, "reflection: verify/adopt failed: {e}"),
+    }
 }
 
 async fn agent_handler(State(app): State<App>, Json(r): Json<AgentReq>) -> ApiResult {
@@ -3929,6 +4016,9 @@ async fn skills(State(app): State<App>) -> ApiResult {
         let enabled = !app.registry.is_retired(&id);
         let active = app.registry.active_version(&id).map_err(err)?;
         let versions = app.registry.versions(&id).map_err(err)?;
+        // A PROPOSED skill: distilled (or authored) but not yet activated. It exists on disk with
+        // versions but no active pointer, and isn't retired — the UI shows it with an "Adopt" action.
+        let proposed = active.is_none() && enabled && !versions.is_empty();
         // The gold-signal size: recorded (input, accepted-output) pairs a candidate is scored
         // against. Zero means there is no scored signal yet - the UI must say "unverified".
         let runs = app
@@ -3946,11 +4036,14 @@ async fn skills(State(app): State<App>) -> ApiResult {
                 o
             })
             .collect();
-        // Surface the active manifest so the UI can label a skill (a process/Python skill the agent
-        // authored vs. a WASM transform) and show what it does + which capabilities it holds.
+        // Surface the manifest so the UI can label a skill (a process/Python skill the agent authored
+        // vs. a WASM transform) and show what it does + which capabilities it holds. Prefer the active
+        // version; fall back to the LATEST version so a proposed (inactive) skill still shows its real
+        // description/runtime instead of blanks.
+        let manifest_version = active.or_else(|| versions.iter().max().copied());
         let (runtime, interpreter, description, when_to_use, capabilities, category) =
-            match app.registry.load_active(&id) {
-                Ok((signed, _)) => {
+            match manifest_version.and_then(|v| app.registry.load(&id, v).ok()) {
+                Some((signed, _)) => {
                     let m = signed.manifest;
                     (
                         if m.runtime == engram_skills::Runtime::Process {
@@ -3968,12 +4061,12 @@ async fn skills(State(app): State<App>) -> ApiResult {
                         m.category,
                     )
                 }
-                Err(_) => ("wasm", None, String::new(), None, vec![], String::new()),
+                None => ("wasm", None, String::new(), None, vec![], String::new()),
             };
         out.push(json!({ "id": id, "active": active, "versions": versions, "runs": runs,
             "runtime": runtime, "interpreter": interpreter, "description": description,
             "when_to_use": when_to_use, "capabilities": capabilities, "category": category,
-            "learn": events, "enabled": enabled }));
+            "learn": events, "enabled": enabled, "proposed": proposed }));
     }
     Ok(Json(json!({ "skills": out })))
 }
@@ -4298,6 +4391,22 @@ async fn skill_activate(
     Ok(Json(json!({ "ok": true, "id": id, "active": r.version })))
 }
 
+/// Adopt a PROPOSED (inactive) skill: replay its latest version against its recorded gold and
+/// activate it only if it reproduces them. The verified path the dashboard's "Adopt" button calls —
+/// unlike `/activate` (a raw set-active escape hatch), this never activates a skill that fails its
+/// own examples. A human click consents to a net-capable skill, so purity is not required here.
+async fn skill_adopt(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
+    let backend = {
+        let c = app.cfg();
+        config::resolve_shell_backend(&c.security.shell_backend, &c.security.shell_target)
+    };
+    let p = skill_run_params(&app, backend.as_deref());
+    let decision = engram_agent::verify_and_adopt(&app.registry, &id, "user", false, &p, Some(&app.halt))
+        .await
+        .map_err(ApiError)?;
+    Ok(Json(decision))
+}
+
 /// Revert a skill to its previous version (or an explicit one) - the auditable undo.
 async fn skill_revert(
     State(app): State<App>,
@@ -4337,11 +4446,18 @@ async fn skill_teach(
     Path(id): Path<String>,
     Json(r): Json<TeachReq>,
 ) -> ApiResult {
-    let active = app
-        .registry
-        .active_version(&id)
-        .map_err(err)?
-        .ok_or_else(|| err("no active version"))?;
+    // Record against the active version, or — for a PROPOSED (not-yet-active) skill — its latest
+    // version, so a user can teach gold examples that later let it be adopted.
+    let active = match app.registry.active_version(&id).map_err(err)? {
+        Some(v) => v,
+        None => app
+            .registry
+            .versions(&id)
+            .map_err(err)?
+            .into_iter()
+            .max()
+            .ok_or_else(|| err("no such skill"))?,
+    };
     // Validate + clamp the reward: a NaN/inf would write a poison line to runs.jsonl that
     // permanently breaks this skill's replay/improve routes.
     let reward = r.reward.unwrap_or(1.0);

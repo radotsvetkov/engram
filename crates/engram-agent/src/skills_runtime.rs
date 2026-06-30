@@ -378,6 +378,72 @@ pub async fn improve_skill(
     }))
 }
 
+/// Earn activation for a *proposed* (inactive) skill: replay its LATEST version against its own
+/// recorded gold and flip it active iff it reproduces the gold (and, when `require_pure` is set, only
+/// if it asks for no egress capabilities). This is the promotion gate that lets autonomously
+/// distilled skills become usable WITHOUT trusting them on faith — and it sidesteps the circular
+/// `load_active` precondition (it works on a skill that has no active version yet). Replays run
+/// network-isolated. Every adoption is signed into the ledger as `skill.learn`.
+///
+/// `require_pure` is true for the autonomous path (a net-capable skill needs a human to consent to
+/// the egress) and false for an explicit human "Adopt" click. Returns a decision object; never
+/// activates a skill that fails to reproduce its gold or has no gold to judge against.
+pub async fn verify_and_adopt(
+    registry: &Registry,
+    id: &str,
+    actor: &str,
+    require_pure: bool,
+    p: &SkillRunParams<'_>,
+    halt: Option<&AtomicBool>,
+) -> Result<Value, String> {
+    let versions = registry.versions(id).map_err(|e| e.to_string())?;
+    let Some(&latest) = versions.iter().max() else {
+        return Err(format!("no such skill '{id}'"));
+    };
+    if registry.active_version(id).map_err(|e| e.to_string())? == Some(latest) {
+        return Ok(json!({ "decision": "already_active", "id": id, "version": latest }));
+    }
+    let (signed, _) = registry.load(id, latest).map_err(|e| e.to_string())?;
+    let metric = signed.manifest.metric.clone();
+    let pure = signed.manifest.capabilities.is_empty();
+    let runs = registry.accepted_runs(id).map_err(|e| e.to_string())?;
+    if runs.is_empty() {
+        return Ok(json!({
+            "decision": "no_data", "id": id, "version": latest,
+            "note": "no gold examples to verify against — left proposed; teach it accepted (input, output) pairs to enable adoption"
+        }));
+    }
+    let score = score_skill(registry, id, latest, &runs, &metric, p, halt).await;
+    let exact = metric == "exact_match";
+    // Reproduce ALL gold on an exact skill; clear the high-water mark on a fuzzy one.
+    let passes = if exact { score >= 1.0 } else { score >= 0.8 };
+    let blocked_by_egress = require_pure && !pure;
+    if passes && !blocked_by_egress {
+        registry
+            .set_active(id, latest, actor, "skill.adopt")
+            .map_err(|e| e.to_string())?;
+        let _ = registry.ledger().append(
+            "skill.learn",
+            actor,
+            json!({ "id": id, "adopted": true, "promoted": true, "candidate": latest,
+                    "candidate_score": score, "replays": runs.len() }),
+        );
+        return Ok(json!({
+            "decision": "adopted", "id": id, "version": latest,
+            "score": score, "replays": runs.len()
+        }));
+    }
+    let reason = if blocked_by_egress {
+        "skill requests network access — a human must adopt it explicitly"
+    } else {
+        "did not reproduce its gold examples"
+    };
+    Ok(json!({
+        "decision": "rejected", "id": id, "version": latest,
+        "score": score, "replays": runs.len(), "reason": reason
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -551,5 +617,78 @@ mod tests {
         .unwrap();
         assert_eq!(decision["decision"], "promoted", "decision was {decision}");
         assert_eq!(f.registry.active_version("upper").unwrap(), Some(2));
+    }
+
+    #[tokio::test]
+    async fn verify_and_adopt_activates_a_skill_that_reproduces_its_gold() {
+        let f = setup();
+        // A proposed (inactive) pure skill that correctly uppercases stdin.
+        let v = f
+            .registry
+            .install_inactive(upper_skill(), b"tr a-z A-Z")
+            .unwrap();
+        assert_eq!(f.registry.active_version("upper").unwrap(), None);
+        for (inp, gold) in [("abc", "ABC"), ("xy", "XY")] {
+            f.registry
+                .record_run("upper", v, inp.as_bytes(), gold.as_bytes(), 1.0)
+                .unwrap();
+        }
+        let d = verify_and_adopt(
+            &f.registry,
+            "upper",
+            "test",
+            true,
+            &params(&f, Taint::Trusted, true),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(d["decision"], "adopted", "decision was {d}");
+        assert_eq!(f.registry.active_version("upper").unwrap(), Some(v));
+    }
+
+    #[tokio::test]
+    async fn verify_and_adopt_rejects_a_skill_that_fails_its_gold() {
+        let f = setup();
+        // `cat` echoes the input unchanged — it will NOT reproduce the uppercased gold.
+        f.registry
+            .install_inactive(upper_skill(), b"cat")
+            .unwrap();
+        f.registry
+            .record_run("upper", 1, b"abc", b"ABC", 1.0)
+            .unwrap();
+        let d = verify_and_adopt(
+            &f.registry,
+            "upper",
+            "test",
+            true,
+            &params(&f, Taint::Trusted, true),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(d["decision"], "rejected", "decision was {d}");
+        assert_eq!(f.registry.active_version("upper").unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn verify_and_adopt_left_proposed_without_gold() {
+        let f = setup();
+        f.registry
+            .install_inactive(upper_skill(), b"tr a-z A-Z")
+            .unwrap();
+        // No recorded gold → cannot verify → must not activate.
+        let d = verify_and_adopt(
+            &f.registry,
+            "upper",
+            "test",
+            true,
+            &params(&f, Taint::Trusted, true),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(d["decision"], "no_data", "decision was {d}");
+        assert_eq!(f.registry.active_version("upper").unwrap(), None);
     }
 }

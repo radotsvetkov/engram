@@ -106,6 +106,33 @@ fn bump(v: &mut [f32], key: &[u8]) {
     v[idx] += sign;
 }
 
+/// Binary-quantize a vector to one sign bit per dimension, packed little-endian into bytes. This
+/// is the coarse index: comparing two quantized vectors by Hamming distance approximates their
+/// cosine ordering at ~1/32 the bytes and with a single XOR+popcount per byte, which is what lets
+/// recall scan EVERY in-scope vector (no salience cap) and still stay fast as the brain grows.
+pub fn quantize_binary(v: &[f32]) -> Vec<u8> {
+    let nbytes = v.len().div_ceil(8);
+    let mut out = vec![0u8; nbytes];
+    for (i, &x) in v.iter().enumerate() {
+        if x >= 0.0 {
+            out[i / 8] |= 1u8 << (i % 8);
+        }
+    }
+    out
+}
+
+/// Hamming distance between two packed binary codes (lower = more similar). Bytes past the shorter
+/// code count as fully differing, so a dimension/space mismatch is deprioritised rather than
+/// silently ignored.
+pub fn hamming(a: &[u8], b: &[u8]) -> u32 {
+    let n = a.len().min(b.len());
+    let mut d = 0u32;
+    for i in 0..n {
+        d += (a[i] ^ b[i]).count_ones();
+    }
+    d + (a.len().abs_diff(b.len()) as u32) * 8
+}
+
 /// Pack a vector into little-endian bytes for BLOB storage.
 pub fn to_bytes(v: &[f32]) -> Vec<u8> {
     let mut b = Vec::with_capacity(v.len() * 4);
@@ -142,5 +169,27 @@ mod tests {
         let e = TrigramHashEmbedder::new(32);
         let v = e.embed("hello world");
         assert_eq!(from_bytes(&to_bytes(&v)), v);
+    }
+
+    #[test]
+    fn binary_code_hamming_tracks_cosine_order() {
+        let e = TrigramHashEmbedder::default();
+        let q = e.embed("the user prefers a dark theme");
+        let close = e.embed("the user likes dark themes");
+        let far = e.embed("the weather in Berlin is cold today");
+        let (qb, cb, fb) = (
+            quantize_binary(&q),
+            quantize_binary(&close),
+            quantize_binary(&far),
+        );
+        // The paraphrase is nearer in BOTH the exact cosine and the coarse Hamming ordering, so the
+        // coarse pass keeps the right candidate.
+        assert!(cosine(&q, &close) > cosine(&q, &far));
+        assert!(
+            hamming(&qb, &cb) < hamming(&qb, &fb),
+            "coarse Hamming must rank the paraphrase nearer"
+        );
+        // The code is one bit per dimension.
+        assert_eq!(qb.len(), q.len().div_ceil(8));
     }
 }

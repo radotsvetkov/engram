@@ -16,23 +16,28 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use engram_core::{now_ms, Ledger, Taint};
-use rusqlite::{params, Connection, OptionalExtension, Row};
+use rusqlite::{params, params_from_iter, types::Value, Connection, OptionalExtension, Row};
 use serde::Serialize;
 use serde_json::json;
 
-use crate::embed::{cosine, from_bytes, to_bytes, Embedder};
+use crate::embed::{cosine, from_bytes, hamming, quantize_binary, to_bytes, Embedder};
 use crate::region::Region;
+use engram_core::{Scope, ScopeCtx};
 
 /// How many candidates each search arm contributes before fusion.
 const ARM_LIMIT: usize = 64;
-/// The semantic arm scans at most this many salience-ordered candidates, so recall latency stays
-/// flat as the brain grows past tens of thousands of memories (instead of an O(n) full scan).
-const SEM_SCAN_CAP: usize = 5000;
+/// The coarse (binary) pass keeps the best this-many candidates by Hamming distance before the exact
+/// cosine rerank. It scans EVERY live in-scope vector (no salience cap), so an old, low-importance,
+/// semantically-perfect memory is never silently dropped - the completeness fix.
+const COARSE_K: usize = 256;
+/// MMR diversity/relevance trade-off for the semantic arm: relevance-dominant, but enough novelty
+/// pressure to break up near-duplicate passages.
+const MMR_LAMBDA: f32 = 0.7;
 /// Reciprocal Rank Fusion constant (standard default).
 const RRF_K: f32 = 60.0;
 
 const COLS: &str =
-    "id,region,text,importance,taint,tier,source,metadata,content_hash,ledger_seq,created_ms,last_access_ms,access_count";
+    "id,region,text,importance,taint,tier,source,metadata,content_hash,ledger_seq,created_ms,last_access_ms,access_count,scope_kind,scope_id";
 
 #[derive(Debug, thiserror::Error)]
 pub enum MemoryError {
@@ -57,6 +62,8 @@ pub struct WriteReq {
     pub metadata: serde_json::Value,
     /// Who is writing this (for the audit trail), e.g. "core" or "skill:drafter@3".
     pub actor: String,
+    /// Which world this memory belongs to (user-global by default). Recall is ringed by scope.
+    pub scope: Scope,
 }
 
 impl WriteReq {
@@ -69,6 +76,7 @@ impl WriteReq {
             source: None,
             metadata: serde_json::Value::Null,
             actor: "core".into(),
+            scope: Scope::user(),
         }
     }
     pub fn importance(mut self, v: f32) -> Self {
@@ -85,6 +93,11 @@ impl WriteReq {
     }
     pub fn actor(mut self, a: impl Into<String>) -> Self {
         self.actor = a.into();
+        self
+    }
+    /// Bind this write to a scope (user-global, a project, or a session).
+    pub fn scope(mut self, s: Scope) -> Self {
+        self.scope = s;
         self
     }
 }
@@ -105,6 +118,10 @@ pub struct Record {
     pub created_ms: i64,
     pub last_access_ms: i64,
     pub access_count: i64,
+    /// Which world this memory lives in - `user` (global), `project`, or `session`.
+    pub scope_kind: String,
+    /// The project/session id for a scoped memory; empty for user-global.
+    pub scope_id: String,
 }
 
 /// A recall result with its fused score and the rank each arm gave it (so the UI can
@@ -150,7 +167,39 @@ impl Memory {
             ledger,
         };
         mem.migrate_embedding_space()?;
+        mem.backfill_binary()?;
         Ok(mem)
+    }
+
+    /// Populate `embedding_bin` for rows written before the binary index existed, computing each
+    /// code from the stored `embedding` (no re-embedding needed). Bounded and idempotent: once every
+    /// row has a code this is a cheap no-op. (P5 makes this resumable/off-boot for very large brains.)
+    fn backfill_binary(&self) -> Result<()> {
+        let mut conn = self.conn.lock().expect("memory mutex poisoned");
+        let rows: Vec<(i64, Vec<u8>)> = {
+            let mut stmt =
+                conn.prepare("SELECT id, embedding FROM facts WHERE embedding_bin IS NULL")?;
+            let mapped =
+                stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))?;
+            let mut v = Vec::new();
+            for row in mapped {
+                v.push(row?);
+            }
+            v
+        };
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let tx = conn.transaction()?;
+        for (id, blob) in &rows {
+            let bin = quantize_binary(&from_bytes(blob));
+            tx.execute(
+                "UPDATE facts SET embedding_bin = ?1 WHERE id = ?2",
+                params![bin, id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     /// Re-embed every stored memory when the active embedding model/space changes. Vectors
@@ -199,10 +248,11 @@ impl Memory {
         )?;
         let tx = conn.transaction()?;
         for (id, text) in &rows {
-            let emb = to_bytes(&self.embedder.embed(text));
+            // Re-embedding into a new space invalidates the binary code too - recompute both.
+            let v = self.embedder.embed(text);
             tx.execute(
-                "UPDATE facts SET embedding = ?1 WHERE id = ?2",
-                params![emb, id],
+                "UPDATE facts SET embedding = ?1, embedding_bin = ?2 WHERE id = ?3",
+                params![to_bytes(&v), quantize_binary(&v), id],
             )?;
         }
         tx.execute(
@@ -217,6 +267,7 @@ impl Memory {
     pub fn remember(&self, req: WriteReq) -> Result<Record> {
         let embedding = self.embedder.embed(&req.text);
         let blob = to_bytes(&embedding);
+        let bin = quantize_binary(&embedding);
         let content_hash = blake3::hash(req.text.as_bytes()).to_hex().to_string();
         let now = now_ms() as i64;
         let taint = taint_str(req.taint);
@@ -231,11 +282,14 @@ impl Memory {
         // ledger.append() runs while the lock is held, which is safe: it never re-enters the memory
         // connection, so there is no lock cycle.
         let mut conn = self.conn.lock().expect("memory mutex poisoned");
+        // Dedup is scope-aware: the SAME fact text in two different rings (e.g. a note that is
+        // both a user-global preference and a project fact) is two distinct rows, so bumping one
+        // never reaches across the ring boundary.
         let existing: Option<(i64, f64)> = conn
             .query_row(
                 "SELECT id, importance FROM facts WHERE region = ?1 AND content_hash = ?2 \
-                 AND deleted = 0 AND superseded_by IS NULL LIMIT 1",
-                params![req.region.as_str(), content_hash],
+                 AND scope_kind = ?3 AND scope_id = ?4 AND deleted = 0 AND superseded_by IS NULL LIMIT 1",
+                params![req.region.as_str(), content_hash, req.scope.kind.as_str(), req.scope.id],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?;
@@ -274,8 +328,8 @@ impl Memory {
         // can never leave the fact searchable-but-missing or present-but-unsearchable.
         let tx = conn.transaction()?;
         tx.execute(
-            "INSERT INTO facts(region,text,importance,taint,tier,source,metadata,embedding,content_hash,ledger_seq,created_ms,last_access_ms) \
-             VALUES(?1,?2,?3,?4,'warm',?5,?6,?7,?8,?9,?10,?10)",
+            "INSERT INTO facts(region,text,importance,taint,tier,source,metadata,embedding,content_hash,ledger_seq,created_ms,last_access_ms,scope_kind,scope_id,embedding_bin) \
+             VALUES(?1,?2,?3,?4,'warm',?5,?6,?7,?8,?9,?10,?10,?11,?12,?13)",
             params![
                 req.region.as_str(),
                 req.text,
@@ -287,6 +341,9 @@ impl Memory {
                 content_hash,
                 entry.seq as i64,
                 now,
+                req.scope.kind.as_str(),
+                req.scope.id,
+                bin,
             ],
         )?;
         let id = tx.last_insert_rowid();
@@ -310,23 +367,47 @@ impl Memory {
             created_ms: now,
             last_access_ms: now,
             access_count: 0,
+            scope_kind: req.scope.kind.as_str().to_string(),
+            scope_id: req.scope.id,
         })
     }
 
-    /// Hybrid recall: BM25 keyword search and vector semantic search, fused by RRF.
-    /// `regions` empty means search the whole brain.
-    /// Hybrid recall across `regions`, returning the top `k`. Includes ALL provenance
-    /// (even memories written during an untrusted run) - for transparency / audit views.
+    /// Hybrid recall across the WHOLE brain (every scope): BM25 keyword + vector semantic,
+    /// fused by RRF. `regions` empty means every region. Includes ALL provenance (even untrusted)
+    /// - for transparency / audit / the Atlas. For model-facing recall use [`Memory::recall_scoped`]
+    /// so the user/project/session rings are respected and one project can't read another's work.
     pub fn recall(&self, query: &str, regions: &[Region], k: usize) -> Result<Vec<Hit>> {
-        self.recall_inner(query, regions, k, false)
+        self.recall_inner(query, regions, k, false, &ScopeCtx::any())
     }
 
-    /// Like [`Memory::recall`], but EXCLUDES untrusted-provenance memories - this is what a
-    /// model should get as trusted context. Content read during a tainted run is stored
-    /// with its provenance yet never silently re-surfaces here, closing the memory-poisoning
-    /// vector (injected text can't become trusted memory and steer a later clean run).
+    /// Whole-brain recall EXCLUDING untrusted-provenance memories. See [`Memory::recall_trusted_scoped`]
+    /// for the ringed, model-facing variant.
     pub fn recall_trusted(&self, query: &str, regions: &[Region], k: usize) -> Result<Vec<Hit>> {
-        self.recall_inner(query, regions, k, true)
+        self.recall_inner(query, regions, k, true, &ScopeCtx::any())
+    }
+
+    /// Ringed recall: restricted to the union of the rings in `scope` (user ∪ active project ∪
+    /// active session), the more-specific ring boosted on ties. Includes all provenance.
+    pub fn recall_scoped(
+        &self,
+        query: &str,
+        regions: &[Region],
+        k: usize,
+        scope: &ScopeCtx,
+    ) -> Result<Vec<Hit>> {
+        self.recall_inner(query, regions, k, false, scope)
+    }
+
+    /// Ringed, TRUSTED-only recall - what a model should get as grounded context: only the rings
+    /// that apply to this turn, and never untrusted-provenance memory (the memory-poisoning guard).
+    pub fn recall_trusted_scoped(
+        &self,
+        query: &str,
+        regions: &[Region],
+        k: usize,
+        scope: &ScopeCtx,
+    ) -> Result<Vec<Hit>> {
+        self.recall_inner(query, regions, k, true, scope)
     }
 
     fn recall_inner(
@@ -335,6 +416,7 @@ impl Memory {
         regions: &[Region],
         k: usize,
         trusted_only: bool,
+        scope: &ScopeCtx,
     ) -> Result<Vec<Hit>> {
         let taint_clause = |prefix: &str| {
             if trusted_only {
@@ -349,48 +431,85 @@ impl Memory {
         // --- keyword arm (BM25; lower is better) ---
         let mut keyword: Vec<i64> = Vec::new();
         if let Some(match_q) = build_match(query) {
+            let (scope_sql, scope_binds) = scope_clause("f.", scope);
             let sql = format!(
                 "SELECT facts_fts.rowid FROM facts_fts \
                  JOIN facts f ON f.id = facts_fts.rowid \
-                 WHERE facts_fts MATCH ?1 AND f.deleted = 0 AND f.superseded_by IS NULL AND {region}{taint} \
-                 ORDER BY bm25(facts_fts) LIMIT ?2",
+                 WHERE facts_fts MATCH ? AND f.deleted = 0 AND f.superseded_by IS NULL AND {region}{taint} AND {scope} \
+                 ORDER BY bm25(facts_fts) LIMIT ?",
                 region = region_clause("f.", regions),
-                taint = taint_clause("f.")
+                taint = taint_clause("f."),
+                scope = scope_sql,
             );
+            // Bind order follows placeholder order in the SQL: MATCH ?, then scope ids, then LIMIT ?.
+            let mut binds: Vec<Value> = Vec::with_capacity(scope_binds.len() + 2);
+            binds.push(Value::Text(match_q));
+            for id in scope_binds {
+                binds.push(Value::Text(id));
+            }
+            binds.push(Value::Integer(ARM_LIMIT as i64));
             let mut stmt = conn.prepare(&sql)?;
-            let rows =
-                stmt.query_map(params![match_q, ARM_LIMIT as i64], |r| r.get::<_, i64>(0))?;
+            let rows = stmt.query_map(params_from_iter(binds), |r| r.get::<_, i64>(0))?;
             for id in rows {
                 keyword.push(id?);
             }
         }
 
-        // --- semantic arm (cosine over a BOUNDED, salience-ordered candidate set) ---
-        // Scanning every row's embedding is O(n) and won't survive tens of thousands of memories
-        // on a $5 VPS. Instead scan at most SEM_SCAN_CAP candidates, ordered by importance then
-        // recency (backed by idx_facts_salience), so the work stays flat as the brain grows AND
-        // what-matters is preferentially considered. The keyword arm (FTS index) is already bounded.
-        let sem_sql = format!(
-            "SELECT id, embedding FROM facts WHERE deleted = 0 AND superseded_by IS NULL AND {region}{taint} \
-             ORDER BY importance DESC, last_access_ms DESC LIMIT {cap}",
+        // --- semantic arm: two-stage binary-quantized recall over ALL live in-scope vectors ---
+        // Stage A (coarse): scan every live in-scope row's SMALL binary code and keep the COARSE_K
+        // nearest by Hamming distance. This has NO salience cap - unlike the old top-5000-by-
+        // importance scan, an old, low-importance, semantically-perfect memory is always eligible
+        // (the completeness fix). The scope filter keeps the scan to the active rings, so per-recall
+        // cost tracks the current project, not the whole brain. Stage B (exact): cosine-rerank just
+        // those COARSE_K candidates on the full f32 embedding, for accurate ordering.
+        let q_bin = quantize_binary(&q_emb);
+        let (sem_scope_sql, sem_scope_binds) = scope_clause("", scope);
+        let coarse_sql = format!(
+            "SELECT id, embedding_bin FROM facts WHERE deleted = 0 AND superseded_by IS NULL AND {region}{taint} AND {scope}",
             region = region_clause("", regions),
             taint = taint_clause(""),
-            cap = SEM_SCAN_CAP,
+            scope = sem_scope_sql,
         );
-        let mut sims: Vec<(i64, f32)> = {
-            let mut stmt = conn.prepare(&sem_sql)?;
-            let rows =
-                stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))?;
-            let mut out = Vec::new();
+        let mut coarse: Vec<(u32, i64)> = {
+            let mut stmt = conn.prepare(&coarse_sql)?;
+            let binds: Vec<Value> = sem_scope_binds.into_iter().map(Value::Text).collect();
+            let rows = stmt.query_map(params_from_iter(binds), |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, Option<Vec<u8>>>(1)?))
+            })?;
+            let mut out: Vec<(u32, i64)> = Vec::new();
             for row in rows {
-                let (id, blob) = row?;
-                out.push((id, cosine(&q_emb, &from_bytes(&blob))));
+                let (id, bin) = row?;
+                // A missing code (shouldn't happen after backfill) is treated as the best distance,
+                // so a row is never dropped for lack of an index - completeness over micro-speed.
+                let dist = bin.map(|b| hamming(&q_bin, &b)).unwrap_or(0);
+                out.push((dist, id));
             }
             out
         };
+        coarse.sort_by_key(|(d, _)| *d);
+        coarse.truncate(COARSE_K);
+        // Stage B: exact cosine over the coarse candidates, then MMR to diversify - so near-duplicate
+        // passages (e.g. overlapping document chunks) don't crowd out other relevant memories.
+        let mut sims: Vec<(i64, f32, Vec<f32>)> = Vec::with_capacity(coarse.len());
+        if !coarse.is_empty() {
+            let ids: Vec<i64> = coarse.iter().map(|(_, id)| *id).collect();
+            let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let exact_sql = format!("SELECT id, embedding FROM facts WHERE id IN ({placeholders})");
+            let mut stmt = conn.prepare(&exact_sql)?;
+            let binds: Vec<Value> = ids.iter().map(|i| Value::Integer(*i)).collect();
+            let rows = stmt.query_map(params_from_iter(binds), |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?))
+            })?;
+            for row in rows {
+                let (id, blob) = row?;
+                let v = from_bytes(&blob);
+                let sim = cosine(&q_emb, &v);
+                sims.push((id, sim, v));
+            }
+        }
         sims.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        sims.truncate(ARM_LIMIT);
-        let semantic: Vec<i64> = sims.into_iter().map(|(id, _)| id).collect();
+        // MMR (λ=0.7) keeps relevance dominant while breaking up near-duplicates.
+        let semantic: Vec<i64> = crate::rerank::mmr(&sims, MMR_LAMBDA, ARM_LIMIT);
 
         // --- Reciprocal Rank Fusion ---
         let mut score: HashMap<i64, f32> = HashMap::new();
@@ -403,6 +522,13 @@ impl Memory {
         for (i, id) in semantic.iter().enumerate() {
             *score.entry(*id).or_default() += 1.0 / (RRF_K + (i as f32) + 1.0);
             sem_rank.insert(*id, i + 1);
+        }
+        // Specificity boost: when a hit lives in the active project or session ring, nudge it above
+        // an equally-scored user-global hit, so the more-specific memory wins ties without burying a
+        // strongly-relevant global fact. Only meaningful when a specific ring is active; the whole-
+        // brain and user-only views leave RRF ordering untouched (preserving legacy behaviour).
+        if scope.project.is_some() || scope.session.is_some() {
+            apply_scope_boost(&conn, &mut score)?;
         }
         let mut fused: Vec<(i64, f32)> = score.into_iter().collect();
         fused.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -479,15 +605,36 @@ impl Memory {
     }
 
     /// IDs of current (live, non-superseded) memories in `region` whose text starts with
-    /// `prefix` - used to find the prior singular fact a new one replaces.
+    /// `prefix`, across ALL scopes - used to find the prior singular fact a new one replaces.
     pub fn current_with_prefix(&self, region: Region, prefix: &str) -> Result<Vec<i64>> {
+        self.current_with_prefix_scoped(region, prefix, &ScopeCtx::any())
+    }
+
+    /// Like [`current_with_prefix`], but restricted to the rings in `scope`, so a superseding
+    /// write only replaces a prior fact IN THE SAME RING (a global name-change never reaches into
+    /// a project ring, and vice-versa).
+    pub fn current_with_prefix_scoped(
+        &self,
+        region: Region,
+        prefix: &str,
+        scope: &ScopeCtx,
+    ) -> Result<Vec<i64>> {
         let conn = self.conn.lock().expect("memory mutex poisoned");
-        let mut stmt = conn.prepare(
+        let (scope_sql, scope_binds) = scope_clause("", scope);
+        let sql = format!(
             "SELECT id FROM facts \
-             WHERE region = ?1 AND deleted = 0 AND superseded_by IS NULL AND text LIKE ?2",
-        )?;
+             WHERE region = ? AND deleted = 0 AND superseded_by IS NULL AND text LIKE ? AND {scope}",
+            scope = scope_sql,
+        );
         let like = format!("{prefix}%"); // prefixes are fixed RULE strings, no LIKE wildcards
-        let rows = stmt.query_map(params![region.as_str(), like], |r| r.get::<_, i64>(0))?;
+        let mut binds: Vec<Value> = Vec::with_capacity(scope_binds.len() + 2);
+        binds.push(Value::Text(region.as_str().to_string()));
+        binds.push(Value::Text(like));
+        for id in scope_binds {
+            binds.push(Value::Text(id));
+        }
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(binds), |r| r.get::<_, i64>(0))?;
         let mut out = Vec::new();
         for r in rows {
             out.push(r?);
@@ -526,20 +673,61 @@ impl Memory {
         get_record(&conn, id)
     }
 
-    /// The most recent `n` memories in a region, oldest-first - used to reload a
+    /// The most recent `n` memories in a region across ALL scopes, oldest-first - used to reload a
     /// conversation from episodic memory so the chat survives a refresh.
     pub fn recent(&self, region: Region, n: usize) -> Result<Vec<Record>> {
+        self.recent_scoped(region, n, &ScopeCtx::any())
+    }
+
+    /// Like [`recent`], but restricted to the rings in `scope`. Consciousness distillation uses
+    /// this to build a user-global working-memory block and a separate per-project block.
+    pub fn recent_scoped(
+        &self,
+        region: Region,
+        n: usize,
+        scope: &ScopeCtx,
+    ) -> Result<Vec<Record>> {
         let conn = self.conn.lock().expect("memory mutex poisoned");
+        let (scope_sql, scope_binds) = scope_clause("", scope);
         let sql = format!(
-            "SELECT {COLS} FROM facts WHERE region = ?1 AND deleted = 0 ORDER BY created_ms DESC LIMIT ?2"
+            "SELECT {COLS} FROM facts WHERE region = ? AND deleted = 0 AND {scope} \
+             ORDER BY created_ms DESC LIMIT ?",
+            scope = scope_sql,
         );
+        let mut binds: Vec<Value> = Vec::with_capacity(scope_binds.len() + 2);
+        binds.push(Value::Text(region.as_str().to_string()));
+        for id in scope_binds {
+            binds.push(Value::Text(id));
+        }
+        binds.push(Value::Integer(n as i64));
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(params![region.as_str(), n as i64], map_record)?;
+        let rows = stmt.query_map(params_from_iter(binds), map_record)?;
         let mut out = Vec::new();
         for r in rows {
             out.push(r?);
         }
         out.reverse();
+        Ok(out)
+    }
+
+    /// The most recent `n` memories in a region within a SINGLE ring (exact scope), most-recent
+    /// first - used to build a per-project working-memory block that must contain *only* that
+    /// project's facts (not the user-global ones, which the global block already carries).
+    pub fn recent_in_ring(&self, region: Region, n: usize, scope: &Scope) -> Result<Vec<Record>> {
+        let conn = self.conn.lock().expect("memory mutex poisoned");
+        let sql = format!(
+            "SELECT {COLS} FROM facts WHERE region = ? AND deleted = 0 AND superseded_by IS NULL \
+             AND scope_kind = ? AND scope_id = ? ORDER BY created_ms DESC LIMIT ?"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(
+            params![region.as_str(), scope.kind.as_str(), scope.id, n as i64],
+            map_record,
+        )?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
         Ok(out)
     }
 
@@ -562,6 +750,35 @@ impl Memory {
                 .append("memory.consolidate", "core", json!({ "demoted": demoted }))?;
         }
         Ok(demoted)
+    }
+
+    /// Rebuild the derived binary coarse index (`embedding_bin`) for EVERY row from its stored
+    /// embedding. The binary codes are derived state, not the source of truth, so this fully repairs
+    /// a corrupt or partially-populated index without touching content or the ledger. Returns the
+    /// number of rows reindexed. (`backfill_binary` only fills NULLs; this recomputes all.)
+    pub fn reindex_binary(&self) -> Result<i64> {
+        let mut conn = self.conn.lock().expect("memory mutex poisoned");
+        let rows: Vec<(i64, Vec<u8>)> = {
+            let mut stmt = conn.prepare("SELECT id, embedding FROM facts")?;
+            let mapped =
+                stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))?;
+            let mut v = Vec::new();
+            for row in mapped {
+                v.push(row?);
+            }
+            v
+        };
+        let n = rows.len() as i64;
+        let tx = conn.transaction()?;
+        for (id, blob) in &rows {
+            let bin = quantize_binary(&from_bytes(blob));
+            tx.execute(
+                "UPDATE facts SET embedding_bin = ?1 WHERE id = ?2",
+                params![bin, id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(n)
     }
 
     /// Counts for the Memory Atlas.
@@ -598,7 +815,10 @@ fn init_schema(conn: &Connection) -> Result<()> {
             last_access_ms INTEGER NOT NULL,
             access_count  INTEGER NOT NULL DEFAULT 0,
             deleted       INTEGER NOT NULL DEFAULT 0,
-            superseded_by INTEGER
+            superseded_by INTEGER,
+            scope_kind    TEXT NOT NULL DEFAULT 'user',
+            scope_id      TEXT NOT NULL DEFAULT '',
+            embedding_bin BLOB
         );
         CREATE INDEX IF NOT EXISTS idx_facts_region ON facts(region, deleted);
         CREATE INDEX IF NOT EXISTS idx_facts_salience ON facts(importance DESC, last_access_ms DESC);
@@ -606,9 +826,27 @@ fn init_schema(conn: &Connection) -> Result<()> {
         CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(text, tokenize = 'unicode61');
         CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);",
     )?;
-    // Add the supersession column to brains created before temporal validity (ignored if
-    // it already exists).
+    // Idempotent column adds for brains created before a feature existed (each is a no-op,
+    // and errors "duplicate column", when the column is already present - hence `let _`).
+    // The supersession column predates temporal validity; the scope columns partition memory
+    // into user/project/session rings (default 'user' makes every legacy row user-global, so
+    // nothing disappears and the bleed only stops accruing forward).
     let _ = conn.execute("ALTER TABLE facts ADD COLUMN superseded_by INTEGER", []);
+    let _ = conn.execute(
+        "ALTER TABLE facts ADD COLUMN scope_kind TEXT NOT NULL DEFAULT 'user'",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE facts ADD COLUMN scope_id TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    // The binary-quantized companion of `embedding` - the coarse index for two-stage recall.
+    let _ = conn.execute("ALTER TABLE facts ADD COLUMN embedding_bin BLOB", []);
+    // Created AFTER the ALTERs so the referenced columns exist on a migrated legacy brain too.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_facts_scope ON facts(scope_kind, scope_id, deleted)",
+        [],
+    )?;
     Ok(())
 }
 
@@ -647,6 +885,8 @@ fn map_record(r: &Row) -> rusqlite::Result<Record> {
         created_ms: r.get(10)?,
         last_access_ms: r.get(11)?,
         access_count: r.get(12)?,
+        scope_kind: r.get(13)?,
+        scope_id: r.get(14)?,
     })
 }
 
@@ -678,6 +918,62 @@ fn region_clause(prefix: &str, regions: &[Region]) -> String {
         .collect::<Vec<_>>()
         .join(",");
     format!("{prefix}region IN ({list})")
+}
+
+/// The union-of-rings scope predicate and its bound `scope_id` values. A whole-brain context
+/// (`ScopeCtx::any()`) yields `("1 = 1", [])` - no ring filter. `scope_kind` is a fixed enum
+/// string (safe to inline); `scope_id` is an opaque workspace id, so it is always bound, never
+/// interpolated. `prefix` qualifies the columns for a joined query (e.g. `"f."`).
+fn scope_clause(prefix: &str, scope: &ScopeCtx) -> (String, Vec<String>) {
+    let rings = scope.rings();
+    if rings.is_empty() {
+        return ("1 = 1".into(), Vec::new());
+    }
+    let mut parts = Vec::with_capacity(rings.len());
+    let mut binds = Vec::with_capacity(rings.len());
+    for (kind, id) in rings {
+        parts.push(format!(
+            "({prefix}scope_kind = '{}' AND {prefix}scope_id = ?)",
+            kind.as_str()
+        ));
+        binds.push(id);
+    }
+    (format!("({})", parts.join(" OR ")), binds)
+}
+
+/// Session > project > user tie-break, sized at roughly one RRF rank-step so it settles ties
+/// without overpowering genuine relevance. Applied only to the bounded fused candidate set.
+const SCOPE_BOOST_PROJECT: f32 = 0.010;
+const SCOPE_BOOST_SESSION: f32 = 0.018;
+
+/// Add a small specificity boost to project/session-ringed hits among the fused candidates. Looks
+/// up the scope of only those candidate ids (a bounded set, <= 2*ARM_LIMIT) in a single query.
+fn apply_scope_boost(conn: &Connection, score: &mut HashMap<i64, f32>) -> Result<()> {
+    if score.is_empty() {
+        return Ok(());
+    }
+    let ids: Vec<i64> = score.keys().copied().collect();
+    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let sql = format!("SELECT id, scope_kind FROM facts WHERE id IN ({placeholders})");
+    let mut stmt = conn.prepare(&sql)?;
+    let binds: Vec<Value> = ids.iter().map(|i| Value::Integer(*i)).collect();
+    let rows = stmt.query_map(params_from_iter(binds), |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+    })?;
+    for row in rows {
+        let (id, kind) = row?;
+        let boost = match kind.as_str() {
+            "session" => SCOPE_BOOST_SESSION,
+            "project" => SCOPE_BOOST_PROJECT,
+            _ => 0.0,
+        };
+        if boost != 0.0 {
+            if let Some(s) = score.get_mut(&id) {
+                *s += boost;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn taint_str(t: Taint) -> &'static str {
@@ -740,6 +1036,194 @@ mod tests {
             .remember(WriteReq::new(Region::Identity, "The user works in Rust"))
             .unwrap();
         assert_ne!(c.id, a.id);
+    }
+
+    #[test]
+    fn scope_defaults_to_user_and_round_trips() {
+        let (m, _d) = mem();
+        // A default write is user-global.
+        let g = m
+            .remember(WriteReq::new(Region::Semantic, "global fact"))
+            .unwrap();
+        assert_eq!(g.scope_kind, "user");
+        assert_eq!(g.scope_id, "");
+        // A project-scoped write round-trips its scope on the returned record and on re-fetch.
+        let p = m
+            .remember(WriteReq::new(Region::Semantic, "project fact").scope(Scope::project("p1")))
+            .unwrap();
+        assert_eq!(p.scope_kind, "project");
+        assert_eq!(p.scope_id, "p1");
+        let refetched = m.get(p.id).unwrap().unwrap();
+        assert_eq!(refetched.scope_kind, "project");
+        assert_eq!(refetched.scope_id, "p1");
+        // The SAME text in a different scope is a DISTINCT row (scope-aware dedup), not a bump.
+        let same_text_other_scope = m
+            .remember(WriteReq::new(Region::Semantic, "global fact").scope(Scope::project("p1")))
+            .unwrap();
+        assert_ne!(
+            same_text_other_scope.id, g.id,
+            "same text in a different ring must be its own row"
+        );
+        // But re-writing the SAME text in the SAME scope still dedups (bumps, one row).
+        let dup = m
+            .remember(WriteReq::new(Region::Semantic, "global fact"))
+            .unwrap();
+        assert_eq!(dup.id, g.id, "same text in the same ring dedups");
+    }
+
+    #[test]
+    fn scoped_recall_isolates_projects_but_keeps_user_global() {
+        let (m, _d) = mem();
+        // Two projects each with their own deploy-target fact, plus a user-global identity fact.
+        m.remember(
+            WriteReq::new(Region::Semantic, "the deploy target is fly.io")
+                .scope(Scope::project("A")),
+        )
+        .unwrap();
+        m.remember(
+            WriteReq::new(Region::Semantic, "the deploy target is render")
+                .scope(Scope::project("B")),
+        )
+        .unwrap();
+        m.remember(WriteReq::new(
+            Region::Identity,
+            "the user prefers concise answers",
+        ))
+        .unwrap(); // user-global by default
+
+        // Inside project B: sees B's fact, NEVER project A's (the bleed, fixed).
+        let ctx_b = ScopeCtx::project("B");
+        let hits = m
+            .recall_trusted_scoped("deploy target", &[Region::Semantic], 5, &ctx_b)
+            .unwrap();
+        assert!(
+            hits.iter().any(|h| h.record.text.contains("render")),
+            "project B recalls its own fact"
+        );
+        assert!(
+            !hits.iter().any(|h| h.record.text.contains("fly.io")),
+            "project B must NOT recall project A's fact"
+        );
+
+        // The user-global identity fact still surfaces inside project B.
+        let ident = m
+            .recall_trusted_scoped("concise answers", &[Region::Identity], 5, &ctx_b)
+            .unwrap();
+        assert!(
+            ident.iter().any(|h| h.record.text.contains("concise")),
+            "user-global memory follows the user into every project"
+        );
+
+        // A brand-new project C starts clean: no other project's work, only user-global.
+        let ctx_c = ScopeCtx::project("C");
+        let deploy_c = m
+            .recall_trusted_scoped("deploy target", &[Region::Semantic], 5, &ctx_c)
+            .unwrap();
+        assert!(
+            deploy_c
+                .iter()
+                .all(|h| !h.record.text.contains("fly.io") && !h.record.text.contains("render")),
+            "a new project sees no other project's work"
+        );
+    }
+
+    #[test]
+    fn specificity_boost_prefers_project_over_global_on_a_tie() {
+        let (m, _d) = mem();
+        // Identical text in the user ring and in project P: with project P active, the project
+        // copy should rank first (the specificity tie-break).
+        let _g = m
+            .remember(WriteReq::new(Region::Semantic, "the api base url is set"))
+            .unwrap();
+        let p = m
+            .remember(
+                WriteReq::new(Region::Semantic, "the api base url is set").scope(Scope::project("P")),
+            )
+            .unwrap();
+        let hits = m
+            .recall_scoped(
+                "api base url",
+                &[Region::Semantic],
+                5,
+                &ScopeCtx::project("P"),
+            )
+            .unwrap();
+        assert!(!hits.is_empty());
+        assert_eq!(
+            hits[0].record.id, p.id,
+            "the project-ringed copy wins the tie over the user-global one"
+        );
+        assert_eq!(hits[0].record.scope_kind, "project");
+    }
+
+    #[test]
+    fn low_importance_old_memory_is_still_recalled_by_paraphrase() {
+        // The completeness fix: the old salience cap made only the top-N-by-importance rows
+        // eligible for the semantic arm, so a low-importance but semantically-perfect memory could
+        // be silently invisible. The binary coarse pass scans ALL in-scope rows, so it surfaces.
+        let (m, _d) = mem();
+        // Bury the target under many higher-importance, unrelated memories.
+        for i in 0..60 {
+            m.remember(
+                WriteReq::new(Region::Semantic, format!("unrelated note number {i} about invoices"))
+                    .importance(0.95),
+            )
+            .unwrap();
+        }
+        let target = m
+            .remember(
+                WriteReq::new(Region::Semantic, "the user preferences include a dark theme")
+                    .importance(0.05),
+            )
+            .unwrap();
+        let hits = m
+            .recall("preferred theming", &[Region::Semantic], 5)
+            .unwrap();
+        assert!(
+            hits.iter().any(|h| h.record.id == target.id),
+            "the low-importance paraphrase match must still be recalled"
+        );
+    }
+
+    #[test]
+    fn reindex_binary_rebuilds_the_coarse_index_from_source_of_truth() {
+        let (m, _d) = mem();
+        for i in 0..5 {
+            m.remember(WriteReq::new(Region::Semantic, format!("fact number {i}")))
+                .unwrap();
+        }
+        m.remember(WriteReq::new(Region::Semantic, "the user prefers a dark theme"))
+            .unwrap();
+        // Wipe the derived binary index entirely.
+        {
+            let conn = m.conn.lock().unwrap();
+            conn.execute("UPDATE facts SET embedding_bin = NULL", [])
+                .unwrap();
+        }
+        // Reindex rebuilds every code from the stored embeddings (the source of truth).
+        let n = m.reindex_binary().unwrap();
+        assert_eq!(n, 6, "every row is reindexed");
+        // Recall still works and finds the paraphrase.
+        let hits = m
+            .recall("preferred theming", &[Region::Semantic], 5)
+            .unwrap();
+        assert!(
+            hits.iter().any(|h| h.record.text.contains("dark theme")),
+            "recall works after a full reindex"
+        );
+    }
+
+    #[test]
+    fn whole_brain_recall_still_sees_all_scopes() {
+        let (m, _d) = mem();
+        m.remember(WriteReq::new(Region::Semantic, "alpha fact").scope(Scope::project("A")))
+            .unwrap();
+        m.remember(WriteReq::new(Region::Semantic, "beta fact").scope(Scope::project("B")))
+            .unwrap();
+        // The bare recall() (Atlas / audit view) spans every scope.
+        let hits = m.recall("fact", &[Region::Semantic], 10).unwrap();
+        assert!(hits.iter().any(|h| h.record.text.contains("alpha")));
+        assert!(hits.iter().any(|h| h.record.text.contains("beta")));
     }
 
     #[test]

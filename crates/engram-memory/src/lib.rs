@@ -15,11 +15,12 @@
 
 pub mod embed;
 pub mod region;
+pub mod rerank;
 pub mod static_embed;
 pub mod store;
 
 pub use embed::{cosine, Embedder, TrigramHashEmbedder};
-pub use engram_core::Taint;
+pub use engram_core::{Scope, ScopeCtx, ScopeKind, Taint};
 pub use region::Region;
 pub use static_embed::StaticEmbedder;
 pub use store::{Hit, Memory, MemoryError, Record, Stats, WriteReq};

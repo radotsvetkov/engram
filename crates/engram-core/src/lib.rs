@@ -19,6 +19,7 @@ pub mod autonomy;
 pub mod event;
 pub mod ledger;
 pub mod lifecycle;
+pub mod scope;
 
 pub use autonomy::{
     sign_policy, verify_policy, ActionClass, AutonomyPolicy, EgressBudget, EgressDecision, EgressRule,
@@ -29,6 +30,7 @@ pub use ledger::{
     entries_from_file, verify_file, verifying_key_from_hex, Entry, Ledger, LedgerError,
 };
 pub use lifecycle::{run_until_idle, Activity, WakeReason};
+pub use scope::{Scope, ScopeCtx, ScopeKind};
 
 /// Semantic version of the kernel, taken from the crate manifest.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

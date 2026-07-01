@@ -102,6 +102,32 @@ The control center is driven by these endpoints, alongside the existing `/v1/age
 | `/v1/voice/stream` | GET (WebSocket) | a multi-turn live voice session |
 | `/v1/channel/{platform}` | POST | an inbound messaging-channel webhook |
 
+## Terminal (CLI & TUI)
+
+The same control surface, keyboard-first, in your terminal. `crates/engram-cli` is a
+single small binary (`engram`) that talks to the daemon over the very same HTTP API
+the desktop uses — it shares no process and stores nothing, so the daemon stays the
+one audited choke-point. Run `engram` with no arguments for a full-screen TUI, or use
+a subcommand for scripting; if the daemon isn't up, the client starts it and waits.
+
+- **A full-screen TUI** built on `ratatui`: a streaming chat pane (tool steps and the
+  model's narration stream live, answers render as real Markdown with a region-tinted
+  **recall ribbon**), a three-column **kanban** with glass-box receipt cards, and views
+  for **Memory / Skills / Schedule / Autonomy / Ledger / Agents** — all behind a
+  `Ctrl-P` command palette. The same **trust spine** rides the header: model, today's
+  cost, and a live `✓ ledger N` chip that flips to `✗ TAMPER` if the chain ever fails to
+  verify. Staged egress waits for your approval in the **Autonomy** view (`a`/`d`), the
+  graduated-autonomy gate in the terminal.
+- **A scriptable CLI** with `--json` on every command: `engram ask` / `run` (streaming),
+  `tasks`, `memory recall|remember|forget`, `skills`, `schedule`, `autonomy`,
+  `ledger verify`, `config`, plus `engram status` / `doctor` and shell `completions`.
+  `engram ledger verify` exits non-zero on tamper, so it drops straight into CI or a
+  health check.
+
+The renderer is shared between both surfaces, so `engram ask "…"` in a pipe looks
+identical to the TUI's chat pane. See [`docs/CLI.md`](./docs/CLI.md) for the full
+command and key reference.
+
 ## Benchmark results
 
 Measured by `cargo run -p engram-bench` over a 25-fact corpus and 17 paraphrase queries (10 of them sharing no content word with their target). The harness compares the zero-dependency offline default against the pure-Rust static (model2vec) embedder:

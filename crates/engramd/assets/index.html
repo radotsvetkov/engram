@@ -3026,6 +3026,8 @@ async function skillAdopt(id){
     const r=await J('/v1/skills/'+encodeURIComponent(id)+'/adopt',{method:'POST',headers:MIND_JSON,body:'{}'});
     const d=r&&r.decision;
     if(d==='adopted') notify('Adopted "'+id+'" · verified & active · signed','ok');
+    else if(d==='approved') notify('Approved "'+id+'" · active — network skill (can\'t be replay-verified) · signed','ok');
+    else if(d==='needs_approval') notify('"'+id+'" is a network skill — click Adopt to approve & activate it');
     else if(d==='no_data') notify('Add at least one example first, then Adopt');
     else if(d==='already_active') notify('"'+id+'" is already active','ok');
     else if(d==='needs_shell') notify('Turn on the shell tool (Settings → Tools) so this script skill can be run & verified');
@@ -3300,13 +3302,14 @@ function ccTools(c){
       <div class="row2" style="margin-top:13px">
         <div class="field"><label>Sandbox</label>
           <select id="sbackend" onchange="shellBackendChanged()">
-            <option value=""${bk===''?' selected':''}>Host - no isolation</option>
+            <option value="sandbox"${bk==='sandbox'?' selected':''}>Built-in sandbox (recommended, no Docker)</option>
             <option value="docker"${bk==='docker'?' selected':''}>Docker container</option>
             <option value="ssh"${bk==='ssh'?' selected':''}>Remote SSH host</option>
+            <option value=""${bk===''?' selected':''}>Host - no isolation</option>
           </select>
-          <div class="hint">Where shell commands run. Docker isolates each run in a throwaway container; SSH runs them on another machine. Both need that backend on the daemon's host.</div>
+          <div class="hint">Where shell commands and skills run. <b>Built-in sandbox</b> needs no install — it uses the OS sandbox (macOS Seatbelt / Linux bubblewrap) to deny network and confine writes. Docker isolates each run in a throwaway container; SSH runs them on another machine.</div>
         </div>
-        <div class="field" id="stargetwrap" style="${bk?'':'display:none'}"><label id="stargetlbl">${tlbl}</label>
+        <div class="field" id="stargetwrap" style="${(bk==='docker'||bk==='ssh')?'':'display:none'}"><label id="stargetlbl">${tlbl}</label>
           <input type="text" id="starget" value="${tgt}" placeholder="${tph}" autocomplete="off">
           <div class="hint" id="stargethint">${bk==='ssh'?'e.g. deploy@10.0.0.5 (key auth, must be set up)':'e.g. alpine, ubuntu:24.04, or your own image'}</div>
         </div>
@@ -3851,7 +3854,8 @@ function collectSettings(){
 // Show the right target field (Docker image vs SSH host) for the chosen shell sandbox.
 function shellBackendChanged(){
   const bk=gv('sbackend'); const wrap=document.getElementById('stargetwrap'); if(!wrap) return;
-  wrap.style.display = bk? '' : 'none';
+  // Only docker/ssh need a target (image / host). The built-in sandbox and host need none.
+  wrap.style.display = (bk==='docker'||bk==='ssh')? '' : 'none';
   const lbl=document.getElementById('stargetlbl'), inp=document.getElementById('starget'), hint=document.getElementById('stargethint');
   if(bk==='ssh'){ lbl.textContent='SSH host'; inp.placeholder='user@host'; hint.textContent='e.g. deploy@10.0.0.5 (key auth, must be set up)'; }
   else { lbl.textContent='Docker image'; inp.placeholder='alpine'; hint.textContent='e.g. alpine, ubuntu:24.04, or your own image'; }

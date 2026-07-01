@@ -185,6 +185,23 @@ impl Tool for SkillRunTool {
             "agent",
             json!({ "id": id, "bytes_out": outcome.output.len(), "duration_us": outcome.duration_us }),
         );
+        // AUTO-LEARN from real use: a PURE (no network / no LLM) skill is deterministic, so its real
+        // output IS reliable gold. Record this (input, output) as an accepted example — the skill grows
+        // its own test set from actual use, and future improvements get scored against it with ZERO
+        // manual "Add example". Deduped by input and capped so it can't grow without bound. Network/LLM
+        // skills are skipped (their output varies with the live world, so it isn't a stable answer).
+        if signed.manifest.capabilities.is_empty() && !outcome.output.is_empty() && !input.is_empty() {
+            if let Ok(existing) = ctx.skills.accepted_runs(id) {
+                let already = existing.iter().any(|(i, _)| i.as_slice() == input.as_bytes());
+                if !already && existing.len() < 30 {
+                    if let Ok(Some(v)) = ctx.skills.active_version(id) {
+                        let _ = ctx
+                            .skills
+                            .record_run(id, v, input.as_bytes(), &outcome.output, 1.0);
+                    }
+                }
+            }
+        }
         let text = String::from_utf8_lossy(&outcome.output).to_string();
         Ok(if text.trim().is_empty() {
             format!("(skill '{id}' produced no output)")

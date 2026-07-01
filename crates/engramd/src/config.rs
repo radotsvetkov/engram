@@ -188,6 +188,8 @@ pub struct SecurityCfg {
 /// `None` = run on the host, `Some("<image>")` = a Docker sandbox, `Some("ssh:<host>")` = SSH.
 pub fn resolve_shell_backend(backend: &str, target: &str) -> Option<String> {
     match backend.trim() {
+        // Built-in OS sandbox — no Docker, no target needed (Seatbelt on macOS, bubblewrap on Linux).
+        "sandbox" => Some("sandbox".to_string()),
         "docker" => Some(if target.trim().is_empty() {
             "alpine".to_string()
         } else {

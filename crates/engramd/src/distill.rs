@@ -28,6 +28,10 @@ pub struct Proposal {
     pub description: String,
     pub when_to_use: Option<String>,
     pub examples: Vec<(String, String)>,
+    /// Egress the program needs, a subset of {"net","llm"}. A NEW skill that fetches the web declares
+    /// "net" so it is installed network-capable; such a skill can't be replay-verified offline, so it
+    /// is staged for a one-tap human approval instead of auto-adopting. Empty = a pure transform.
+    pub capabilities: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -47,6 +51,8 @@ struct Raw {
     when_to_use: Option<String>,
     #[serde(default)]
     examples: Vec<RawEx>,
+    #[serde(default)]
+    capabilities: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -107,12 +113,14 @@ pub async fn propose(
          For a NEW skill: \
          {{\"id\":\"snake_case_slug\",\"interpreter\":\"python3\",\"source\":\"<the program>\",\
          \"description\":\"<one line>\",\"when_to_use\":\"<short cue>\",\
-         \"examples\":[{{\"input\":\"...\",\"output\":\"...\"}}]}}.\n\
+         \"capabilities\":[],\"examples\":[{{\"input\":\"...\",\"output\":\"...\"}}]}}.\n\
          For an IMPROVEMENT: \
          {{\"improves\":\"<existing id>\",\"interpreter\":\"python3\",\"source\":\"<better program>\",\
          \"description\":\"<one line, optional>\"}}.\n\
-         Keep the program short and dependency-light; for a new skill include 1-3 examples whose \
-         output you are CONFIDENT is correct (they become the gold the skill is verified against)."
+         If the program must reach the INTERNET (fetch a URL/API), set \"capabilities\":[\"net\"] — such \
+         a skill is staged for one-tap approval, not auto-activated. A pure transform leaves it empty \
+         and should include 1-3 examples whose output you are CONFIDENT is correct (the gold it is \
+         verified against). Keep the program short and dependency-light."
     );
     let req = CompletionRequest::new(model.to_string(), vec![Message::user(prompt)]);
     let out = gateway
@@ -158,6 +166,7 @@ fn parse(reply: &str, existing: &[String]) -> Option<Proposal> {
             description: raw.description.trim().to_string(),
             when_to_use: raw.when_to_use.filter(|s| !s.trim().is_empty()),
             examples: Vec::new(),
+            capabilities: Vec::new(), // improvements inherit the existing skill's capabilities
         });
     }
     // NEW skill: fresh, non-duplicate id.
@@ -171,6 +180,13 @@ fn parse(reply: &str, existing: &[String]) -> Option<Proposal> {
         .filter(|e| !e.input.is_empty() || !e.output.is_empty())
         .map(|e| (e.input, e.output))
         .collect();
+    // Only egress capabilities the runtime understands survive; anything else is dropped.
+    let capabilities = raw
+        .capabilities
+        .into_iter()
+        .map(|c| c.trim().to_ascii_lowercase())
+        .filter(|c| c == "net" || c == "llm")
+        .collect::<Vec<_>>();
     Some(Proposal {
         id,
         improves: false,
@@ -183,6 +199,7 @@ fn parse(reply: &str, existing: &[String]) -> Option<Proposal> {
         },
         when_to_use: raw.when_to_use.filter(|s| !s.trim().is_empty()),
         examples,
+        capabilities,
     })
 }
 
@@ -264,5 +281,24 @@ mod tests {
     fn improvement_of_unknown_skill_is_rejected() {
         let reply = "{\"improves\":\"nope\",\"interpreter\":\"python3\",\"source\":\"print(1)\"}";
         assert!(parse(reply, &["upcase".to_string()]).is_none());
+    }
+
+    #[test]
+    fn new_skill_keeps_only_known_capabilities() {
+        let reply = "{\"id\":\"weather_fetch\",\"interpreter\":\"python3\",\"source\":\"import sys\",\
+            \"capabilities\":[\"net\",\"BOGUS\",\"llm\"]}";
+        let p = parse(reply, &[]).expect("should parse");
+        assert!(!p.improves);
+        assert_eq!(p.capabilities, vec!["net", "llm"]); // BOGUS dropped, case-normalized
+    }
+
+    #[test]
+    fn pure_skill_has_no_capabilities() {
+        let p = parse(
+            "{\"id\":\"rev\",\"interpreter\":\"python3\",\"source\":\"print(1)\"}",
+            &[],
+        )
+        .unwrap();
+        assert!(p.capabilities.is_empty());
     }
 }

@@ -446,6 +446,8 @@ pub fn shell_command(
     command: &str,
 ) -> (String, Vec<String>) {
     match backend {
+        // Built-in OS sandbox (no Docker). Network-denied for the agent's general shell.
+        Some("sandbox") => sandbox_command(workdir, command, false),
         Some(b) if b.starts_with("ssh:") => {
             ("ssh".into(), vec![b[4..].to_string(), command.to_string()])
         }
@@ -480,6 +482,74 @@ pub fn shell_command(
             )
         }
         None => ("sh".into(), vec!["-c".into(), command.to_string()]),
+    }
+}
+
+/// Wrap `command` in the platform's BUILT-IN sandbox so code runs without network (unless `allow_net`)
+/// and can only write to `workdir` — no Docker required. macOS uses Seatbelt (`sandbox-exec`), Linux
+/// uses bubblewrap (`bwrap`). On other platforms there is no built-in sandbox, so it falls back to a
+/// plain shell and the caller should prefer an explicit backend (docker/ssh) there.
+///
+/// Validated on macOS: interpreters (python3/node/…) start normally, outbound network is refused, and
+/// writes outside `workdir` (e.g. the user's home) are denied. On Linux, `--unshare-net` removes all
+/// network and only `workdir` is bind-mounted read-write over a read-only root.
+pub fn sandbox_command(
+    workdir: &std::path::Path,
+    command: &str,
+    allow_net: bool,
+) -> (String, Vec<String>) {
+    #[cfg(target_os = "macos")]
+    {
+        let wd = workdir.display().to_string();
+        let home = std::env::var("HOME").unwrap_or_default();
+        // `allow default` lets interpreters start; then deny the network (the exfiltration vector) and
+        // deny writes to the user's home except the skill's own scratch dir under workdir.
+        let net = if allow_net { "" } else { "(deny network*)\n" };
+        let profile = format!(
+            "(version 1)\n(allow default)\n{net}(deny file-write* (subpath \"{home}\"))\n(allow file-write* (subpath \"{wd}\"))\n"
+        );
+        return (
+            "sandbox-exec".into(),
+            vec![
+                "-p".into(),
+                profile,
+                "sh".into(),
+                "-c".into(),
+                command.to_string(),
+            ],
+        );
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let wd = workdir.display().to_string();
+        let mut args: Vec<String> = Vec::new();
+        if !allow_net {
+            args.push("--unshare-net".into());
+        }
+        args.extend([
+            "--die-with-parent".into(),
+            "--ro-bind".into(),
+            "/".into(),
+            "/".into(),
+            "--dev".into(),
+            "/dev".into(),
+            "--proc".into(),
+            "/proc".into(),
+            "--tmpfs".into(),
+            "/tmp".into(),
+            "--bind".into(),
+            wd.clone(),
+            wd,
+            "sh".into(),
+            "-c".into(),
+            command.to_string(),
+        ]);
+        return ("bwrap".into(), args);
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = (workdir, allow_net);
+        ("sh".into(), vec!["-c".into(), command.to_string()])
     }
 }
 

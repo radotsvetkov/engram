@@ -2645,12 +2645,22 @@ async fn reflect_on_skills(
     }
 
     // NEW skill: install inactive, seed the gold with the asserted examples, then try to earn
-    // activation by replaying it against that gold.
+    // activation by replaying it against that gold. A pure skill (no declared capabilities) can be
+    // auto-adopted; a network/LLM skill is staged for human approval (it can't be replay-verified).
+    let capabilities: Vec<engram_skills::Capability> = p
+        .capabilities
+        .iter()
+        .filter_map(|c| match c.as_str() {
+            "net" => Some(engram_skills::Capability::Net),
+            "llm" => Some(engram_skills::Capability::Llm),
+            _ => None,
+        })
+        .collect();
     let new = engram_skills::NewSkill {
         id: p.id.clone(),
         category: "problem_solving".into(),
         description: p.description.clone(),
-        capabilities: vec![], // distilled skills are pure by default — no egress
+        capabilities,
         metric: "exact_match".into(),
         runtime: engram_skills::Runtime::Process,
         interpreter: Some(p.interpreter.clone()),

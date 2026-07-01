@@ -100,6 +100,9 @@ fn skill_shell_command(
     allow_net: bool,
 ) -> (String, Vec<String>) {
     match backend {
+        // Built-in OS sandbox (Seatbelt/bwrap) — network is granted only when the skill declared Net
+        // (and we're trusted + not scoring, per `allow_net`); otherwise the sandbox denies it.
+        Some("sandbox") => crate::tools::sandbox_command(workdir, command, allow_net),
         Some(img)
             if !img.starts_with("ssh:") && !img.starts_with("singularity:") =>
         {
@@ -412,7 +415,32 @@ pub async fn verify_and_adopt(
     if signed.manifest.runtime == Runtime::Process && !p.allow_exec {
         return Ok(json!({
             "decision": "needs_shell", "id": id, "version": latest,
-            "note": "enable the shell tool (Settings → Tools; a Docker sandbox is safest) so this script skill can be run and verified before adopting"
+            "note": "enable the shell tool (Settings → Tools; the built-in sandbox or Docker) so this script skill can be run and verified before adopting"
+        }));
+    }
+    // A NETWORK/LLM skill can't be replay-verified: its output depends on the live world, and scoring
+    // runs network-isolated. So the gold-replay gate doesn't apply — instead it's a trust decision.
+    // Autonomous path: never auto-activate it; leave it staged for a human. Human "Adopt": the click IS
+    // the approval, so activate it on trust (clearly marked as not replay-verified).
+    if !pure {
+        if require_pure {
+            return Ok(json!({
+                "decision": "needs_approval", "id": id, "version": latest,
+                "note": "network skill — can't be auto-verified offline; approve it in the Skills tab to activate"
+            }));
+        }
+        registry
+            .set_active(id, latest, actor, "skill.adopt")
+            .map_err(|e| e.to_string())?;
+        let _ = registry.ledger().append(
+            "skill.learn",
+            actor,
+            json!({ "id": id, "adopted": true, "promoted": true, "candidate": latest,
+                    "approved_unverified": true }),
+        );
+        return Ok(json!({
+            "decision": "approved", "id": id, "version": latest,
+            "note": "network skill activated on your approval (can't be replay-verified offline)"
         }));
     }
     let runs = registry.accepted_runs(id).map_err(|e| e.to_string())?;
@@ -426,8 +454,7 @@ pub async fn verify_and_adopt(
     let exact = metric == "exact_match";
     // Reproduce ALL gold on an exact skill; clear the high-water mark on a fuzzy one.
     let passes = if exact { score >= 1.0 } else { score >= 0.8 };
-    let blocked_by_egress = require_pure && !pure;
-    if passes && !blocked_by_egress {
+    if passes {
         registry
             .set_active(id, latest, actor, "skill.adopt")
             .map_err(|e| e.to_string())?;
@@ -442,14 +469,9 @@ pub async fn verify_and_adopt(
             "score": score, "replays": runs.len()
         }));
     }
-    let reason = if blocked_by_egress {
-        "skill requests network access — a human must adopt it explicitly"
-    } else {
-        "did not reproduce its gold examples"
-    };
     Ok(json!({
         "decision": "rejected", "id": id, "version": latest,
-        "score": score, "replays": runs.len(), "reason": reason
+        "score": score, "replays": runs.len(), "reason": "did not reproduce its gold examples"
     }))
 }
 
@@ -678,6 +700,75 @@ mod tests {
         .unwrap();
         assert_eq!(d["decision"], "rejected", "decision was {d}");
         assert_eq!(f.registry.active_version("upper").unwrap(), None);
+    }
+
+    fn net_skill() -> NewSkill {
+        NewSkill {
+            id: "netskill".into(),
+            category: "research".into(),
+            description: "fetches the web".into(),
+            capabilities: vec![engram_skills::Capability::Net],
+            metric: "exact_match".into(),
+            runtime: Runtime::Process,
+            interpreter: Some("sh".into()),
+            when_to_use: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn verify_and_adopt_stages_net_skill_for_approval_on_auto_path() {
+        let f = setup();
+        f.registry.install_inactive(net_skill(), b"echo hi").unwrap();
+        // Autonomous path (require_pure=true) must NEVER auto-activate a network skill.
+        let d = verify_and_adopt(
+            &f.registry,
+            "netskill",
+            "distiller",
+            true,
+            &params(&f, Taint::Trusted, true),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(d["decision"], "needs_approval", "decision was {d}");
+        assert_eq!(f.registry.active_version("netskill").unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn verify_and_adopt_activates_net_skill_on_human_approval() {
+        let f = setup();
+        f.registry.install_inactive(net_skill(), b"echo hi").unwrap();
+        // Human "Adopt" (require_pure=false): the click IS the approval → activate on trust.
+        let d = verify_and_adopt(
+            &f.registry,
+            "netskill",
+            "user",
+            false,
+            &params(&f, Taint::Trusted, true),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(d["decision"], "approved", "decision was {d}");
+        assert_eq!(f.registry.active_version("netskill").unwrap(), Some(1));
+    }
+
+    #[test]
+    fn sandbox_command_denies_network_by_default() {
+        let (prog, args) =
+            crate::tools::sandbox_command(std::path::Path::new("/tmp/x"), "echo hi", false);
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(prog, "sandbox-exec");
+            assert!(args.iter().any(|a| a.contains("(deny network*)")));
+        }
+        #[cfg(target_os = "linux")]
+        {
+            assert_eq!(prog, "bwrap");
+            assert!(args.iter().any(|a| a == "--unshare-net"));
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        let _ = (prog, args);
     }
 
     #[tokio::test]

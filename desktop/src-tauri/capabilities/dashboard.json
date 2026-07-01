@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "dashboard-dialog",
+  "description": "The dashboard is served by the local daemon on 127.0.0.1:8088 and loaded as a remote origin in the main window. Grant just that origin the native folder picker, so a project can be bound to a working directory from the UI. No other capability is exposed to the page.",
+  "windows": ["main"],
+  "remote": {
+    "urls": ["http://127.0.0.1:8088", "http://localhost:8088"]
+  },
+  "permissions": ["dialog:allow-open"]
+}

@@ -33,6 +33,9 @@ tauri-plugin-notification = "2"
 tauri-plugin-deep-link = "2"
 #  opener: open external links / files in the OS default app from the shell.
 tauri-plugin-opener = "2"
+#  dialog: the native folder picker, so a project can be bound to a working directory from the UI
+#  (the dashboard runs on the daemon's origin, so this is exposed to it via a remote capability).
+tauri-plugin-dialog = "2"
 
 [[bin]]
 name = "engram-desktop"

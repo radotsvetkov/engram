@@ -20,6 +20,12 @@ pub struct Project {
     /// Standing instructions for this project's chats - what gives a project its own voice.
     #[serde(default)]
     pub persona: String,
+    /// The working directory this project's agent operates in: file/shell tools run here (and are
+    /// confined to it), artifacts land here. `None` falls back to the shared daemon workdir, so a
+    /// project without a directory behaves exactly as before. This is the third leg of a project,
+    /// alongside its memory scope and its persona.
+    #[serde(default)]
+    pub workdir: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -105,6 +111,7 @@ impl WorkspaceStore {
                 name: "Personal".into(),
                 created_ms: now_ms(),
                 persona: String::new(),
+                workdir: None,
             });
         }
         let store = WorkspaceStore {
@@ -142,12 +149,13 @@ impl WorkspaceStore {
     pub fn projects(&self) -> Vec<Project> {
         self.data.lock().expect("ws").projects.clone()
     }
-    pub fn create_project(&self, name: String) -> Project {
+    pub fn create_project(&self, name: String, workdir: Option<String>) -> Project {
         let p = Project {
             id: new_id("p"),
             name,
             created_ms: now_ms(),
             persona: String::new(),
+            workdir: workdir.filter(|w| !w.trim().is_empty()),
         };
         self.data.lock().expect("ws").projects.push(p.clone());
         self.persist();
@@ -158,6 +166,9 @@ impl WorkspaceStore {
         id: &str,
         name: Option<String>,
         persona: Option<String>,
+        // `Some(path)` sets the working directory (an empty/blank path clears it back to the shared
+        // workdir); `None` leaves it unchanged.
+        workdir: Option<String>,
     ) -> Option<Project> {
         let out = {
             let mut d = self.data.lock().expect("ws");
@@ -168,6 +179,14 @@ impl WorkspaceStore {
                 if let Some(per) = persona {
                     p.persona = per;
                 }
+                if let Some(w) = workdir {
+                    let w = w.trim();
+                    p.workdir = if w.is_empty() {
+                        None
+                    } else {
+                        Some(w.to_string())
+                    };
+                }
                 p.clone()
             })
         };
@@ -175,6 +194,23 @@ impl WorkspaceStore {
             self.persist();
         }
         out
+    }
+
+    /// The working directory for a chat session: its project's `workdir`, if that project has one.
+    /// `None` means the session should use the shared daemon workdir (back-compat).
+    pub fn workdir_for_session(&self, session_id: &str) -> Option<PathBuf> {
+        let d = self.data.lock().expect("ws");
+        let pid = d
+            .sessions
+            .iter()
+            .find(|s| s.id == session_id)
+            .map(|s| s.project_id.clone())?;
+        d.projects
+            .iter()
+            .find(|p| p.id == pid)
+            .and_then(|p| p.workdir.clone())
+            .filter(|w| !w.trim().is_empty())
+            .map(PathBuf::from)
     }
     /// The last `n` turns of a session as (role, text), oldest-first - the conversation history the
     /// agentic chat needs so a follow-up ("let's try again") resolves against what was already said
@@ -478,7 +514,7 @@ mod tests {
     fn scope_for_session_resolves_the_project_ring() {
         let dir = tempfile::tempdir().unwrap();
         let ws = WorkspaceStore::open(dir.path());
-        let p = ws.create_project("Apollo".into());
+        let p = ws.create_project("Apollo".into(), None);
         let s = ws.create_session(p.id.clone(), None);
 
         // The session resolves to user ∪ its project ∪ itself — the linkage that used to be dropped
@@ -493,7 +529,7 @@ mod tests {
         );
 
         // A session in a different project resolves to a DIFFERENT ring (isolation at the source).
-        let p2 = ws.create_project("Zephyr".into());
+        let p2 = ws.create_project("Zephyr".into(), None);
         let s2 = ws.create_session(p2.id.clone(), None);
         let ctx2 = ws.scope_for_session(&s2.id);
         assert_ne!(ctx.project, ctx2.project);
@@ -502,6 +538,32 @@ mod tests {
         let unknown = ws.scope_for_session("does-not-exist");
         assert!(unknown.project.is_none());
         assert_eq!(unknown.session.as_deref(), Some("does-not-exist"));
+    }
+
+    #[test]
+    fn workdir_for_session_resolves_the_projects_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = WorkspaceStore::open(dir.path());
+        // A project WITH a working directory: its sessions resolve to that dir.
+        let p = ws.create_project("Coderepo".into(), Some("/tmp/some-repo".into()));
+        let s = ws.create_session(p.id.clone(), None);
+        assert_eq!(
+            ws.workdir_for_session(&s.id),
+            Some(PathBuf::from("/tmp/some-repo"))
+        );
+        // A project WITHOUT one falls back (None → shared daemon workdir).
+        let p2 = ws.create_project("NoDir".into(), None);
+        let s2 = ws.create_session(p2.id.clone(), None);
+        assert_eq!(ws.workdir_for_session(&s2.id), None);
+        // update_project can set it…
+        ws.update_project(&p2.id, None, None, Some("/tmp/added".into()));
+        assert_eq!(
+            ws.workdir_for_session(&s2.id),
+            Some(PathBuf::from("/tmp/added"))
+        );
+        // …and an empty string clears it back to the shared workdir.
+        ws.update_project(&p2.id, None, None, Some(String::new()));
+        assert_eq!(ws.workdir_for_session(&s2.id), None);
     }
 }
 

@@ -3822,9 +3822,14 @@ async fn converse_stream_handler(
             app.workspace.append_user_turn(sid, &r.text);
         }
         // Snapshot the workdir so files this turn creates (e.g. a browser screenshot) are captured as
-        // downloadable artifacts in the gallery, bucketed under this chat session.
+        // downloadable artifacts in the gallery, bucketed under this chat session. Snapshot the
+        // PROJECT's workdir when it has one, so artifacts created there are still captured.
         let art_bucket = r.session.clone().unwrap_or_else(|| "chat".to_string());
-        let run_workdir = app.workdir.clone();
+        let run_workdir = r
+            .session
+            .as_ref()
+            .and_then(|sid| app.workspace.workdir_for_session(sid))
+            .unwrap_or_else(|| app.workdir.clone());
         let artifacts_before = snapshot_files(&run_workdir);
         // Stream each tool step live as it lands - the glass box, in chat.
         let txs = tx.clone();
@@ -3861,6 +3866,13 @@ async fn converse_stream_handler(
             .as_ref()
             .map(|sid| app.workspace.scope_for_session(sid))
             .unwrap_or_else(engram_core::ScopeCtx::user_only);
+        // The active project's working directory, if it has one: file/shell tools this turn run
+        // (and are confined to) there, so a project's agent acts on that project's files - not the
+        // shared workdir. `None` keeps the shared workdir (back-compat).
+        let chat_workdir = r
+            .session
+            .as_ref()
+            .and_then(|sid| app.workspace.workdir_for_session(sid));
         let res = run_agent_task_cb(
             &app,
             &task,
@@ -3870,7 +3882,7 @@ async fn converse_stream_handler(
             Some(on_step),
             Some(on_narration),
             None,
-            None,
+            chat_workdir,
             false, // approved
             true,  // attended (interactive streaming conversation)
             run_halt,
@@ -5574,9 +5586,41 @@ async fn projects_create(State(app): State<App>, Json(b): Json<Value>) -> ApiRes
     } else {
         name
     };
+    // Optional working directory for this project: attach-or-create. A relative or ~-path is
+    // resolved; the directory is created if missing, then stored canonicalised.
+    let workdir = match b.get("workdir").and_then(|v| v.as_str()).map(str::trim) {
+        Some(w) if !w.is_empty() => Some(resolve_project_dir(w).map_err(ApiError)?),
+        _ => None,
+    };
     Ok(Json(
-        serde_json::to_value(app.workspace.create_project(name)).map_err(err)?,
+        serde_json::to_value(app.workspace.create_project(name, workdir)).map_err(err)?,
     ))
+}
+
+/// Resolve a user-supplied project directory: expand a leading `~`, create it if it doesn't exist
+/// (attach-or-create), and return the canonical absolute path. Errors if the path exists but is a
+/// file, or can't be created.
+fn resolve_project_dir(raw: &str) -> Result<String, String> {
+    let expanded = if let Some(rest) = raw.strip_prefix("~/") {
+        match std::env::var("HOME") {
+            Ok(h) => format!("{h}/{rest}"),
+            Err(_) => raw.to_string(),
+        }
+    } else {
+        raw.to_string()
+    };
+    let path = std::path::Path::new(&expanded);
+    if path.exists() {
+        if !path.is_dir() {
+            return Err(format!("{expanded} exists but is not a directory"));
+        }
+    } else {
+        std::fs::create_dir_all(path).map_err(|e| format!("could not create {expanded}: {e}"))?;
+    }
+    Ok(path
+        .canonicalize()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or(expanded))
 }
 async fn projects_update(
     State(app): State<App>,
@@ -5591,9 +5635,15 @@ async fn projects_update(
         .get("persona")
         .and_then(|v| v.as_str())
         .map(str::to_string);
+    // A provided workdir is attach-or-created; an empty string clears it back to the shared workdir.
+    let workdir = match b.get("workdir").and_then(|v| v.as_str()).map(str::trim) {
+        Some("") => Some(String::new()), // explicit clear
+        Some(w) => Some(resolve_project_dir(w).map_err(ApiError)?),
+        None => None, // unchanged
+    };
     let p = app
         .workspace
-        .update_project(&id, name, persona)
+        .update_project(&id, name, persona, workdir)
         .ok_or_else(|| ApiError("project not found".into()))?;
     Ok(Json(serde_json::to_value(p).map_err(err)?))
 }

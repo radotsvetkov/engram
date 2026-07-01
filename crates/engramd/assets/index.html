@@ -2106,8 +2106,24 @@ async function deleteProject(){
 }
 async function pickProject(id){ projMenuOpen=false; WS.activeProject=id; WS.activeSession=null; WS.byId={}; renderSidebar();
   await loadSessions(); WS.activeSession=(WS.sessions[0]||{}).id||null; renderSidebar(); if(state.route==='Chat') renderChat(); }
-async function addProject(){ projMenuOpen=false; const n=await askInput({title:'New project',label:'Sessions, persona, and its own settings live inside a project.',placeholder:'e.g. Apex, Research, Personal',ok:'Create'}); if(!(n&&n.trim())){ renderSidebar(); return; }
-  try{ const p=await J('/v1/projects',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name:n.trim()})}); WS.projects.push(p); pickProject(p.id); }
+// Pick a project working directory: a native folder picker inside the Tauri desktop app, a
+// text-path prompt in a plain browser. Returns a path string, or null if the user skipped it.
+async function pickDir(){
+  try{
+    const dlg = window.__TAURI__ && window.__TAURI__.dialog;
+    if(dlg && dlg.open){
+      const sel = await dlg.open({ directory:true, multiple:false, title:'Choose the project folder' });
+      return (typeof sel === 'string' && sel) ? sel : null;
+    }
+  }catch(_){}
+  // Browser fallback: ask for a path (blank = no directory, uses the shared workspace).
+  const p = await askInput({title:'Project folder (optional)',label:'The folder this project’s agent reads and writes files in. Leave blank to use the shared workspace — it’s created if it doesn’t exist.',placeholder:'e.g. ~/code/my-app',ok:'Use folder'});
+  return (p && p.trim()) ? p.trim() : null;
+}
+async function addProject(){ projMenuOpen=false; const n=await askInput({title:'New project',label:'Sessions, persona, its own memory scope, and a working directory live inside a project.',placeholder:'e.g. Apex, Research, Personal',ok:'Next'}); if(!(n&&n.trim())){ renderSidebar(); return; }
+  const workdir=await pickDir();
+  const body={name:n.trim()}; if(workdir) body.workdir=workdir;
+  try{ const p=await J('/v1/projects',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}); WS.projects.push(p); pickProject(p.id); if(workdir) notify('Project folder: '+workdir,'ok'); }
   catch(e){ notify('Couldn\'t create project - '+e.message); }
 }
 function openProjPersona(){
@@ -3369,9 +3385,11 @@ function ccWorkspace(){
       <div class="desc">Your brain - every memory and the signed ledger - is stored locally at <code>~/.engram</code> and shared across projects. Switching a project swaps its active sessions and standing instructions. Nothing leaves the machine; the ledger spine at the bottom of every screen stays verifiable offline.</div></div>`;
 }
 async function wsNewProject(){
-  const n=await askInput({title:'New project',label:'Sessions and standing instructions live inside a project.',placeholder:'e.g. Apex, Research',ok:'Create'});
+  const n=await askInput({title:'New project',label:'Sessions, standing instructions, memory scope, and a working directory live inside a project.',placeholder:'e.g. Apex, Research',ok:'Next'});
   if(!(n&&n.trim())) return;
-  try{ const p=await J('/v1/projects',{method:'POST',headers:MIND_JSON,body:JSON.stringify({name:n.trim()})}); WS.projects.push(p); notify('Project created','ok'); if(ccActive==='workspace') renderCC(); renderSidebar(); }
+  const workdir=await pickDir();
+  const body={name:n.trim()}; if(workdir) body.workdir=workdir;
+  try{ const p=await J('/v1/projects',{method:'POST',headers:MIND_JSON,body:JSON.stringify(body)}); WS.projects.push(p); notify(workdir?('Project created · '+workdir):'Project created','ok'); if(ccActive==='workspace') renderCC(); renderSidebar(); }
   catch(e){ notify('Couldn\'t create - '+e.message); }
 }
 async function wsPick(id){ await pickProject(id); if(ccActive==='workspace') renderCC(); }

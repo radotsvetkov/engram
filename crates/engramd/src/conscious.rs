@@ -15,7 +15,7 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use engram_core::Ledger;
-use engram_memory::{Memory, Region};
+use engram_memory::{Memory, Record, Region, Scope, ScopeCtx};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -128,10 +128,14 @@ impl Consciousness {
     /// Re-distill: keep pinned lines, then fill the rest from the most important TRUSTED identity
     /// and semantic memories. Deterministic (no model call) so every line traces to real evidence.
     pub fn distill(&self, mem: &Memory, ledger: &Ledger) -> Result<State, String> {
-        // Gather candidates first (no lock held during DB work).
+        // Gather candidates first (no lock held during DB work). The GLOBAL block distils only the
+        // USER-GLOBAL ring, so a project's semantic note can never pollute the working memory shown
+        // in every project. Per-project facts live in the separate per-project block (`project_block`).
         let mut cands = Vec::new();
         for region in [Region::Identity, Region::Semantic] {
-            let recs = mem.recent(region, 60).map_err(|e| e.to_string())?;
+            let recs = mem
+                .recent_scoped(region, 60, &ScopeCtx::user_only())
+                .map_err(|e| e.to_string())?;
             for r in recs {
                 if r.taint.eq_ignore_ascii_case("trusted") {
                     cands.push(r);
@@ -335,11 +339,139 @@ impl Consciousness {
     }
 }
 
+/// An on-the-fly per-project working-memory block: the few most important TRUSTED facts that live in
+/// THIS project's ring, verbatim (each traces to a real stored memory). Unlike the global block it is
+/// not persisted or user-editable - it is a fresh projection of the project's durable memory, loaded
+/// only when that project is active. This keeps "what matters in THIS project" in context without
+/// polluting the global block that every project sees.
+pub fn project_block(mem: &Memory, project_id: &str) -> Option<String> {
+    const MAX: usize = 4;
+    let ring = Scope::project(project_id);
+    let mut cands: Vec<Record> = Vec::new();
+    for region in [Region::Semantic, Region::Procedural] {
+        if let Ok(recs) = mem.recent_in_ring(region, 40, &ring) {
+            for r in recs {
+                // Skip raw document chunks - they're retrievable via recall, but a 1200-char passage
+                // is not a good always-loaded working-memory line.
+                let is_doc = r
+                    .source
+                    .as_deref()
+                    .map(|s| s.starts_with(crate::corpus::DOC_SOURCE_PREFIX))
+                    .unwrap_or(false);
+                if r.taint.eq_ignore_ascii_case("trusted") && !is_doc {
+                    cands.push(r);
+                }
+            }
+        }
+    }
+    // Most important first, then most recent; de-dup by id.
+    cands.sort_by(|a, b| {
+        b.importance
+            .partial_cmp(&a.importance)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(b.created_ms.cmp(&a.created_ms))
+    });
+    let mut seen = HashSet::new();
+    let lines: Vec<String> = cands
+        .into_iter()
+        .filter(|r| seen.insert(r.id))
+        .take(MAX)
+        .map(|r| trim(&r.text))
+        .collect();
+    if lines.is_empty() {
+        return None;
+    }
+    let mut s = String::from(
+        "Working memory for the ACTIVE PROJECT - its durable, project-scoped facts (these apply \
+         here, not in your other projects):\n",
+    );
+    for l in lines {
+        s.push_str("- ");
+        s.push_str(&l);
+        s.push('\n');
+    }
+    Some(s)
+}
+
 fn push_history(g: &mut Persisted) {
     if g.history.len() >= HISTORY {
         g.history.pop_front();
     }
     g.history.push_back(g.current.clone());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use engram_memory::{Memory, TrigramHashEmbedder, WriteReq};
+    use std::sync::Arc;
+
+    fn setup() -> (tempfile::TempDir, Arc<Memory>, Arc<Ledger>, Consciousness) {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Arc::new(Ledger::open(dir.path()).unwrap());
+        let mem = Arc::new(
+            Memory::open(
+                dir.path().join("b.db"),
+                Arc::new(TrigramHashEmbedder::default()),
+                ledger.clone(),
+            )
+            .unwrap(),
+        );
+        let c = Consciousness::open(dir.path().to_str().unwrap());
+        (dir, mem, ledger, c)
+    }
+
+    #[test]
+    fn global_block_excludes_project_scoped_facts() {
+        let (_d, mem, ledger, c) = setup();
+        mem.remember(WriteReq::new(Region::Identity, "the user is a rustacean").importance(0.9))
+            .unwrap();
+        mem.remember(WriteReq::new(Region::Semantic, "the user favors small binaries").importance(0.8))
+            .unwrap();
+        mem.remember(
+            WriteReq::new(Region::Semantic, "this project deploys to fly.io")
+                .importance(0.95)
+                .scope(Scope::project("P")),
+        )
+        .unwrap();
+        c.distill(&mem, &ledger).unwrap();
+        let block = c.prompt_block().unwrap_or_default();
+        assert!(block.contains("rustacean"), "global identity present: {block}");
+        assert!(block.contains("small binaries"), "global semantic present");
+        assert!(
+            !block.contains("fly.io"),
+            "a project fact must NOT pollute the global block: {block}"
+        );
+    }
+
+    #[test]
+    fn project_block_has_only_that_projects_facts() {
+        let (_d, mem, _l, _c) = setup();
+        mem.remember(WriteReq::new(Region::Semantic, "the user favors small binaries"))
+            .unwrap(); // user-global
+        mem.remember(
+            WriteReq::new(Region::Semantic, "this project deploys to fly.io")
+                .scope(Scope::project("P")),
+        )
+        .unwrap();
+        mem.remember(
+            WriteReq::new(Region::Semantic, "the other project uses render")
+                .scope(Scope::project("Q")),
+        )
+        .unwrap();
+        let pb = project_block(&mem, "P").unwrap_or_default();
+        assert!(pb.contains("fly.io"), "P's own fact present: {pb}");
+        assert!(
+            !pb.contains("small binaries"),
+            "user-global must not be in the project block: {pb}"
+        );
+        assert!(
+            !pb.contains("render"),
+            "project Q's fact must not be in project P's block: {pb}"
+        );
+        // A project with no facts yields no block (a fresh project starts with an empty block).
+        assert!(project_block(&mem, "EMPTY").is_none());
+    }
 }
 
 fn region_rank(region: &str) -> u8 {

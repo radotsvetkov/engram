@@ -1672,10 +1672,12 @@ impl Tool for MemoryRecallTool {
         // A trusted run gets trusted-provenance memories only (injected web/memory content
         // can't poison it). An already-tainted run may see all - its egress is blocked
         // anyway and it can legitimately use what it just researched.
+        // Ringed to the run's scope, so a deliberate recall inside a project chat surfaces only this
+        // project's memory ∪ user-global, never another project's.
         let hits = if ctx.taint.is_untrusted() {
-            ctx.memory.recall(query, &[], k)
+            ctx.memory.recall_scoped(query, &[], k, &ctx.scope)
         } else {
-            ctx.memory.recall_trusted(query, &[], k)
+            ctx.memory.recall_trusted_scoped(query, &[], k, &ctx.scope)
         }
         .map_err(|e| e.to_string())?;
         if hits.is_empty() {
@@ -1712,10 +1714,22 @@ impl Tool for MemoryRememberTool {
             Some("procedural") => Region::Procedural,
             _ => Region::Semantic,
         };
-        // Writes inherit the run's taint, so injected content can't launder into a trusted fact.
+        // Writes inherit the run's taint, so injected content can't launder into a trusted fact,
+        // and land in the run's durable ring (this project, else user-global) - so a memory the
+        // agent stores in a project chat stays in that project. Identity is always user-global.
+        let write_scope = if region == Region::Identity {
+            engram_memory::Scope::user()
+        } else {
+            ctx.scope.durable_write_scope()
+        };
         let rec = ctx
             .memory
-            .remember(WriteReq::new(region, text).taint(ctx.taint).actor("agent"))
+            .remember(
+                WriteReq::new(region, text)
+                    .taint(ctx.taint)
+                    .actor("agent")
+                    .scope(write_scope),
+            )
             .map_err(|e| e.to_string())?;
         Ok(format!("remembered as #{}", rec.id))
     }
@@ -3255,6 +3269,7 @@ mod file_tools_tests {
             model: "test".into(),
             depth: 0,
             browser: Arc::new(crate::tool::NoBrowser),
+            scope: engram_core::ScopeCtx::any(),
         }
     }
 

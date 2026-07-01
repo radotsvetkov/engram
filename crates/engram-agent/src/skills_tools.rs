@@ -31,6 +31,7 @@ fn params<'a>(ctx: &'a ToolCtx, host: &'a SkillHost) -> SkillRunParams<'a> {
         gateway: ctx.gateway.clone(),
         memory: ctx.memory.clone(),
         host,
+        scope: ctx.scope.clone(),
         scoring: false,
     }
 }
@@ -469,6 +470,7 @@ mod tests {
                 model: "test".into(),
                 depth: 0,
                 browser: Arc::new(NoBrowser),
+                scope: engram_core::ScopeCtx::any(),
             },
             dir,
         )

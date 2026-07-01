@@ -930,6 +930,7 @@ mod tests {
             model: "test".into(),
             depth: 0,
             browser: Arc::new(crate::tool::NoBrowser),
+            scope: engram_core::ScopeCtx::any(),
         };
         let agent = Agent::new(gateway, crate::default_tools(), "test");
         let run = agent
@@ -979,6 +980,7 @@ mod tests {
             model: "test".into(),
             depth: 0,
             browser: Arc::new(crate::tool::NoBrowser),
+            scope: engram_core::ScopeCtx::any(),
         };
         let run = Agent::new(gateway, crate::default_tools(), "test")
             .run("run echo", ctx)
@@ -1025,6 +1027,7 @@ mod tests {
             model: "test".into(),
             depth: 0,
             browser: Arc::new(crate::tool::NoBrowser),
+            scope: engram_core::ScopeCtx::any(),
         };
         let run = Agent::new(gateway, crate::default_tools(), "test")
             .run("do the thing", ctx)
@@ -1071,6 +1074,7 @@ mod tests {
             model: "test".into(),
             depth: 0,
             browser: Arc::new(crate::tool::NoBrowser),
+            scope: engram_core::ScopeCtx::any(),
         };
 
         // vision_analyze reads the image, encodes it, and reaches the model (mock here).
@@ -1126,6 +1130,7 @@ mod tests {
             model: "test".into(),
             depth: 0,
             browser: Arc::new(crate::tool::NoBrowser),
+            scope: engram_core::ScopeCtx::any(),
         };
         let out = crate::tools::SendMessageTool
             .run(
@@ -1237,6 +1242,7 @@ mod tests {
             model: "test".into(),
             depth: 0,
             browser: Arc::new(crate::tool::NoBrowser),
+            scope: engram_core::ScopeCtx::any(),
         };
         let run = Agent::new(gateway, tools, "test")
             .run("do the thing", ctx)
@@ -1412,6 +1418,7 @@ mod tests {
             model: "test".into(),
             depth: 0,
             browser: Arc::new(crate::tool::NoBrowser),
+            scope: engram_core::ScopeCtx::any(),
         };
         Agent::new(gateway, tools, "test").run("go", ctx).await.unwrap();
         let v = sent.lock().unwrap().clone();
@@ -1503,6 +1510,7 @@ mod tests {
             model: "test".into(),
             depth: 0,
             browser: Arc::new(crate::tool::NoBrowser),
+            scope: engram_core::ScopeCtx::any(),
         };
         Agent::new(gateway, tools, "test").run("go", ctx).await.unwrap();
         // `*` must NOT "match" an unresolvable destination — the opaque egress stages, never sends.
@@ -1565,6 +1573,7 @@ mod tests {
             model: "test".into(),
             depth: 0,
             browser: Arc::new(crate::tool::NoBrowser),
+            scope: engram_core::ScopeCtx::any(),
         };
         let run = Agent::new(gateway, tools, "test")
             .run("do it", ctx)
@@ -1636,6 +1645,7 @@ mod tests {
             model: "test".into(),
             depth: 0,
             browser: Arc::new(crate::tool::NoBrowser),
+            scope: engram_core::ScopeCtx::any(),
         };
         let tools = ToolRegistry::new().with(Arc::new(Echo));
         let start = std::time::Instant::now();
@@ -1715,6 +1725,7 @@ mod tests {
             model: "test".into(),
             depth: 0,
             browser: Arc::new(crate::tool::NoBrowser),
+            scope: engram_core::ScopeCtx::any(),
         };
         let tools = ToolRegistry::new().with(Arc::new(BigTool));
         let run = Agent::new(gateway, tools, "test")
@@ -1769,6 +1780,7 @@ mod tests {
             model: "test".into(),
             depth: 0,
             browser: Arc::new(crate::tool::NoBrowser),
+            scope: engram_core::ScopeCtx::any(),
         };
         let run = Agent::new(gateway, crate::default_tools(), "test")
             .reflect(true)
@@ -1822,6 +1834,7 @@ mod tests {
             model: "test".into(),
             depth: 0,
             browser: Arc::new(crate::tool::NoBrowser),
+            scope: engram_core::ScopeCtx::any(),
         };
         let run = Agent::new(gateway, crate::default_tools(), "test")
             .run("plan and do it", ctx)
@@ -1866,6 +1879,7 @@ mod tests {
             model: "test".into(),
             depth: 0,
             browser: Arc::new(crate::tool::NoBrowser),
+            scope: engram_core::ScopeCtx::any(),
         }
     }
 
@@ -1993,6 +2007,7 @@ mod tests {
             model: "test".into(),
             depth: 0,
             browser: Arc::new(crate::tool::NoBrowser),
+            scope: engram_core::ScopeCtx::any(),
         };
         let tools = ToolRegistry::new().with(Arc::new(Writer(ran.clone())));
         let run = Agent::new(gateway, tools, "test")

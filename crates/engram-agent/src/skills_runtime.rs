@@ -49,6 +49,9 @@ pub struct SkillRunParams<'a> {
     pub gateway: Arc<Gateway>,
     pub memory: Arc<Memory>,
     pub host: &'a SkillHost,
+    /// The calling run's memory rings, so a skill's engram.recall/remember stays scoped to this
+    /// project (∪ user-global), never another project's memory.
+    pub scope: engram_core::ScopeCtx,
     /// True during A/B replay: forces network isolation for process skills so scoring a net/egress
     /// skill cannot cause real side effects.
     pub scoring: bool,
@@ -250,7 +253,8 @@ async fn run_loaded(
             let ctx = RunCtx::pure()
                 .memory(p.memory.clone(), Region::ALL.to_vec())
                 .gateway(p.gateway.clone())
-                .taint(p.taint);
+                .taint(p.taint)
+                .scope(p.scope.clone());
             p.host
                 .run_signed_async(signed, bytes, vk, input, ctx)
                 .await
@@ -542,6 +546,7 @@ mod tests {
             gateway: f.gateway.clone(),
             memory: f.memory.clone(),
             host: &f.host,
+            scope: engram_core::ScopeCtx::any(),
             scoring: false,
         }
     }

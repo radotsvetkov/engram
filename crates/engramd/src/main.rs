@@ -22,13 +22,16 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 mod agents;
+mod budget;
 mod channels;
 mod config;
 mod conscious;
 mod converse;
+mod corpus;
 mod dissent;
 mod distill;
 mod embedder;
+mod scope;
 mod seed;
 mod tasks;
 mod telegram;
@@ -842,6 +845,7 @@ async fn run(mode: RunMode) -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/memory/stats", get(memory_stats))
         .route("/v1/memory/recent", get(memory_recent))
         .route("/v1/memory/graph", get(memory_graph))
+        .route("/v1/memory/reindex", post(memory_reindex))
         .route("/v1/screenshot", get(screenshot_get))
         .route(
             "/v1/artifact",
@@ -1204,6 +1208,13 @@ async fn memory_stats(State(app): State<App>) -> ApiResult {
     Ok(Json(
         serde_json::to_value(app.memory.stats().map_err(err)?).map_err(err)?,
     ))
+}
+
+/// Rebuild the derived binary coarse index from the stored embeddings - a repair hook if the index
+/// is ever suspected corrupt. Recall keeps working throughout (the index is derived, not content).
+async fn memory_reindex(State(app): State<App>) -> ApiResult {
+    let n = app.memory.reindex_binary().map_err(err)?;
+    Ok(Json(json!({ "reindexed": n })))
 }
 
 #[derive(Deserialize)]
@@ -2106,6 +2117,7 @@ pub(crate) async fn run_agent_task(
         false, // approved
         true,  // attended (this wrapper backs interactive conversation)
         app.halt.clone(),
+        engram_core::ScopeCtx::user_only(), // no session/project in this path → user-global
     )
     .await
 }
@@ -2242,6 +2254,10 @@ pub(crate) async fn run_agent_task_cb(
     // The halt flag THIS run checks at each step boundary. Pass a per-session flag so one chat can be
     // stopped without killing others; pass `app.halt` for the global emergency-stop behavior.
     halt: Arc<std::sync::atomic::AtomicBool>,
+    // Which rings this run's memory recall and capture are bound to. The chat path passes the
+    // session's scope (user ∪ project ∪ session) so a project's work stays isolated; scheduled /
+    // inbound runs with no project pass `ScopeCtx::user_only()` and see only user-global memory.
+    scope: engram_core::ScopeCtx,
 ) -> Result<engram_agent::AgentRun, String> {
     // A named agent may carry a signed standing AutonomyPolicy that lets it egress unattended within
     // an allowlist + budget. Verify the signature with the skill key before honoring it; an
@@ -2338,7 +2354,7 @@ pub(crate) async fn run_agent_task_cb(
     } else {
         let regions = engram_memory::Region::for_task(task);
         app.memory
-            .recall_trusted(task, &regions, 5)
+            .recall_trusted_scoped(task, &regions, 5, &scope)
             .ok()
             .filter(|h| !h.is_empty())
             .map(|hits| {
@@ -2421,6 +2437,9 @@ pub(crate) async fn run_agent_task_cb(
         model: model.clone(),
         depth: 0,
         browser: app.browser.clone(),
+        // The run's memory rings, so the agent's memory_recall / memory_remember tools (and any
+        // subagents it delegates to, via the cloned ctx) stay inside this project's world.
+        scope: scope.clone(),
     };
     // CURATION: drop tools the user turned off globally (disabled_tools), then, if the assigned agent
     // is scoped (allowed_tools), keep only those — so a named specialist has exactly the toolbelt it
@@ -2471,17 +2490,23 @@ pub(crate) async fn run_agent_task_cb(
     // Standing context, in order: the assigned agent's ROLE (its specialization) leads, then the
     // consciousness working memory (facts about the user), then the global persona (style). Together
     // they replace SOUL.md as the source of truth for what the agent always knows.
-    let mut parts: Vec<String> = Vec::new();
+    // Assemble the standing context as budget-tagged parts (tier 0 = essential/always-kept, higher =
+    // droppable-under-pressure), then pack them under a token ceiling so a flood of recalled memory
+    // or a large ingested document can never crowd out the essentials or blow the model window.
+    let mut parts: Vec<budget::Part> = Vec::new();
     // Ground the agent in the current date — otherwise the model defaults to its training-cutoff year
     // (it was searching "AI news 2024" in mid-2026). Use local wall-clock so "today"/"this morning"
     // line up with the user.
-    parts.push(format!(
-        "Today's date is {}. Use the current year for any time-sensitive search or content.",
-        chrono::Local::now().format("%A, %-d %B %Y")
+    parts.push(budget::Part::new(
+        format!(
+            "Today's date is {}. Use the current year for any time-sensitive search or content.",
+            chrono::Local::now().format("%A, %-d %B %Y")
+        ),
+        0,
     ));
     if let Some(a) = agent_def {
         if !a.role.trim().is_empty() {
-            parts.push(a.role.clone());
+            parts.push(budget::Part::new(a.role.clone(), 0));
         }
     }
     // Refresh the consciousness from current memory before reading it, so identity/semantic facts
@@ -2492,21 +2517,33 @@ pub(crate) async fn run_agent_task_cb(
     // know about me?" missed them entirely.)
     let _ = app.consciousness.distill(&app.memory, &app.ledger);
     if let Some(c) = app.consciousness.prompt_block() {
-        parts.push(c);
+        parts.push(budget::Part::new(c, 0)); // curated working memory: essential
+    }
+    // Layered working memory: after the always-loaded GLOBAL block, add a per-project block for the
+    // active project (its own durable facts), loaded only when a project is in scope - so "what
+    // matters in THIS project" is present without leaking into any other project's context.
+    if let Some(pid) = &scope.project {
+        if let Some(pb) = conscious::project_block(&app.memory, pid) {
+            parts.push(budget::Part::new(pb, 1));
+        }
     }
     if let Some(mb) = &memory_block {
-        parts.push(mb.clone());
+        parts.push(budget::Part::new(mb.clone(), 2)); // recalled memories: droppable under pressure
     }
     if let Some(sb) = &skills_block {
-        parts.push(sb.clone());
+        parts.push(budget::Part::new(sb.clone(), 2));
     }
     if let Some(p) = app.persona.read().expect("persona lock").clone() {
         if !p.trim().is_empty() {
-            parts.push(p);
+            parts.push(budget::Part::new(p, 1));
         }
     }
-    if !parts.is_empty() {
-        agent = agent.persona(parts.join("\n\n"));
+    // Cap the assembled standing context; history, tools, the user turn, and the reply budget live
+    // outside this. Generous but bounded, so it never dominates the window.
+    const SYSTEM_CONTEXT_TOKENS: usize = 6000;
+    let assembled = budget::pack(parts, SYSTEM_CONTEXT_TOKENS);
+    if !assembled.trim().is_empty() {
+        agent = agent.persona(assembled);
     }
     if let Some(cb) = on_step {
         agent = agent.on_step(cb);
@@ -2541,10 +2578,15 @@ pub(crate) async fn run_agent_task_cb(
                 let label: String = clean_task.chars().take(160).collect();
                 let snippet: String = answer.chars().take(280).collect();
                 let text = format!("Task: {label}\nOutcome: {snippet}");
+                // Route the capture to the right ring: a run inside a project keeps its outcome in
+                // that project (so it never surfaces in another), while a project-less run stays
+                // user-global. This is the single change that stops the flywheel bleed at its source.
+                let write_scope = crate::scope::classify(engram_memory::Region::Episodic, &scope, &text);
                 let _ = app.memory.remember(
                     engram_memory::WriteReq::new(engram_memory::Region::Episodic, text)
                         .taint(taint)
-                        .actor("agent"),
+                        .actor("agent")
+                        .scope(write_scope),
                 );
             }
             // SELF-IMPROVEMENT REFLECTION (opt-in via auto_distill_skills): after a task that did
@@ -2704,6 +2746,7 @@ async fn agent_handler(State(app): State<App>, Json(r): Json<AgentReq>) -> ApiRe
         false, // approved
         true,  // attended (interactive /v1/agent call)
         app.halt.clone(),
+        engram_core::ScopeCtx::user_only(), // /v1/agent carries no session/project → user-global
     )
     .await
     .map_err(ApiError)?;
@@ -3287,6 +3330,7 @@ pub(crate) async fn run_task_core(
         approved,
         attended,
         app.halt.clone(),
+        engram_core::ScopeCtx::user_only(), // task-board runs are not project-bound yet → user-global
     )
     .await
     {
@@ -3627,6 +3671,11 @@ async fn converse_handler(State(app): State<App>, Json(r): Json<ConverseReq>) ->
         .session
         .as_ref()
         .and_then(|sid| app.workspace.persona_for_session(sid));
+    let scope = r
+        .session
+        .as_ref()
+        .map(|sid| app.workspace.scope_for_session(sid))
+        .unwrap_or_else(engram_core::ScopeCtx::user_only);
     let turn = converse::converse(
         &app.memory,
         &app.gateway,
@@ -3634,6 +3683,7 @@ async fn converse_handler(State(app): State<App>, Json(r): Json<ConverseReq>) ->
         &app.model(),
         persona.as_deref(),
         &r.attachments,
+        &scope,
     )
     .await
     .map_err(ApiError)?;
@@ -3677,7 +3727,13 @@ async fn converse_stream_handler(
         // an untrusted inbound message must never drive the shell/browser.)
         // Memory features the conversational path gave are preserved: the grounding ribbon and
         // identity learning; the agent's own flywheel recalls + captures the exchange to memory.
-        let (recalled, recalled_refs) = converse::recall_ribbon(&app.memory, &r.text);
+        let ribbon_scope = r
+            .session
+            .as_ref()
+            .map(|sid| app.workspace.scope_for_session(sid))
+            .unwrap_or_else(engram_core::ScopeCtx::user_only);
+        let (recalled, recalled_refs) =
+            converse::recall_ribbon(&app.memory, &r.text, &ribbon_scope);
         let learned = converse::learn_identity(&app.memory, &r.text);
         // Conversation continuity: hand the agent the recent turns so a follow-up ("let's try again")
         // resolves against what was already said, instead of re-asking for context it already has.
@@ -3782,6 +3838,13 @@ async fn converse_stream_handler(
                 g.insert(sid, run_halt.clone());
             }
         }
+        // The chat's scope: user-global ∪ this session's project ∪ this session. This is what keeps
+        // one project's memories and captures out of another project's chats.
+        let chat_scope = r
+            .session
+            .as_ref()
+            .map(|sid| app.workspace.scope_for_session(sid))
+            .unwrap_or_else(engram_core::ScopeCtx::user_only);
         let res = run_agent_task_cb(
             &app,
             &task,
@@ -3795,6 +3858,7 @@ async fn converse_stream_handler(
             false, // approved
             true,  // attended (interactive streaming conversation)
             run_halt,
+            chat_scope,
         )
         .await;
         if let Some(sid) = &r.session {
@@ -3859,6 +3923,11 @@ struct UploadReq {
     content_b64: String,
     #[serde(default)]
     mime: Option<String>,
+    /// The chat session the upload belongs to. When set, the document's text is chunked and
+    /// ingested into that session's project as scoped, retrievable memory (so it can be recalled in
+    /// later turns), not just attached to this one turn.
+    #[serde(default)]
+    session: Option<String>,
 }
 
 /// Extract readable text from an uploaded document (PDF / DOCX / XLSX / CSV / plain text) so the
@@ -3995,12 +4064,25 @@ async fn upload_handler(State(app): State<App>, Json(r): Json<UploadReq>) -> Api
     // Extract readable text for documents so the agent can actually read them (capped so a huge
     // PDF can't blow the context). The UI attaches this text to the turn.
     let extracted = extract_document_text(&base, &bytes).map(|t| cap_text_on_boundary(t, 600_000));
+    // If the upload belongs to a chat session, ALSO ingest the text into that session's project as
+    // scoped, retrievable memory - so the document persists as a first-class part of the project's
+    // corpus (recallable in later turns), not just this one turn's attachment. Project-scoped by
+    // construction, so one project's documents never surface in another.
+    let mut ingested_chunks = 0usize;
+    if let (Some(sid), Some(text)) = (r.session.as_ref(), extracted.as_ref()) {
+        let write_scope = app
+            .workspace
+            .scope_for_session(sid)
+            .durable_write_scope();
+        ingested_chunks = corpus::ingest_document(&app.memory, &base, text, &write_scope);
+    }
     Ok(Json(json!({
         "ref": stored,
         "name": base,
         "size": bytes.len(),
         "mime": r.mime.unwrap_or_else(|| "application/octet-stream".into()),
         "extracted_text": extracted,
+        "ingested_chunks": ingested_chunks,
     })))
 }
 
@@ -4288,6 +4370,7 @@ fn skill_run_params<'a>(
         gateway: app.gateway.clone(),
         memory: app.memory.clone(),
         host: &app.host,
+        scope: engram_core::ScopeCtx::user_only(), // direct skill-run endpoint has no project
         scoring: false,
     }
 }

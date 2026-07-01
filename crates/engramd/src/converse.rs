@@ -10,7 +10,7 @@
 
 use engram_core::Taint;
 use engram_gateway::{Call, CompletionRequest, Gateway, Message};
-use engram_memory::{Memory, Region, WriteReq};
+use engram_memory::{Memory, Region, ScopeCtx, WriteReq};
 
 pub struct Turn {
     pub reply: String,
@@ -37,6 +37,7 @@ pub async fn converse(
     model: &str,
     persona: Option<&str>,
     attachments: &[Attachment],
+    scope: &ScopeCtx,
 ) -> Result<Turn, String> {
     // The non-streaming path is the streaming one with a sink that discards fragments.
     let mut sink = |_: String| {};
@@ -47,6 +48,7 @@ pub async fn converse(
         model,
         persona,
         attachments,
+        scope,
         &mut sink,
     )
     .await
@@ -73,10 +75,17 @@ pub struct Attachment {
 /// The grounding "recall ribbon" for a message: the trusted memories that bear on it, for display
 /// under the chat answer. Used by the agentic chat path (which runs the tool-using agent) to keep
 /// the same memory grounding the conversational path shows. Best-effort (empty on error).
-pub(crate) fn recall_ribbon(memory: &Memory, text: &str) -> (Vec<String>, Vec<RecalledRef>) {
+pub(crate) fn recall_ribbon(
+    memory: &Memory,
+    text: &str,
+    scope: &ScopeCtx,
+) -> (Vec<String>, Vec<RecalledRef>) {
     let regions = [Region::Identity, Region::Episodic, Region::Semantic];
-    // Pull a few extra so we can drop noise and still have something to show.
-    let hits = memory.recall_trusted(text, &regions, 8).unwrap_or_default();
+    // Pull a few extra so we can drop noise and still have something to show. Ringed to the active
+    // scope, so the ribbon only shows grounding from this project / user-global, never another's.
+    let hits = memory
+        .recall_trusted_scoped(text, &regions, 8, scope)
+        .unwrap_or_default();
     // The "grounding" ribbon must show MEANINGFUL grounding, not the flywheel's internal bookkeeping.
     // Two filters: (1) drop the auto-captured task log ("Task: … Outcome: …") — that's continuity
     // state for the agent, not a fact the answer rests on, and showing it reads as broken noise;
@@ -117,7 +126,11 @@ pub(crate) fn learn_identity(memory: &Memory, text: &str) -> Vec<String> {
             continue;
         };
         if l.supersede {
-            if let Ok(olds) = memory.current_with_prefix(Region::Identity, &l.prefix) {
+            // Identity is user-global; only supersede prior user-global identity facts, never reach
+            // into a project ring.
+            if let Ok(olds) =
+                memory.current_with_prefix_scoped(Region::Identity, &l.prefix, &ScopeCtx::user_only())
+            {
                 for old in olds {
                     if old != rec.id {
                         let _ = memory.supersede(old, rec.id);
@@ -170,23 +183,26 @@ pub async fn converse_stream(
     model: &str,
     persona: Option<&str>,
     attachments: &[Attachment],
+    scope: &ScopeCtx,
     on_delta: &mut (dyn FnMut(String) + Send),
 ) -> Result<Turn, String> {
-    // 1. Record the user's message as a lived experience.
+    // 1. Record the user's message as a lived experience, in the right ring (a project chat's
+    //    turns stay in that project; a project-less chat is user-global / session-scoped).
     let user_record = memory
         .remember(
             WriteReq::new(Region::Episodic, text)
                 .source("user")
-                .actor("user"),
+                .actor("user")
+                .scope(crate::scope::classify(Region::Episodic, scope, text)),
         )
         .map_err(|e| e.to_string())?;
 
-    // 2. Recall what we already know that bears on this message.
+    // 2. Recall what we already know that bears on this message - ringed to the active scope.
     let regions = [Region::Identity, Region::Episodic, Region::Semantic];
     // Trusted context only: content the agent read from untrusted sources is stored with
     // its provenance but never re-surfaces here as trusted memory (memory-poisoning guard).
     let hits = memory
-        .recall_trusted(text, &regions, 5)
+        .recall_trusted_scoped(text, &regions, 5, scope)
         .map_err(|e| e.to_string())?;
     // Drop the user's own message we just stored - it would otherwise surface as its own
     // "grounding" memory in the recall ribbon and the prompt context.
@@ -220,8 +236,9 @@ pub async fn converse_stream(
             )
             .map_err(|e| e.to_string())?;
         if l.supersede {
+            // Identity is user-global; supersede only within the user ring.
             for old in memory
-                .current_with_prefix(Region::Identity, &l.prefix)
+                .current_with_prefix_scoped(Region::Identity, &l.prefix, &ScopeCtx::user_only())
                 .map_err(|e| e.to_string())?
             {
                 if old != rec.id {
@@ -263,15 +280,15 @@ pub async fn converse_stream(
         .await
         .map_err(|e| e.to_string())?;
 
-    // 5. Remember our own reply, so the conversation is searchable later.
+    // 5. Remember our own reply, so the conversation is searchable later - in the same ring as the
+    //    turn it answered.
+    let reply_text = format!("assistant said: {}", completion.text);
     memory
         .remember(
-            WriteReq::new(
-                Region::Episodic,
-                format!("assistant said: {}", completion.text),
-            )
-            .source("assistant")
-            .actor("core"),
+            WriteReq::new(Region::Episodic, reply_text.clone())
+                .source("assistant")
+                .actor("core")
+                .scope(crate::scope::classify(Region::Episodic, scope, &reply_text)),
         )
         .map_err(|e| e.to_string())?;
 

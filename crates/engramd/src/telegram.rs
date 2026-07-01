@@ -101,6 +101,7 @@ pub fn spawn(app: App, token: String) -> tokio::task::AbortHandle {
                     false, // approved: inbound message never auto-approves its own egress
                     false, // attended: unattended inbound surface
                     app.halt.clone(),
+                    engram_core::ScopeCtx::user_only(), // inbound has no project → user-global only
                 )
                 .await
                 {

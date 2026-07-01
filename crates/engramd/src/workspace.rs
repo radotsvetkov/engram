@@ -214,6 +214,26 @@ impl WorkspaceStore {
             .map(|p| p.persona.clone())
             .filter(|p| !p.trim().is_empty())
     }
+
+    /// The scope context for a chat session: its project ring plus the session ring, so recall
+    /// spans user-global ∪ this project ∪ this session and captures land in the right ring. A
+    /// session under no known project (or an unknown session) resolves to the session ring alone,
+    /// which still keeps its chatter out of every other chat.
+    pub fn scope_for_session(&self, session_id: &str) -> engram_core::ScopeCtx {
+        let d = self.data.lock().expect("ws");
+        let project = d
+            .sessions
+            .iter()
+            .find(|s| s.id == session_id)
+            .map(|s| s.project_id.clone())
+            .filter(|pid| d.projects.iter().any(|p| p.id == *pid));
+        engram_core::ScopeCtx {
+            project,
+            session: Some(session_id.to_string()),
+            any: false,
+        }
+    }
+
     /// Delete a project and its sessions. Refuses to remove the last project.
     pub fn delete_project(&self, id: &str) -> bool {
         let ok = {
@@ -447,6 +467,41 @@ impl WorkspaceStore {
             self.persist();
         }
         ok
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scope_for_session_resolves_the_project_ring() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = WorkspaceStore::open(dir.path());
+        let p = ws.create_project("Apollo".into());
+        let s = ws.create_session(p.id.clone(), None);
+
+        // The session resolves to user ∪ its project ∪ itself — the linkage that used to be dropped
+        // before memory recall/capture, which is what caused the cross-project bleed.
+        let ctx = ws.scope_for_session(&s.id);
+        assert_eq!(ctx.project.as_deref(), Some(p.id.as_str()));
+        assert_eq!(ctx.session.as_deref(), Some(s.id.as_str()));
+        assert_eq!(
+            ctx.durable_write_scope(),
+            engram_core::Scope::project(p.id.clone()),
+            "a durable capture in this session lands in its project's ring"
+        );
+
+        // A session in a different project resolves to a DIFFERENT ring (isolation at the source).
+        let p2 = ws.create_project("Zephyr".into());
+        let s2 = ws.create_session(p2.id.clone(), None);
+        let ctx2 = ws.scope_for_session(&s2.id);
+        assert_ne!(ctx.project, ctx2.project);
+
+        // An unknown session still gets its own session ring (never another project's).
+        let unknown = ws.scope_for_session("does-not-exist");
+        assert!(unknown.project.is_none());
+        assert_eq!(unknown.session.as_deref(), Some("does-not-exist"));
     }
 }
 

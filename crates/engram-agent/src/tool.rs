@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use engram_core::{AutonomyPolicy, Ledger, Taint};
+use engram_core::{AutonomyPolicy, Ledger, ScopeCtx, Taint};
 use engram_gateway::{Gateway, ToolDef};
 use engram_memory::Memory;
 use engram_skills::Registry;
@@ -89,6 +89,10 @@ pub struct ToolCtx {
     pub depth: usize,
     /// The interactive browser session (no-op unless built with `browser-cdp`).
     pub browser: Arc<dyn BrowserSession>,
+    /// The memory rings this run reads and writes (user ∪ project ∪ session). The `memory_recall`
+    /// and `memory_remember` tools honour this so a delegated worker in a project chat can't read
+    /// or write another project's memory. Propagated into subagents via the cloned ctx.
+    pub scope: ScopeCtx,
 }
 
 /// What the agent is permitted to do. Safe by default.

@@ -11,7 +11,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use engram_core::Taint;
+use engram_core::{ScopeCtx, Taint};
 use engram_gateway::{Call, CompletionRequest, Gateway, Message};
 use engram_memory::{Memory, Region, WriteReq};
 use tokio::runtime::Handle;
@@ -38,6 +38,9 @@ pub struct RunCtx {
     pub gateway: Option<Arc<Gateway>>,
     pub taint: Taint,
     pub fuel: u64,
+    /// The memory rings this skill run may read/write - so a skill invoked in a project chat
+    /// sees that project ∪ user-global, never another project's memory.
+    pub scope: ScopeCtx,
 }
 
 impl RunCtx {
@@ -50,6 +53,7 @@ impl RunCtx {
             gateway: None,
             taint: Taint::Trusted,
             fuel: 5_000_000,
+            scope: ScopeCtx::user_only(),
         }
     }
     /// Give the run access to the LLM gateway (needed for the `Llm` capability).
@@ -74,6 +78,11 @@ impl RunCtx {
         self.fuel = f;
         self
     }
+    /// Bind this run to a memory scope (the calling agent's rings).
+    pub fn scope(mut self, s: ScopeCtx) -> Self {
+        self.scope = s;
+        self
+    }
 }
 
 /// The result of running a skill, with the instrumentation the learning loop needs.
@@ -93,6 +102,7 @@ pub struct HostState {
     gateway: Option<Arc<Gateway>>,
     handle: Option<Handle>,
     taint: Taint,
+    scope: ScopeCtx,
     logs: Vec<String>,
     host_calls: u64,
 }
@@ -190,6 +200,7 @@ fn run_inner(
         gateway: ctx.gateway.clone(),
         handle,
         taint: ctx.taint,
+        scope: ctx.scope.clone(),
         logs: Vec::new(),
         host_calls: 0,
     };
@@ -328,14 +339,15 @@ fn add_recall(linker: &mut Linker<HostState>) -> Result<(), SkillError> {
                     Some(q) => q,
                     None => return -1,
                 };
-                let (memory, regions) = {
+                let (memory, regions, scope) = {
                     let st = caller.data();
-                    (st.memory.clone(), st.regions.clone())
+                    (st.memory.clone(), st.regions.clone(), st.scope.clone())
                 };
                 let Some(memory) = memory else { return -1 };
                 // Skills get trusted-provenance memory only - untrusted content can't
-                // re-enter a skill as trusted context (memory-poisoning guard).
-                let hits = match memory.recall_trusted(&query, &regions, 5) {
+                // re-enter a skill as trusted context (memory-poisoning guard) - and ringed to the
+                // run's scope, so a skill never reads another project's memory.
+                let hits = match memory.recall_trusted_scoped(&query, &regions, 5, &scope) {
                     Ok(h) => h,
                     Err(_) => return -1,
                 };
@@ -373,9 +385,9 @@ fn add_remember(linker: &mut Linker<HostState>) -> Result<(), SkillError> {
                     Ok(v) => v,
                     Err(_) => return -1,
                 };
-                let (memory, taint) = {
+                let (memory, taint, scope) = {
                     let st = caller.data();
-                    (st.memory.clone(), st.taint)
+                    (st.memory.clone(), st.taint, st.scope.clone())
                 };
                 let Some(memory) = memory else { return -1 };
                 let text = parsed["text"].as_str().unwrap_or("").to_string();
@@ -383,10 +395,12 @@ fn add_remember(linker: &mut Linker<HostState>) -> Result<(), SkillError> {
                     return -1;
                 }
                 // A skill writing memory inherits the run's taint, so injected content
-                // can never launder itself into a "trusted" fact.
+                // can never launder itself into a "trusted" fact, and lands in the run's durable
+                // ring (this project, else user-global) so it can't leak across projects.
                 let req = WriteReq::new(Region::Procedural, text)
                     .taint(taint)
-                    .actor("skill");
+                    .actor("skill")
+                    .scope(scope.durable_write_scope());
                 let id = match memory.remember(req) {
                     Ok(r) => r.id,
                     Err(_) => return -1,

@@ -2877,7 +2877,7 @@ function skillCardHTML(s){
       return `<div class="sk-ev rejected">↺ <b>v${e.candidate|0} rejected</b> · ${cand.toFixed(2)} ≤ ${inc.toFixed(2)} on ${reps} replay${reps===1?'':'s'} - kept v${e.active|0} ${seq}</div>`;
     }).join('');
     const evBlock = events ? `<div class="sk-events">${events}</div>`
-      : (verified ? `<div class="sk-muted">No promotions yet - v${active} is the best on ${runs} run${runs===1?'':'s'}.</div>` : '');
+      : (verified && !proposed ? `<div class="sk-muted">No promotions yet - v${active} is the best on ${runs} run${runs===1?'':'s'}.</div>` : '');
     const rt = s.runtime==='process' ? esc(s.interpreter||'script') : 'wasm';
     const rtBadge = `<span class="sk-rt" title="${s.runtime==='process'?'A small program the agent wrote, run in your shell sandbox':'A WASM transform run in the fuel-bounded sandbox'}">${rt}</span>`;
     const catBadge = s.category ? `<span class="sk-rt" style="background:var(--surface-3);color:var(--text-muted)" title="category" onclick="setSkillCat('${esc(s.category)}')">${esc(s.category)}</span>` : '';

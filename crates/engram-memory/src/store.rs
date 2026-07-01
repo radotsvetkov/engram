@@ -642,6 +642,41 @@ impl Memory {
         Ok(out)
     }
 
+    /// Promote a memory to the user-global ring - e.g. a project fact that turns out to be a durable
+    /// cross-project preference, so it should follow the user everywhere. Ledgered and reversible.
+    /// Refuses to promote UNTRUSTED-provenance memory into the trusted user-global ring (the
+    /// injection guard: scraped/attacker content must never become a global fact about the user).
+    /// Returns `Ok(false)` if the id isn't a live memory.
+    pub fn promote_to_user(&self, id: i64, actor: &str) -> Result<bool> {
+        let row: Option<(String, String)> = {
+            let conn = self.conn.lock().expect("memory mutex poisoned");
+            conn.query_row(
+                "SELECT taint, scope_kind FROM facts WHERE id = ?1 AND deleted = 0",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?
+        };
+        let Some((taint, scope_kind)) = row else {
+            return Ok(false);
+        };
+        if taint != "trusted" {
+            return Err(MemoryError::Sqlite(rusqlite::Error::InvalidQuery));
+        }
+        if scope_kind == "user" {
+            return Ok(true); // already global, nothing to do
+        }
+        let entry = self
+            .ledger
+            .append("memory.promote", actor, json!({ "id": id, "to": "user" }))?;
+        let conn = self.conn.lock().expect("memory mutex poisoned");
+        conn.execute(
+            "UPDATE facts SET scope_kind = 'user', scope_id = '', ledger_seq = ?1 WHERE id = ?2",
+            params![entry.seq as i64, id],
+        )?;
+        Ok(true)
+    }
+
     /// Undo a [`forget`], bringing the memory back into recall.
     pub fn restore(&self, id: i64, actor: &str) -> Result<bool> {
         let exists: Option<i64> = {
@@ -1211,6 +1246,35 @@ mod tests {
             hits.iter().any(|h| h.record.text.contains("dark theme")),
             "recall works after a full reindex"
         );
+    }
+
+    #[test]
+    fn promote_to_user_makes_a_project_fact_global_and_guards_untrusted() {
+        let (m, _d) = mem();
+        let p = m
+            .remember(WriteReq::new(Region::Semantic, "always use pnpm").scope(Scope::project("P")))
+            .unwrap();
+        // Before promotion, project Q can't see P's fact.
+        assert!(m
+            .recall_trusted_scoped("pnpm", &[Region::Semantic], 5, &ScopeCtx::project("Q"))
+            .unwrap()
+            .is_empty());
+        assert!(m.promote_to_user(p.id, "user").unwrap());
+        // After promotion it is user-global and surfaces in any project.
+        assert_eq!(m.get(p.id).unwrap().unwrap().scope_kind, "user");
+        assert!(!m
+            .recall_trusted_scoped("pnpm", &[Region::Semantic], 5, &ScopeCtx::project("Q"))
+            .unwrap()
+            .is_empty());
+        // Untrusted-provenance memory refuses promotion into the trusted user-global ring.
+        let u = m
+            .remember(
+                WriteReq::new(Region::Semantic, "a scraped claim")
+                    .taint(Taint::Untrusted)
+                    .scope(Scope::project("P")),
+            )
+            .unwrap();
+        assert!(m.promote_to_user(u.id, "user").is_err());
     }
 
     #[test]

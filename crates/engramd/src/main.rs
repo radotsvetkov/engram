@@ -846,6 +846,7 @@ async fn run(mode: RunMode) -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/memory/recent", get(memory_recent))
         .route("/v1/memory/graph", get(memory_graph))
         .route("/v1/memory/reindex", post(memory_reindex))
+        .route("/v1/memory/promote", post(memory_promote))
         .route("/v1/screenshot", get(screenshot_get))
         .route(
             "/v1/artifact",
@@ -1215,6 +1216,21 @@ async fn memory_stats(State(app): State<App>) -> ApiResult {
 async fn memory_reindex(State(app): State<App>) -> ApiResult {
     let n = app.memory.reindex_binary().map_err(err)?;
     Ok(Json(json!({ "reindexed": n })))
+}
+
+#[derive(Deserialize)]
+struct PromoteReq {
+    id: i64,
+}
+
+/// Promote a project/session memory to the user-global ring, so a fact that turns out to be a
+/// durable cross-project preference follows the user everywhere. Ledgered; trusted-only.
+async fn memory_promote(State(app): State<App>, Json(r): Json<PromoteReq>) -> ApiResult {
+    let ok = app
+        .memory
+        .promote_to_user(r.id, "user")
+        .map_err(|_| ApiError("could not promote (only trusted memories can become global)".into()))?;
+    Ok(Json(json!({ "promoted": ok })))
 }
 
 #[derive(Deserialize)]

@@ -28,6 +28,9 @@ pub struct RecalledRef {
     pub region: String,
     pub text: String,
     pub score: f32,
+    /// Which ring this memory lives in (`user` | `project` | `session`), so the UI can badge the
+    /// chip - the user can SEE that a grounding fact is this-project vs a global fact about them.
+    pub scope_kind: String,
 }
 
 pub async fn converse(
@@ -105,6 +108,7 @@ pub(crate) fn recall_ribbon(
             region: h.record.region.clone(),
             text: h.record.text.clone(),
             score: h.score,
+            scope_kind: h.record.scope_kind.clone(),
         })
         .collect();
     let recalled = kept.iter().map(|r| r.text.clone()).collect();
@@ -218,6 +222,7 @@ pub async fn converse_stream(
             region: h.record.region.clone(),
             text: h.record.text.clone(),
             score: h.score,
+            scope_kind: h.record.scope_kind.clone(),
         })
         .collect();
 

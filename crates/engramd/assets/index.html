@@ -925,6 +925,12 @@
   .recall.clk:hover { color:var(--text-secondary); text-decoration:underline; text-underline-offset:2px; text-decoration-color:var(--lc,var(--border-strong)); }
   .recall .rg { font-family:var(--mono); color:var(--lc,var(--accent)); opacity:.6; font-size:9px; font-variant-numeric:tabular-nums; }
   .rb-lbl { align-self:center; font:600 9px var(--mono); text-transform:uppercase; letter-spacing:.07em; color:var(--text-muted); opacity:.85; margin-right:1px; }
+  /* Scope tag on a grounding chip: shows a memory is bound to THIS project / chat (no tag = a
+     global fact about the user, which follows everywhere). This is where isolation becomes visible. */
+  .sc-tag { font:600 8.5px var(--mono); text-transform:uppercase; letter-spacing:.05em; margin-left:5px; padding:1px 5px; border-radius:20px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-muted); }
+  .sc-tag.sc-proj { color:var(--accent); border-color:rgba(69,200,168,.30); }
+  .rp-glob { font:600 8.5px var(--mono); text-transform:uppercase; letter-spacing:.04em; margin:0 6px; padding:2px 7px; border-radius:20px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-secondary); cursor:pointer; flex-shrink:0; }
+  .rp-glob:hover { color:var(--accent); border-color:rgba(69,200,168,.35); }
   .recall:nth-child(2){ animation-delay:55ms } .recall:nth-child(3){ animation-delay:110ms }
   .recall:nth-child(4){ animation-delay:165ms } .recall:nth-child(5){ animation-delay:220ms }
   @keyframes recall-in { from{ opacity:0; transform:translateY(4px); } to{ opacity:1; transform:none; } }
@@ -2273,7 +2279,7 @@ function paintFeed(toBottom=true){
     if(m.role==='user') return `<div class="msg user">${esc(m.text)}</div>`;
     const refs=(m.recalled_refs&&m.recalled_refs.length)?m.recalled_refs:null;
     const ribbon = refs
-      ? `<div class="ribbon"><span class="rb-lbl">grounded on ${refs.length}</span>${refs.slice(0,6).map(r=>{const reg=BRAIN_REGIONS[r.region]||BRAIN_REGIONS.semantic; return `<span class="recall clk" style="--lc:${reg.color}" title="${escAttr(r.text)}" onclick="recallOpen(${r.id|0})"><span class="rg">◇</span> ${esc((r.text||'').replace(/\s+/g,' ').slice(0,48))}</span>`;}).join('')}</div>`
+      ? `<div class="ribbon"><span class="rb-lbl">grounded on ${refs.length}</span>${refs.slice(0,6).map(r=>{const reg=BRAIN_REGIONS[r.region]||BRAIN_REGIONS.semantic; const sc=r.scope_kind==='project'?'<span class="sc-tag sc-proj" title="scoped to this project — it won\'t surface in your other projects">project</span>':r.scope_kind==='session'?'<span class="sc-tag sc-sess" title="scoped to this chat session">session</span>':''; return `<span class="recall clk" style="--lc:${reg.color}" title="${escAttr(r.text)}" onclick="recallOpen(${r.id|0})"><span class="rg">◇</span> ${esc((r.text||'').replace(/\s+/g,' ').slice(0,48))}${sc}</span>`;}).join('')}</div>`
       : (m.recalled&&m.recalled.length)?`<div class="ribbon">${m.recalled.slice(0,5).map(r=>`<span class="recall" title="${escAttr(r)}"><span class="rg">◇</span> ${esc((r||'').replace(/\s+/g,' ').slice(0,54))}</span>`).join('')}</div>`:'';
     const learned=(m.learned&&m.learned.length)?`<div class="learned">learned about you · ${m.learned.map(esc).join(' · ')}</div>`:'';
     // The agent's tool activity (browse/shell/files/vision...) - the glass box, shown above the
@@ -2737,9 +2743,16 @@ async function brainRecentLoad(){
     }
     const list=document.getElementById('rpList'); if(!list) return;
     list.innerHTML = (recs&&recs.length) ? recs.map(r=>{ const reg=BRAIN_REGIONS[r.region]||BRAIN_REGIONS.semantic;
-      return `<div class="rp-i" style="--lc:${reg.color}" title="${escAttr(r.text||'')}" onclick="recallOpen(${r.id|0})"><span class="rp-dot"></span><span class="rp-t">${esc((r.text||'').replace(/\s+/g,' '))}</span><span class="rp-m">${(r.importance||0).toFixed(1)}</span></div>`; }).join('')
+      const sc=r.scope_kind==='project'?'<span class="sc-tag sc-proj">project</span>':r.scope_kind==='session'?'<span class="sc-tag sc-sess">session</span>':''; const prom=(r.scope_kind==='project'||r.scope_kind==='session')?`<button class="rp-glob" title="Promote to a global fact about you — it will then follow you into every project" onclick="event.stopPropagation();makeGlobal(${r.id|0})">Make global</button>`:''; return `<div class="rp-i" style="--lc:${reg.color}" title="${escAttr(r.text||'')}" onclick="recallOpen(${r.id|0})"><span class="rp-dot"></span><span class="rp-t">${esc((r.text||'').replace(/\s+/g,' '))}</span>${sc}${prom}<span class="rp-m">${(r.importance||0).toFixed(1)}</span></div>`; }).join('')
       : '<div class="rp-empty">no memories in this region yet</div>';
   }catch(e){ const list=document.getElementById('rpList'); if(list) list.innerHTML='<div class="rp-empty">could not load</div>'; }
+}
+// Promote a project/session memory to a global fact about the user - it will then follow into every
+// project. Trusted-only (the backend refuses to globalize untrusted-provenance memory).
+async function makeGlobal(id){
+  try{ await J('/v1/memory/promote',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id})}); }
+  catch(e){ notify('Couldn\'t promote - '+e.message); return; }
+  notify('Now a global fact — it follows you everywhere','ok'); brainRecentLoad();
 }
 // Forget (delete) a memory from the brain - it stops being recalled; the removal is itself signed
 // to the ledger (auditable, not a silent erase).

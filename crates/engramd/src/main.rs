@@ -5194,9 +5194,10 @@ fn apply_config_patch(cfg: &mut config::Config, p: &Value) {
             cfg.security.allow_shell = b;
         }
         if let Some(x) = s(sec, "shell_backend") {
-            // Only "docker" / "ssh" change behaviour; anything else means run on the host.
+            // "sandbox" (built-in OS sandbox), "docker", "ssh" change behaviour; anything else means
+            // run on the host (no isolation).
             cfg.security.shell_backend = match x.trim() {
-                "docker" | "ssh" => x.trim().to_string(),
+                "sandbox" | "docker" | "ssh" => x.trim().to_string(),
                 _ => String::new(),
             };
         }

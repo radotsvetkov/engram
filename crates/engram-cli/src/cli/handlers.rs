@@ -2,7 +2,8 @@
 
 use super::output::{self as out, accent, bad, bold, dim, good, kv, table, warn};
 use super::{
-    AgentsCmd, AutonomyCmd, Cmd, ConfigCmd, LedgerCmd, MemoryCmd, ScheduleCmd, SkillsCmd, TasksCmd,
+    AgentsCmd, AutonomyCmd, Cmd, ConfigCmd, LedgerCmd, MemoryCmd, ProjectsCmd, ScheduleCmd,
+    SkillsCmd, TasksCmd,
 };
 use crate::api::{ChatEvent, Client, TaskEvent};
 use crate::ui::format::{cost, human_count, one_line, rel_time, stamp};
@@ -36,6 +37,7 @@ pub async fn dispatch(client: &Client, cmd: Cmd, json: bool) -> Result<i32> {
         Cmd::Doctor => doctor(client, json).await,
         Cmd::Tasks { cmd } => tasks(client, cmd, json).await,
         Cmd::Memory { cmd } => memory(client, cmd, json).await,
+        Cmd::Projects { cmd } => projects(client, cmd, json).await,
         Cmd::Skills { cmd } => skills(client, cmd, json).await,
         Cmd::Schedule { cmd } => schedule(client, cmd, json).await,
         Cmd::Autonomy { cmd } => autonomy(client, cmd, json).await,
@@ -504,6 +506,54 @@ async fn stream_task(client: &Client, id: &str, json: bool) -> Result<i32> {
         }
     }
     Ok(0)
+}
+
+// ---- projects -------------------------------------------------------------
+
+async fn projects(client: &Client, cmd: ProjectsCmd, json: bool) -> Result<i32> {
+    match cmd {
+        ProjectsCmd::List => {
+            let ps = client.projects().await?;
+            if json {
+                print_json(&ps);
+                return Ok(0);
+            }
+            let rows: Vec<Vec<String>> = ps
+                .iter()
+                .map(|p| {
+                    vec![
+                        p.name.clone(),
+                        p.id.clone(),
+                        p.workdir.clone().unwrap_or_else(|| dim("(shared)").to_string()),
+                    ]
+                })
+                .collect();
+            out::header(&format!("Projects · {}", ps.len()));
+            table(&["name", "id", "workdir"], &rows);
+            Ok(0)
+        }
+        ProjectsCmd::New { name, dir } => {
+            let name = name.trim().to_string();
+            if name.is_empty() {
+                println!("{}", bad("a project name is required: engram project new <name> [--dir <path>]"));
+                return Ok(2);
+            }
+            let p = client.project_create(&name, dir.as_deref()).await?;
+            if json {
+                print_json(&p);
+                return Ok(0);
+            }
+            out::header("Project created");
+            kv("name", &p.name);
+            kv("id", &p.id);
+            kv(
+                "workdir",
+                &p.workdir.clone().unwrap_or_else(|| "(shared daemon workdir)".into()),
+            );
+            println!("{}", good("✓ ready — start a chat in it from the desktop app or the TUI"));
+            Ok(0)
+        }
+    }
 }
 
 // ---- memory ---------------------------------------------------------------

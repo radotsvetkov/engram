@@ -453,6 +453,9 @@ pub struct Project {
     pub persona: String,
     #[serde(default)]
     pub created_ms: i64,
+    /// The working directory the project's agent operates in (None = shared daemon workdir).
+    #[serde(default)]
+    pub workdir: Option<String>,
 }
 
 /// The slice of `GET /v1/config` the client surfaces. The full object is also

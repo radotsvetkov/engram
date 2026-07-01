@@ -86,6 +86,13 @@ pub enum Cmd {
         cmd: MemoryCmd,
     },
 
+    /// Projects: the named worlds (memory scope + persona + working directory) work happens in.
+    #[command(visible_alias = "proj")]
+    Projects {
+        #[command(subcommand)]
+        cmd: ProjectsCmd,
+    },
+
     /// Skills: the self-improving program library.
     Skills {
         #[command(subcommand)]
@@ -162,6 +169,21 @@ pub enum TasksCmd {
     Run { id: String },
     /// Print the signed receipt JSON for a finished task.
     Receipt { id: String },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ProjectsCmd {
+    /// List projects (name, id, working directory).
+    List,
+    /// Create a new project, optionally bound to a working directory.
+    /// Quote a multi-word name: `engram project new "My App" --dir ~/code/my-app`.
+    New {
+        /// The project name (quote it if it has spaces).
+        name: String,
+        /// Working directory the project's agent operates in (attach-or-create). Omit for none.
+        #[arg(long)]
+        dir: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]

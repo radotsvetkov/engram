@@ -2,8 +2,8 @@
 
 use crate::api::{
     AutonomyReport, ChatEvent, Client, Consciousness, EgressItem, Health, LedgerEntry,
-    LedgerVerify, MemRecord, MemoryStats, Meter, RecalledRef, ScheduleJob, SessionMeta, SessionMsg,
-    Skill, StepRecord, Task,
+    LedgerVerify, MemRecord, MemoryStats, Meter, Project, RecalledRef, ScheduleJob, SessionMeta,
+    SessionMsg, Skill, StepRecord, Task,
 };
 use crate::ui::format::now_ms;
 use crate::ui::Theme;
@@ -76,6 +76,12 @@ pub enum Msg {
     Agents(Vec<Value>),
     Config(Value),
     Sessions(Vec<SessionMeta>),
+    /// The workspace project list (for the switcher + status bar).
+    Projects(Vec<Project>),
+    /// A newly-created project (switch to it, start a session in it).
+    ProjectCreated(Project),
+    /// A real server-side session was created under the active project (chat is now scoped to it).
+    SessionStarted(String),
     SessionLoaded {
         id: String,
         msgs: Vec<SessionMsg>,
@@ -149,6 +155,8 @@ pub enum Action {
     Go(View),
     ClearChat,
     NewSession,
+    NewProject,
+    SwitchProject,
     ResumeSession,
     SwitchModel,
     Verify,
@@ -229,6 +237,7 @@ pub struct FormModal {
 
 pub enum FormKind {
     CreateAgent,
+    NewProject,
     EditAgent {
         id: String,
     },
@@ -283,6 +292,13 @@ pub struct App {
     pub egress: Vec<EgressItem>,
     pub agents: Vec<Value>,
     pub sessions: Vec<SessionMeta>,
+    /// The workspace projects, and which one is active. Chats run under the active project, so their
+    /// memory and working directory are scoped to it.
+    pub projects: Vec<Project>,
+    pub active_project: Option<String>,
+    /// The project switcher overlay.
+    pub project_picker_open: bool,
+    pub project_sel: usize,
     /// The full (redacted) daemon config, for the Settings view.
     pub config_raw: Option<Value>,
 
@@ -380,6 +396,16 @@ pub const PALETTE: &[PaletteItem] = &[
         action: Action::NewSession,
     },
     PaletteItem {
+        label: "New project",
+        hint: "a named world with its own memory + working directory",
+        action: Action::NewProject,
+    },
+    PaletteItem {
+        label: "Switch project",
+        hint: "change the active project (scopes the chat's memory + files)",
+        action: Action::SwitchProject,
+    },
+    PaletteItem {
         label: "Resume session",
         hint: "reopen a past conversation",
         action: Action::ResumeSession,
@@ -460,6 +486,10 @@ impl App {
             egress: vec![],
             agents: vec![],
             sessions: vec![],
+            projects: vec![],
+            active_project: None,
+            project_picker_open: false,
+            project_sel: 0,
             config_raw: None,
             sel: 0,
             board_col: 0,
@@ -503,6 +533,80 @@ impl App {
         self.load_view(self.view);
         // Tasks power chat-side counts too; pull once up front.
         self.refresh_tasks();
+        // Load the projects so the switcher + status bar work, and the first chat runs scoped.
+        self.refetch_projects();
+    }
+
+    fn refetch_projects(&self) {
+        self.fetch(|c| async move { c.projects().await.ok().map(Msg::Projects) });
+    }
+
+    /// Start a REAL server-side session under `project_id`, so the chat's memory + working directory
+    /// are scoped to that project (unlike the client-only fallback id used before any project loads).
+    fn start_session_in(&mut self, project_id: String) {
+        self.chat.turns.clear();
+        self.chat.session = None;
+        self.chat.scroll = 0;
+        self.chat.stick = true;
+        self.view = View::Chat;
+        self.fetch(move |c| async move {
+            c.session_create(&project_id, None)
+                .await
+                .ok()
+                .map(|s| Msg::SessionStarted(s.id))
+        });
+    }
+
+    /// The active project's display name (for the status bar / switcher).
+    pub fn active_project_name(&self) -> String {
+        match &self.active_project {
+            Some(id) => self
+                .projects
+                .iter()
+                .find(|p| &p.id == id)
+                .map(|p| p.name.clone())
+                .unwrap_or_else(|| id.clone()),
+            None => "—".into(),
+        }
+    }
+
+    pub fn open_project_picker(&mut self) {
+        self.project_picker_open = true;
+        self.project_sel = self
+            .projects
+            .iter()
+            .position(|p| Some(&p.id) == self.active_project.as_ref())
+            .unwrap_or(0);
+        self.refetch_projects();
+    }
+
+    fn project_picker_key(&mut self, k: KeyEvent) {
+        match k.code {
+            KeyCode::Esc => self.project_picker_open = false,
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.project_sel = self.project_sel.saturating_sub(1)
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if self.project_sel + 1 < self.projects.len() {
+                    self.project_sel += 1;
+                }
+            }
+            KeyCode::Char('n') => {
+                // Quick "new project" straight from the switcher.
+                self.project_picker_open = false;
+                self.create_project_prompt();
+            }
+            KeyCode::Enter => {
+                if let Some(p) = self.projects.get(self.project_sel) {
+                    let (id, name) = (p.id.clone(), p.name.clone());
+                    self.project_picker_open = false;
+                    self.active_project = Some(id.clone());
+                    self.toast(&format!("· project · {name}"));
+                    self.start_session_in(id);
+                }
+            }
+            _ => {}
+        }
     }
 
     pub fn refresh_spine(&self) {
@@ -671,6 +775,38 @@ impl App {
                         self.sessions_sel.min(self.sessions.len().saturating_sub(1));
                 }
             }
+            Msg::Projects(ps) => {
+                self.projects = ps;
+                if self.project_picker_open {
+                    self.project_sel = self.project_sel.min(self.projects.len().saturating_sub(1));
+                }
+                // First load: adopt a default project and start the chat scoped to it, so the very
+                // first message already runs under a real project (memory + workdir).
+                if self.active_project.is_none() {
+                    if let Some(first) = self.projects.first() {
+                        let id = first.id.clone();
+                        self.active_project = Some(id.clone());
+                        if self.chat.session.is_none() {
+                            self.start_session_in(id);
+                        }
+                    }
+                }
+            }
+            Msg::ProjectCreated(p) => {
+                self.toast(&format!(
+                    "· project · {}{}",
+                    p.name,
+                    p.workdir.as_deref().map(|w| format!(" · {w}")).unwrap_or_default()
+                ));
+                self.active_project = Some(p.id.clone());
+                self.refetch_projects();
+                self.start_session_in(p.id);
+            }
+            Msg::SessionStarted(id) => {
+                self.chat.session = Some(id);
+                self.chat.turns.clear();
+                self.chat.stick = true;
+            }
             Msg::Reconnected(ok) => {
                 self.reconnecting = false;
                 if ok {
@@ -819,6 +955,7 @@ impl App {
             || self.prompt_modal.is_some()
             || self.palette.is_some()
             || self.sessions_open
+            || self.project_picker_open
         {
             return;
         }
@@ -885,6 +1022,10 @@ impl App {
                 self.sessions_open = false;
                 return;
             }
+            if self.project_picker_open {
+                self.project_picker_open = false;
+                return;
+            }
             if self.palette.take().is_some() {
                 return;
             }
@@ -904,6 +1045,10 @@ impl App {
             self.sessions_key(k);
             return;
         }
+        if self.project_picker_open {
+            self.project_picker_key(k);
+            return;
+        }
         if self.palette.is_some() {
             self.palette_key(k);
             return;
@@ -915,6 +1060,10 @@ impl App {
             }
             (true, KeyCode::Char('r')) => {
                 self.open_sessions();
+                return;
+            }
+            (true, KeyCode::Char('o')) => {
+                self.open_project_picker();
                 return;
             }
             (true, KeyCode::Char('t')) => {
@@ -1398,6 +1547,23 @@ impl App {
 
     // ---- agents -----------------------------------------------------------
 
+    pub fn create_project_prompt(&mut self) {
+        self.form = Some(FormModal {
+            title: "New project".into(),
+            fields: vec![
+                FormField::new("Name", "", "required"),
+                FormField::new(
+                    "Directory",
+                    "",
+                    "optional — the folder its agent works in (created if missing)",
+                ),
+            ],
+            sel: 0,
+            cursor: 0,
+            kind: FormKind::NewProject,
+        });
+    }
+
     pub fn create_agent_prompt(&mut self) {
         self.form = Some(FormModal {
             title: "New agent".into(),
@@ -1723,6 +1889,23 @@ impl App {
                 .collect()
         };
         match form.kind {
+            FormKind::NewProject => {
+                let name = get(0);
+                if name.is_empty() {
+                    self.toast("· a project needs a name");
+                    return;
+                }
+                let dir = get(1);
+                let dir = if dir.is_empty() { None } else { Some(dir) };
+                self.fetch(move |c| async move {
+                    match c.project_create(&name, dir.as_deref()).await {
+                        // Switch to the new project + start a session in it (see Msg::ProjectCreated).
+                        Ok(p) => Some(Msg::ProjectCreated(p)),
+                        Err(e) => Some(Msg::Toast(format!("· project create failed: {e}"))),
+                    }
+                });
+                self.toast("· creating project…");
+            }
             FormKind::CreateAgent | FormKind::EditAgent { .. } => {
                 let name = get(0);
                 if name.is_empty() {
@@ -2010,13 +2193,23 @@ impl App {
                 self.chat.stick = true;
             }
             Action::NewSession => {
-                self.chat.turns.clear();
-                self.chat.session = None;
-                self.chat.scroll = 0;
-                self.chat.stick = true;
-                self.view = View::Chat;
+                // Start a fresh session UNDER the active project, so the new chat's memory and
+                // working directory are scoped to it (falls back to a client-only chat if no
+                // project has loaded yet).
                 self.toast("· new session");
+                match self.active_project.clone() {
+                    Some(pid) => self.start_session_in(pid),
+                    None => {
+                        self.chat.turns.clear();
+                        self.chat.session = None;
+                        self.chat.scroll = 0;
+                        self.chat.stick = true;
+                        self.view = View::Chat;
+                    }
+                }
             }
+            Action::NewProject => self.create_project_prompt(),
+            Action::SwitchProject => self.open_project_picker(),
             Action::ResumeSession => self.open_sessions(),
             Action::SwitchModel => self.open_model_prompt(),
             Action::Verify => {

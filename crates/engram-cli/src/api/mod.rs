@@ -131,6 +131,15 @@ impl Client {
         self.get("/v1/memory/stats").await
     }
 
+    /// Create a project, optionally bound to a working directory (attach-or-create on the daemon).
+    pub async fn project_create(&self, name: &str, workdir: Option<&str>) -> Result<Project> {
+        let mut body = serde_json::json!({ "name": name });
+        if let Some(w) = workdir {
+            body["workdir"] = serde_json::Value::String(w.to_string());
+        }
+        self.post("/v1/projects", body).await
+    }
+
     pub async fn memory_recent(&self, region: Option<&str>, n: usize) -> Result<Vec<MemRecord>> {
         let mut path = format!("/v1/memory/recent?n={n}");
         if let Some(r) = region {
@@ -298,6 +307,16 @@ impl Client {
 
     pub async fn projects(&self) -> Result<Vec<Project>> {
         self.get("/v1/projects").await
+    }
+
+    /// Create a real chat session under a project, so its turns persist server-side and its memory
+    /// + working directory are scoped to that project. Returns the created session.
+    pub async fn session_create(&self, project_id: &str, title: Option<&str>) -> Result<SessionMeta> {
+        let mut body = serde_json::json!({ "project_id": project_id });
+        if let Some(t) = title {
+            body["title"] = serde_json::Value::String(t.to_string());
+        }
+        self.post("/v1/sessions", body).await
     }
 
     pub async fn sessions(&self, project: Option<&str>) -> Result<Vec<SessionMeta>> {

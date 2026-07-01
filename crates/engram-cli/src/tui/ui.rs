@@ -31,6 +31,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if app.sessions_open {
         sessions_picker(f, app, area);
     }
+    if app.project_picker_open {
+        project_picker(f, app, area);
+    }
     if app.prompt_modal.is_some() {
         prompt_modal(f, app, area);
     }
@@ -155,6 +158,68 @@ fn prompt_modal(f: &mut Frame, app: &App, area: Rect) {
 }
 
 /// The session-resume picker overlay.
+fn project_picker(f: &mut Frame, app: &App, area: Rect) {
+    let t = &app.theme;
+    let h = (app.projects.len() as u16 + 4)
+        .min(area.height.saturating_sub(2))
+        .max(5);
+    let w = 76u16.min(area.width.saturating_sub(4));
+    let rect = centered(area, w, h);
+    f.render_widget(Clear, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(t.accent))
+        .title(Span::styled(
+            " switch project · enter=select · n=new · esc=cancel ",
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+        ))
+        .style(Style::default().bg(t.bar_bg));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+    if app.projects.is_empty() {
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "  loading…",
+                Style::default().fg(t.muted),
+            ))),
+            inner,
+        );
+        return;
+    }
+    let view_h = inner.height as usize;
+    let start = super::views::window_start(app.projects.len(), view_h, app.project_sel);
+    let namew = w.saturating_sub(32) as usize;
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, p) in app.projects.iter().enumerate().skip(start).take(view_h) {
+        let selected = i == app.project_sel;
+        let active = Some(&p.id) == app.active_project.as_ref();
+        let name = crate::ui::format::ellipsize(&p.name, namew);
+        let dir = crate::ui::format::ellipsize(p.workdir.as_deref().unwrap_or("(shared)"), 26);
+        lines.push(Line::from(vec![
+            Span::styled(
+                if selected { "▌ " } else { "  " },
+                Style::default().fg(t.accent),
+            ),
+            Span::styled(
+                if active { "● " } else { "  " },
+                Style::default().fg(t.good),
+            ),
+            Span::styled(
+                format!("{name:<namew$}"),
+                Style::default()
+                    .fg(if selected { t.fg } else { t.muted })
+                    .add_modifier(if selected {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::empty()
+                    }),
+            ),
+            Span::styled(format!("  {dir}"), Style::default().fg(t.faint)),
+        ]));
+    }
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
 fn sessions_picker(f: &mut Frame, app: &App, area: Rect) {
     let t = &app.theme;
     let h = (app.sessions.len() as u16 + 4)
@@ -420,6 +485,14 @@ fn footer(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let mut right: Vec<Span> = Vec::new();
+    // Always show the active project in chat, so it's clear which world the chat is scoped to
+    // (^O switches it). This is the visible half of project isolation in the TUI.
+    if app.view == View::Chat && !app.projects.is_empty() {
+        right.push(Span::styled(
+            format!("⬡ {} ", crate::ui::format::ellipsize(&app.active_project_name(), 16)),
+            Style::default().fg(t.accent2).add_modifier(Modifier::BOLD),
+        ));
+    }
     if app.chat.streaming {
         right.push(Span::styled(
             format!("{} thinking ", spinner(app.tick)),
@@ -443,7 +516,7 @@ fn footer_hint(app: &App) -> &'static str {
             if app.chat.streaming {
                 " esc stop   ↑↓ scroll   ^P palette   ^C quit"
             } else {
-                " ↵ send   ^T task   ^A attach   ^R sessions   / cmds   ? help"
+                " ↵ send   ^O project   ^R sessions   ^T task   ^A attach   / cmds   ? help"
             }
         }
         View::Tasks => " ↑↓ move   ←→ column   ↵ run/open   r refresh   / cmds   ? help",

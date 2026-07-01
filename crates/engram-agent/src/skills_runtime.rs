@@ -406,6 +406,15 @@ pub async fn verify_and_adopt(
     let (signed, _) = registry.load(id, latest).map_err(|e| e.to_string())?;
     let metric = signed.manifest.metric.clone();
     let pure = signed.manifest.capabilities.is_empty();
+    // A Process (script) skill can only be VERIFIED by running it, which needs the shell tool. Say so
+    // plainly instead of scoring 0 and reporting "didn't reproduce its examples" — that reads as if the
+    // skill is wrong, when in fact it never ran.
+    if signed.manifest.runtime == Runtime::Process && !p.allow_exec {
+        return Ok(json!({
+            "decision": "needs_shell", "id": id, "version": latest,
+            "note": "enable the shell tool (Settings → Tools; a Docker sandbox is safest) so this script skill can be run and verified before adopting"
+        }));
+    }
     let runs = registry.accepted_runs(id).map_err(|e| e.to_string())?;
     if runs.is_empty() {
         return Ok(json!({
@@ -668,6 +677,32 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(d["decision"], "rejected", "decision was {d}");
+        assert_eq!(f.registry.active_version("upper").unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn verify_and_adopt_reports_needs_shell_when_exec_disabled() {
+        let f = setup();
+        let v = f
+            .registry
+            .install_inactive(upper_skill(), b"tr a-z A-Z")
+            .unwrap();
+        f.registry
+            .record_run("upper", v, b"abc", b"ABC", 1.0)
+            .unwrap();
+        // allow_exec = false → a script skill can't be run, so we must SAY it needs the shell, not
+        // silently score 0 and call it "did not reproduce".
+        let d = verify_and_adopt(
+            &f.registry,
+            "upper",
+            "test",
+            true,
+            &params(&f, Taint::Trusted, false),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(d["decision"], "needs_shell", "decision was {d}");
         assert_eq!(f.registry.active_version("upper").unwrap(), None);
     }
 

@@ -3028,6 +3028,7 @@ async function skillAdopt(id){
     if(d==='adopted') notify('Adopted "'+id+'" · verified & active · signed','ok');
     else if(d==='no_data') notify('Add at least one example first, then Adopt');
     else if(d==='already_active') notify('"'+id+'" is already active','ok');
+    else if(d==='needs_shell') notify('Turn on the shell tool (Settings → Tools) so this script skill can be run & verified');
     else notify('Not adopted — it didn\'t reproduce its examples'+(r&&r.score!=null?' (score '+(+r.score).toFixed(2)+')':''));
     renderSkills();
   }

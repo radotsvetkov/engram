@@ -57,6 +57,55 @@ pub trait Provider: Send + Sync {
     fn id(&self) -> &str;
 }
 
+/// Normalize a tool call's `arguments` from an OpenAI-compatible response. The spec says a
+/// JSON-ENCODED STRING, but real backends disagree: several models routed through OpenRouter
+/// (MiniMax, some Gemini/Qwen deployments) send a plain OBJECT, and a few double-encode the
+/// string. The old `as_str().unwrap_or("{}")` silently turned every object-form call into `{}`,
+/// so the tool failed with "missing argument" while the model had, in fact, sent everything.
+pub fn normalize_tool_args(raw: &serde_json::Value) -> serde_json::Value {
+    match raw {
+        serde_json::Value::Object(_) | serde_json::Value::Array(_) => raw.clone(),
+        serde_json::Value::String(s) => {
+            let t = s.trim();
+            if t.is_empty() {
+                return serde_json::json!({});
+            }
+            match serde_json::from_str::<serde_json::Value>(t) {
+                // Double-encoded: a JSON string whose content is itself JSON.
+                Ok(serde_json::Value::String(inner)) => {
+                    serde_json::from_str(&inner).unwrap_or(serde_json::json!({}))
+                }
+                Ok(v) => v,
+                Err(_) => serde_json::json!({}),
+            }
+        }
+        _ => serde_json::json!({}),
+    }
+}
+
+#[cfg(test)]
+mod arg_norm_tests {
+    use super::normalize_tool_args;
+    use serde_json::json;
+
+    #[test]
+    fn accepts_every_shape_backends_actually_send() {
+        // spec form: JSON-encoded string
+        assert_eq!(normalize_tool_args(&json!("{\"path\":\"a.txt\"}")), json!({"path":"a.txt"}));
+        // object form (MiniMax & friends) - the shape that used to become {}
+        assert_eq!(normalize_tool_args(&json!({"path":"a.txt"})), json!({"path":"a.txt"}));
+        // double-encoded string
+        assert_eq!(
+            normalize_tool_args(&json!("\"{\\\"path\\\":\\\"a\\\"}\"")),
+            json!({"path":"a"})
+        );
+        // empty / null / garbage degrade to {} (never a crash)
+        assert_eq!(normalize_tool_args(&json!("")), json!({}));
+        assert_eq!(normalize_tool_args(&serde_json::Value::Null), json!({}));
+        assert_eq!(normalize_tool_args(&json!("not json")), json!({}));
+    }
+}
+
 /// Rough token estimate (~4 chars/token). Real providers return exact counts; this
 /// is for metering when they don't and for the offline mock.
 pub fn approx_tokens(text: &str) -> u32 {
@@ -946,12 +995,10 @@ mod http {
                     arr.iter()
                         .filter_map(|c| {
                             let f = &c["function"];
-                            let args = f["arguments"].as_str().unwrap_or("{}");
                             Some(ToolCall {
                                 id: c["id"].as_str().unwrap_or("").to_string(),
                                 name: f["name"].as_str()?.to_string(),
-                                arguments: serde_json::from_str(args)
-                                    .unwrap_or(serde_json::json!({})),
+                                arguments: normalize_tool_args(&f["arguments"]),
                             })
                         })
                         .collect()

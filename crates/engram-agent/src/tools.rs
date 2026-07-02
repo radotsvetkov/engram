@@ -15,10 +15,33 @@ use serde_json::{json, Value};
 use crate::tool::{confine, Tool, ToolCtx};
 
 pub(crate) fn arg_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
-    args[key]
-        .as_str()
-        .ok_or_else(|| format!("missing string argument '{key}'"))
+    args[key].as_str().ok_or_else(|| {
+        // Name what WAS received - "missing 'path'" with no context made provider quirks
+        // (arguments arriving as {}) look like model stupidity and cost real debugging time.
+        let got: Vec<&str> = args
+            .as_object()
+            .map(|o| o.keys().map(String::as_str).collect())
+            .unwrap_or_default();
+        format!(
+            "missing string argument '{key}' (received keys: [{}])",
+            got.join(", ")
+        )
+    })
 }
+
+/// A string argument by canonical key, tolerating the aliases models actually emit
+/// ("path" vs "file"/"filename"/"file_path"; "content" vs "text"/"contents"/"body").
+pub(crate) fn arg_str_any<'a>(args: &'a Value, keys: &[&str]) -> Result<&'a str, String> {
+    for k in keys {
+        if let Some(s) = args[*k].as_str() {
+            return Ok(s);
+        }
+    }
+    arg_str(args, keys[0])
+}
+
+pub(crate) const PATH_KEYS: &[&str] = &["path", "file", "filename", "file_path"];
+pub(crate) const CONTENT_KEYS: &[&str] = &["content", "text", "contents", "body"];
 
 /// Reject non-public destinations (SSRF guard): only http(s), and never loopback,
 /// private, link-local (incl. the 169.254.169.254 cloud-metadata IP), or unspecified
@@ -923,7 +946,7 @@ impl Tool for ReadFileTool {
         true
     }
     async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
-        let path = confine(&ctx.workdir, arg_str(args, "path")?)?;
+        let path = confine(&ctx.workdir, arg_str_any(args, PATH_KEYS)?)?;
         let text = tokio::fs::read_to_string(&path)
             .await
             .map_err(|e| e.to_string())?;
@@ -980,7 +1003,7 @@ impl Tool for WriteFileTool {
         if !ctx.policy.allow_write {
             return Err("file writing is disabled".into());
         }
-        let path = confine(&ctx.workdir, arg_str(args, "path")?)?;
+        let path = confine(&ctx.workdir, arg_str_any(args, PATH_KEYS)?)?;
         // Accept common synonyms a model might use for the body, and give a clear, recoverable error
         // (the old one fired even when the model DID send content under a different key, or when a
         // huge value got truncated — and the model just retried the same broken call until stopped).
@@ -1070,7 +1093,7 @@ impl Tool for EditFileTool {
         if !ctx.policy.allow_write {
             return Err("file writing is disabled".into());
         }
-        let rel = arg_str(args, "path")?;
+        let rel = arg_str_any(args, PATH_KEYS)?;
         let path = confine(&ctx.workdir, rel)?;
         let old = arg_str(args, "old")?;
         let new = args["new"].as_str().unwrap_or("");
@@ -1222,8 +1245,8 @@ impl Tool for AppendFileTool {
         if !ctx.policy.allow_write {
             return Err("file writing is disabled".into());
         }
-        let path = confine(&ctx.workdir, arg_str(args, "path")?)?;
-        let content = arg_str(args, "content")?;
+        let path = confine(&ctx.workdir, arg_str_any(args, PATH_KEYS)?)?;
+        let content = arg_str_any(args, CONTENT_KEYS)?;
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent)
                 .await
@@ -1272,7 +1295,7 @@ impl Tool for MakeDirTool {
         if !ctx.policy.allow_write {
             return Err("file writing is disabled".into());
         }
-        let path = confine(&ctx.workdir, arg_str(args, "path")?)?;
+        let path = confine(&ctx.workdir, arg_str_any(args, PATH_KEYS)?)?;
         tokio::fs::create_dir_all(&path)
             .await
             .map_err(|e| e.to_string())?;
@@ -1281,7 +1304,7 @@ impl Tool for MakeDirTool {
             "agent",
             json!({ "path": path.to_string_lossy() }),
         );
-        Ok(format!("created {}", arg_str(args, "path")?))
+        Ok(format!("created {}", arg_str_any(args, PATH_KEYS)?))
     }
 }
 
@@ -1394,7 +1417,7 @@ impl Tool for DeleteFileTool {
         if !ctx.policy.allow_write {
             return Err("file writing is disabled".into());
         }
-        let path = confine(&ctx.workdir, arg_str(args, "path")?)?;
+        let path = confine(&ctx.workdir, arg_str_any(args, PATH_KEYS)?)?;
         if path == ctx.workdir {
             return Err("refusing to delete the working directory itself".into());
         }
@@ -1415,7 +1438,7 @@ impl Tool for DeleteFileTool {
             "agent",
             json!({ "path": path.to_string_lossy() }),
         );
-        Ok(format!("deleted {}", arg_str(args, "path")?))
+        Ok(format!("deleted {}", arg_str_any(args, PATH_KEYS)?))
     }
 }
 
@@ -1855,7 +1878,7 @@ impl Tool for VisionAnalyzeTool {
         true
     }
     async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
-        let path = confine(&ctx.workdir, arg_str(args, "path")?)?;
+        let path = confine(&ctx.workdir, arg_str_any(args, PATH_KEYS)?)?;
         let question = arg_str(args, "question")?;
         let bytes = tokio::fs::read(&path).await.map_err(|e| e.to_string())?;
         let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
@@ -1895,7 +1918,7 @@ impl Tool for ImageGenerateTool {
     }
     async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
         let prompt = arg_str(args, "prompt")?;
-        let path = confine(&ctx.workdir, arg_str(args, "path")?)?;
+        let path = confine(&ctx.workdir, arg_str_any(args, PATH_KEYS)?)?;
         let bytes = ctx
             .gateway
             .generate_image(prompt, "agent")
@@ -1932,7 +1955,7 @@ impl Tool for TextToSpeechTool {
     }
     async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
         let text = arg_str(args, "text")?;
-        let path = confine(&ctx.workdir, arg_str(args, "path")?)?;
+        let path = confine(&ctx.workdir, arg_str_any(args, PATH_KEYS)?)?;
         let voice = args["voice"].as_str().unwrap_or("alloy");
         let bytes = ctx
             .gateway
@@ -1974,7 +1997,7 @@ impl Tool for TranscribeTool {
         true
     }
     async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
-        let path = confine(&ctx.workdir, arg_str(args, "path")?)?;
+        let path = confine(&ctx.workdir, arg_str_any(args, PATH_KEYS)?)?;
         let format = args["format"]
             .as_str()
             .map(String::from)

@@ -166,6 +166,7 @@
     color:var(--text-secondary); cursor:pointer; opacity:0; transition:opacity var(--dur-2) var(--ease-out), background var(--dur-1), color var(--dur-1), border-color var(--dur-1); }
   .card:hover .card-run, .card-run:focus-visible { opacity:1; }
   .card-run:hover { background:var(--accent); color:var(--accent-ink); border-color:transparent; }
+  .card-run.card-stop:hover { background:var(--danger); color:#fff; }
   .card-run svg { width:13px; height:13px; margin-left:1px; }
   .col[data-col="doing"] .card::before { background:var(--accent); }
   .col[data-col="done"] .card::before { background:var(--text-muted); opacity:.5; }
@@ -415,8 +416,11 @@
   .ses-busy { width:7px; height:7px; flex:none; border-radius:50%; background:#45c8a8; box-shadow:0 0 6px #45c8a8; animation:ct-blink 1s ease-in-out infinite; margin-right:1px; }
   /* Pin the composer: never let it shrink or scroll away when the feed fills. */
   .chat > .composer { flex:0 0 auto; }
-  .msg.user { align-self:flex-end; background:var(--surface-2); border:1px solid var(--border); border-radius:13px 13px 4px 13px; padding:10px 14px; max-width:78%; line-height:1.5; white-space:pre-wrap; }
-  .msg.engram { font-family:var(--sans); font-size:14.5px; line-height:1.65; max-width:72ch; color:var(--text-primary); }
+  /* One reading size for the whole thread (user + assistant); long unbroken strings (URLs,
+     hashes, file paths) wrap instead of overflowing the bubble/column. */
+  .msg.user { align-self:flex-end; background:var(--surface-2); border:1px solid var(--border); border-radius:13px 13px 4px 13px; padding:10px 14px; max-width:78%; font-size:14.5px; line-height:1.55; white-space:pre-wrap; overflow-wrap:anywhere; }
+  .msg.engram { font-family:var(--sans); font-size:14.5px; line-height:1.65; max-width:72ch; color:var(--text-primary); overflow-wrap:anywhere; }
+  .msg.engram del { color:var(--text-muted); }
   /* rendered markdown in replies */
   .msg.engram > :first-child { margin-top:0; } .msg.engram > :last-child { margin-bottom:0; }
   .msg.engram p { margin:0 0 11px; }
@@ -425,7 +429,7 @@
   .msg.engram .md-list { margin:0 0 11px; padding-left:22px; } .msg.engram .md-list li { margin:3px 0; }
   .msg.engram blockquote { margin:0 0 11px; padding:2px 0 2px 14px; border-left:2px solid var(--accent); color:var(--text-secondary); }
   .msg.engram hr { border:none; border-top:1px solid var(--border); margin:16px 0; }
-  .msg.engram a { color:var(--web); text-decoration:none; border-bottom:1px solid rgba(133,183,235,.35); }
+  .msg.engram a { color:var(--web); text-decoration:none; border-bottom:1px solid color-mix(in srgb, var(--web) 35%, transparent); }
   .msg.engram a:hover { border-bottom-color:var(--web); }
   .msg.engram code.ic { font:12.5px var(--mono); background:var(--surface-2); border:1px solid var(--border); border-radius:5px; padding:1px 5px; }
   .msg.engram strong { font-weight:650; } .msg.engram em { font-style:italic; }
@@ -871,7 +875,8 @@
   .statusbar .sb-right { margin-left:auto; display:flex; align-items:center; gap:11px; }
   .statusbar .sb-clk { cursor:pointer; transition:color var(--dur-1) var(--ease-out); }
   .statusbar .sb-clk:hover { color:var(--text-primary); }
-  .statusbar .sb-run { display:inline-flex; align-items:center; gap:6px; cursor:pointer; color:var(--accent); border-color:color-mix(in srgb,var(--accent) 30%,transparent); }
+  /* .sb-center .chip (0,3,0) outranks .statusbar .sb-run - match its specificity so the accent wins. */
+  .statusbar .sb-center .chip.sb-run, .statusbar .sb-run { display:inline-flex; align-items:center; gap:6px; cursor:pointer; color:var(--accent); border-color:color-mix(in srgb,var(--accent) 30%,transparent); }
   .statusbar .sb-run .pulse { width:6px; height:6px; }
   .statusbar .dot { width:7px; height:7px; border-radius:50%; background:var(--text-muted); transition:background .5s, box-shadow .5s; }
   .statusbar .dot.awake { background:var(--accent); box-shadow:0 0 7px rgba(69,200,168,.55); }
@@ -907,7 +912,7 @@
   .pal-item { display:flex; align-items:center; gap:11px; padding:9px 12px; border-radius:8px; cursor:pointer; }
   .pal-item .pal-ic { width:16px; height:16px; color:var(--text-muted); flex:none; }
   .pal-item .pal-ic svg { width:16px; height:16px; }
-  .pal-item .pal-t { flex:1; color:var(--text-primary); font-size:13px; }
+  .pal-item .pal-t { flex:1; color:var(--text-primary); font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; }
   .pal-item .pal-sub { font-size:11px; color:var(--text-muted); }
   .pal-item .pal-key { font:11px var(--mono); color:var(--text-muted); background:var(--surface-2); border:1px solid var(--border); border-radius:4px; padding:1px 6px; }
   .pal-item.sel { background:var(--surface-2); }
@@ -1005,7 +1010,9 @@
     border-radius:999px; padding:8px 15px; font-size:13px; cursor:pointer; transition:border-color var(--dur-1) var(--ease-out), color var(--dur-1), background var(--dur-1); }
   .chat-welcome .cw-chips button:hover { border-color:var(--ring); color:var(--text-primary); background:var(--surface-2); }
   /* chat: composer model picker + recall ribbon */
-  .composer-top { display:flex; align-items:center; gap:8px; margin-bottom:7px; }
+  .composer-top { display:flex; align-items:center; gap:8px; margin-bottom:7px; flex-wrap:wrap; }
+  .composer-top .modelpick { min-width:0; }
+  .composer-top .modelpick .mp-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:38ch; }
   .modelpick { display:inline-flex; align-items:center; gap:7px; background:var(--surface-2); border:1px solid var(--border);
     color:var(--text-secondary); border-radius:9px; padding:5px 9px 5px 10px; font-size:12px; font-weight:500; cursor:pointer; line-height:1;
     transition:border-color var(--dur-1) var(--ease-out), color var(--dur-1), background var(--dur-1); }
@@ -1095,9 +1102,13 @@
   .md-doc a { color:var(--accent,#45c8a8); }
   /* finishing touches: calm focus rings, refined hovers, softer depth */
   * { -webkit-tap-highlight-color:transparent; }
+  /* Keyboard focus is visible EVERYWHERE: the old 8-selector allowlist left most controls (send,
+     attach, copy, skill actions, settings fields...) with no focus indicator at all. Mouse clicks
+     stay ring-free via :focus-visible. */
   :focus { outline:none; }
+  :focus-visible { outline:2px solid var(--ring); outline-offset:1px; }
   .nav a:focus-visible, .ses:focus-visible, .kbtn:focus-visible, .sbtn:focus-visible, .newchat:focus-visible,
-  .proj-btn:focus-visible, .modelpick:focus-visible, .pal-item:focus-visible, .cc-cat:focus-visible { box-shadow:0 0 0 2px var(--ring); }
+  .proj-btn:focus-visible, .modelpick:focus-visible, .pal-item:focus-visible, .cc-cat:focus-visible { box-shadow:0 0 0 2px var(--ring); outline:none; }
   .kbtn:hover, .modelpick:hover, .proj-btn:hover, .newchat:hover { background:var(--active); }
   .palette .pal-box, .cc .cc-box { box-shadow:var(--e4); }
   .overlay { background:rgba(5,6,8,.58); }
@@ -1428,6 +1439,10 @@
     --text-primary:#1a1c1f; --text-secondary:#4a4e56; --text-muted:#80858e;
     --hover:rgba(0,0,0,.04); --active:rgba(0,0,0,.07);
     --web-bg:#eaf2fb; --files-bg:#fdf4e3;
+    /* Semantic text colours darkened for light surfaces: the dark theme's pastels (#85b7eb links,
+       #e0a23c warnings) sit near 2:1 on white - unreadable at chat sizes. The accent itself is
+       remapped by applyEngramAppearance (its inline vars would override anything set here). */
+    --web:#2270c0; --warning:#8a5f00; --danger:#c03a31;
     --accent-soft:rgba(35,150,120,.12); --accent-ink:#0a3f34;
     /* Lighter elevation so cards don't carry heavy dark shadows on a light surface. */
     --e1:0 1px 2px rgba(0,0,0,.08), inset 0 1px 0 rgba(255,255,255,.6);
@@ -1439,11 +1454,19 @@
   /* The status bar paints a hardcoded dark gradient (not a var), so override it for light mode -
      otherwise the bottom strip stays black while the rest of the app is light. */
   html[data-engram-theme="light"] .statusbar { background:linear-gradient(#f4f5f7, #e7e9ec); }
-  /* Responsive: below 860px collapse the project sidebar so the work surface isn't crushed (the
-     rail nav stays). A drawer toggle is a follow-up; this keeps the app usable on a narrow window. */
+  /* Responsive: below 860px the chats sidebar collapses so the work surface isn't crushed — but on
+     Chat it's the ONLY list of conversations + the New-chat button, so a topbar toggle reopens it
+     as an overlay drawer. Without this, a narrow window stranded the user in one session. */
+  .sb-toggle { display:none; align-items:center; justify-content:center; width:30px; height:30px; border-radius:8px;
+    background:none; border:1px solid var(--border); color:var(--text-secondary); cursor:pointer; }
+  .sb-toggle:hover { background:var(--hover); color:var(--text-primary); }
+  .sb-toggle svg { width:15px; height:15px; }
   @media (max-width: 860px) {
     .app { grid-template-columns: 56px 1fr; }
     .sidebar { display: none; }
+    body:not(.no-sb) .sb-toggle { display:inline-flex; }   /* only where the sidebar has content (Chat) */
+    body.sb-drawer:not(.no-sb) .sidebar { display:flex; position:fixed; left:56px; top:0; bottom:28px; width:min(280px, 78vw);
+      z-index:48; background:var(--surface-1); border-right:1px solid var(--border-strong); box-shadow:var(--e3); }
   }
   @media (max-width: 620px) {
     .board { grid-template-columns: 1fr; }
@@ -1570,10 +1593,11 @@
   <div class="main">
     <div id="banner" aria-live="assertive"></div>
     <header class="topbar">
+      <button class="sb-toggle" id="sbToggle" onclick="event.stopPropagation();document.body.classList.toggle('sb-drawer')" title="Chats" aria-label="Show chats"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h10M4 18h16"/></svg></button>
       <span class="proj-top-wrap" id="projTopWrap"><button class="proj-top" id="projTop" onclick="projTopToggle(event)" title="Switch project — scopes chats, tasks, and memory"><span class="proj-dot"></span><span id="projTopName">…</span><span class="proj-caret">⌄</span></button></span>
       <h1 id="viewname">Tasks</h1>
       <div class="right">
-        <button class="kbtn" onclick="openPalette()" title="Command palette"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3-3"/></svg> <kbd>⌘K</kbd></button>
+        <button class="kbtn" onclick="openPalette()" title="Command palette (⌘K)" aria-label="Command palette"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3-3"/></svg> <kbd aria-hidden="true">⌘K</kbd></button>
         <button id="haltBtn" class="stopbtn" style="display:none" onclick="toggleHalt()" title="Emergency stop: halts every running task at its next step"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2.5"/></svg><span id="haltLabel">Stop</span></button>
       </div>
     </header>
@@ -1641,7 +1665,12 @@ function askInput(o){ o=o||{};
     document.body.appendChild(ov);
     const inp=ov.querySelector('#askInput'); setTimeout(()=>{ inp.focus(); inp.select(); },20);
     const done=v=>{ ov.remove(); document.removeEventListener('keydown',key,true); resolve(v); };
-    const key=e=>{ if(e.key==='Escape'){ e.preventDefault(); done(null); } else if(e.key==='Enter'){ e.preventDefault(); done(inp.value); } };
+    // Enter must respect FOCUS: a keyboard user who tabbed to Cancel and pressed Enter was getting
+    // the dialog CONFIRMED (the capture-phase handler ignored the focused button entirely).
+    const key=e=>{ if(e.key==='Escape'){ e.preventDefault(); done(null); }
+      else if(e.key==='Enter'){ e.preventDefault();
+        const b=document.activeElement&&document.activeElement.closest&&document.activeElement.closest('[data-act]');
+        done(b ? (b.dataset.act==='ok'?inp.value:null) : inp.value); } };
     document.addEventListener('keydown',key,true);
     ov.addEventListener('click',e=>{ if(e.target===ov) return done(null); const a=e.target.closest('[data-act]'); if(a) done(a.dataset.act==='ok'?inp.value:null); });
   });
@@ -1652,9 +1681,15 @@ function askConfirm(o){ o=o||{};
     ov.innerHTML=`<div class="ask-card"><div class="ask-title">${esc(o.title||'Are you sure?')}</div>${o.message?`<div class="ask-msg">${esc(o.message)}</div>`:''}
       <div class="ask-actions"><button class="ask-ghost" data-act="x">Cancel</button><button class="ask-ok ${o.danger?'danger':''}" data-act="ok">${esc(o.ok||'Confirm')}</button></div></div>`;
     document.body.appendChild(ov);
-    setTimeout(()=>ov.querySelector('[data-act="ok"]').focus(),20);
+    // Destructive dialogs default-focus CANCEL: auto-focusing OK meant a held/double Enter from
+    // the keystroke that OPENED the dialog could instantly confirm a deletion.
+    setTimeout(()=>ov.querySelector(o.danger?'[data-act="x"]':'[data-act="ok"]').focus(),20);
     const done=v=>{ ov.remove(); document.removeEventListener('keydown',key,true); resolve(v); };
-    const key=e=>{ if(e.key==='Escape'){ e.preventDefault(); done(false); } else if(e.key==='Enter'){ e.preventDefault(); done(true); } };
+    // Enter follows FOCUS (Tab to Cancel + Enter must cancel, not confirm-and-delete).
+    const key=e=>{ if(e.key==='Escape'){ e.preventDefault(); done(false); }
+      else if(e.key==='Enter'){ e.preventDefault();
+        const b=document.activeElement&&document.activeElement.closest&&document.activeElement.closest('[data-act]');
+        done(b ? b.dataset.act==='ok' : true); } };
     document.addEventListener('keydown',key,true);
     ov.addEventListener('click',e=>{ if(e.target===ov) return done(false); const a=e.target.closest('[data-act]'); if(a) done(a.dataset.act==='ok'); });
   });
@@ -1740,8 +1775,13 @@ function go(v){ if(typeof voiceCloseConversation==='function' && v!=='Chat') voi
 // scope visible (and switchable) everywhere, so leaving Chat never loses the project context.
 function projTopSync(){
   document.body.classList.toggle('no-sb', state.route!=='Chat');
+  if(state.route!=='Chat') document.body.classList.remove('sb-drawer');
   const n=document.getElementById('projTopName'); if(n) n.textContent=curProject().name;
 }
+// Click-away closes the narrow-width chats drawer (the sidebar overlays the feed there).
+document.addEventListener('click', e=>{
+  if(document.body.classList.contains('sb-drawer') && !e.target.closest('.sidebar,#sbToggle')) document.body.classList.remove('sb-drawer');
+});
 function projTopClose(){ const m=document.getElementById('projTopMenu'); if(m) m.remove(); }
 function projTopToggle(ev){
   if(ev) ev.stopPropagation();
@@ -1766,18 +1806,24 @@ async function poll(){
     const [v,m,h,pe] = await Promise.all([J('/v1/ledger/verify'),J('/v1/meter'),J('/health'),J('/v1/egress/pending').catch(()=>({pending:[]}))]);
     const lc=document.getElementById('ledgerChip'), spine=document.getElementById('sbSpine');
     if(v.ok){
-      lc.className='chip ok'; lc.innerHTML='<span class="seal"></span>ledger verified · <b>'+v.entries+'</b>';
+      // Only write the aria-live region when the value CHANGED - rewriting identical innerHTML
+      // every 3s made screen readers announce "ledger verified" in a loop, forever.
+      const lcHtml='<span class="seal"></span>ledger verified · <b>'+v.entries+'</b>';
+      if(lc.innerHTML!==lcHtml){ lc.className='chip ok sb-clk'; lc.innerHTML=lcHtml; }
       // Unattended agents that staged an out-of-policy egress surface here for async approval.
       const np = (pe&&pe.pending)?pe.pending.length:0;
-      document.getElementById('banner').innerHTML = np>0
+      const bHtml = np>0
         ? `<div class="banner" role="alert" style="cursor:pointer;background:rgba(224,162,60,.12);border-color:rgba(224,162,60,.4);color:var(--warning)" onclick="openApprovals()">${np} egress action${np===1?'':'s'} awaiting your approval — click to review</div>`
         : '';
+      const bEl=document.getElementById('banner');
+      if(bEl.innerHTML!==bHtml) bEl.innerHTML=bHtml;   // role=alert: write only on change
       // a single teal breath when a new entry chains - confidence shown, never claimed
       if(_lastLedgerN!==null && v.entries!==_lastLedgerN && spine){ spine.classList.remove('flash'); void spine.offsetWidth; spine.classList.add('flash'); }
       _lastLedgerN=v.entries;
     } else { lc.className='chip bad'; lc.textContent='⚠ tamper detected';
       document.getElementById('banner').innerHTML='<div class="banner" role="alert">Tamper detected - the audit chain doesn\'t verify. Showing the last good state.</div>'; }
-    document.getElementById('costChip').textContent='$'+(m.cost_usd||0).toFixed(4);
+    { const cc=document.getElementById('costChip'), t='$'+(m.cost_usd||0).toFixed(4);
+      if(cc.textContent!==t) cc.textContent=t; }   // aria-live: write only on change
     const wasOffline=state.offline; state.offline = !!h.offline;
     // The offline banner is baked into a view at render time, so re-render when it flips - but
     // not while the user is typing in the composer.
@@ -1812,8 +1858,12 @@ function card(t){
   const agentBadge = t.agent ? `<span class="card-agent" title="runs as this agent">◇ ${esc((AGENTS.find(a=>a.id===t.agent)||{}).name||'agent')}</span>` : '';
   // Failed/stopped tasks live in the same 'Finished' column as done ones (STATUS_COLS maps
   // failed→done); a distinct class keeps them visually separable from healthy completions.
-  // A one-click Run affordance right on the card - opening the panel first was a hidden extra step.
-  const runBtn = t.status==='todo' ? `<button class="card-run" title="Run now" aria-label="Run this task now" onclick="event.stopPropagation();runWithReview('${t.id}')"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M8 5.5v13l11-6.5z"/></svg></button>` : '';
+  // One-click Run on queued cards; one-click Stop on running ones (the panel has both too).
+  const runBtn = t.status==='todo'
+    ? `<button class="card-run" title="Run now" aria-label="Run this task now" onclick="event.stopPropagation();runWithReview('${t.id}')"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M8 5.5v13l11-6.5z"/></svg></button>`
+    : running
+    ? `<button class="card-run card-stop" title="Stop this task at its next step (signed)" aria-label="Stop this task" onclick="event.stopPropagation();stopTask('${t.id}')"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="7" y="7" width="10" height="10" rx="2"/></svg></button>`
+    : '';
   return `<div class="card ${running?'running':''}${t.status==='failed'?' failed':''}" data-id="${t.id}"
      role="button" tabindex="0" aria-label="${escAttr(t.title)}"
      onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openTask('${t.id}')}">
@@ -1888,10 +1938,14 @@ function wireComposer(){
   c.addEventListener('keydown',e=>{
     if(typeof slashKeydown==='function' && slashKeydown(e)) return;   // slash menu owns nav keys when open
     if(e.key!=='Enter' || e.isComposing) return;   // let IME composition finish
-    if(e.shiftKey) return;                          // Shift+Enter = newline
+    if(e.shiftKey && !(e.metaKey||e.ctrlKey)) return;   // Shift+Enter = newline; ⇧⌘↵ falls through
     e.preventDefault();
     if(typeof slashTrySubmit==='function' && slashTrySubmit()) return;  // '/cmd <arg>' + Enter runs the command
-    if(ctx==='chat'){ if(e.metaKey||e.ctrlKey) submitComposer(false); else converseInline(c.value); }
+    if(ctx==='chat'){
+      if((e.metaKey||e.ctrlKey)&&e.shiftKey) submitComposer(true);      // ⇧⌘↵ create & run as a task
+      else if(e.metaKey||e.ctrlKey) submitComposer(false);              // ⌘↵ create a task
+      else converseInline(c.value);
+    }
     else { if(e.metaKey||e.ctrlKey) submitComposer(true); else submitComposer(false); }
   });
 }
@@ -2163,28 +2217,31 @@ async function openTask(id, fromPoll){
       html+=`<div class="handoff-trail"><div class="ht-lbl">hand-off trail · signed</div>${t.handoffs.map(h=>`<div class="ht-row"><span class="ht-from">${esc(h.from||'Default')}</span><span class="ht-arr">→</span><span class="ht-to">${esc(h.to)}</span>${h.note?`<div class="ht-note">${esc(h.note)}</div>`:''}</div>`).join('')}</div>`;
     }
   }
-  if(t.status==='todo') html+=`<div class="row"><button onclick="runWithReview('${id}')">Run now</button><button class="ghost" onclick="previewTask('${id}')" title="see what the agent would do - nothing is executed">Preview</button></div><div id="previewOut" class="sub"></div>`;
+  if(t.status==='todo') html+=`<div class="row"><button onclick="runWithReview('${id}')">Run now</button><button class="ghost" onclick="previewTask('${id}')" title="see what the agent would do - nothing is executed">Preview</button><span style="flex:1"></span><button class="ghost" onclick="panelMove('${id}','done')" title="File it under Finished without running">Mark finished</button></div><div id="previewOut" class="sub"></div>`;
+  if(t.status==='doing') html+=`<div class="row"><button onclick="stopTask('${id}')" style="background:var(--surface-2);color:var(--danger)" title="Halts THIS task at its next step - other runs keep going. The halt is signed.">■ Stop this task</button></div>`;
+  if((t.status==='done'||t.status==='failed')) html+=`<div class="row"><button class="ghost" onclick="panelMove('${id}','todo')" title="Move back to To-do so it can run again">↺ Reopen</button></div>`;
   if(t.run){
     const denied=(t.run.steps||[]).find(s=>!s.ok && /shell/i.test(s.tool) && /disabled|refused/i.test(s.observation));
     if(denied){
+      // Honest copy: this flips the PERSISTENT allow_shell policy, not a one-run grant - say so.
       html+=`<div class="approval"><b>Wants to run shell</b>
-        <div class="sub">Runs a command in the work folder · writes nothing outside it</div>
-        <div class="row" style="margin-top:8px"><button onclick="approveShell('${id}')">Allow &amp; re-run</button>
-          <button class="ghost" onclick="closePanel()">Skip</button></div></div>`;
+        <div class="sub">Runs commands in the work folder · writes nothing outside it. Allowing turns the shell tool on for <b>all future runs</b> - you can turn it off any time in Settings → Tools.</div>
+        <div class="row" style="margin-top:8px"><button onclick="approveShell('${id}')">Enable shell &amp; re-run</button>
+          <button class="ghost" onclick="closePanel()" title="Decide later - nothing is recorded">Not now</button></div></div>`;
     }
     // Egress de-escalation: the run hit the trifecta guard (read untrusted content + holds private
     // data, so an outbound action was refused) OR the agent explicitly asked. One-time approval
     // re-runs with egress permitted for THIS run only — never persisted.
     const egressBlocked=(t.run.steps||[]).find(s=>!s.ok && /egress refused/i.test(s.observation||''));
     const wantsApproval=[...(t.run.steps||[])].reverse().find(s=>s.tool==='request_approval');
-    if(egressBlocked||wantsApproval){
+    if((egressBlocked||wantsApproval) && !_egressDenied.has(id+':'+(t.run.ledger_head_hash||''))){
       const a=(wantsApproval&&wantsApproval.args)||{};
       const what=a.action?esc(String(a.action)):'Send data out / take an external action';
       const why=a.reason?esc(String(a.reason)):'This run read untrusted content while holding private data, so the trifecta guard blocked the outbound action. Approve to allow it once.';
       html+=`<div class="approval"><b>Needs your approval</b>
         <div style="margin:4px 0">${what}</div><div class="sub">${why}</div>
         <div class="row" style="margin-top:8px"><button onclick="approveEgress('${id}')">Approve once &amp; continue</button>
-          <button class="ghost" onclick="closePanel()">Deny</button></div></div>`;
+          <button class="ghost" onclick="denyTaskEgress('${id}', ${escAttr(JSON.stringify(String(a.action||'egress')))})" title="Records a signed denial in the ledger">Deny</button></div></div>`;
     }
     // Clarification: the agent asked a focused question and stopped rather than guess. Surface it.
     const askStep=[...(t.run.steps||[])].reverse().find(s=>s.tool==='clarify');
@@ -2265,7 +2322,29 @@ function closePanel(){ panelId=null; document.getElementById('panel').classList.
 async function delTask(id){ await fetch('/v1/tasks/'+id,{method:'DELETE', headers:AUTH}); closePanel(); await loadTasks(); renderBoard(); }
 async function approveShell(id){
   await J('/v1/policy',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({allow_shell:true})});
-  runTask(id);
+  notify('Shell enabled for all future runs · signed - turn off in Settings → Tools','ok');
+  runTaskLive(id);   // stream the approved run live, like the egress path
+}
+// Halt ONE task at its next step boundary (the daemon registers per-run halt flags keyed by task
+// id) - the global Emergency Stop used to be the only way, and it killed everything.
+async function stopTask(id){
+  try{ await J('/v1/halt',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({session:id,on:true})});
+    notify('Stopping at the next step · signed','ok');
+  }catch(e){ notify('Couldn\'t stop - '+((e&&e.message)||'try again')); }
+}
+// Keyboard-reachable status moves from the panel (drag was the only way to file/reopen a card).
+async function panelMove(id,key){ await moveTask(id,key); openTask(id,true); }
+// A signed denial: records egress.denied in the ledger (same endpoint as the async approvals
+// queue) and stops re-surfacing the banner for this run. "Deny" that only closed the panel was
+// theater - the request stayed pending and reappeared.
+const _egressDenied=new Set();
+async function denyTaskEgress(id, what){
+  const t=state.tasks.find(x=>x.id===id);
+  try{ await J('/v1/egress/deny',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({scope:'task:'+id, dest:String(what||'egress')})}); }
+  catch(e){ notify('Couldn\'t record the denial - '+((e&&e.message)||'try again')); return; }
+  _egressDenied.add(id+':'+((t&&t.run&&t.run.ledger_head_hash)||''));
+  notify('Denied · signed to the ledger','ok');
+  openTask(id,true);
 }
 // One-time egress approval: re-run the task with the trifecta egress guard de-escalated for THIS run
 // only (no persistent policy change). Streams live so the user watches the approved action proceed.
@@ -2291,6 +2370,7 @@ async function newSession(open){
   }catch(e){ notify('Couldn\'t start a chat - '+e.message); return null; }
 }
 async function openSession(id){
+  document.body.classList.remove('sb-drawer');   // picking a chat closes the narrow-width drawer
   WS.activeSession=id;
   if(!WS.byId[id]){ try{ WS.byId[id]=await J('/v1/sessions/'+encodeURIComponent(id)); }catch(_){ WS.byId[id]={id,messages:[]}; } }
   renderSidebar(); if(state.route!=='Chat') go('Chat'); else renderChat();
@@ -2380,7 +2460,7 @@ function renderSidebar(){
   const el=document.getElementById('sidebar'); if(!el) return;
   if(typeof projTopSync==='function') projTopSync();
   const sess=curSessions(), favs=sess.filter(s=>s.fav), rest=sess.filter(s=>!s.fav);
-  const row=s=>`<div class="ses ${s.id===WS.activeSession?'active':''}" onclick="openSession('${s.id}')" title="${escAttr(s.title)}">
+  const row=s=>`<div class="ses ${s.id===WS.activeSession?'active':''}" role="button" tabindex="0" onclick="openSession('${s.id}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openSession('${s.id}')}" title="${escAttr(s.title)}">
     ${_busySessions.has(s.id)?'<span class="ses-busy" title="Working…"></span>':''}<span class="ses-t">${esc(s.title||'New chat')}</span>${s.updated_ms?`<span class="ses-when">${fmtAgo(s.updated_ms)}</span>`:''}<span class="ses-actions">
       <button class="${s.fav?'star':''}" title="${s.fav?'Unfavorite':'Favorite'}" onclick="favSession('${s.id}',event)">${s.fav?'★':'☆'}</button>
       <button title="Rename" onclick="renameSession('${s.id}',event)">✎</button>
@@ -2415,6 +2495,10 @@ async function renderChat(){
   if(cv){ c.value=cv; c.style.height='auto'; c.style.height=Math.min(c.scrollHeight,180)+'px'; }
   if(wasFocused){ c.focus(); try{ c.setSelectionRange(selS??c.value.length, selE??c.value.length); }catch(_){} }
   wireComposer(); paintFeed();
+  // The composer is freshly built as the idle Send button - if this session has a run in flight
+  // (navigated away and back mid-run), restore the Stop affordance + busy hint, or an empty-Enter
+  // "nudge" silently kills the run the UI just said would send.
+  refreshSendBtn();
 }
 // ---- markdown + code rendering for replies ----
 // Engram's replies are model output, so they're untrusted: we escape EVERYTHING first, then
@@ -2477,21 +2561,38 @@ function mdInline(t){ // t is already escaped
   t = t
     .replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')
     .replace(/(^|[^*])\*([^*\n]+)\*/g,'$1<em>$2</em>')
+    .replace(/~~([^~\n]+)~~/g,'<del>$1</del>')
     .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g,(m,txt,url)=>`<a href="${url.replace(/"/g,'%22').replace(/'/g,'%27')}" target="_blank" rel="noopener">${txt}</a>`);
   return t.replace(new RegExp(S+'(\\d+)'+S,'g'),(m,i)=>`<code class="ic">${codes[+i]}</code>`);
 }
 function mdToHtml(raw){
   const blocks=[];
-  const text=String(raw).replace(/```([\w+#-]*)\n?([\s\S]*?)```/g,(m,lang,code)=>{ blocks.push(codeBlock(code.replace(/\n$/,''),lang)); return ` B${blocks.length-1} `; });
+  // Close a trailing OPEN fence so streaming code renders as a live code block from the first
+  // token, instead of flashing as raw escaped markdown until the closing fence arrives.
+  let src=String(raw);
+  if((((src.match(/```/g)||[]).length) & 1) === 1) src+='\n```';
+  // An INDENTED fence (under a list item - the most common model output) used to leave leading
+  // spaces before the placeholder, failing the exact-match re-insert: the whole code block
+  // vanished and a literal "B0" rendered (esc() strips the NUL sentinels). The \n padding puts
+  // every placeholder on its own line, the matcher tolerates whitespace, the capture is dedented.
+  const text=src.replace(/```([\w+#-]*)[^\S\n]*\n?([\s\S]*?)```/g,(m,lang,code)=>{
+    code=code.replace(/\n$/,'');
+    const pads=code.split('\n').filter(l=>l.trim()).map(l=>l.match(/^[ \t]*/)[0].length);
+    const ind=pads.length?Math.min.apply(null,pads):0;
+    if(ind>0) code=code.split('\n').map(l=>l.slice(ind)).join('\n');
+    blocks.push(codeBlock(code,lang));
+    return `\n\x00B${blocks.length-1}\x00\n`;
+  });
   const lines=text.split('\n'); const out=[]; let i=0;
   // GFM table helpers: a header row, a |---|:--:|---| separator, then body rows.
   const tIsSep=l=>/^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$/.test(l);
   const tIsRow=l=>/\|/.test(l)&&/\S/.test(l);
   const tCells=l=>l.replace(/^\s*\|/,'').replace(/\|\s*$/,'').split('|').map(c=>c.trim());
-  const isBlock=l=>/^\s*$/.test(l)||/^ B\d+ $/.test(l)||/^#{1,4}\s/.test(l)||/^\s*([-*]|\d+\.)\s+/.test(l)||/^\s*>\s?/.test(l)||/^---+\s*$/.test(l)||tIsRow(l);
+  const BRE=/^\s*\x00B(\d+)\x00\s*$/;
+  const isBlock=l=>/^\s*$/.test(l)||BRE.test(l)||/^#{1,6}\s/.test(l)||/^\s*([-*]|\d+\.)\s+/.test(l)||/^\s*>\s?/.test(l)||/^---+\s*$/.test(l)||tIsRow(l);
   while(i<lines.length){
     const ln=lines[i];
-    const bm=ln.match(/^ B(\d+) $/); if(bm){ out.push(blocks[+bm[1]]); i++; continue; }
+    const bm=ln.match(BRE); if(bm){ out.push(blocks[+bm[1]]); i++; continue; }
     if(/^\s*$/.test(ln)){ i++; continue; }
     if(tIsRow(ln)&&i+1<lines.length&&tIsSep(lines[i+1])){
       const head=tCells(ln), sep=tCells(lines[i+1]);
@@ -2503,15 +2604,49 @@ function mdToHtml(raw){
       out.push(`<div class="md-table-wrap"><table class="md-table"><thead><tr>${th}</tr></thead><tbody>${tb}</tbody></table></div>`);
       continue;
     }
-    const hm=ln.match(/^(#{1,4})\s+(.*)$/); if(hm){ out.push(`<div class="md-h md-h${hm[1].length}">${mdInline(esc(hm[2]))}</div>`); i++; continue; }
+    const hm=ln.match(/^(#{1,6})\s+(.*)$/); if(hm){ out.push(`<div class="md-h md-h${Math.min(4,hm[1].length)}">${mdInline(esc(hm[2]))}</div>`); i++; continue; }
     if(/^---+\s*$/.test(ln)){ out.push('<hr>'); i++; continue; }
     if(/^\s*>\s?/.test(ln)){ const buf=[]; while(i<lines.length&&/^\s*>\s?/.test(lines[i])){ buf.push(mdInline(esc(lines[i].replace(/^\s*>\s?/,'')))); i++; } out.push(`<blockquote>${buf.join('<br>')}</blockquote>`); continue; }
-    if(/^\s*([-*]|\d+\.)\s+/.test(ln)){ const ol=/^\s*\d+\./.test(ln); const buf=[]; while(i<lines.length&&/^\s*([-*]|\d+\.)\s+/.test(lines[i])){ buf.push(`<li>${mdInline(esc(lines[i].replace(/^\s*([-*]|\d+\.)\s+/,'')))}</li>`); i++; } out.push(`<${ol?'ol':'ul'} class="md-list">${buf.join('')}</${ol?'ol':'ul'}>`); continue; }
+    if(/^\s*([-*]|\d+\.)\s+/.test(ln)){
+      // Real list semantics: nesting from marker indent, ordered/bulleted switches at the same
+      // depth close and reopen the list (no silent renumbering), and an indented continuation
+      // line folds into its item instead of ending the list as a stray paragraph.
+      const items=[];
+      while(i<lines.length){
+        const l=lines[i];
+        const m=l.match(/^([ \t]*)([-*]|\d+\.)\s+(.*)$/);
+        if(m){ items.push({ind:m[1].replace(/\t/g,'  ').length, ord:/^\d/.test(m[2]), text:m[3]}); i++; }
+        else if(items.length && /^[ \t]+\S/.test(l) && !isBlock(l)){ items[items.length-1].text+=' '+l.trim(); i++; }
+        else break;
+      }
+      let html=''; const stack=[], levels=[];
+      const open=o=>{ html+=`<${o?'ol':'ul'} class="md-list">`; stack.push(o); };
+      const close=()=>{ html+=`</${stack.pop()?'ol':'ul'}>`; };
+      for(const it of items){
+        if(!stack.length){ open(it.ord); levels.push(it.ind); }
+        else if(it.ind>levels[levels.length-1]+1){ open(it.ord); levels.push(it.ind); }
+        else {
+          while(levels.length>1 && it.ind<levels[levels.length-1]-1){ html+='</li>'; close(); levels.pop(); }
+          html+='</li>';
+          if(stack[stack.length-1]!==it.ord){ close(); open(it.ord); }
+        }
+        html+=`<li>${mdInline(esc(it.text))}`;
+      }
+      while(stack.length){ html+='</li>'; close(); }
+      out.push(html); continue;
+    }
     const buf=[]; while(i<lines.length&&!isBlock(lines[i])){ buf.push(mdInline(esc(lines[i]))); i++; } out.push(`<p>${buf.join('<br>')}</p>`);
   }
   return out.join('');
 }
 const thinkingDots='<span class="thinking"><i></i><i></i><i></i></span>';
+// Streaming render: the caret hugs the last character (inside the final <p>/<li>) instead of
+// dropping onto its own empty line below the text.
+function mdStream(text){
+  const h=mdToHtml(text||'');
+  const m=h.match(/<\/(p|li)>$/);
+  return m ? h.slice(0,-m[0].length)+'<span class="caret"></span>'+m[0] : h+'<span class="caret"></span>';
+}
 // A browser_screenshot step carries the saved image path in its args; render it inline so a task
 // that drives the browser SHOWS what it saw, right in the run trail / chat. Served workdir-confined.
 function stepShotHtml(s){
@@ -2559,25 +2694,8 @@ function paintFeed(toBottom=true){
       ? `<div class="ribbon"><span class="rb-lbl">grounded on ${refs.length}</span>${refs.slice(0,6).map(r=>{const reg=BRAIN_REGIONS[r.region]||BRAIN_REGIONS.semantic; const sc=r.scope_kind==='project'?'<span class="sc-tag sc-proj" title="scoped to this project — it won\'t surface in your other projects">project</span>':r.scope_kind==='session'?'<span class="sc-tag sc-sess" title="scoped to this chat session">session</span>':''; return `<span class="recall clk" style="--lc:${reg.color}" title="${escAttr(r.text)}" onclick="recallOpen(${r.id|0})"><span class="rg">◇</span> ${esc((r.text||'').replace(/\s+/g,' ').slice(0,48))}${sc}</span>`;}).join('')}</div>`
       : (m.recalled&&m.recalled.length)?`<div class="ribbon">${m.recalled.slice(0,5).map(r=>`<span class="recall" title="${escAttr(r)}"><span class="rg">◇</span> ${esc((r||'').replace(/\s+/g,' ').slice(0,54))}</span>`).join('')}</div>`:'';
     const learned=(m.learned&&m.learned.length)?`<div class="learned">learned about you · ${m.learned.map(esc).join(' · ')}</div>`:'';
-    // The agent's tool activity (browse/shell/files/vision...) - the glass box, shown above the
-    // answer with any screenshots inline. Empty for a plain conversational reply (no tools used).
-    const steps=(m.steps&&m.steps.length)?`<div class="chat-steps">${m.steps.map(st=>{
-      const lbl=CHAT_TOOL_LABEL[st.tool]||st.tool;
-      // A file the agent wrote/edited is clickable: open it in the right-side canvas (like Claude).
-      const fpath=(st.args&&(st.args.path||st.args.file))||'';
-      const openable=st.ok && fpath && ['write_file','edit_file','append_file'].includes(st.tool);
-      const clk=openable?` clk" data-open="1" onclick="artOpenFile(WS.activeSession, ${escAttr(JSON.stringify(fpath))})`:'';
-      // Surface a short summary of what the step actually returned, inline — so the trail reads as
-      // real progress ("✓ searched the web — Ryanair NRN→TNG €24…") instead of opaque tool names.
-      const obsFull=(st.observation||'').replace(/\s+/g,' ').trim();
-      const obsText=(!openable && obsFull) ? obsFull.slice(0,110) : '';
-      const chip=`<span class="cstep${st.ok?'':' bad'}${clk}" title="${escAttr(openable?('Open '+fpath):obsFull.slice(0,400))}"><span class="cs-ic">${st.ok?'✓':'✕'}</span>${esc(lbl)}${openable?'<span class="cs-open">↗</span>':''}${obsText?`<span class="cs-obs">— ${esc(obsText)}</span>`:''}</span>`;
-      return chip+stepShotHtml(st);
-    }).join('')}</div>`:'';
-    // The model's live "what I'm doing" commentary (narration) — shown above the tool chips so a
-    // long run reads as activity, not a silent wait.
-    const notes=(m.notes&&m.notes.length)?`<div class="chat-notes">${m.notes.map(n=>`<div class="cnote">${mdInline(esc(n))}</div>`).join('')}</div>`:'';
-    const body = m.text ? (mdToHtml(m.text) + (m.streaming?'<span class="caret"></span>':'')) : (m.streaming?'':'...');
+    const steps=turnStepsHtml(m), notes=turnNotesHtml(m);
+    const body = m.text ? (m.streaming ? mdStream(m.text) : mdToHtml(m.text)) : (m.streaming?'':'...');
     // The whole working trail (narration + steps) lives in ONE collapsible activity fold above the
     // answer: open + live-updating while the run is in flight, folded to a quiet summary line once
     // the answer lands. The spinning mark + seconds counter live in its header (sibling of the reply
@@ -2585,11 +2703,7 @@ function paintFeed(toBottom=true){
     const nSteps=(m.steps&&m.steps.length)||0, nNotes=(m.notes&&m.notes.length)||0;
     let act='';
     if(m.streaming){
-      const label = m.text ? 'Writing the answer' : (nSteps ? 'Working' : 'Thinking');
-      const t0 = m.t0 || Date.now();
-      const secs = Math.max(0,(Date.now()-t0)/1000|0);
-      const lastNote = nNotes ? (m.notes[nNotes-1]||'') : '';
-      act = `<div class="act-fold live open"><div class="af-head" id="thinkFoot"><span class="ct-mark">${CW_MARK}</span><span class="af-title ct-label">${label}</span><span class="ct-secs af-secs" data-t0="${t0}">${secs}s</span>${nSteps?`<span class="af-count">· ${nSteps} step${nSteps===1?'':'s'}</span>`:''}${(!nSteps&&!nNotes)?'':`<span class="af-now">${esc(lastNote.replace(/\s+/g,' ').slice(0,90))}</span>`}</div>${(nSteps||nNotes)?`<div class="af-body">${notes}${steps}</div>`:''}</div>`;
+      act = liveFoldHtml(m);
     } else if(nSteps||nNotes){
       // A failed step inside a run that still answered is a footnote, not a failure — the icon only
       // goes red when EVERY step failed (the run really went nowhere).
@@ -2611,9 +2725,56 @@ function paintFeed(toBottom=true){
   if(toBottom) f.scrollTop=f.scrollHeight;
   updateJumpBtn();
 }
-// A coalesced, sticky-bottom repaint for streaming step events: rebuild at most once per frame, and
-// only auto-scroll if the reader is already near the bottom — so a long multi-step run no longer
-// yanks the view up/down on every tool step (the "jumpy/klinky" chat).
+// The agent's tool activity (browse/shell/files/vision...) - the glass box chips, with any
+// screenshots inline. Empty for a plain conversational reply (no tools used).
+function turnStepsHtml(m){
+  if(!(m.steps&&m.steps.length)) return '';
+  return `<div class="chat-steps">${m.steps.map(st=>{
+    const lbl=CHAT_TOOL_LABEL[st.tool]||st.tool;
+    // A file the agent wrote/edited is clickable: open it in the right-side canvas (like Claude).
+    const fpath=(st.args&&(st.args.path||st.args.file))||'';
+    const openable=st.ok && fpath && ['write_file','edit_file','append_file'].includes(st.tool);
+    const clk=openable?` clk" data-open="1" onclick="artOpenFile(WS.activeSession, ${escAttr(JSON.stringify(fpath))})`:'';
+    // Surface a short summary of what the step actually returned, inline — so the trail reads as
+    // real progress ("✓ searched the web — Ryanair NRN→TNG €24…") instead of opaque tool names.
+    const obsFull=(st.observation||'').replace(/\s+/g,' ').trim();
+    const obsText=(!openable && obsFull) ? obsFull.slice(0,110) : '';
+    const chip=`<span class="cstep${st.ok?'':' bad'}${clk}" title="${escAttr(openable?('Open '+fpath):obsFull.slice(0,400))}"><span class="cs-ic">${st.ok?'✓':'✕'}</span>${esc(lbl)}${openable?'<span class="cs-open">↗</span>':''}${obsText?`<span class="cs-obs">— ${esc(obsText)}</span>`:''}</span>`;
+    return chip+stepShotHtml(st);
+  }).join('')}</div>`;
+}
+// The model's live "what I'm doing" commentary (narration) — shown above the tool chips so a
+// long run reads as activity, not a silent wait.
+function turnNotesHtml(m){
+  return (m.notes&&m.notes.length)?`<div class="chat-notes">${m.notes.map(n=>`<div class="cnote">${mdInline(esc(n))}</div>`).join('')}</div>`:'';
+}
+// The LIVE activity fold (id=liveFold) - rendered by paintFeed while a run streams, and surgically
+// replaced by liveFoldTick on each step/narration so the rest of the feed keeps DOM identity.
+function liveFoldHtml(m){
+  const nSteps=(m.steps&&m.steps.length)||0, nNotes=(m.notes&&m.notes.length)||0;
+  const label = m.text ? 'Writing the answer' : (nSteps ? 'Working' : 'Thinking');
+  const t0 = m.t0 || Date.now();
+  const secs = Math.max(0,(Date.now()-t0)/1000|0);
+  const lastNote = nNotes ? (m.notes[nNotes-1]||'') : '';
+  return `<div class="act-fold live open" id="liveFold"><div class="af-head" id="thinkFoot"><span class="ct-mark">${CW_MARK}</span><span class="af-title ct-label">${label}</span><span class="ct-secs af-secs" data-t0="${t0}">${secs}s</span>${nSteps?`<span class="af-count">· ${nSteps} step${nSteps===1?'':'s'}</span>`:''}${(!nSteps&&!nNotes)?'':`<span class="af-now">${esc(lastNote.replace(/\s+/g,' ').slice(0,90))}</span>`}</div>${(nSteps||nNotes)?`<div class="af-body">${turnNotesHtml(m)}${turnStepsHtml(m)}</div>`:''}</div>`;
+}
+// Surgical repaint for step/narration events: rebuilding the entire feed per tool step destroyed
+// the reader's text selection and hover state in every prior turn. Only the live fold changes.
+let _foldRAF=0;
+function liveFoldTick(msg){
+  if(_foldRAF) return;
+  _foldRAF=requestAnimationFrame(()=>{
+    _foldRAF=0;
+    if(!msg.streaming) return;                       // the final full paint already ran
+    const fold=document.getElementById('liveFold');
+    if(!fold){ paintFeedSticky(); return; }          // structure changed (switch/first paint) -> full
+    fold.outerHTML=liveFoldHtml(msg);
+    const f=document.getElementById('feed');
+    if(f && (f.scrollHeight - f.scrollTop - f.clientHeight) < 160) f.scrollTop=f.scrollHeight;
+  });
+}
+// A coalesced, sticky-bottom repaint for structural streaming moments: rebuild at most once per
+// frame, and only auto-scroll if the reader is already near the bottom.
 let _feedRAF=0;
 function paintFeedSticky(){
   if(_feedRAF) return;
@@ -2639,7 +2800,7 @@ function streamTick(msg){
     // Sticky bottom: only auto-scroll when the reader is already near the end, so a long reply
     // doesn't yank them back down while they've scrolled up to read.
     const stick = !f || (f.scrollHeight - f.scrollTop - f.clientHeight) < 160;
-    el.innerHTML = mdToHtml(msg.text||'') + '<span class="caret"></span>';
+    el.innerHTML = mdStream(msg.text||'');
     // The run footer is a sibling of #streamMsg so it survives token repaints; just keep its label
     // current as the answer starts streaming (its seconds tick independently via tickThinking).
     if(msg.text){ const lb=document.querySelector('#thinkFoot .ct-label'); if(lb) lb.textContent='Writing the answer'; }
@@ -2647,9 +2808,13 @@ function streamTick(msg){
     updateJumpBtn();
   });
 }
-async function chatSay(text, attachments){
+async function chatSay(text, attachments, sidOverride){
   attachments = Array.isArray(attachments) ? attachments : [];
-  let sid=WS.activeSession, sess=WS.byId[sid];
+  // sidOverride pins the message to the conversation it was WRITTEN for (queued follow-ups): the
+  // user may have switched chats or projects by the time the queue drains, and resolving the
+  // session at drain time posted the follow-up into the wrong thread - with the wrong project's
+  // memory scope and workdir.
+  let sid=sidOverride||WS.activeSession, sess=WS.byId[sid];
   if(!sess){
     if(sid){
       // The active session's thread just isn't cached (a transient fetch failure). Re-hydrate it
@@ -2669,10 +2834,10 @@ async function chatSay(text, attachments){
   if(!sess.messages) sess.messages=[];
   sess.messages.push({role:'user',text,ts:Date.now()});
   const meta=WS.sessions.find(x=>x.id===sid);
-  if(meta && (!meta.title || meta.title==='New chat')){ meta.title=text.replace(/\s+/g,' ').slice(0,42); if(state.route==='Chat') document.getElementById('viewname').textContent=meta.title; }
+  if(meta && (!meta.title || meta.title==='New chat')){ meta.title=text.replace(/\s+/g,' ').slice(0,42); if(state.route==='Chat' && WS.activeSession===sid) document.getElementById('viewname').textContent=meta.title; }
   if(meta){ WS.sessions=[meta, ...WS.sessions.filter(x=>x.id!==sid)]; }   // bump to top
   _busySessions.add(sid); renderSidebar();
-  const msg={role:'engram',text:'',streaming:true,t0:Date.now(),ts:Date.now(),model:(CFG&&CFG.model_in_use)||''}; sess.messages.push(msg); paintFeed();
+  const msg={role:'engram',text:'',streaming:true,t0:Date.now(),ts:Date.now(),model:(CFG&&CFG.model_in_use)||''}; sess.messages.push(msg); if(WS.activeSession===sid) paintFeed();
   const ac=new AbortController(); _chatAborts.set(sid, ac); refreshSendBtn();
   try {
     const r = await fetch('/v1/converse/stream',{method:'POST',headers:{...AUTH,'content-type':'application/json'},body:JSON.stringify({text, session:sid, attachments}), signal:ac.signal});
@@ -2693,8 +2858,8 @@ async function chatSay(text, attachments){
         // is still on screen (so a mid-stream switch doesn't render into the wrong feed).
         const live = WS.activeSession===sid;
         if(ev==='token'){ msg.text+=data; if(live) streamTick(msg); }
-        else if(ev==='step'){ try{ const d=JSON.parse(data); (msg.steps=msg.steps||[]).push(d); if(live) paintFeedSticky(); }catch(_){} }
-        else if(ev==='narration'){ try{ const d=JSON.parse(data); if(d.text&&d.text.trim()){ (msg.notes=msg.notes||[]).push(d.text.trim()); if(live) paintFeedSticky(); } }catch(_){} }
+        else if(ev==='step'){ try{ const d=JSON.parse(data); (msg.steps=msg.steps||[]).push(d); if(live) liveFoldTick(msg); }catch(_){} }
+        else if(ev==='narration'){ try{ const d=JSON.parse(data); if(d.text&&d.text.trim()){ (msg.notes=msg.notes||[]).push(d.text.trim()); if(live) liveFoldTick(msg); } }catch(_){} }
         // done/error use the STICKY repaint (like token/step) so a reader scrolled up to an earlier
         // answer isn't snapped to the bottom the instant a long run completes.
         else if(ev==='done'){ try{const d=JSON.parse(data); if(d.reply) msg.text=d.reply; msg.recalled=d.recalled; msg.recalled_refs=d.recalled_refs; msg.learned=d.learned; if(d.steps) msg.steps=d.steps;}catch(_){} if(typeof _artifacts==='object') _artifacts.items=null; if(live) paintFeedSticky(); }
@@ -2724,7 +2889,7 @@ function drainQueued(sid, wasStopped){
   if(wasStopped){ _queued.delete(sid); if(WS.activeSession===sid) renderQueued(sid); return; }
   const next=q.shift(); if(!q.length) _queued.delete(sid); else _queued.set(sid, q);
   if(WS.activeSession===sid) renderQueued(sid);
-  chatSay(next.text, next.attachments||[]);
+  chatSay(next.text, next.attachments||[], sid);   // pin to the thread it was written for
 }
 // A small "queued" strip under the feed showing follow-ups waiting for the current run to finish.
 function renderQueued(sid){
@@ -2741,7 +2906,7 @@ function unqueue(sid, i){ const q=_queued.get(sid); if(!q) return; q.splice(i,1)
 function friendlyChatError(data){
   const s=String(data||'');
   if(/429|rate.?limit|too many requests/i.test(s)) return '⚠️ Your model provider is rate-limiting requests (429). Wait a few seconds and try again — or switch to a less limited model in Settings (e.g. a paid Anthropic key). Mistral\'s free tier limits requests per minute.';
-  if(/\b401\b|\b403\b|invalid.*key|unauthor/i.test(s)) return '⚠️ The provider rejected the API key. Check it in Settings › Keys & security.';
+  if(/\b401\b|\b403\b|invalid.*key|unauthor/i.test(s)) return '⚠️ The provider rejected the API key. Check it in Settings › Gateways (where the model + key live).';
   if(/timeout|timed out/i.test(s)) return '⚠️ The model took too long to respond. Try again, or pick a faster model.';
   return '⚠️ Couldn\'t complete the request — '+s;
 }
@@ -2851,7 +3016,7 @@ async function renderMemory(){
         <div class="brain-legend">${legend}<button class="brain-teach ghost" onclick="brainRecentToggle()" title="Browse recent memories as a list, filter by region">Recent</button><button class="brain-teach" onclick="openTeach()">+ Teach</button></div>
       </div>
       <div class="brain-foot"><div class="brain-recall">
-        <input id="brainQ" placeholder="Recall a memory - try a paraphrase..." onkeydown="if(event.key==='Enter')brainRecall()">
+        <input id="brainQ" placeholder="Recall a memory - try a paraphrase..." onkeydown="if(event.key==='Enter')brainRecall(); else if(event.key==='Escape')brainClearRecall()" oninput="if(!this.value&&BRAIN&&BRAIN.matched){BRAIN.matched=null;const n=document.getElementById('brainNote');if(n)n.textContent='';}">
         <button onclick="brainRecall()">Recall</button><span id="brainNote" class="brain-note"></span>
       </div></div>
     </div>
@@ -3057,8 +3222,12 @@ async function brainRecall(){
   const B=BRAIN, q=(document.getElementById('brainQ')?.value||'').trim(), note=document.getElementById('brainNote');
   if(!q){ if(B) B.matched=null; if(note) note.textContent=''; return; }
   try{ const hits=await J('/v1/recall?k=8&q='+encodeURIComponent(q));
-    if(B) B.matched=new Set(hits.map(h=>h.record.id));
-    if(note) note.innerHTML = hits.length? `lit ${hits.length} ${hits.length===1?'memory':'memories'} · <span style="cursor:pointer;color:var(--accent)" onclick="brainClearRecall()">clear</span>` : 'no matches';
+    // Zero hits must NOT dim the graph: an empty matched-set ghosted every node with no visible
+    // way back, leaving the brain looking broken. No matches -> no filter, just say so.
+    if(B) B.matched = hits.length ? new Set(hits.map(h=>h.record.id)) : null;
+    if(note) note.innerHTML = hits.length
+      ? `lit ${hits.length} ${hits.length===1?'memory':'memories'} · <span style="cursor:pointer;color:var(--accent)" onclick="brainClearRecall()">clear</span>`
+      : `no close match — try a paraphrase · <span style="cursor:pointer;color:var(--accent)" onclick="brainClearRecall()">clear</span>`;
   }catch(e){ if(note) note.textContent='recall failed'; }
 }
 function brainClearRecall(){ if(BRAIN) BRAIN.matched=null; const i=document.getElementById('brainQ'); if(i) i.value=''; const n=document.getElementById('brainNote'); if(n) n.textContent=''; }
@@ -3117,7 +3286,10 @@ async function brainForget(id){
     brainCloseDetail();
     if(BRAIN&&BRAIN.nodes){ BRAIN.nodes=BRAIN.nodes.filter(n=>n.id!==id); BRAIN.edges=null; }
     notify('Forgotten · signed','ok');
-    if(typeof renderMemory==='function') renderMemory();   // refresh the graph + region counts
+    // Stay calm: the node is already gone locally; merge counts/legend in place instead of a full
+    // renderMemory teardown (camera reset + the multi-second birth animation replay).
+    if(typeof brainPoll==='function') brainPoll();
+    if(document.getElementById('brainRecent')) brainRecentLoad();
   }catch(e){ notify('Couldn\'t forget - '+((e&&e.message)||'error')); }
 }
 
@@ -3191,6 +3363,9 @@ function mindFocus(memId){
 // A recall-ribbon chip under a chat answer: jump to the Memory view and focus the memory that
 // grounded the reply, so "what backed this answer" is one click from the answer itself.
 function recallOpen(id){
+  // Already looking at the brain (e.g. browsing the Recent list): focus in place - re-running
+  // renderMemory would close the list, reset the camera, and replay the birth animation.
+  if(state.route==='Memory' && BRAIN && BRAIN.nodes && BRAIN.nodes.length){ mindFocus(id); return; }
   go('Memory');
   // Poll until the brain has loaded (the graph fetch can be slower than any fixed delay), then focus.
   let tries=0;
@@ -3205,26 +3380,42 @@ function openTeach(){
   let m=document.getElementById('teachOverlay');
   if(!m){ m=document.createElement('div'); m.id='teachOverlay'; m.className='overlay teach'; document.body.appendChild(m); }
   const regs=Object.entries(BRAIN_REGIONS).map(([k,r],i)=>`<button class="seg ${i===0?'on':''}" data-r="${k}" onclick="teachPick('${k}',this)" style="--rc:${r.color}">${r.label}</button>`).join('');
+  // Scope is a first-class, VISIBLE choice: silently writing every taught fact user-global was the
+  // exact cross-project bleed this release closes for automatic captures.
+  const proj=curProject();
   m.innerHTML=`<div class="teach-card">
     <h3>Teach Engram</h3>
     <div class="teach-sub">Add something to its memory. Pick the region, then write it the way you'd say it.</div>
     <div class="seg-row">${regs}</div>
     <textarea id="teachText" placeholder="e.g. I prefer concise answers. · I'm building Engram in Rust. · The launch is in September."></textarea>
+    <div class="seg-row teach-scope" title="Where this fact lives. Project facts stay out of your other projects' recall; global facts follow you everywhere.">
+      <button class="seg on" data-s="project" onclick="teachScope('project',this)">In ${esc(proj.name)}</button>
+      <button class="seg" data-s="global" onclick="teachScope('global',this)">Everywhere</button>
+    </div>
     <div class="teach-foot">
       <label class="teach-imp">Importance <input type="range" id="teachImp" min="0" max="1" step="0.05" value="0.7"></label>
       <div class="teach-actions"><button class="ghost" onclick="closeTeach()">Cancel</button><button class="primary" onclick="saveTeach()">Remember</button></div>
     </div></div>`;
-  m.hidden=false; m._region='identity'; m.onclick=e=>{ if(e.target===m) closeTeach(); };
+  m.hidden=false; m._region='identity'; m._scope='project'; m.onclick=e=>{ if(e.target===m) closeTeach(); };
   setTimeout(()=>document.getElementById('teachText')?.focus(),30);
 }
-function teachPick(k,btn){ document.querySelectorAll('#teachOverlay .seg').forEach(b=>b.classList.remove('on')); btn.classList.add('on'); document.getElementById('teachOverlay')._region=k; }
+function teachPick(k,btn){ document.querySelectorAll('#teachOverlay .seg-row:not(.teach-scope) .seg').forEach(b=>b.classList.remove('on')); btn.classList.add('on'); document.getElementById('teachOverlay')._region=k; }
+function teachScope(s,btn){ document.querySelectorAll('#teachOverlay .teach-scope .seg').forEach(b=>b.classList.remove('on')); btn.classList.add('on'); document.getElementById('teachOverlay')._scope=s; }
 function closeTeach(){ const m=document.getElementById('teachOverlay'); if(m) m.hidden=true; }
 async function saveTeach(){
   const m=document.getElementById('teachOverlay'), text=(document.getElementById('teachText').value||'').trim(); if(!text) return;
   const region=m._region||'identity', importance=parseFloat(document.getElementById('teachImp').value);
-  try{ await J('/v1/remember',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({region,text,importance})}); }
+  // "In <project>" routes the write through the active session's scope (the daemon classifies it
+  // into the project ring); "Everywhere" keeps the user-global default.
+  const body={region,text,importance};
+  if(m._scope!=='global' && WS.activeSession) body.session=WS.activeSession;
+  try{ await J('/v1/remember',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}); }
   catch(e){ notify('Couldn\'t save - '+e.message); return; }
-  closeTeach(); notify('Remembered','ok'); renderMemory();
+  closeTeach(); notify(m._scope==='global'?'Remembered — everywhere':'Remembered — in '+curProject().name,'ok');
+  // Merge the new node in calmly; a full renderMemory teardown reset the camera + replayed the
+  // birth animation for one added fact.
+  if(state.route==='Memory' && typeof brainPoll==='function') brainPoll();
+  if(document.getElementById('brainRecent')) brainRecentLoad();
 }
 
 // ---- Skills ----
@@ -3335,8 +3526,15 @@ function renderSkillList(){
   // ones waiting on a decision (Adopt / add an example).
   list.sort((a,b)=>(b.proposed?1:0)-(a.proposed?1:0));
   const el=document.getElementById('skills-list'); if(!el) return;
+  // Rebuilding the list wiped every card's in-progress Try-it input and run output the moment any
+  // OTHER card was expanded/toggled. Snapshot them and put them back after the repaint.
+  const keep={};
+  el.querySelectorAll('input[id^="in_"]').forEach(x=>{ if(x.value) keep[x.id]={v:x.value}; });
+  el.querySelectorAll('[id^="out_"]').forEach(x=>{ if(x.innerHTML) (keep[x.id]=keep[x.id]||{}).h=x.innerHTML; });
   el.innerHTML = list.length ? list.map(skillCardHTML).join('')
     : `<div class="sk-none">No skills match <b>${esc(_skFilter.q||cat)}</b>.</div>`;
+  for(const id in keep){ const x=document.getElementById(id); if(!x) continue;
+    if(keep[id].v!=null) x.value=keep[id].v; if(keep[id].h!=null) x.innerHTML=keep[id].h; }
 }
 function setSkillCat(c){ _skFilter.cat=c;
   document.querySelectorAll('.sk-cat').forEach(el=>el.classList.toggle('active', el.dataset.cat===c));
@@ -3588,7 +3786,7 @@ function ccFilter(q){ ccFilterStr=(q||'').toLowerCase().trim();
 }
 function renderCatList(){
   const cats = ccFilterStr ? CC_CATS.filter(c=>(c.name+' '+c.kw).toLowerCase().includes(ccFilterStr)) : CC_CATS;
-  document.getElementById('ccCats').innerHTML = cats.map(c=>`<div class="cc-cat ${c.key===ccActive?'active':''}" onclick="ccGo('${c.key}')">${c.icon} ${esc(c.name)}</div>`).join('') || '<div class="ph" style="padding:8px">no matches</div>';
+  document.getElementById('ccCats').innerHTML = cats.map(c=>`<div class="cc-cat ${c.key===ccActive?'active':''}" role="button" tabindex="0" onclick="ccGo('${c.key}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();ccGo('${c.key}')}">${c.icon} ${esc(c.name)}</div>`).join('') || '<div class="ph" style="padding:8px">no matches</div>';
 }
 function renderCCBody(){
   const cat=CC_CATS.find(c=>c.key===ccActive)||CC_CATS[0];
@@ -3836,11 +4034,6 @@ function ccVoice(){
     <div class="ph" style="margin-top:12px">Dictate from the <b>mic</b> beside the composer. Start a hands-free <b>Voice</b> conversation from the Chat header - an animated orb listens, speaks, and supports tap-to-interrupt.</div>
     <div class="ph" style="margin-top:8px;color:var(--text-muted)">A premium server-side engine (POST <code class="ic">/v1/voice</code> and the <code class="ic">/v1/voice/stream</code> socket) provides STT/TTS where the browser can\'t - configurable once a speech provider is connected.</div>
   </div>`; }
-function ccKeyboard(){
-  const rows=[['Command palette','⌘K'],['Settings','⌘,'],['Send / answer in chat','↵'],['Create a task','⌘↵'],['Create &amp; run a task','⇧⌘↵'],['Close palette / settings / panel','Esc']];
-  return ccHead('Keyboard','Shortcuts. A full rebindable map with conflict detection is coming.')+
-    `<div class="scard">${rows.map(r=>`<div class="kbd-row"><span>${r[0]}</span><kbd>${r[1]}</kbd></div>`).join('')}</div>`;
-}
 // A small, bounded starter set (deliberately NOT a marketplace) - enough to begin work
 // pre-shaped. Each starter is a real action: create a task, apply a persona, prefill the composer.
 const TEMPLATES = {
@@ -4320,9 +4513,11 @@ async function testProvider(){
   const k=gv('pkey'); if(k) patch.provider.api_key=k;
   try{
     const r=await J('/v1/config/test',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(patch)});
-    if(r.ok){ line.className='testline ok'; line.textContent='✓ '+r.provider+' replied: '+esc((r.reply||'ok').slice(0,80)); }
-    else { line.className='testline bad'; line.textContent='✕ '+esc(r.error||'request failed'); }
-  }catch(e){ line.className='testline bad'; line.textContent='✕ '+esc(e.message); }
+    // textContent is escape-safe by definition - esc() here double-escaped, showing literal
+    // &lt;/&amp; entities whenever a model reply contained markup characters.
+    if(r.ok){ line.className='testline ok'; line.textContent='✓ '+r.provider+' replied: '+String(r.reply||'ok').slice(0,80); }
+    else { line.className='testline bad'; line.textContent='✕ '+(r.error||'request failed'); }
+  }catch(e){ line.className='testline bad'; line.textContent='✕ '+e.message; }
 }
 
 async function clearSecret(section,flag){
@@ -4467,6 +4662,11 @@ window.addEventListener('keydown', e=>{
   if((e.metaKey||e.ctrlKey) && !e.shiftKey && !e.altKey && k>='1' && k<='9'){
     const v=ALL_VIEWS[+k-1]; if(v){ e.preventDefault(); go(v); return; }
   }
+  // '/' focuses the settings search while the settings dialog is open (as the reference documents).
+  if(k==='/' && !e.metaKey && !e.ctrlKey && !document.getElementById('cc').hidden
+     && !(document.activeElement && /^(input|textarea|select)$/i.test(document.activeElement.tagName))){
+    e.preventDefault(); document.getElementById('ccSearch')?.focus(); return;
+  }
   if(!document.getElementById('palette').hidden){
     if(k==='escape'){ e.preventDefault(); closePalette(); }
     else if(k==='arrowdown'){ e.preventDefault(); palMove(1); }
@@ -4500,7 +4700,7 @@ async function renderTerminal(){
       <h2>A terminal that keeps no secrets</h2>
       <p>Engram signs every command - the agent's and your own - into one tamper-evident ledger, so even the lines you type by hand stay auditable. No human-shaped hole in the glass box.</p>
       <button class="primary" onclick="enableShell()">Enable shell access</button>
-      <div class="tg-fine">You can turn this off any time in Settings › Security.</div>
+      <div class="tg-fine">You can turn this off any time in <a href="#" onclick="openCC('tools');return false" style="color:var(--accent)">Settings › Tools</a>.</div>
     </div></div>`;
     return;
   }
@@ -4613,7 +4813,17 @@ async function renderArtifacts(force){
   const view=document.getElementById('view');
   if(_artifacts.items===null || force){
     if(_artifacts.items===null) view.innerHTML='<div class="artifacts-view"><div class="muted" style="padding:48px;text-align:center">Loading artifacts…</div></div>';
-    try{ const r=await J('/v1/artifacts'); _artifacts.items=r.items||[]; }catch(e){ _artifacts.items=[]; }
+    // A FAILED fetch is not an empty library: caching [] here told a user with dozens of artifacts
+    // "No artifacts yet" after any transient daemon hiccup (the same data-looks-gone bug already
+    // fixed on Skills and Checkpoints). Keep the cache null and show a retry state instead.
+    try{ const r=await J('/v1/artifacts'); _artifacts.items=r.items||[]; }
+    catch(e){
+      _artifacts.items=null;
+      view.innerHTML=`<div class="artifacts-view"><div class="sched-empty"><span class="se-glyph">${ICONS.Artifacts}</span>
+        <div class="se-title">Couldn't load artifacts</div>
+        <div class="se-hint">${esc((e&&e.message)||'The daemon didn\'t answer.')} <button class="sbtn" style="margin-left:6px" onclick="renderArtifacts(true)">Retry</button></div></div></div>`;
+      return;
+    }
   }
   const items=_artifacts.items, q=_artifacts.q.trim().toLowerCase();
   const counts={}; items.forEach(i=>{ counts[i.kind]=(counts[i.kind]||0)+1; });
@@ -5257,6 +5467,9 @@ async function renderScheduleView(){
         <div class="se-title">Nothing scheduled yet</div>
         <div class="se-hint">Engram can run a task on a cadence and wake itself to do it - even from sleep. Try <code>every Monday at 9am</code> or <code>every 30 minutes</code>.</div>
       </div>`;
+  // A re-render (Run-now, Delete, the async agents load) must NOT destroy an in-progress compose
+  // draft - the prompt textarea is the agent's whole instruction set. Snapshot + restore.
+  const keep={}; for(const id of ['sname','swhen','sprompt','sagent']){ const x=document.getElementById(id); if(x&&x.value) keep[id]=x.value; }
   document.getElementById('view').innerHTML = `<div class="panes"><div class="pane">
     <div class="sched-head"><h2>Schedule a recurring run</h2><span class="sched-count">${n} ${n===1?'job':'jobs'}</span></div>
     <div class="sched-compose">
@@ -5277,6 +5490,8 @@ async function renderScheduleView(){
     <div class="sched-head"><h2>Upcoming</h2></div>
     ${list}
   </div></div>`;
+  for(const id in keep){ const x=document.getElementById(id); if(x) x.value=keep[id]; }
+  if(keep.swhen && typeof schedPreviewCadence==='function') schedPreviewCadence();   // restore the cadence badge too
 }
 
 // Live cadence preview in the composer: renders the parsed badge + glyph, not just a date.
@@ -5763,12 +5978,21 @@ function voiceMaybeMountHeaderBtn(){
    ========================================================================== */
 
 // ---- client-side UI preferences (theme / accent / density / chat mode) ------
+// Each accent carries a LIGHT-THEME variant: the dark-tuned pastels (#45c8a8 etc.) sit at ~2:1
+// contrast on near-white surfaces — accent text, links, and pills were unreadable in light mode.
+// applyEngramAppearance picks the variant by theme (the inline custom properties it writes would
+// otherwise override any CSS-block remap).
 const ENGRAM_ACCENTS = {
-  teal:   {hex:'#45c8a8', ink:'#04342c', soft:'rgba(69,200,168,.12)', ring:'rgba(69,200,168,.5)', glow:'drop-shadow(0 0 6px rgba(69,200,168,.45))'},
-  indigo: {hex:'#7c83ff', ink:'#0c0f3a', soft:'rgba(124,131,255,.14)', ring:'rgba(124,131,255,.5)', glow:'drop-shadow(0 0 6px rgba(124,131,255,.45))'},
-  amber:  {hex:'#e0a23c', ink:'#3a2606', soft:'rgba(224,162,60,.14)', ring:'rgba(224,162,60,.5)', glow:'drop-shadow(0 0 6px rgba(224,162,60,.45))'},
-  rose:   {hex:'#e2675f', ink:'#3a0c0a', soft:'rgba(226,103,95,.14)', ring:'rgba(226,103,95,.5)', glow:'drop-shadow(0 0 6px rgba(226,103,95,.45))'},
-  blue:   {hex:'#85b7eb', ink:'#08283f', soft:'rgba(133,183,235,.14)', ring:'rgba(133,183,235,.5)', glow:'drop-shadow(0 0 6px rgba(133,183,235,.45))'},
+  teal:   {hex:'#45c8a8', ink:'#04342c', soft:'rgba(69,200,168,.12)', ring:'rgba(69,200,168,.5)', glow:'drop-shadow(0 0 6px rgba(69,200,168,.45))',
+           light:{hex:'#0e8a6c', ink:'#ffffff', soft:'rgba(14,138,108,.13)', ring:'rgba(14,138,108,.45)', glow:'drop-shadow(0 0 5px rgba(14,138,108,.3))'}},
+  indigo: {hex:'#7c83ff', ink:'#0c0f3a', soft:'rgba(124,131,255,.14)', ring:'rgba(124,131,255,.5)', glow:'drop-shadow(0 0 6px rgba(124,131,255,.45))',
+           light:{hex:'#4a51d4', ink:'#ffffff', soft:'rgba(74,81,212,.13)', ring:'rgba(74,81,212,.45)', glow:'drop-shadow(0 0 5px rgba(74,81,212,.3))'}},
+  amber:  {hex:'#e0a23c', ink:'#3a2606', soft:'rgba(224,162,60,.14)', ring:'rgba(224,162,60,.5)', glow:'drop-shadow(0 0 6px rgba(224,162,60,.45))',
+           light:{hex:'#8a5f00', ink:'#ffffff', soft:'rgba(138,95,0,.13)', ring:'rgba(138,95,0,.45)', glow:'drop-shadow(0 0 5px rgba(138,95,0,.3))'}},
+  rose:   {hex:'#e2675f', ink:'#3a0c0a', soft:'rgba(226,103,95,.14)', ring:'rgba(226,103,95,.5)', glow:'drop-shadow(0 0 6px rgba(226,103,95,.45))',
+           light:{hex:'#c03a31', ink:'#ffffff', soft:'rgba(192,58,49,.12)', ring:'rgba(192,58,49,.45)', glow:'drop-shadow(0 0 5px rgba(192,58,49,.3))'}},
+  blue:   {hex:'#85b7eb', ink:'#08283f', soft:'rgba(133,183,235,.14)', ring:'rgba(133,183,235,.5)', glow:'drop-shadow(0 0 6px rgba(133,183,235,.45))',
+           light:{hex:'#2270c0', ink:'#ffffff', soft:'rgba(34,112,192,.12)', ring:'rgba(34,112,192,.45)', glow:'drop-shadow(0 0 5px rgba(34,112,192,.3))'}},
 };
 function engramPrefs(){
   try{ return JSON.parse(localStorage.getItem('engram.ui')||'{}'); }catch(_){ return {}; }
@@ -5780,7 +6004,8 @@ function applyEngramAppearance(){
   const p = engramPrefs(), root = document.documentElement;
   root.setAttribute('data-engram-theme', p.theme==='light' ? 'light' : 'dark');
   root.setAttribute('data-engram-density', p.density==='compact' ? 'compact' : 'comfortable');
-  const a = ENGRAM_ACCENTS[p.accent] || ENGRAM_ACCENTS.teal;
+  const base = ENGRAM_ACCENTS[p.accent] || ENGRAM_ACCENTS.teal;
+  const a = (p.theme==='light' && base.light) ? base.light : base;
   root.style.setProperty('--accent', a.hex);
   root.style.setProperty('--accent-ink', a.ink);
   root.style.setProperty('--accent-soft', a.soft);
@@ -5834,6 +6059,7 @@ function ccChat2(){
       <div class="desc" style="margin:9px 0 0">Trace shows every tool call and its signed hash · Normal shows replies with collapsible reasoning · Brief shows answers only.</div>
       <div style="height:14px"></div>
       ${ccSeg('Streaming density', [{v:'flowing',l:'Flowing'},{v:'paced',l:'Paced'}], p.streamDensity||'flowing', "v=>setEngramPref('streamDensity',v)")}
+      <div class="desc" style="margin:9px 0 0">Flowing paints tokens the moment they arrive · Paced smooths them into a steadier, easier-to-read rhythm.</div>
       <div style="height:16px"></div>
       <label class="toggle"><input type="checkbox" ${ts} onchange="setEngramPref('chatTimestamps',this.checked)"><span class="track"></span> Show message timestamps</label>
     </div>`;
@@ -5887,9 +6113,9 @@ const ENGRAM_SLASH = [
 const ENGRAM_KEYS = [
   ['Command palette','⌘K'],['Settings','⌘,'],['Jump to a view (rail order)','⌘1–9'],
   ['Send / answer in chat','↵'],['New line in composer','⇧↵'],['Queue a follow-up while busy','↵'],
-  ['Create a task','⌘↵'],['Create & run a task','⇧⌘↵'],
+  ['Turn the draft into a task (create & run in Tasks view)','⌘↵'],['Create & run the draft as a task','⇧⌘↵'],
   ['Model menu (in chat)','⌘M'],['Attach files (in chat)','⌘U'],
-  ['Stop the running chat','Esc'],['Close palette / settings / panel','Esc'],['Focus search in settings','/'],
+  ['Stop the running chat','Esc'],['Close palette / settings / panel','Esc'],['Focus settings search','/'],
 ];
 function ccSlashRef(){
   const rows = ENGRAM_SLASH.map(r=>`<tr data-q="${escAttr((r[0]+' '+r[1]).toLowerCase())}"><td class="cmd">${esc(r[0])}</td><td class="dsc">${esc(r[1])}</td></tr>`).join('');
@@ -6305,10 +6531,12 @@ async function obSave(){
 try { boot(); }
 catch(e){
   console.error('boot failed', e);
-  document.body.innerHTML = '<div style="padding:48px;max-width:560px;margin:8vh auto;font:14px/1.6 -apple-system,system-ui,sans-serif;color:#c8ccd2">'
-    + '<div style="font-size:17px;font-weight:600;margin-bottom:10px;color:#fff">Engram couldn\'t start</div>'
-    + '<div style="color:#8a9099">A startup error occurred. Details:</div>'
-    + '<pre style="white-space:pre-wrap;background:#181b1f;border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:12px;margin-top:10px;font:12px ui-monospace,monospace;color:#e2675f">'
+  // Token-based colors so the screen is readable in BOTH themes (the body background follows
+  // --surface-0; hardcoded dark greys were unreadable in light mode).
+  document.body.innerHTML = '<div style="padding:48px;max-width:560px;margin:8vh auto;font:14px/1.6 -apple-system,system-ui,sans-serif;color:var(--text-secondary,#c8ccd2)">'
+    + '<div style="font-size:17px;font-weight:600;margin-bottom:10px;color:var(--text-primary,#fff)">Engram couldn\'t start</div>'
+    + '<div style="color:var(--text-muted,#8a9099)">A startup error occurred. Details:</div>'
+    + '<pre style="white-space:pre-wrap;background:var(--surface-2,#181b1f);border:1px solid var(--border-strong,rgba(255,255,255,.1));border-radius:8px;padding:12px;margin-top:10px;font:12px ui-monospace,monospace;color:var(--danger,#e2675f)">'
     + String((e&&e.stack)||e).replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]))
     + '</pre></div>';
 }

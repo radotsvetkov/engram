@@ -191,11 +191,25 @@ impl Tool for SkillRunTool {
         }
         let host = SkillHost::new();
         let p = params(ctx, &host);
-        let outcome = run_active(&ctx.skills, id, input.as_bytes(), &p).await?;
+        let outcome = match run_active(&ctx.skills, id, input.as_bytes(), &p).await {
+            Ok(o) => o,
+            Err(e) => {
+                // A failed run is EXPERIENCE. Sign it into the ledger so the reflection loop can
+                // see which skills keep failing in real use and target THEM for improvement —
+                // swallowing failures left the loop only ever looking at its successes.
+                let head: String = e.chars().take(200).collect();
+                let _ = ctx.ledger.append(
+                    "skill.run",
+                    "agent",
+                    json!({ "id": id, "ok": false, "error": head }),
+                );
+                return Err(e);
+            }
+        };
         let _ = ctx.ledger.append(
             "skill.run",
             "agent",
-            json!({ "id": id, "bytes_out": outcome.output.len(), "duration_us": outcome.duration_us }),
+            json!({ "id": id, "ok": true, "bytes_out": outcome.output.len(), "duration_us": outcome.duration_us }),
         );
         // AUTO-LEARN from real use: record this (input, output) from a PURE (no network / no LLM)
         // skill as a PROVISIONAL example (reward 0.5), NOT accepted gold (≥ 0.75). Deterministic is
@@ -227,6 +241,77 @@ impl Tool for SkillRunTool {
         } else {
             text
         })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// skill_source
+// ---------------------------------------------------------------------------
+
+pub struct SkillSourceTool;
+
+#[async_trait]
+impl Tool for SkillSourceTool {
+    fn name(&self) -> &str {
+        "skill_source"
+    }
+    fn description(&self) -> &str {
+        "Read the CURRENT program of an installed skill (its active version, else the latest) plus \
+         its interpreter and a few of its gold examples. Use this BEFORE skill_improve so the \
+         improved source starts from what the skill actually does — the registry is the only place \
+         the program lives; it is NOT a file in the workspace."
+    }
+    fn schema(&self) -> Value {
+        json!({ "type": "object",
+            "properties": { "id": { "type": "string" } },
+            "required": ["id"] })
+    }
+    async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
+        let id = arg_str(args, "id")?;
+        let versions = ctx.skills.versions(id).map_err(|e| e.to_string())?;
+        let Some(&latest) = versions.iter().max() else {
+            return Err(format!("no such skill '{id}' (use skill_search to list skills)"));
+        };
+        let shown = ctx
+            .skills
+            .active_version(id)
+            .ok()
+            .flatten()
+            .unwrap_or(latest);
+        let (signed, bytes) = ctx.skills.load(id, shown).map_err(|e| e.to_string())?;
+        let m = &signed.manifest;
+        if m.runtime != Runtime::Process {
+            return Ok(format!(
+                "skill '{id}' v{shown} is a WASM transform ({} bytes of wasm) — its source isn't \
+                 readable here; improve it from the dashboard.",
+                bytes.len()
+            ));
+        }
+        let source = String::from_utf8_lossy(&bytes);
+        let gold = ctx.skills.accepted_runs(id).unwrap_or_default();
+        let examples = gold
+            .iter()
+            .take(3)
+            .map(|(i, o)| {
+                format!(
+                    "  input: {}\n  output: {}",
+                    crate::skills_runtime::truncate(&String::from_utf8_lossy(i), 300),
+                    crate::skills_runtime::truncate(&String::from_utf8_lossy(o), 300)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n---\n");
+        Ok(format!(
+            "skill '{id}' v{shown}{} — interpreter: {} — {}\ncapabilities: {:?}\n\n--- source ---\n{}\n\n--- gold examples ({} recorded{}) ---\n{}",
+            if Some(shown) == ctx.skills.active_version(id).ok().flatten() { " (active)" } else { " (proposed, not active)" },
+            m.interpreter.as_deref().unwrap_or("python3"),
+            m.description,
+            m.capabilities.iter().map(|c| c.as_str()).collect::<Vec<_>>(),
+            crate::skills_runtime::truncate(&source, 12_000),
+            gold.len(),
+            if gold.len() > 3 { ", first 3 shown" } else { "" },
+            examples,
+        ))
     }
 }
 
@@ -372,16 +457,24 @@ impl Tool for SkillImproveTool {
         true
     }
     fn description(&self) -> &str {
-        "Offer a better version of an existing skill (new source). It is installed as a new version \
-         and replay-scored against the skill's recorded gold examples; it becomes active ONLY if it \
-         measurably beats the current version. This is how a skill gets better over time."
+        "Offer a better version of an existing skill (new source; read the current one with \
+         skill_source first). It is installed as a new version and replay-scored against the \
+         skill's recorded gold examples; it becomes active ONLY if it measurably beats the current \
+         version. If the improvement ADDS behavior (new inputs the old version can't handle), you \
+         MUST pass 1-3 `examples` proving the new behavior — the candidate is verified to reproduce \
+         them AND to keep all old gold passing, while the old version must fail them. This is how a \
+         skill gets better over time."
     }
     fn schema(&self) -> Value {
         json!({ "type": "object", "properties": {
             "id": { "type": "string" },
             "source": { "type": "string", "description": "the improved program" },
             "interpreter": { "type": "string" },
-            "description": { "type": "string" }
+            "description": { "type": "string" },
+            "examples": { "type": "array", "description": "for behavior-extending improvements: (input, output) pairs proving the NEW behavior",
+                "items": { "type": "object", "properties": {
+                    "input": { "type": "string" }, "output": { "type": "string" } },
+                    "required": ["input", "output"] } }
         }, "required": ["id", "source"] })
     }
     async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
@@ -427,6 +520,20 @@ impl Tool for SkillImproveTool {
                 .or_else(|| m.interpreter.clone()),
             when_to_use: m.when_to_use.clone(),
         };
+        // Asserted new (input, output) pairs let a behavior-EXTENDING candidate earn promotion: on
+        // exact gold an extension can only tie the incumbent, and ties never promote.
+        let new_examples: Vec<(String, String)> = args["examples"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|e| {
+                        let i = e["input"].as_str()?;
+                        let o = e["output"].as_str()?;
+                        Some((i.to_string(), o.to_string()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         let host = SkillHost::new();
         let p = params(ctx, &host);
         let decision = improve_skill(
@@ -434,6 +541,7 @@ impl Tool for SkillImproveTool {
             id,
             candidate,
             source.as_bytes(),
+            &new_examples,
             true,
             "agent",
             &p,

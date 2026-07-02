@@ -63,6 +63,77 @@ struct RawEx {
     output: String,
 }
 
+/// What a reflection ask produced. Every non-proposal outcome carries WHY, so the caller can sign
+/// it into the ledger — a self-improvement loop that drops its failures silently is undebuggable
+/// (64 distiller calls once produced zero visible output and nobody could say why).
+pub enum ProposeOutcome {
+    Proposal(Proposal),
+    /// The model was asked and nothing usable came back. `reason` is a stable slug ("none",
+    /// "no_json", "bad_json", …); `reply_head` is the start of the visible reply for diagnosis.
+    Declined {
+        reason: &'static str,
+        reply_head: String,
+    },
+    /// No real model connected (the mock stays silent, never a costume).
+    Unavailable,
+    /// The gateway call itself failed (auth, rate-limit, network).
+    Error(String),
+}
+
+/// The model-visible part of a reply: everything after the LAST closing reasoning tag. Reasoning
+/// models (minimax, deepseek-r1, qwen) interleave `<think>…</think>` into `message.content`; the
+/// braces and stray "NONE"s inside that block wrecked the old prefix/first-brace parser.
+fn visible_text(t: &str) -> &str {
+    let mut s = t;
+    for tag in ["</think>", "</thinking>", "</reasoning>"] {
+        if let Some(i) = s.rfind(tag) {
+            s = &s[i + tag.len()..];
+        }
+    }
+    s.trim()
+}
+
+/// Balanced top-level `{…}` spans in `t`, string-and-escape aware, in order of appearance. The
+/// reply may hold prose, code fences, or several objects — each candidate is tried until one
+/// deserializes into a usable proposal.
+fn json_candidates(t: &str) -> Vec<&str> {
+    let bytes = t.as_bytes();
+    let mut out = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    let mut in_str = false;
+    let mut escaped = false;
+    for (i, &b) in bytes.iter().enumerate() {
+        if in_str {
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == b'"' {
+                in_str = false;
+            }
+            continue;
+        }
+        match b {
+            b'"' if depth > 0 => in_str = true,
+            b'{' => {
+                if depth == 0 {
+                    start = i;
+                }
+                depth += 1;
+            }
+            b'}' if depth > 0 => {
+                depth -= 1;
+                if depth == 0 {
+                    out.push(&t[start..=i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 64
@@ -79,19 +150,19 @@ fn valid_interpreter(s: &str) -> bool {
 }
 
 /// Ask the model whether the finished task yields a reusable program — a NEW skill or an IMPROVEMENT
-/// to an existing one. `None` when no real model is connected, the model declines, or the proposal is
-/// invalid. `existing` is the id set used to validate (improvement targets must exist; new ids must
-/// not collide); `catalog` is a human-readable "id — description" listing for the prompt.
+/// to an existing one. Shape-validates only (id charset, interpreter charset, non-empty source);
+/// resolving the id against the registry (does the target exist? does a new id collide?) is the
+/// caller's job, because only the caller can turn a collision into an improvement instead of a drop.
+/// `catalog` is a human-readable "id — description" listing for the prompt.
 pub async fn propose(
     gateway: &Gateway,
     model: &str,
     task: &str,
     answer: &str,
-    existing: &[String],
     catalog: &str,
-) -> Option<Proposal> {
+) -> ProposeOutcome {
     if gateway.provider_id() == "mock" {
-        return None;
+        return ProposeOutcome::Unavailable;
     }
     let catalog = if catalog.trim().is_empty() {
         "(none)".to_string()
@@ -122,85 +193,126 @@ pub async fn propose(
          and should include 1-3 examples whose output you are CONFIDENT is correct (the gold it is \
          verified against). Keep the program short and dependency-light."
     );
-    let req = CompletionRequest::new(model.to_string(), vec![Message::user(prompt)]);
-    let out = gateway
+    // A real proposal is a whole program + gold examples, and reasoning models spend part of the
+    // output budget thinking — the 1024-token default truncated proposals MID-JSON (the ledger
+    // showed a valid improvement cut off at "def main():", declined as no_json). Give it room.
+    let req =
+        CompletionRequest::new(model.to_string(), vec![Message::user(prompt)]).max_tokens(8192);
+    let out = match gateway
         .complete(Call::new(req).actor("distiller").tainted(Taint::Trusted))
         .await
-        .ok()?;
-    parse(&out.text, existing)
+    {
+        Ok(o) => o,
+        Err(e) => return ProposeOutcome::Error(e.to_string()),
+    };
+    match parse(&out.text) {
+        Ok(p) => ProposeOutcome::Proposal(p),
+        Err((reason, reply_head)) => ProposeOutcome::Declined { reason, reply_head },
+    }
 }
 
-/// Parse the model's reply into a validated proposal. Pure + unit-tested. Drops anything that isn't a
-/// valid new skill (non-duplicate id) or improvement (existing target). A hallucinated or malformed
-/// reply yields nothing.
-fn parse(reply: &str, existing: &[String]) -> Option<Proposal> {
-    let t = reply.trim();
-    if t.is_empty() || t.starts_with("NONE") || t.starts_with("none") {
-        return None;
+/// The first chars of the visible reply, for the ledger — enough to diagnose a decline without
+/// storing the whole reply.
+fn head(t: &str) -> String {
+    t.chars().take(240).collect()
+}
+
+/// Parse the model's reply into a shape-validated proposal, or say exactly why not. Pure +
+/// unit-tested. JSON is preferred over a decline: candidates are tried FIRST, and "NONE" only
+/// counts when no usable object exists — a reasoning preamble mentioning "none" must not veto a
+/// valid proposal that follows it.
+fn parse(reply: &str) -> Result<Proposal, (&'static str, String)> {
+    let t = visible_text(reply);
+    if t.is_empty() {
+        // The whole reply was reasoning (or empty) — nothing visible survived.
+        return Err(("empty_reply", head(reply)));
     }
-    // Extract the first {...} object (the model may wrap it in fences or stray prose).
-    let start = t.find('{')?;
-    let end = t.rfind('}')?;
-    if end <= start {
-        return None;
-    }
-    let raw: Raw = serde_json::from_str(&t[start..=end]).ok()?;
-    let interpreter = if raw.interpreter.trim().is_empty() {
-        "python3".to_string()
-    } else {
-        raw.interpreter.trim().to_string()
-    };
-    if !valid_interpreter(&interpreter) || raw.source.trim().is_empty() {
-        return None;
-    }
-    // IMPROVEMENT: targets an existing skill. The target must exist; `id` is ignored.
-    if let Some(target) = raw.improves.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        if !existing.iter().any(|e| e == target) {
-            return None; // can't improve a skill that doesn't exist
+    let candidates = json_candidates(t);
+    let had_braces = !candidates.is_empty();
+    let mut saw_object = false;
+    for cand in candidates {
+        let Ok(raw) = serde_json::from_str::<Raw>(cand) else {
+            continue;
+        };
+        saw_object = true;
+        let interpreter = if raw.interpreter.trim().is_empty() {
+            "python3".to_string()
+        } else {
+            raw.interpreter.trim().to_string()
+        };
+        if raw.source.trim().is_empty() {
+            continue; // not a proposal object (e.g. an example the model echoed)
         }
-        return Some(Proposal {
-            id: target.to_string(),
-            improves: true,
+        if !valid_interpreter(&interpreter) {
+            return Err(("bad_interpreter", head(t)));
+        }
+        // IMPROVEMENT: targets an existing skill; the caller checks the target exists (and may
+        // reinterpret a missing target as a NEW skill, so asserted examples are kept).
+        if let Some(target) = raw.improves.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            if !valid_id(target) {
+                return Err(("bad_id", head(t)));
+            }
+            let examples = raw
+                .examples
+                .into_iter()
+                .filter(|e| !e.input.is_empty() || !e.output.is_empty())
+                .map(|e| (e.input, e.output))
+                .collect();
+            return Ok(Proposal {
+                id: target.to_string(),
+                improves: true,
+                interpreter,
+                source: raw.source,
+                description: raw.description.trim().to_string(),
+                when_to_use: raw.when_to_use.filter(|s| !s.trim().is_empty()),
+                examples,
+                capabilities: Vec::new(), // improvements inherit the existing skill's capabilities
+            });
+        }
+        // NEW skill.
+        let id = raw.id.trim().to_string();
+        if !valid_id(&id) {
+            return Err(("bad_id", head(t)));
+        }
+        let examples = raw
+            .examples
+            .into_iter()
+            .filter(|e| !e.input.is_empty() || !e.output.is_empty())
+            .map(|e| (e.input, e.output))
+            .collect();
+        // Only egress capabilities the runtime understands survive; anything else is dropped.
+        let capabilities = raw
+            .capabilities
+            .into_iter()
+            .map(|c| c.trim().to_ascii_lowercase())
+            .filter(|c| c == "net" || c == "llm")
+            .collect::<Vec<_>>();
+        return Ok(Proposal {
+            id,
+            improves: false,
             interpreter,
             source: raw.source,
-            description: raw.description.trim().to_string(),
+            description: if raw.description.trim().is_empty() {
+                "(distilled skill)".to_string()
+            } else {
+                raw.description.trim().to_string()
+            },
             when_to_use: raw.when_to_use.filter(|s| !s.trim().is_empty()),
-            examples: Vec::new(),
-            capabilities: Vec::new(), // improvements inherit the existing skill's capabilities
+            examples,
+            capabilities,
         });
     }
-    // NEW skill: fresh, non-duplicate id.
-    let id = raw.id.trim().to_string();
-    if !valid_id(&id) || existing.iter().any(|e| e == &id) {
-        return None;
+    // No usable object. A "NONE" anywhere in the visible text is the model declining (models
+    // rarely emit the bare word we asked for); anything else is a reply we couldn't read.
+    if t.to_ascii_lowercase().contains("none") {
+        Err(("none", head(t)))
+    } else if saw_object {
+        Err(("no_source", head(t)))
+    } else if had_braces {
+        Err(("bad_json", head(t)))
+    } else {
+        Err(("no_json", head(t)))
     }
-    let examples = raw
-        .examples
-        .into_iter()
-        .filter(|e| !e.input.is_empty() || !e.output.is_empty())
-        .map(|e| (e.input, e.output))
-        .collect();
-    // Only egress capabilities the runtime understands survive; anything else is dropped.
-    let capabilities = raw
-        .capabilities
-        .into_iter()
-        .map(|c| c.trim().to_ascii_lowercase())
-        .filter(|c| c == "net" || c == "llm")
-        .collect::<Vec<_>>();
-    Some(Proposal {
-        id,
-        improves: false,
-        interpreter,
-        source: raw.source,
-        description: if raw.description.trim().is_empty() {
-            "(distilled skill)".to_string()
-        } else {
-            raw.description.trim().to_string()
-        },
-        when_to_use: raw.when_to_use.filter(|s| !s.trim().is_empty()),
-        examples,
-        capabilities,
-    })
 }
 
 #[cfg(test)]
@@ -208,10 +320,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn none_yields_nothing() {
-        assert!(parse("NONE", &[]).is_none());
-        assert!(parse("none, nothing reusable here", &[]).is_none());
-        assert!(parse("", &[]).is_none());
+    fn none_declines_with_reason() {
+        assert_eq!(parse("NONE").unwrap_err().0, "none");
+        assert_eq!(parse("none, nothing reusable here").unwrap_err().0, "none");
+        assert_eq!(parse("").unwrap_err().0, "empty_reply");
     }
 
     #[test]
@@ -220,7 +332,7 @@ mod tests {
             \"source\":\"import sys,csv,json\\nprint(json.dumps(list(csv.reader(sys.stdin))))\",\
             \"description\":\"convert CSV on stdin to JSON\",\"when_to_use\":\"csv→json\",\
             \"examples\":[{\"input\":\"a,b\",\"output\":\"[[\\\"a\\\",\\\"b\\\"]]\"}]}\n```";
-        let p = parse(reply, &[]).expect("should parse");
+        let p = parse(reply).expect("should parse");
         assert_eq!(p.id, "csv_to_json");
         assert_eq!(p.interpreter, "python3");
         assert_eq!(p.examples.len(), 1);
@@ -228,77 +340,111 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_id_is_rejected() {
-        let reply = "{\"id\":\"shout\",\"interpreter\":\"python3\",\"source\":\"print(1)\"}";
-        assert!(parse(reply, &["shout".to_string()]).is_none());
+    fn reasoning_block_before_none_still_declines() {
+        // What minimax-style reasoning models actually send: thinking (with braces and prose)
+        // interleaved into content, then the real answer. The old prefix parser read the think
+        // block and never saw the decline.
+        let reply = "<think>The task fetched {some} pages… maybe a scraper? No — the output was \
+            prose, not a program. I should answer NONE.</think>\nNONE";
+        assert_eq!(parse(reply).unwrap_err().0, "none");
+    }
+
+    #[test]
+    fn reasoning_block_before_json_still_parses() {
+        let reply = "<think>A reusable {\"id\":\"draft\"} idea… let me write the real one.</think>\n\
+            {\"id\":\"line_count\",\"interpreter\":\"python3\",\
+            \"source\":\"import sys;print(len(sys.stdin.readlines()))\",\
+            \"description\":\"count lines on stdin\"}";
+        let p = parse(reply).expect("should parse despite the think block");
+        assert_eq!(p.id, "line_count");
+    }
+
+    #[test]
+    fn a_none_mention_does_not_veto_a_valid_proposal() {
+        // JSON wins over the word "none" appearing in surrounding prose.
+        let reply = "None of the existing skills cover this, so:\n\
+            {\"id\":\"rev\",\"interpreter\":\"python3\",\"source\":\"print(1)\"}";
+        assert_eq!(parse(reply).expect("json beats prose-none").id, "rev");
+    }
+
+    #[test]
+    fn multiple_objects_first_usable_wins() {
+        // The model echoes an example object (no source) before the proposal — skip it.
+        let reply = "{\"input\":\"a\",\"output\":\"b\"}\n\
+            {\"id\":\"ok\",\"interpreter\":\"python3\",\"source\":\"print(1)\"}";
+        assert_eq!(parse(reply).expect("second object wins").id, "ok");
     }
 
     #[test]
     fn unsafe_id_or_interpreter_is_rejected() {
-        assert!(parse(
-            "{\"id\":\"../etc\",\"interpreter\":\"python3\",\"source\":\"x\"}",
-            &[]
-        )
-        .is_none());
-        assert!(parse(
-            "{\"id\":\"ok\",\"interpreter\":\"python3; rm -rf /\",\"source\":\"x\"}",
-            &[]
-        )
-        .is_none());
+        assert_eq!(
+            parse("{\"id\":\"../etc\",\"interpreter\":\"python3\",\"source\":\"x\"}")
+                .unwrap_err()
+                .0,
+            "bad_id"
+        );
+        assert_eq!(
+            parse("{\"id\":\"ok\",\"interpreter\":\"python3; rm -rf /\",\"source\":\"x\"}")
+                .unwrap_err()
+                .0,
+            "bad_interpreter"
+        );
     }
 
     #[test]
-    fn empty_source_is_rejected() {
-        assert!(parse(
-            "{\"id\":\"ok\",\"interpreter\":\"python3\",\"source\":\"   \"}",
-            &[]
-        )
-        .is_none());
+    fn empty_source_is_no_source() {
+        assert_eq!(
+            parse("{\"id\":\"ok\",\"interpreter\":\"python3\",\"source\":\"   \"}")
+                .unwrap_err()
+                .0,
+            "no_source"
+        );
+    }
+
+    #[test]
+    fn unreadable_reply_reasons() {
+        assert_eq!(parse("I made you a lovely script!").unwrap_err().0, "no_json");
+        assert_eq!(parse("{\"id\": broken").unwrap_err().0, "no_json"); // unbalanced → no candidate
+        assert_eq!(parse("{'id': 'single-quoted'}").unwrap_err().0, "bad_json");
     }
 
     #[test]
     fn new_skill_has_improves_false() {
-        let p = parse(
-            "{\"id\":\"csv_to_json\",\"interpreter\":\"python3\",\"source\":\"print(1)\"}",
-            &[],
-        )
-        .expect("new skill should parse");
+        let p = parse("{\"id\":\"csv_to_json\",\"interpreter\":\"python3\",\"source\":\"print(1)\"}")
+            .expect("new skill should parse");
         assert!(!p.improves);
         assert_eq!(p.id, "csv_to_json");
     }
 
     #[test]
-    fn improvement_targets_an_existing_skill() {
+    fn improvement_carries_the_target_id() {
         let reply = "{\"improves\":\"upcase\",\"interpreter\":\"python3\",\
             \"source\":\"import sys; print(sys.stdin.read().upper())\"}";
-        let p = parse(reply, &["upcase".to_string()]).expect("improvement should parse");
+        let p = parse(reply).expect("improvement should parse");
         assert!(p.improves);
         assert_eq!(p.id, "upcase"); // the target id, not a new one
         assert!(p.source.contains("upper"));
     }
 
     #[test]
-    fn improvement_of_unknown_skill_is_rejected() {
-        let reply = "{\"improves\":\"nope\",\"interpreter\":\"python3\",\"source\":\"print(1)\"}";
-        assert!(parse(reply, &["upcase".to_string()]).is_none());
-    }
-
-    #[test]
     fn new_skill_keeps_only_known_capabilities() {
         let reply = "{\"id\":\"weather_fetch\",\"interpreter\":\"python3\",\"source\":\"import sys\",\
             \"capabilities\":[\"net\",\"BOGUS\",\"llm\"]}";
-        let p = parse(reply, &[]).expect("should parse");
+        let p = parse(reply).expect("should parse");
         assert!(!p.improves);
         assert_eq!(p.capabilities, vec!["net", "llm"]); // BOGUS dropped, case-normalized
     }
 
     #[test]
     fn pure_skill_has_no_capabilities() {
-        let p = parse(
-            "{\"id\":\"rev\",\"interpreter\":\"python3\",\"source\":\"print(1)\"}",
-            &[],
-        )
-        .unwrap();
+        let p = parse("{\"id\":\"rev\",\"interpreter\":\"python3\",\"source\":\"print(1)\"}").unwrap();
         assert!(p.capabilities.is_empty());
+    }
+
+    #[test]
+    fn json_candidates_respects_strings_and_nesting() {
+        let t = r#"prose {"a":{"b":"}"}} tail {"c":1}"#;
+        let c = json_candidates(t);
+        assert_eq!(c, vec![r#"{"a":{"b":"}"}}"#, r#"{"c":1}"#]);
     }
 }

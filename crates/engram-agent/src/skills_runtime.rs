@@ -89,7 +89,7 @@ fn bigram_similarity(a: &[u8], b: &[u8]) -> f32 {
     }
 }
 
-fn truncate(s: &str, max: usize) -> String {
+pub(crate) fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
         return s.to_string();
     }
@@ -374,14 +374,22 @@ pub async fn score_skill(
 
 /// Install a candidate version, replay both it and the incumbent against the recorded gold runs, and
 /// promote the candidate iff it measurably wins (and consent is granted). Every outcome is signed
-/// into the ledger. This is the one self-improvement path, shared by the agent tool and the HTTP
-/// endpoint so they can never diverge.
+/// into the ledger. This is the one self-improvement path, shared by the agent tool, the reflection
+/// pass, and the HTTP endpoint so they can never diverge.
+///
+/// `new_examples` is how a candidate that EXTENDS behavior earns promotion: on exact-match gold a
+/// pure extension can only ever TIE the incumbent (both reproduce the old gold), and a tie never
+/// promotes. Asserted new (input, output) pairs are replayed against BOTH versions — the candidate
+/// must reproduce them ALL, keep the incumbent's score on the old gold, and the incumbent must FAIL
+/// at least part of the new behavior (otherwise nothing is being added). Only on promotion do the
+/// new examples become recorded gold; a rejected candidate leaves the gold set untouched.
 #[allow(clippy::too_many_arguments)]
 pub async fn improve_skill(
     registry: &Registry,
     id: &str,
     candidate: NewSkill,
     bytes: &[u8],
+    new_examples: &[(String, String)],
     consent: bool,
     actor: &str,
     p: &SkillRunParams<'_>,
@@ -396,35 +404,63 @@ pub async fn improve_skill(
     // Check for gold BEFORE installing — otherwise a candidate version (artifact + signed manifest +
     // skill.install ledger entry) accumulates on every improve attempt that can't be scored.
     let runs = registry.accepted_runs(id).map_err(|e| e.to_string())?;
-    if runs.is_empty() {
+    if runs.is_empty() && new_examples.is_empty() {
         return Ok(json!({
             "decision": "no_data", "id": id, "active": active,
-            "note": "no recorded gold runs to judge against yet — teach it accepted (input, output) examples first"
+            "note": "no recorded gold runs to judge against yet — teach it accepted (input, output) examples first, or pass new examples with the improvement"
         }));
     }
+    let fresh: Vec<(Vec<u8>, Vec<u8>)> = new_examples
+        .iter()
+        .map(|(i, o)| (i.as_bytes().to_vec(), o.as_bytes().to_vec()))
+        .collect();
     let candidate_version = registry.install(candidate, bytes).map_err(|e| e.to_string())?;
-    let incumbent_score = score_skill(registry, id, active, &runs, &metric, p, halt).await;
-    let candidate_score = score_skill(registry, id, candidate_version, &runs, &metric, p, halt).await;
+    let incumbent_score = if runs.is_empty() {
+        1.0 // no old gold to regress on
+    } else {
+        score_skill(registry, id, active, &runs, &metric, p, halt).await
+    };
+    let candidate_score = if runs.is_empty() {
+        1.0
+    } else {
+        score_skill(registry, id, candidate_version, &runs, &metric, p, halt).await
+    };
     let exact = metric == "exact_match";
     // A fuzzy metric is noisy, so require a real margin and a minimum sample count.
     let margin = if exact { 0.0 } else { 0.05 };
-    let promoted =
-        candidate_score > incumbent_score + margin && (exact || runs.len() >= 3) && consent;
+    let promoted = if fresh.is_empty() {
+        candidate_score > incumbent_score + margin && (exact || runs.len() >= 3) && consent
+    } else {
+        // Extension path: no regression on the old gold, the candidate reproduces every asserted
+        // new example, and the incumbent demonstrably does NOT — a measurable win, not a tie.
+        let cand_new = score_skill(registry, id, candidate_version, &fresh, &metric, p, halt).await;
+        let incumbent_new = score_skill(registry, id, active, &fresh, &metric, p, halt).await;
+        candidate_score >= incumbent_score
+            && cand_new >= if exact { 1.0 } else { 0.8 }
+            && incumbent_new + margin < cand_new
+            && consent
+    };
     if promoted {
         registry
             .set_active(id, candidate_version, actor, "skill.promote")
             .map_err(|e| e.to_string())?;
+        // The asserted examples were just verified against the now-active version — they are gold.
+        for (i, o) in &fresh {
+            let _ = registry.record_run(id, candidate_version, i, o, 1.0);
+        }
     }
     let _ = registry.ledger().append(
         "skill.learn",
         actor,
         json!({ "id": id, "promoted": promoted, "from": active, "candidate": candidate_version,
-                "incumbent_score": incumbent_score, "candidate_score": candidate_score, "replays": runs.len() }),
+                "incumbent_score": incumbent_score, "candidate_score": candidate_score,
+                "replays": runs.len(), "new_examples": fresh.len() }),
     );
     Ok(json!({
         "decision": if promoted { "promoted" } else { "rejected" },
         "id": id, "from": active, "candidate": candidate_version,
-        "incumbent_score": incumbent_score, "candidate_score": candidate_score, "replays": runs.len(),
+        "incumbent_score": incumbent_score, "candidate_score": candidate_score,
+        "replays": runs.len(), "new_examples": fresh.len(),
     }))
 }
 
@@ -688,6 +724,7 @@ mod tests {
             "upper",
             upper_skill(),
             b"tr a-z A-Z",
+            &[],
             true,
             "test",
             &params(&f, Taint::Trusted, true),
@@ -697,6 +734,53 @@ mod tests {
         .unwrap();
         assert_eq!(decision["decision"], "promoted", "decision was {decision}");
         assert_eq!(f.registry.active_version("upper").unwrap(), Some(2));
+    }
+
+    #[tokio::test]
+    async fn improve_with_new_examples_promotes_an_extension_and_rejects_a_tie() {
+        let f = setup();
+        // v1 uppercases correctly — on old gold alone, any correct candidate can only TIE.
+        f.registry.install(upper_skill(), b"tr a-z A-Z").unwrap();
+        for (inp, gold) in [("abc", "ABC"), ("xy", "XY")] {
+            f.registry
+                .record_run("upper", 1, inp.as_bytes(), gold.as_bytes(), 1.0)
+                .unwrap();
+        }
+        // A no-op "improvement" with examples the INCUMBENT already satisfies must be rejected —
+        // nothing is being added.
+        let tie = improve_skill(
+            &f.registry,
+            "upper",
+            upper_skill(),
+            b"tr a-z A-Z",
+            &[("zz".to_string(), "ZZ".to_string())],
+            true,
+            "test",
+            &params(&f, Taint::Trusted, true),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(tie["decision"], "rejected", "decision was {tie}");
+        // An EXTENSION: also swap spaces for underscores — old gold still passes (no spaces in it),
+        // the new example proves behavior the incumbent fails. Must be promoted, and the new
+        // example must become recorded gold.
+        let golds_before = f.registry.accepted_runs("upper").unwrap().len();
+        let ext = improve_skill(
+            &f.registry,
+            "upper",
+            upper_skill(),
+            b"tr 'a-z ' 'A-Z_'",
+            &[("a b".to_string(), "A_B".to_string())],
+            true,
+            "test",
+            &params(&f, Taint::Trusted, true),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(ext["decision"], "promoted", "decision was {ext}");
+        assert!(f.registry.accepted_runs("upper").unwrap().len() > golds_before);
     }
 
     #[tokio::test]

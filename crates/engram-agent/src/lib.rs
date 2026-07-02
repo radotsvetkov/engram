@@ -88,9 +88,10 @@ fn base_tools() -> ToolRegistry {
         .with(Arc::new(tools::ImageGenerateTool))
         .with(Arc::new(tools::TextToSpeechTool))
         .with(Arc::new(tools::TranscribeTool))
-        // Self-improving skills: find, run, author, and improve small reusable programs.
+        // Self-improving skills: find, run, read, author, and improve small reusable programs.
         .with(Arc::new(skills_tools::SkillSearchTool))
         .with(Arc::new(skills_tools::SkillRunTool))
+        .with(Arc::new(skills_tools::SkillSourceTool))
         .with(Arc::new(skills_tools::SkillAuthorTool))
         .with(Arc::new(skills_tools::SkillImproveTool));
     #[cfg(feature = "web")]

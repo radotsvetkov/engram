@@ -3120,29 +3120,43 @@ pub(crate) async fn run_agent_task_cb(
                         .scope(write_scope),
                 );
             }
-            // SELF-IMPROVEMENT REFLECTION (opt-in via auto_distill_skills): after a task that did
-            // real multi-step work, reflect once on whether it yielded a reusable program — a NEW
-            // skill or an IMPROVEMENT to an existing one — and verify it before it can become active.
-            // Runs REGARDLESS of taint (unlike the episodic capture above): the reflection is a
-            // separate Trusted model call, and the verification gate (replay against gold, sandboxed,
-            // capability-clamped) is what protects activation. One bounded model call, gated by the
-            // flag AND a tool-step threshold, so a daemon that opts out pays nothing.
-            const MIN_STEPS_TO_DISTILL: usize = 3;
-            if app.cfg().security.auto_distill_skills
-                && run.steps.len() >= MIN_STEPS_TO_DISTILL
-                && !app.cfg().security.disable_skill_author
-            {
+        }
+        // SELF-IMPROVEMENT REFLECTION (opt-in via auto_distill_skills): after a task that did
+        // real multi-step work, reflect once on whether it yielded a reusable program — a NEW
+        // skill or an IMPROVEMENT to an existing one — and verify it before it can become active.
+        // Runs REGARDLESS of taint (unlike the episodic capture above): the reflection is a
+        // separate Trusted model call, and the verification gate (replay against gold, sandboxed,
+        // capability-clamped) is what protects activation. One bounded model call, gated by the
+        // flag AND a tool-step threshold, so a daemon that opts out pays nothing.
+        //
+        // Fires on limit/budget stops too, not only "final": a run that spent its whole step or
+        // token budget did the most multi-step work of all — exactly the runs whose method is
+        // worth distilling. ("loop"/"halted"/"error" stops stay excluded: circling or killed work
+        // is not a method worth keeping.)
+        //
+        // DETACHED: the reflection is spawned, not awaited — the user's answer must never wait on
+        // the distiller's model call. Everything it decides lands in the signed ledger
+        // (skill.reflect / skill.distill / skill.learn), not in this response.
+        const MIN_STEPS_TO_DISTILL: usize = 3;
+        if !dry_run
+            && matches!(run.stopped, "final" | "limit" | "budget")
+            && app.cfg().security.auto_distill_skills
+            && run.steps.len() >= MIN_STEPS_TO_DISTILL
+            && !app.cfg().security.disable_skill_author
+        {
+            let app2 = app.clone();
+            let gateway2 = gateway.clone();
+            let model2 = model.clone();
+            let task2 = task.to_string();
+            let answer2 = run.answer.clone();
+            let steps2 = run.steps.len();
+            let tainted2 = taint.is_untrusted();
+            tokio::spawn(async move {
                 reflect_on_skills(
-                    app,
-                    &gateway,
-                    &model,
-                    task,
-                    &run.answer,
-                    run.steps.len(),
-                    taint.is_untrusted(),
+                    &app2, &gateway2, &model2, &task2, &answer2, steps2, tainted2,
                 )
                 .await;
-            }
+            });
         }
     }
     result
@@ -3153,7 +3167,11 @@ pub(crate) async fn run_agent_task_cb(
 /// or installs a NEW proposed skill and tries to EARN its activation by replaying it against its own
 /// asserted gold. Nothing here trusts the proposal on faith — a new skill activates only if it (a) is
 /// pure (no egress) and (b) reproduces every gold example in the sandbox; otherwise it is left
-/// proposed for a human to adopt. Best-effort: any failure is logged and dropped.
+/// proposed for a human to adopt.
+///
+/// EVERY exit signs a `skill.reflect` event into the ledger — a decline, a parse failure, a gateway
+/// error, an improvement verdict, an adoption verdict. The loop's whole funnel is auditable: "why
+/// did no skill come out of that task?" is a ledger query, not a debugging session.
 async fn reflect_on_skills(
     app: &App,
     gateway: &engram_gateway::Gateway,
@@ -3165,20 +3183,68 @@ async fn reflect_on_skills(
     // answer can embed injected code, so its verify/replay must be sandboxed (fail-closed downstream).
     source_tainted: bool,
 ) {
+    let reflect_event = |payload: serde_json::Value| {
+        let mut p = payload;
+        p["steps"] = json!(steps);
+        let _ = app.ledger.append("skill.reflect", "distiller", p);
+    };
     let existing = app.registry.skills().unwrap_or_default();
-    // A human-readable catalog (id — description) so the model can pick an improvement target.
+    // Real-use experience per skill from the ledger tail: (runs, failures). A skill that keeps
+    // failing in production is the best improvement target there is — put that signal in front of
+    // the model instead of making it guess which incumbents are weak.
+    let mut stats: std::collections::HashMap<String, (u32, u32)> = Default::default();
+    if let Ok(entries) = app.ledger.read_all() {
+        for e in entries.iter().rev().take(4000) {
+            if e.kind != "skill.run" {
+                continue;
+            }
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(e.payload.get()) {
+                if let Some(id) = v.get("id").and_then(serde_json::Value::as_str) {
+                    let st = stats.entry(id.to_string()).or_default();
+                    st.0 += 1;
+                    if v.get("ok").and_then(serde_json::Value::as_bool) == Some(false) {
+                        st.1 += 1;
+                    }
+                }
+            }
+        }
+    }
+    // A human-readable catalog (id — description [experience]) so the model can pick an improvement
+    // target. Falls back to the LATEST version's manifest for a proposed (inactive) skill — those
+    // are legitimate improvement targets too, not invisible.
     let catalog = existing
         .iter()
         .filter_map(|id| {
-            app.registry
+            let m = app
+                .registry
                 .load_active(id)
                 .ok()
-                .map(|(s, _)| format!("{id} — {}", s.manifest.description))
+                .map(|(s, _)| s.manifest)
+                .or_else(|| {
+                    let latest = app.registry.versions(id).ok()?.into_iter().max()?;
+                    app.registry.load(id, latest).ok().map(|(s, _)| s.manifest)
+                })?;
+            let experience = match stats.get(id.as_str()) {
+                Some((r, f)) if *f > 0 => format!(" [{r} runs, {f} FAILED recently]"),
+                Some((r, _)) => format!(" [{r} runs]"),
+                None => String::new(),
+            };
+            Some(format!("{id} — {}{experience}", m.description))
         })
         .collect::<Vec<_>>()
         .join("\n");
-    let Some(p) = distill::propose(gateway, model, task, answer, &existing, &catalog).await else {
-        return;
+    let p = match distill::propose(gateway, model, task, answer, &catalog).await {
+        distill::ProposeOutcome::Proposal(p) => p,
+        distill::ProposeOutcome::Unavailable => return, // mock: no model, no noise
+        distill::ProposeOutcome::Declined { reason, reply_head } => {
+            reflect_event(json!({ "outcome": "declined", "reason": reason, "reply": reply_head }));
+            return;
+        }
+        distill::ProposeOutcome::Error(e) => {
+            tracing::warn!("reflection: distiller call failed: {e}");
+            reflect_event(json!({ "outcome": "error", "error": e }));
+            return;
+        }
     };
     let backend = {
         let c = app.cfg();
@@ -3186,15 +3252,54 @@ async fn reflect_on_skills(
     };
     let params = skill_run_params(app, backend.as_deref(), source_tainted);
 
-    if p.improves {
-        // IMPROVEMENT to an existing skill: A/B-replay the candidate against the incumbent's gold and
-        // promote it only if it measurably wins (shared path with the agent tool + HTTP endpoint).
-        let Ok((active_signed, _)) = app.registry.load_active(&p.id) else {
+    // Resolve the proposal against the registry. A NEW id that collides with a live skill BECOMES
+    // an improvement of it (the model re-solving a solved problem is a signal the incumbent is
+    // imperfect, not a reason to drop the work); an "improvement" of a skill that doesn't exist
+    // BECOMES a new skill under that id (models routinely say "improves" about the script they
+    // just wrote in the task — the work is real either way).
+    let target_exists = existing.iter().any(|e| e == &p.id);
+    let mut p = p;
+    if p.improves && !target_exists {
+        if app.registry.is_retired(&p.id) {
+            reflect_event(json!({ "outcome": "declined", "reason": "id_disabled", "id": p.id }));
+            return;
+        }
+        p.improves = false;
+        if p.description.trim().is_empty() {
+            p.description = "(distilled skill)".to_string();
+        }
+    }
+    if !p.improves && !target_exists && app.registry.is_retired(&p.id) {
+        // The id exists on disk but the user switched it off — re-proposing under it would install
+        // invisible versions forever (skills() hides retired dirs, set_active doesn't clear the
+        // marker). Refuse loudly; the user can re-enable the skill to make it a target again.
+        reflect_event(json!({ "outcome": "declined", "reason": "id_disabled", "id": p.id }));
+        return;
+    }
+
+    if p.improves || target_exists {
+        let active = app.registry.active_version(&p.id).unwrap_or(None);
+        // The incumbent's manifest: the active version's, else the latest version's (a proposed
+        // skill that never activated can still be improved — its next version re-enters the
+        // verify-and-adopt gate below).
+        let manifest = match active {
+            Some(_) => app.registry.load_active(&p.id).ok().map(|(s, _)| s.manifest),
+            None => app
+                .registry
+                .versions(&p.id)
+                .ok()
+                .and_then(|v| v.into_iter().max())
+                .and_then(|v| app.registry.load(&p.id, v).ok())
+                .map(|(s, _)| s.manifest),
+        };
+        let Some(m) = manifest else {
+            reflect_event(json!({ "outcome": "improve_failed", "id": p.id, "error": "no loadable version" }));
             return;
         };
-        let m = active_signed.manifest;
         if m.runtime != engram_skills::Runtime::Process {
-            return; // WASM skills are improved from the dashboard (WAT), not autonomously
+            // WASM skills are improved from the dashboard (WAT), not autonomously.
+            reflect_event(json!({ "outcome": "declined", "reason": "wasm_target", "id": p.id }));
+            return;
         }
         let description = if p.description.trim().is_empty() {
             m.description.clone()
@@ -3211,20 +3316,55 @@ async fn reflect_on_skills(
             interpreter: Some(p.interpreter.clone()),
             when_to_use: m.when_to_use.clone(),
         };
-        match engram_agent::improve_skill(
-            &app.registry,
-            &p.id,
-            candidate,
-            p.source.as_bytes(),
-            true,
-            "distiller",
-            &params,
-            Some(&app.halt),
-        )
-        .await
-        {
-            Ok(d) => tracing::info!(id = %p.id, decision = %d["decision"], "reflection: improvement attempt"),
-            Err(e) => tracing::warn!(id = %p.id, "reflection: improve failed: {e}"),
+        if active.is_some() {
+            // IMPROVEMENT to an ACTIVE skill: A/B-replay the candidate against the incumbent's gold
+            // and promote it only if it measurably wins (shared path with the agent tool + HTTP).
+            match engram_agent::improve_skill(
+                &app.registry,
+                &p.id,
+                candidate,
+                p.source.as_bytes(),
+                &p.examples,
+                true,
+                "distiller",
+                &params,
+                Some(&app.halt),
+            )
+            .await
+            {
+                Ok(d) => {
+                    tracing::info!(id = %p.id, decision = %d["decision"], "reflection: improvement attempt");
+                    reflect_event(json!({ "outcome": "improve", "id": p.id, "decision": d }));
+                }
+                Err(e) => {
+                    tracing::warn!(id = %p.id, "reflection: improve failed: {e}");
+                    reflect_event(json!({ "outcome": "improve_failed", "id": p.id, "error": e }));
+                }
+            }
+        } else {
+            // NEW VERSION of a PROPOSED (inactive) skill: park it inactive alongside the incumbent
+            // and let it try to EARN activation against the skill's recorded gold. This is the exit
+            // from the old deadlock where an unadopted skill could never change again.
+            let Ok(version) = app.registry.install_inactive(candidate, p.source.as_bytes()) else {
+                reflect_event(json!({ "outcome": "install_failed", "id": p.id }));
+                return;
+            };
+            for (inp, out) in &p.examples {
+                let _ = app
+                    .registry
+                    .record_run(&p.id, version, inp.as_bytes(), out.as_bytes(), 1.0);
+            }
+            match engram_agent::verify_and_adopt(&app.registry, &p.id, "distiller", true, &params, Some(&app.halt))
+                .await
+            {
+                Ok(d) => {
+                    tracing::info!(id = %p.id, version, decision = %d["decision"], "reflection: proposed-skill revision");
+                    reflect_event(json!({ "outcome": "revise_proposed", "id": p.id, "version": version, "decision": d }));
+                }
+                Err(e) => {
+                    reflect_event(json!({ "outcome": "verify_failed", "id": p.id, "version": version, "error": e }));
+                }
+            }
         }
         return;
     }
@@ -3252,6 +3392,7 @@ async fn reflect_on_skills(
         when_to_use: p.when_to_use.clone(),
     };
     let Ok(version) = app.registry.install_inactive(new, p.source.as_bytes()) else {
+        reflect_event(json!({ "outcome": "install_failed", "id": p.id }));
         return;
     };
     for (inp, out) in &p.examples {
@@ -3270,8 +3411,14 @@ async fn reflect_on_skills(
     match engram_agent::verify_and_adopt(&app.registry, &p.id, "distiller", true, &params, Some(&app.halt))
         .await
     {
-        Ok(d) => tracing::info!(id = %p.id, version, decision = %d["decision"], "reflection: new skill"),
-        Err(e) => tracing::warn!(id = %p.id, "reflection: verify/adopt failed: {e}"),
+        Ok(d) => {
+            tracing::info!(id = %p.id, version, decision = %d["decision"], "reflection: new skill");
+            reflect_event(json!({ "outcome": "new_skill", "id": p.id, "version": version, "decision": d }));
+        }
+        Err(e) => {
+            tracing::warn!(id = %p.id, "reflection: verify/adopt failed: {e}");
+            reflect_event(json!({ "outcome": "verify_failed", "id": p.id, "version": version, "error": e }));
+        }
     }
 }
 
@@ -4194,6 +4341,53 @@ fn prune_proposed_skills(app: &App, older_than_ms: u64) -> usize {
     pruned
 }
 
+/// Retry activation for up to `cap` proposed (inactive, enabled) skills that have gold to verify
+/// against. The one-shot verify at distill time fails closed when the environment isn't ready
+/// (shell off, sandbox missing); this sweep is how a proposal earns activation once it is. Every
+/// verdict is signed into the ledger by verify_and_adopt itself; a "needs_shell"/"needs_approval"/
+/// "rejected" verdict just leaves the skill proposed, so re-running is idempotent and cheap.
+async fn reverify_proposed_skills(app: &App, cap: usize) {
+    let backend = {
+        let c = app.cfg();
+        config::resolve_shell_backend(&c.security.shell_backend, &c.security.shell_target)
+    };
+    // Distilled code is unattended here — replay it with the tainted-source clamps on.
+    let params = skill_run_params(app, backend.as_deref(), true);
+    let mut tried = 0;
+    for id in app.registry.skills().unwrap_or_default() {
+        if tried >= cap {
+            break;
+        }
+        if app.registry.active_version(&id).ok().flatten().is_some() {
+            continue;
+        }
+        let has_gold = app
+            .registry
+            .accepted_runs(&id)
+            .map(|r| !r.is_empty())
+            .unwrap_or(false);
+        if !has_gold {
+            continue;
+        }
+        tried += 1;
+        match engram_agent::verify_and_adopt(&app.registry, &id, "reverify-sweep", true, &params, Some(&app.halt))
+            .await
+        {
+            Ok(d) => {
+                if d["decision"].as_str() == Some("adopted") {
+                    tracing::info!(id = %id, "re-verify sweep: proposed skill earned activation");
+                }
+                let _ = app.ledger.append(
+                    "skill.reflect",
+                    "reverify-sweep",
+                    json!({ "outcome": "reverify", "id": id, "decision": d }),
+                );
+            }
+            Err(e) => tracing::debug!(id = %id, "re-verify sweep: {e}"),
+        }
+    }
+}
+
 fn spawn_consolidation_tick(app: App) {
     tokio::spawn(async move {
         // First pass shortly after boot, then hourly.
@@ -4211,6 +4405,11 @@ fn spawn_consolidation_tick(app: App) {
                 if pruned > 0 {
                     tracing::info!(pruned, "skill-sleep: retired proposed skills never adopted");
                 }
+                // Re-verify sweep: proposals whose activation failed ONCE used to be stuck forever
+                // (e.g. distilled while the shell tool was off → "needs_shell" → dead). Conditions
+                // change — shell enabled, sandbox installed — so each tick retries a few. Bounded,
+                // and verify_and_adopt short-circuits already-active ids, so a clean state is free.
+                reverify_proposed_skills(&app, 3).await;
             }
             tokio::time::sleep(Duration::from_secs(3600)).await;
         }
@@ -4960,8 +5159,10 @@ async fn skills(State(app): State<App>) -> ApiResult {
         let active = app.registry.active_version(&id).map_err(err)?;
         let versions = app.registry.versions(&id).map_err(err)?;
         // A PROPOSED skill: distilled (or authored) but not yet activated. It exists on disk with
-        // versions but no active pointer, and isn't retired — the UI shows it with an "Adopt" action.
-        let proposed = active.is_none() && enabled && !versions.is_empty();
+        // versions but no active pointer — the UI shows it with an "Adopt" action. Independent of
+        // `enabled`: a disabled proposal is still a proposal (hiding it made distilled skills
+        // vanish from the UI entirely once toggled off, with no way back).
+        let proposed = active.is_none() && !versions.is_empty();
         // The gold-signal size: recorded (input, accepted-output) pairs a candidate is scored
         // against. Zero means there is no scored signal yet - the UI must say "unverified".
         let runs = app
@@ -5273,6 +5474,16 @@ struct ImproveReq {
     /// Override the interpreter for a process candidate (defaults to the active version's).
     interpreter: Option<String>,
     description: Option<String>,
+    /// For behavior-EXTENDING candidates: asserted (input, output) pairs proving the new behavior.
+    /// The candidate must reproduce them (and keep the old gold) while the incumbent fails them.
+    #[serde(default)]
+    examples: Vec<ImproveExample>,
+}
+
+#[derive(Deserialize)]
+struct ImproveExample {
+    input: String,
+    output: String,
 }
 
 /// Author + A/B-gate a candidate skill version. The candidate inherits the active version's
@@ -5318,11 +5529,14 @@ async fn skill_improve(
         config::resolve_shell_backend(&c.security.shell_backend, &c.security.shell_target)
     };
     let p = skill_run_params(&app, backend.as_deref(), false);
+    let new_examples: Vec<(String, String)> =
+        r.examples.into_iter().map(|e| (e.input, e.output)).collect();
     let decision = engram_agent::improve_skill(
         &app.registry,
         &id,
         candidate,
         &bytes,
+        &new_examples,
         true,
         "user",
         &p,
@@ -5363,6 +5577,13 @@ async fn skill_adopt(State(app): State<App>, Path(id): Path<String>) -> ApiResul
     let decision = engram_agent::verify_and_adopt(&app.registry, &id, "user", false, &p, Some(&app.halt))
         .await
         .map_err(ApiError)?;
+    // An explicit Adopt click on a disabled skill IS the re-enable: activating while the `retired`
+    // marker stands would leave it adopted-but-invisible (skills() hides retired dirs, so it would
+    // never be selected or listed as a skill again).
+    let activated = matches!(decision["decision"].as_str(), Some("adopted" | "approved"));
+    if activated && app.registry.is_retired(&id) {
+        let _ = app.registry.set_enabled(&id, true);
+    }
     Ok(Json(decision))
 }
 

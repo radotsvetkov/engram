@@ -208,6 +208,9 @@ impl Agent {
         ));
         let mut messages = vec![Message::system(system), Message::user(task)];
         let mut steps = Vec::new();
+        // Every tool-call id seen this run - backends can omit or repeat them; uniqueness here
+        // protects spill filenames and tool_result pairing (see the fix-up before each echo).
+        let mut seen_call_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut reflected = false;
         let mut last_sig = String::new();
         let mut repeat = 0usize;
@@ -313,7 +316,7 @@ impl Agent {
                 .max_tokens(8192);
             // Resilient model call: a transient provider failure retries with backoff instead of
             // aborting the whole run; a terminal failure salvages the work gathered so far (below).
-            let completion = match self.complete_with_retry(req, ctx.taint, &spent_counter).await {
+            let mut completion = match self.complete_with_retry(req, ctx.taint, &spent_counter).await {
                 Ok(c) => c,
                 Err(e) => {
                     return Ok(self
@@ -377,6 +380,16 @@ impl Agent {
                 let note = completion.text.trim();
                 if !note.is_empty() {
                     cb(note);
+                }
+            }
+            // Backends may omit or reuse tool-call ids; the spill filename and the tool_result
+            // pairing both key on them. Make ids unique across the WHOLE run before anything
+            // consumes them (echo below + run_tools + StepRecord all see the same fixed ids).
+            for (ci, c) in completion.tool_calls.iter_mut().enumerate() {
+                if c.id.is_empty() || !seen_call_ids.insert(c.id.clone()) {
+                    let base = if c.id.is_empty() { "call".to_string() } else { c.id.clone() };
+                    c.id = format!("{base}_{}_{}", steps.len(), ci);
+                    seen_call_ids.insert(c.id.clone());
                 }
             }
             messages.push(Message::assistant_tool_calls(
@@ -578,6 +591,19 @@ impl Agent {
             let name = call.name.clone();
             let dry_run = ctx.policy.dry_run;
             set.spawn(async move {
+                // A provider-level diagnosis (unparseable/truncated arguments) rides in on the
+                // reserved key: don't run the tool - return the diagnosis as the tool result so
+                // the MODEL can re-send a corrected call instead of hearing "missing argument".
+                if let Some(msg) = args.get(engram_gateway::ARGS_ERROR_KEY).and_then(|v| v.as_str()) {
+                    return (i, (format!("error: {msg}"), false, false));
+                }
+                // On an argument error, restate the tool's schema - "missing 'path'" alone made
+                // models repeat the same broken call; the schema turns the retry into a fix.
+                let schema_hint = |t: &std::sync::Arc<dyn crate::tool::Tool>| {
+                    let s = t.schema().to_string();
+                    let s: String = s.chars().take(400).collect();
+                    format!(" Expected arguments schema: {s}")
+                };
                 let out = match tool {
                     // Dry-run / planning-only: don't execute side-effecting tools; report
                     // what would have happened so the plan can be previewed safely. Not
@@ -599,14 +625,20 @@ impl Agent {
                         match egress_decision(&ctx, &name, dest) {
                             Ok(()) => match t.run(&args, &ctx).await {
                                 Ok(o) => (o, true, true),
-                                Err(e) => (format!("error: {e}"), false, true),
+                                Err(e) => {
+                                    let hint = if e.contains("missing") { schema_hint(&t) } else { String::new() };
+                                    (format!("error: {e}{hint}"), false, true)
+                                }
                             },
                             Err(msg) => (msg, false, false),
                         }
                     }
                     Some(t) => match t.run(&args, &ctx).await {
                         Ok(o) => (o, true, true),
-                        Err(e) => (format!("error: {e}"), false, true),
+                        Err(e) => {
+                            let hint = if e.contains("missing") { schema_hint(&t) } else { String::new() };
+                            (format!("error: {e}{hint}"), false, true)
+                        }
                     },
                     None => (format!("error: unknown tool '{name}'"), false, false),
                 };
@@ -1041,8 +1073,9 @@ fn edit_target(tool: &str, args: &serde_json::Value) -> Option<String> {
     if !matches!(tool, "write_file" | "edit_file" | "append_file") {
         return None;
     }
-    args.get("path")
-        .or_else(|| args.get("file"))
+    ["path", "file", "filename", "file_path"]
+        .iter()
+        .find_map(|k| args.get(*k))
         .and_then(|v| v.as_str())
         .map(str::to_string)
 }

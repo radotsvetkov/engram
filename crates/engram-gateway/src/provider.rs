@@ -72,21 +72,101 @@ pub fn normalize_tool_args(raw: &serde_json::Value) -> serde_json::Value {
             }
             match serde_json::from_str::<serde_json::Value>(t) {
                 // Double-encoded: a JSON string whose content is itself JSON.
-                Ok(serde_json::Value::String(inner)) => {
-                    serde_json::from_str(&inner).unwrap_or(serde_json::json!({}))
-                }
+                Ok(serde_json::Value::String(inner)) => serde_json::from_str(&inner)
+                    .unwrap_or_else(|_| args_error_value("arguments were not valid JSON", &inner)),
                 Ok(v) => v,
-                Err(_) => serde_json::json!({}),
+                // PRESENT but unparseable is a signal, not an empty call: truncation at the
+                // output-token limit cuts JSON mid-string (the live edit_file failure), and some
+                // backends emit trailing-comma JSON. Coercing to {} made that look like the model
+                // sent nothing - the loop retried the identical call until the stuck guard fired.
+                Err(_) => args_error_value("arguments were not valid JSON", t),
             }
         }
         _ => serde_json::json!({}),
     }
 }
 
+/// Reserved key carrying a parse/truncation diagnosis through the ToolCall's `arguments`. The
+/// agent loop short-circuits on it (the tool never runs) and returns the message as the tool
+/// result, so the MODEL learns what went wrong and can re-send a corrected call.
+pub const ARGS_ERROR_KEY: &str = "_args_error";
+
+fn args_error_value(what: &str, raw: &str) -> serde_json::Value {
+    let prefix: String = raw.chars().take(160).collect();
+    serde_json::json!({ ARGS_ERROR_KEY:
+        format!("{what} (starts: {prefix}…). Re-send this tool call with arguments as one strict JSON object; for large file content, write in smaller chunks with append_file.") })
+}
+
+/// Find a tool call's arguments WHEREVER the backend put them. The OpenAI spec location is
+/// function.arguments, but live traffic shows calls with arguments at the call level, under
+/// legacy/alternate keys, or absent entirely (reasoning models occasionally emit the call shell
+/// first). First non-empty candidate wins; everything is normalized for shape.
+pub fn extract_tool_args(call: &serde_json::Value) -> serde_json::Value {
+    let candidates = [
+        &call["function"]["arguments"],
+        &call["arguments"],
+        &call["function"]["parameters"],
+        &call["function"]["input"],
+        &call["parameters"],
+        &call["input"],
+        &call["args"],
+    ];
+    for cand in candidates {
+        if cand.is_null() {
+            continue;
+        }
+        let v = normalize_tool_args(cand);
+        let non_empty = match &v {
+            serde_json::Value::Object(o) => !o.is_empty(),
+            serde_json::Value::Array(a) => !a.is_empty(),
+            _ => false,
+        };
+        if non_empty {
+            return v;
+        }
+    }
+    serde_json::json!({})
+}
+
 #[cfg(test)]
 mod arg_norm_tests {
-    use super::normalize_tool_args;
+    use super::{extract_tool_args, normalize_tool_args};
     use serde_json::json;
+
+    #[test]
+    fn finds_arguments_wherever_the_backend_put_them() {
+        // spec location, string form
+        assert_eq!(
+            extract_tool_args(&json!({"function":{"name":"w","arguments":"{\"path\":\"a\"}"}})),
+            json!({"path":"a"})
+        );
+        // spec location, object form
+        assert_eq!(
+            extract_tool_args(&json!({"function":{"name":"w","arguments":{"path":"a"}}})),
+            json!({"path":"a"})
+        );
+        // call-level arguments (function.arguments missing entirely)
+        assert_eq!(
+            extract_tool_args(&json!({"name":"w","arguments":{"path":"a"}})),
+            json!({"path":"a"})
+        );
+        // alternate keys some backends use
+        assert_eq!(
+            extract_tool_args(&json!({"function":{"name":"w","parameters":{"path":"a"}}})),
+            json!({"path":"a"})
+        );
+        assert_eq!(
+            extract_tool_args(&json!({"function":{"name":"w"},"input":{"path":"a"}})),
+            json!({"path":"a"})
+        );
+        // empty spec slot must NOT shadow a populated alternate slot
+        assert_eq!(
+            extract_tool_args(&json!({"function":{"name":"w","arguments":""},"arguments":{"path":"a"}})),
+            json!({"path":"a"})
+        );
+        // genuinely nothing -> {}
+        assert_eq!(extract_tool_args(&json!({"function":{"name":"w"}})), json!({}));
+    }
 
     #[test]
     fn accepts_every_shape_backends_actually_send() {
@@ -99,10 +179,16 @@ mod arg_norm_tests {
             normalize_tool_args(&json!("\"{\\\"path\\\":\\\"a\\\"}\"")),
             json!({"path":"a"})
         );
-        // empty / null / garbage degrade to {} (never a crash)
+        // empty / null degrade to {} (a legitimate no-arg call)
         assert_eq!(normalize_tool_args(&json!("")), json!({}));
         assert_eq!(normalize_tool_args(&serde_json::Value::Null), json!({}));
-        assert_eq!(normalize_tool_args(&json!("not json")), json!({}));
+        // PRESENT but unparseable (truncated / malformed) is a diagnosis, not an empty call:
+        // it must carry the reserved error key so the loop can tell the model what happened.
+        let garbage = normalize_tool_args(&json!("not json"));
+        assert!(garbage.get(super::ARGS_ERROR_KEY).and_then(|v| v.as_str())
+            .is_some_and(|m| m.contains("not valid JSON")), "{garbage}");
+        let truncated = normalize_tool_args(&json!("{\"path\":\"a.txt\",\"content\":\"abc"));
+        assert!(truncated.get(super::ARGS_ERROR_KEY).is_some(), "{truncated}");
     }
 }
 
@@ -322,6 +408,12 @@ mod anthropic {
         if anthropic {
             // Extended thinking: Claude models only; it requires temperature=1 and max_tokens above
             // the thinking budget, so bump both. Budget scales with effort.
+            // Extended thinking + tool use requires replaying thinking blocks in the follow-up
+            // request (we don't carry them), so Anthropic rejects the tool_result turn. Until
+            // thinking-block replay lands, effort only applies to tool-less Claude requests.
+            if body.get("tools").is_some() {
+                return;
+            }
             if !m.contains("claude") {
                 return;
             }
@@ -522,7 +614,8 @@ mod anthropic {
                         Some("tool_use") => tool_calls.push(ToolCall {
                             id: b["id"].as_str().unwrap_or("").to_string(),
                             name: b["name"].as_str().unwrap_or("").to_string(),
-                            arguments: b["input"].clone(),
+                            // null input round-trips badly (serializes as input:null) - use {}.
+                            arguments: if b["input"].is_null() { serde_json::json!({}) } else { b["input"].clone() },
                         }),
                         _ => {}
                     }
@@ -627,7 +720,8 @@ mod anthropic {
                             let arguments = if p.json.trim().is_empty() {
                                 serde_json::json!({})
                             } else {
-                                serde_json::from_str(&p.json).unwrap_or(serde_json::json!({}))
+                                serde_json::from_str(&p.json)
+                                    .unwrap_or_else(|_| args_error_value("tool arguments were not valid JSON (possibly truncated at the token limit)", &p.json))
                             };
                             tool_calls.push(ToolCall {
                                 id: p.id,
@@ -987,23 +1081,73 @@ mod http {
                 .json()
                 .await
                 .map_err(|e| GatewayError::Provider(e.to_string()))?;
-            let msg = &json["choices"][0]["message"];
-            let text = msg["content"].as_str().unwrap_or("").to_string();
-            let tool_calls = msg["tool_calls"]
+            // Some backends return 200 with an error body, or an empty choices array - both used
+            // to parse as a silent empty answer. Name the failure instead.
+            if let Some(e) = json.get("error").filter(|e| !e.is_null()) {
+                let m = e["message"].as_str().unwrap_or("provider returned an error payload");
+                return Err(GatewayError::Provider(m.to_string()));
+            }
+            let choices = json["choices"].as_array().filter(|a| !a.is_empty()).ok_or_else(|| {
+                GatewayError::Provider("provider returned no choices".to_string())
+            })?;
+            let finish = choices[0]["finish_reason"].as_str().unwrap_or("");
+            let msg = &choices[0]["message"];
+            // content may be a plain string OR an array of typed parts ({type:"text",text:...}).
+            let text = match &msg["content"] {
+                serde_json::Value::String(t) => t.clone(),
+                serde_json::Value::Array(parts) => parts
+                    .iter()
+                    .filter_map(|p| p["text"].as_str())
+                    .collect::<Vec<_>>()
+                    .join(""),
+                _ => String::new(),
+            };
+            let tool_calls: Vec<ToolCall> = msg["tool_calls"]
                 .as_array()
                 .map(|arr| {
                     arr.iter()
-                        .filter_map(|c| {
+                        .enumerate()
+                        .filter_map(|(i, c)| {
                             let f = &c["function"];
-                            Some(ToolCall {
-                                id: c["id"].as_str().unwrap_or("").to_string(),
-                                name: f["name"].as_str()?.to_string(),
-                                arguments: normalize_tool_args(&f["arguments"]),
-                            })
+                            // Some backends put the name/arguments at the CALL level instead of
+                            // under "function" (and a few omit ids) - accept both.
+                            let name = f["name"]
+                                .as_str()
+                                .or_else(|| c["name"].as_str())?
+                                .to_string();
+                            let arguments = extract_tool_args(c);
+                            if arguments.as_object().is_none_or(|o| o.is_empty()) {
+                                // Nothing recognizable anywhere: log the RAW call so the next
+                                // backend quirk is a log line, not a debugging session.
+                                let raw = c.to_string();
+                                tracing::warn!(tool = %name,
+                                    raw = %&raw[..raw.len().min(2000)],
+                                    "tool call arrived with empty arguments after normalization");
+                            }
+                            // A missing id breaks tool_result pairing on the NEXT request
+                            // (OpenAI-compat requires tool_call_id) - synthesize a stable one.
+                            let id = c["id"]
+                                .as_str()
+                                .filter(|s| !s.is_empty())
+                                .map(str::to_string)
+                                .unwrap_or_else(|| format!("call_{i}"));
+                            Some(ToolCall { id, name, arguments })
                         })
                         .collect()
                 })
                 .unwrap_or_default();
+            // The one reliable discriminator between "model sent nothing" and "we cut it off":
+            // finish_reason=length means the arguments ended at the token limit, not by intent.
+            let mut tool_calls = tool_calls;
+            if finish == "length" {
+                for c in &mut tool_calls {
+                    let empty = c.arguments.as_object().is_none_or(|o| o.is_empty());
+                    if empty || c.arguments.get(ARGS_ERROR_KEY).is_some() {
+                        c.arguments = serde_json::json!({ ARGS_ERROR_KEY:
+                            "this tool call was TRUNCATED at the output-token limit (finish_reason=length) - its arguments never fully arrived. Re-send it with smaller arguments; for large file content, write the file in parts with append_file." });
+                    }
+                }
+            }
             let tokens_in = json["usage"]["prompt_tokens"].as_u64().unwrap_or(0) as u32;
             let tokens_out = json["usage"]["completion_tokens"].as_u64().unwrap_or(0) as u32;
             Ok(Completion {

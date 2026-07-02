@@ -22,8 +22,10 @@ pub(crate) fn arg_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, String>
             .as_object()
             .map(|o| o.keys().map(String::as_str).collect())
             .unwrap_or_default();
+        // Actionable for the MODEL too (this string is its tool result): a bare "missing" made
+        // models repeat the same broken call; telling them how to re-call fixes the retry.
         format!(
-            "missing string argument '{key}' (received keys: [{}])",
+            "missing string argument '{key}' (received keys: [{}]). Re-send this tool call with ALL required arguments as a JSON object, e.g. {{\"{key}\": \"...\"}}.",
             got.join(", ")
         )
     })
@@ -41,7 +43,7 @@ pub(crate) fn arg_str_any<'a>(args: &'a Value, keys: &[&str]) -> Result<&'a str,
 }
 
 pub(crate) const PATH_KEYS: &[&str] = &["path", "file", "filename", "file_path"];
-pub(crate) const CONTENT_KEYS: &[&str] = &["content", "text", "contents", "body"];
+pub(crate) const CONTENT_KEYS: &[&str] = &["content", "text", "contents", "body", "data"];
 
 /// Reject non-public destinations (SSRF guard): only http(s), and never loopback,
 /// private, link-local (incl. the 169.254.169.254 cloud-metadata IP), or unspecified
@@ -1096,7 +1098,11 @@ impl Tool for EditFileTool {
         let rel = arg_str_any(args, PATH_KEYS)?;
         let path = confine(&ctx.workdir, rel)?;
         let old = arg_str(args, "old")?;
-        let new = args["new"].as_str().unwrap_or("");
+        // 'new' is REQUIRED by the schema: defaulting a dropped/mistyped value to "" silently
+        // DELETED the matched text. An explicit "" is still a legitimate deletion.
+        let new = args["new"]
+            .as_str()
+            .ok_or("missing string argument 'new' (pass \"\" explicitly to delete the matched text)")?;
         if old.is_empty() {
             return Err("'old' must not be empty".into());
         }

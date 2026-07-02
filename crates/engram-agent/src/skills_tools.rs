@@ -166,7 +166,15 @@ impl Tool for SkillRunTool {
     }
     async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
         let id = arg_str(args, "id")?;
-        let input = args["input"].as_str().unwrap_or("");
+        // Skills read stdin, often as JSON - so models frequently pass `input` as an OBJECT.
+        // Dropping it to "" ran the skill on empty stdin with plausible-but-wrong output;
+        // serialize instead, so the skill sees exactly what the model meant.
+        let input_owned = match &args["input"] {
+            Value::Null => String::new(),
+            Value::String(t) => t.clone(),
+            v => v.to_string(),
+        };
+        let input = input_owned.as_str();
         let (signed, _) = ctx
             .skills
             .load_active(id)

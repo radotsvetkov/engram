@@ -720,6 +720,9 @@
   .sk-pill { font:600 10.5px var(--mono); text-transform:uppercase; letter-spacing:.04em; border-radius:999px; padding:3px 10px; }
   .sk-pill.ok { color:var(--accent); background:var(--accent-soft); border:1px solid color-mix(in srgb,var(--accent) 28%,transparent); }
   .sk-pill.warn { color:var(--warning); background:color-mix(in srgb,var(--warning) 13%,transparent); border:1px solid color-mix(in srgb,var(--warning) 30%,transparent); }
+  /* "unverified" is a neutral starting state, not a warning — 43 amber pills read as a wall of
+     alarms. Quiet grey; amber stays reserved for states that genuinely want attention (proposed). */
+  .sk-pill.dim { color:var(--text-muted); background:var(--surface-2); border:1px solid var(--border); }
   .sk-events { margin-top:11px; display:flex; flex-direction:column; gap:5px; }
   .sk-ev { font-size:12.5px; line-height:1.5; color:var(--text-secondary); padding:5px 9px; border-radius:8px; background:var(--surface-2); border-left:2px solid var(--border-strong); }
   .sk-ev.promoted { border-left-color:var(--accent); }
@@ -843,6 +846,8 @@
   .statusbar .sb-right { margin-left:auto; display:flex; align-items:center; gap:11px; }
   .statusbar .sb-clk { cursor:pointer; transition:color var(--dur-1) var(--ease-out); }
   .statusbar .sb-clk:hover { color:var(--text-primary); }
+  .statusbar .sb-run { display:inline-flex; align-items:center; gap:6px; cursor:pointer; color:var(--accent); border-color:color-mix(in srgb,var(--accent) 30%,transparent); }
+  .statusbar .sb-run .pulse { width:6px; height:6px; }
   .statusbar .dot { width:7px; height:7px; border-radius:50%; background:var(--text-muted); transition:background .5s, box-shadow .5s; }
   .statusbar .dot.awake { background:var(--accent); box-shadow:0 0 7px rgba(69,200,168,.55); }
   .statusbar .mono, .statusbar .sb-center b, .statusbar .sb-right { font-variant-numeric:tabular-nums; }
@@ -1552,7 +1557,7 @@
 </div>
 <footer class="statusbar">
   <span class="sb-left"><span class="dot" id="sbDot"></span><span id="sbDaemon" class="mono">engramd</span></span>
-  <span class="sb-center" id="sbSpine"><span class="chip ok" id="ledgerChip" role="status" aria-live="polite" onclick="go('Activity')" title="every action is signed into a hash-chained ledger - click to browse and verify it"><span class="seal"></span>ledger ...</span></span>
+  <span class="sb-center" id="sbSpine"><span class="chip ok" id="ledgerChip" role="status" aria-live="polite" onclick="go('Activity')" title="every action is signed into a hash-chained ledger - click to browse and verify it"><span class="seal"></span>ledger ...</span><span class="chip sb-run" id="sbRun" style="display:none" onclick="go('Tasks')" title="Runs in flight right now - click to watch"><span class="pulse"></span><span id="sbRunN"></span></span></span>
   <span class="sb-right"><span id="sbTaint" class="sb-clk" onclick="openCC('tools')" title="Privacy guard: your private context can't leave this machine unless you allow it. Click to review tool & egress settings.">no egress</span><span class="chip sb-clk" id="costChip" role="status" aria-live="polite" onclick="openCC('cost')" title="Model spend today - click for budgets & limits">$0.00</span></span>
 </footer>
 <div class="overlay palette" id="palette" hidden onclick="if(event.target===this)closePalette()">
@@ -1664,10 +1669,13 @@ async function toggleHalt(){
 // stop reads as noise and implies something is wrong), shown with a live count while chats or tasks
 // are in flight, and pinned visible while halted so Resume is always reachable.
 function updateHaltBtn(){
+  const n=((state&&state.tasks)||[]).filter(t=>t.status==='doing').length + _busySessions.size;
+  // Passive heartbeat in the statusbar: a pulsing "N running" chip whenever anything is in flight.
+  const sr=document.getElementById('sbRun');
+  if(sr){ sr.style.display=n?'inline-flex':'none'; const sn=document.getElementById('sbRunN'); if(sn) sn.textContent=n===1?'1 running':(n+' running'); }
   const b=document.getElementById('haltBtn'); if(!b) return;
   const lbl=document.getElementById('haltLabel');
   if(halted){ b.style.display='inline-flex'; if(lbl) lbl.textContent='Resume'; b.title='Resume - let queued and running tasks continue'; return; }
-  const n=((state&&state.tasks)||[]).filter(t=>t.status==='doing').length + _busySessions.size;
   if(!n){ b.style.display='none'; return; }
   b.style.display='inline-flex';
   if(lbl) lbl.textContent = n>1 ? ('Stop · '+n) : 'Stop';
@@ -1830,7 +1838,7 @@ function composerHtml(ctx){
     ? `<button id="sendBtn" class="send send-icon" title="Send (Enter)" aria-label="Send" onclick="converseInline(document.getElementById('composer').value)"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M6 11l6-6 6 6"/></svg></button>`
     : `<button class="send" onclick="submitComposer(false)">Create task</button>`;
   const hint = ctx==='chat'
-    ? `<small><kbd>↵</kbd> send <kbd>⇧↵</kbd> newline <kbd>⌘↵</kbd> task</small>`
+    ? `<small id="composerHint"><kbd>↵</kbd> send <kbd>⇧↵</kbd> newline <kbd>⌘↵</kbd> task</small>`
     : `<small><kbd>↵</kbd> create <kbd>⌘↵</kbd> create &amp; run</small>`;
   // Add-context is a chat-only affordance; the tasks board composer creates tasks, not turns.
   const attachCtl = ctx==='chat'
@@ -1906,10 +1914,14 @@ function refreshSendBtn(){
   else if(_thinkTimer){ clearInterval(_thinkTimer); _thinkTimer=0; }
   if(typeof updateHaltBtn==='function') updateHaltBtn();
   const b=document.getElementById('sendBtn'); if(!b) return;
+  // While a run is in flight, the keys change meaning - say so where the keys are documented.
+  const hint=document.getElementById('composerHint');
   if(_busySessions.has(WS.activeSession)){
+    if(hint) hint.innerHTML='<kbd>↵</kbd> queue a follow-up <kbd>↵</kbd> with empty box stops';
     b.classList.add('is-stop'); b.title='Stop this chat'; b.setAttribute('aria-label','Stop the run');
     b.innerHTML='<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" stroke="none"><rect x="6" y="6" width="12" height="12" rx="2.5"/></svg>';
   } else {
+    if(hint) hint.innerHTML='<kbd>↵</kbd> send <kbd>⇧↵</kbd> newline <kbd>⌘↵</kbd> task';
     b.classList.remove('is-stop'); b.title='Send (Enter)'; b.setAttribute('aria-label','Send');
     b.innerHTML='<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M6 11l6-6 6 6"/></svg>';
   }
@@ -3197,7 +3209,7 @@ function skillCardHTML(s){
       ? `<span class="sk-pill warn" title="Engram distilled this skill from real use. It is NOT active yet — Adopt replays it against its recorded examples and activates it only if it reproduces them.">proposed · not active</span>`
       : verified
       ? `<span class="sk-pill ok" title="Improvements are scored by exact match against ${runs} recorded (input, accepted-output) pair${runs===1?'':'s'}.">verified · ${runs} scored run${runs===1?'':'s'}</span>`
-      : `<span class="sk-pill warn" title="No recorded (input, accepted-output) pairs to score against yet - so an improvement can't be measured. Honest signal, not a guess.">unverified - no scored runs yet</span>`;
+      : `<span class="sk-pill dim" title="No recorded (input, accepted-output) pairs to score against yet - so an improvement can't be measured. Add an example to make it scoreable. Honest signal, not a guess.">unverified</span>`;
     const events=(s.learn||[]).slice().reverse().map(e=>{
       const inc=(+e.incumbent_score||0), cand=(+e.candidate_score||0), reps=e.replays||0;
       const seq=e.seq?`<span class="sk-seq" title="copy the signed ledger hash" onclick="navigator.clipboard.writeText('${escAttr(e.hash||'')}')">◇ ${e.seq|0}</span>`:'';
@@ -4374,7 +4386,9 @@ function renderTaskReceipt(r){
 function recheckReceipt(){ if(_rcptTask) openTaskReceipt(_rcptTask); }
 function paletteCommands(){
   const g='Go to', a='Actions', s='Settings', cmds=[];
-  ALL_VIEWS.forEach(v=>cmds.push({group:g, t:v, ic:ICONS[v], run:()=>go(v)}));
+  ALL_VIEWS.forEach((v,i)=>cmds.push({group:g, t:v, ic:ICONS[v], key:i<9?('⌘'+(i+1)):'', run:()=>go(v)}));
+  // Recent chats are the most-reached-for destinations - jump straight into one.
+  ((WS&&WS.sessions)||[]).slice(0,5).forEach(s=>cmds.push({group:'Chats', t:s.title||'New chat', sub:s.updated_ms?fmtAgo(s.updated_ms):'', ic:ICONS.Chat, run:()=>{ go('Chat'); openSession(s.id); }}));
   cmds.push({group:a, t:'New task', sub:'create a task', run:()=>{ go('Tasks'); setTimeout(()=>document.getElementById('composer')?.focus(),60); }});
   cmds.push({group:a, t:'Ask Engram', sub:'open chat', ic:ICONS.Chat, run:()=>go('Chat')});
   cmds.push({group:a, t:'Verify ledger', sub:'re-check the signed chain', run:verifyLedgerNow});

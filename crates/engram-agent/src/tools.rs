@@ -107,16 +107,28 @@ pub(crate) enum LocalTarget {
 pub(crate) fn classify_browse(url: &str, workdir: &std::path::Path) -> Result<LocalTarget, String> {
     let u = url.trim();
     if let Some(rest) = u.strip_prefix("file://") {
-        // file:///abs/path — strip an optional localhost authority, percent-decode, canonicalize.
+        // file:///path — strip an optional localhost authority, percent-decode.
         let raw = rest.strip_prefix("localhost").unwrap_or(rest);
         let decoded = percent_decode(raw);
-        let p = std::path::Path::new(&decoded);
-        let canon = p
-            .canonicalize()
-            .map_err(|_| format!("file not found: {decoded}"))?;
         let root = workdir
             .canonicalize()
             .map_err(|e| format!("workdir error: {e}"))?;
+        // The model rarely knows the workdir's absolute path, so it sends file:///index.html
+        // (root) or a bare name. Try the literal path first, then resolve it RELATIVE to the
+        // workdir (stripping leading slashes), then the basename in the workdir - the first that
+        // exists wins. Every candidate is still confined to the workdir below.
+        let rel = decoded.trim_start_matches('/');
+        let base = std::path::Path::new(rel)
+            .file_name()
+            .map(std::path::PathBuf::from);
+        let mut candidates = vec![std::path::PathBuf::from(&decoded), root.join(rel)];
+        if let Some(b) = base {
+            candidates.push(root.join(b));
+        }
+        let canon = candidates
+            .iter()
+            .find_map(|c| c.canonicalize().ok())
+            .ok_or_else(|| format!("file not found in the working directory: {decoded}"))?;
         if !canon.starts_with(&root) {
             return Err(
                 "refusing to open a file outside the working directory (only files the agent \
@@ -174,6 +186,16 @@ fn hex_val(c: u8) -> Option<u8> {
         b'a'..=b'f' => Some(c - b'a' + 10),
         b'A'..=b'F' => Some(c - b'A' + 10),
         _ => None,
+    }
+}
+
+/// The URL to actually hand Chrome: a resolved `file://` for a workdir file (the model's guessed
+/// path may be wrong, e.g. file:///name.html; the resolved canonical path is what opens), else the
+/// URL unchanged.
+pub(crate) fn browse_url(original: &str, target: &LocalTarget) -> String {
+    match target {
+        LocalTarget::File(p) => format!("file://{}", p.display()),
+        _ => original.to_string(),
     }
 }
 
@@ -787,6 +809,17 @@ mod ssrf_guard_tests {
             guard_browse_url(&u, wd, true).await,
             Ok(LocalTarget::File(_))
         ));
+
+        // The model rarely knows the absolute workdir path: file:///page.html (root form) and a
+        // bare name must resolve against the workdir, not filesystem root.
+        assert!(matches!(
+            guard_browse_url("file:///page.html", wd, false).await,
+            Ok(LocalTarget::File(_))
+        ));
+        // browse_url turns the resolved target into a canonical file:// URL Chrome can open.
+        if let Ok(t) = guard_browse_url("file:///page.html", wd, false).await {
+            assert!(super::browse_url("file:///page.html", &t).ends_with("/page.html"));
+        }
 
         // A file OUTSIDE the workdir is refused (no file:///etc/passwd).
         assert!(guard_browse_url("file:///etc/hosts", wd, false).await.is_err());
@@ -2266,13 +2299,28 @@ const CHROME_FLAGS: &[&str] = &[
     "--disable-extensions",
 ];
 
-/// A dedicated, per-process Chrome profile dir. Without `--user-data-dir` Chrome uses the default
-/// profile, so when the user already has Chrome open our headless launch can't start (locked
-/// profile) and produces no output. A unique dir makes every Engram Chrome an independent instance.
-fn chrome_profile_dir() -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("engram-chrome-{}", std::process::id()));
+/// A FRESH, unique Chrome profile dir for a single one-shot launch. Without `--user-data-dir`
+/// Chrome uses the default profile (locked when the user has Chrome open). A per-PROCESS dir wasn't
+/// enough: two one-shot launches in the same daemon (e.g. a screenshot the model retries) then
+/// share one dir and the second can't lock it → it hangs → "browser timed out". A per-CALL dir
+/// makes every launch independent; the returned guard removes it when the call ends.
+fn fresh_chrome_profile() -> ChromeProfile {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let d = std::env::temp_dir().join(format!("engram-chrome-{}-{}", std::process::id(), n));
     let _ = std::fs::create_dir_all(&d);
-    d
+    ChromeProfile(d)
+}
+struct ChromeProfile(std::path::PathBuf);
+impl Drop for ChromeProfile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+/// Headless Chrome on macOS legitimately needs several seconds to cold-start when spawned by a
+/// background app; give a one-shot render real headroom so a first launch isn't cut short.
+fn browse_timeout(requested: u64) -> u64 {
+    requested.max(60)
 }
 
 /// Build a Chrome `--host-resolver-rules` flag that PINS the URL's host to the single vetted IP
@@ -2308,9 +2356,10 @@ async fn browse_pin(url: &str) -> Result<Option<String>, String> {
 async fn chrome_dump_dom(url: &str, timeout: u64) -> Result<String, String> {
     let chrome = find_chrome().ok_or("no Chrome/Chromium found (set ENGRAM_CHROME)")?;
     let pin = browse_pin(url).await?;
+    let profile = fresh_chrome_profile();
     let fut = tokio::process::Command::new(&chrome)
         .args(CHROME_FLAGS)
-        .arg(format!("--user-data-dir={}", chrome_profile_dir().display()))
+        .arg(format!("--user-data-dir={}", profile.0.display()))
         .args(pin.as_deref())
         .arg("--dump-dom")
         .arg(url)
@@ -2318,7 +2367,7 @@ async fn chrome_dump_dom(url: &str, timeout: u64) -> Result<String, String> {
         // a Chrome process for the rest of the daemon's life.
         .kill_on_drop(true)
         .output();
-    let out = tokio::time::timeout(Duration::from_secs(timeout), fut)
+    let out = tokio::time::timeout(Duration::from_secs(browse_timeout(timeout)), fut)
         .await
         .map_err(|_| "browser timed out".to_string())?
         .map_err(|e| e.to_string())?;
@@ -2341,25 +2390,52 @@ async fn chrome_screenshot(
 ) -> Result<(), String> {
     let chrome = find_chrome().ok_or("no Chrome/Chromium found (set ENGRAM_CHROME)")?;
     let pin = browse_pin(url).await?;
-    let fut = tokio::process::Command::new(&chrome)
+    let profile = fresh_chrome_profile();
+    // Remove any stale file so we can detect THIS capture appearing.
+    let _ = std::fs::remove_file(out_path);
+    let mut child = tokio::process::Command::new(&chrome)
         .args(CHROME_FLAGS)
-        .arg(format!("--user-data-dir={}", chrome_profile_dir().display()))
+        .arg(format!("--user-data-dir={}", profile.0.display()))
         .args(pin.as_deref())
         .arg("--hide-scrollbars")
         .arg("--window-size=1280,1024")
         .arg(format!("--screenshot={}", out_path.display()))
         .arg(url)
-        // Same as chrome_dump_dom: don't leak a headless Chrome when the render times out.
         .kill_on_drop(true)
-        .output();
-    tokio::time::timeout(Duration::from_secs(timeout), fut)
-        .await
-        .map_err(|_| "browser timed out".to_string())?
-        .map_err(|e| e.to_string())?;
-    if !out_path.exists() {
-        return Err("screenshot was not produced".into());
+        .spawn()
+        .map_err(|e| format!("could not launch browser: {e}"))?;
+    // `--headless=new` WRITES the PNG then keeps running (it doesn't self-exit after --screenshot),
+    // so waiting for process exit would time out on a SUCCESS. Poll for the file, and once it is
+    // present and its size has settled, kill Chrome and return — this is what makes screenshots
+    // reliable. Only a real absence after the whole budget is a failure.
+    let deadline = std::time::Instant::now() + Duration::from_secs(browse_timeout(timeout));
+    let mut last_len: u64 = 0;
+    loop {
+        if let Ok(m) = std::fs::metadata(out_path) {
+            let len = m.len();
+            if len > 0 && len == last_len {
+                let _ = child.kill().await;
+                return Ok(());
+            }
+            last_len = len;
+        }
+        // Chrome exited on its own (crash or old-headless) — check the result once and stop.
+        if let Ok(Some(status)) = child.try_wait() {
+            if std::fs::metadata(out_path).map(|m| m.len() > 0).unwrap_or(false) {
+                return Ok(());
+            }
+            return Err(format!("browser exited without a screenshot (status {status})"));
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill().await;
+            return Err(if out_path.exists() {
+                "browser timed out finishing the screenshot".into()
+            } else {
+                "browser timed out before producing a screenshot (is the page reachable?)".into()
+            });
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
     }
-    Ok(())
 }
 
 pub struct BrowserReadTool;
@@ -2387,11 +2463,11 @@ impl Tool for BrowserReadTool {
         // Permit previewing a workdir file or a loopback dev server (clean runs); public URLs are
         // vetted + exfil-guarded exactly as before.
         let trifecta = ctx.taint.is_untrusted() && ctx.sensitive && !ctx.policy.approved;
-        guard_browse_url(url, &ctx.workdir, trifecta).await?;
+        let target = guard_browse_url(url, &ctx.workdir, trifecta).await?;
         let _ = ctx
             .ledger
             .append("agent.browser_read", "agent", json!({ "url": url, "dest": crate::agent::host_of(url) }));
-        let html = chrome_dump_dom(url, ctx.policy.timeout_secs.max(30)).await?;
+        let html = chrome_dump_dom(&browse_url(url, &target), ctx.policy.timeout_secs.max(30)).await?;
         Ok(html_to_text(&html))
     }
 }
@@ -2435,7 +2511,7 @@ impl Tool for BrowserScreenshotTool {
             // (the interactive CDP session's Fetch interception + post-nav public-origin guard are
             // built for untrusted web browsing, not a local file/dev-server preview).
             if !matches!(target, LocalTarget::Public) {
-                chrome_screenshot(url, &path, ctx.policy.timeout_secs.max(30)).await?;
+                chrome_screenshot(&browse_url(url, &target), &path, ctx.policy.timeout_secs.max(30)).await?;
                 let _ = ctx
                     .ledger
                     .append("agent.browser_screenshot", "agent", json!({ "path": rel }));
@@ -2575,7 +2651,7 @@ impl Tool for BrowserOpenTool {
         // A workdir file / loopback preview: one-shot render (the interactive CDP session's Fetch
         // interception + post-nav public-origin guard are for untrusted web browsing, not previews).
         if !matches!(target, LocalTarget::Public) {
-            let html = chrome_dump_dom(url, ctx.policy.timeout_secs.max(30)).await?;
+            let html = chrome_dump_dom(&browse_url(url, &target), ctx.policy.timeout_secs.max(30)).await?;
             return Ok(html_to_text(&html));
         }
         ctx.browser.open(url).await

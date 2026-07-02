@@ -387,6 +387,22 @@
   .ctx-row .cx-sub { display:block; font-size:11.5px; color:var(--text-muted); margin-top:1px; line-height:1.45; }
   .ctx-row .cx-badge { margin-left:auto; flex:none; font:10.5px var(--mono); color:var(--text-muted); background:var(--surface-3); border:1px solid var(--border); border-radius:5px; padding:1px 6px; }
   .ctx-foot { border-top:1px solid var(--border); margin-top:5px; padding:8px 9px 4px; font-size:11px; color:var(--text-muted); line-height:1.5; }
+  @keyframes menuIn { from { opacity:0; transform:translateY(5px) scale(.985); } to { opacity:1; transform:none; } }
+  /* First-run tour: spotlight ring + coach card. Non-blocking - only the card takes pointer events. */
+  #tour { position:fixed; inset:0; z-index:209; pointer-events:none; }
+  .tour-hole { position:fixed; border-radius:12px; box-shadow:0 0 0 9999px rgba(5,7,9,.62), 0 0 0 1.5px var(--ring); }
+  .tour-card { position:fixed; width:310px; background:var(--surface-2); border:1px solid var(--border-strong);
+    border-radius:13px; box-shadow:var(--e4); padding:14px 15px 11px; pointer-events:auto; animation:menuIn .16s var(--ease-out); }
+  .tour-t { font-weight:600; font-size:13.5px; margin-bottom:5px; }
+  .tour-b { font-size:12.5px; color:var(--text-secondary); line-height:1.55; }
+  .tour-f { display:flex; align-items:center; gap:8px; margin-top:11px; }
+  .tour-dots { display:inline-flex; gap:4px; margin-right:auto; }
+  .tour-dots i { width:5px; height:5px; border-radius:50%; background:var(--border-strong); }
+  .tour-dots i.on { background:var(--accent); }
+  .tour-skip { background:none; border:none; color:var(--text-muted); font-size:12px; cursor:pointer; padding:5px 8px; border-radius:6px; }
+  .tour-skip:hover { color:var(--text-primary); background:var(--hover); }
+  .tour-next { background:var(--accent); color:var(--accent-ink); border:none; border-radius:7px; padding:5px 13px; font-weight:600; font-size:12px; cursor:pointer; }
+  .tour-next:hover { filter:brightness(1.06); }
   /* Follow-ups typed while a run is busy: queued below the feed, sent when the run finishes. */
   .queued-strip { display:flex; flex-direction:column; gap:6px; padding:6px max(18px, calc((100% - 720px) / 2)) 0; }
   .queued-msg { display:flex; align-items:center; gap:8px; font-size:13px; color:var(--text-secondary);
@@ -708,7 +724,15 @@
   .tool-chip { display:inline-flex; align-items:center; gap:6px; padding:5px 10px; border:1px solid var(--border,#2a2c34); border-radius:8px; font-size:12.5px; cursor:pointer; user-select:none; }
   .tool-chip input { margin:0; }
   .tool-chip:hover { border-color:var(--accent,#7b8cff); }
-  .sk-card { background:var(--surface-1); border:1px solid var(--border); border-radius:14px; padding:15px 17px; }
+  .sk-card { background:var(--surface-1); border:1px solid var(--border); border-radius:14px; padding:15px 17px;
+    cursor:pointer; transition:border-color var(--dur-1) var(--ease-out), background var(--dur-1) var(--ease-out); }
+  .sk-card:not(.open):hover { border-color:var(--border-strong); background:var(--surface-2); }
+  .sk-card.open { cursor:auto; }
+  .sk-card .sk-more { display:none; }
+  .sk-card.open .sk-more { display:block; }
+  .sk-chev { flex:none; color:var(--text-muted); display:inline-flex; transition:transform var(--dur-2) var(--ease-out); }
+  .sk-chev svg { width:14px; height:14px; }
+  .sk-card.open .sk-chev { transform:rotate(180deg); }
   .sk-card.proposed { border-left:3px solid var(--accent); background:linear-gradient(90deg,var(--accent-soft),transparent 60%); }
   .sk-head { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
   .sk-name { font-weight:600; font-size:15px; }
@@ -2577,7 +2601,9 @@ function paintFeed(toBottom=true){
       const badNote=(nBad&&!allBad)?`<span class="af-badn">· ${nBad} failed</span>`:'';
       act = `<div class="act-fold${open?' open':''}"><button class="af-head" onclick="actToggle(${mi})" aria-expanded="${open}" title="${open?'Hide':'Show'} how this answer was made"><span class="af-ic ${allBad?'bad':'ok'}">${allBad?'✕':'✓'}</span><span class="af-title">${dur?('Worked for '+dur):'Worked'}</span><span class="af-count">${parts?('· '+parts):''}</span>${badNote}<span class="af-chev"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span></button><div class="af-body">${notes}${steps}</div></div>`;
     }
-    const acts = m.streaming ? '' : `<div class="turn-acts">${when}<button title="Copy the reply as markdown" onclick="copyTurn(${mi},this)">${ICO_COPY} copy</button></div>`;
+    // Quiet provenance on hover: when it was written, by which model, and how long it took.
+    const meta=[m.model?esc(m.model):'', m.dur?fmtDur(m.dur/1000|0):''].filter(Boolean).join(' · ');
+    const acts = m.streaming ? '' : `<div class="turn-acts">${when}${meta?`<span class="turn-when">${meta}</span>`:''}<button title="Copy the reply as markdown" onclick="copyTurn(${mi},this)">${ICO_COPY} copy</button></div>`;
     return `<div class="turn">${act}<div class="msg engram"${m.streaming?' id="streamMsg"':''}>${body}</div>${ribbon}${learned}${acts}</div>`;
   }).join('') || chatWelcome();
   artsAfterPaint();   // detect substantial code/doc blocks, inject "Open in canvas" chips, sync the pane
@@ -2646,7 +2672,7 @@ async function chatSay(text, attachments){
   if(meta && (!meta.title || meta.title==='New chat')){ meta.title=text.replace(/\s+/g,' ').slice(0,42); if(state.route==='Chat') document.getElementById('viewname').textContent=meta.title; }
   if(meta){ WS.sessions=[meta, ...WS.sessions.filter(x=>x.id!==sid)]; }   // bump to top
   _busySessions.add(sid); renderSidebar();
-  const msg={role:'engram',text:'',streaming:true,t0:Date.now(),ts:Date.now()}; sess.messages.push(msg); paintFeed();
+  const msg={role:'engram',text:'',streaming:true,t0:Date.now(),ts:Date.now(),model:(CFG&&CFG.model_in_use)||''}; sess.messages.push(msg); paintFeed();
   const ac=new AbortController(); _chatAborts.set(sid, ac); refreshSendBtn();
   try {
     const r = await fetch('/v1/converse/stream',{method:'POST',headers:{...AUTH,'content-type':'application/json'},body:JSON.stringify({text, session:sid, attachments}), signal:ac.signal});
@@ -3203,6 +3229,14 @@ async function saveTeach(){
 
 // ---- Skills ----
 let _skills=[], _skFilter={q:'',cat:'all'};
+// Which skill cards are expanded. Collapsed-by-default turns 43 tall cards into a scannable list;
+// a card opens (Try it / examples / Improve / history) only when the user reaches for it.
+const _skOpen=new Set();
+function skToggleOpen(id){ if(_skOpen.has(id)) _skOpen.delete(id); else _skOpen.add(id); renderSkillList(); }
+function skCardClick(e,id){
+  if(e.target.closest('button,input,label,select,textarea,a,.vchip,.sk-rt')) return;   // real controls keep their clicks
+  skToggleOpen(id);
+}
 function skillCardHTML(s){
     const active=s.active, runs=s.runs||0, verified=runs>0, proposed=!!s.proposed;
     const ladder=(s.versions||[]).map(v=>`<span class="vchip${v===active?' active':''}" title="Activate v${v}" onclick="skillActivate('${esc(s.id)}',${v})">v${v}</span>`).join('<span class="varr">→</span>');
@@ -3241,11 +3275,13 @@ function skillCardHTML(s){
         <button class="sbtn ghost" onclick="skillImprove('${esc(s.id)}')" title="Let the agent rewrite the skill. The new version is replayed against your examples and kept ONLY if it scores better — every change signed.">Improve ↑</button>
         ${(s.versions||[]).length>1?`<button class="sbtn ghost" onclick="skillRevert('${esc(s.id)}')" title="Roll back to the previous version">Revert</button>`:''}
       </div>`;
-    return `<div class="sk-card${enabled?'':' off'}${proposed?' proposed':''}">
-      <div class="sk-head">${toggle}<span class="sk-name">${esc(s.id)}</span>${rtBadge}${catBadge}<span class="vladder">${ladder}</span><span class="grow"></span>${statusPill}</div>
+    // Proposed skills stay open — they're waiting on a decision (Adopt / add an example) and
+    // hiding the CTA behind a click would bury exactly the thing that needs attention.
+    const open = proposed || _skOpen.has(s.id);
+    return `<div class="sk-card${enabled?'':' off'}${proposed?' proposed':''}${open?' open':''}" onclick="skCardClick(event,'${esc(s.id)}')">
+      <div class="sk-head">${toggle}<span class="sk-name">${esc(s.id)}</span>${rtBadge}${catBadge}<span class="vladder">${ladder}</span><span class="grow"></span>${statusPill}<span class="sk-chev" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span></div>
       ${s.description?`<div class="sk-desc">${esc(s.description)}${caps?' — '+caps:''}</div>`:''}
-      ${evBlock}
-      ${body}
+      <div class="sk-more">${evBlock}${body}</div>
     </div>`;
 }
 async function renderSkills(){
@@ -4805,7 +4841,18 @@ function onSessionSpike(sid){
 async function refetchSession(sid){
   if(sid!==WS.activeSession || _busySessions.has(sid)) return;
   try{ const s=await J('/v1/sessions/'+encodeURIComponent(sid));
-    if(sid===WS.activeSession && !_busySessions.has(sid)){ WS.byId[sid]=s; if(state.route==='Chat') paintFeedSticky(); }
+    if(sid===WS.activeSession && !_busySessions.has(sid)){
+      // MERGE, don't clobber: the server copy is authoritative for text/steps/recalls, but it knows
+      // nothing about client-side presentation state - timestamps, which model wrote a reply, how
+      // long it took, and whether the user expanded an activity fold. Losing those on the 3s poll
+      // made hover metadata and open folds silently vanish moments after an answer landed.
+      const old=WS.byId[sid];
+      if(old && old.messages && s.messages && old.messages.length===s.messages.length){
+        s.messages.forEach((m,i)=>{ const o=old.messages[i];
+          if(o && o.role===m.role){ for(const k of ['ts','model','dur','t0','_actOpen']) if(o[k]!=null && m[k]==null) m[k]=o[k]; } });
+      }
+      WS.byId[sid]=s; if(state.route==='Chat') paintFeedSticky();
+    }
   }catch(_){}
 }
 // The desktop spawns the daemon a beat AFTER the window opens, so the very first fetches can race
@@ -5838,9 +5885,11 @@ const ENGRAM_SLASH = [
   ['/help','List slash commands'],
 ];
 const ENGRAM_KEYS = [
-  ['Command palette','⌘K'],['Settings','⌘,'],['Send / answer in chat','↵'],
-  ['New line in composer','⇧↵'],['Create a task','⌘↵'],['Create & run a task','⇧⌘↵'],
-  ['Close palette / settings / panel','Esc'],['Focus search in settings','/'],
+  ['Command palette','⌘K'],['Settings','⌘,'],['Jump to a view (rail order)','⌘1–9'],
+  ['Send / answer in chat','↵'],['New line in composer','⇧↵'],['Queue a follow-up while busy','↵'],
+  ['Create a task','⌘↵'],['Create & run a task','⇧⌘↵'],
+  ['Model menu (in chat)','⌘M'],['Attach files (in chat)','⌘U'],
+  ['Stop the running chat','Esc'],['Close palette / settings / panel','Esc'],['Focus search in settings','/'],
 ];
 function ccSlashRef(){
   const rows = ENGRAM_SLASH.map(r=>`<tr data-q="${escAttr((r[0]+' '+r[1]).toLowerCase())}"><td class="cmd">${esc(r[0])}</td><td class="dsc">${esc(r[1])}</td></tr>`).join('');
@@ -6102,9 +6151,9 @@ function engramOnboardSeen(){ try{ return localStorage.getItem('engram.onboarded
 function engramOnboardMark(){ try{ localStorage.setItem('engram.onboarded','1'); }catch(_){ } }
 function engramMaybeOnboard(){
   // Only nudge when there's genuinely no live model yet, and only once.
-  if(engramOnboardSeen()) return;
-  if(CFG && CFG.provider_id && CFG.provider_id!=='mock'){ engramOnboardMark(); return; }
-  if(CFG && CFG.http_enabled===false){ engramOnboardMark(); return; } // offline-only build: no point
+  if(engramOnboardSeen()) return engramMaybeTour();   // wizard already handled -> tour may still be due
+  if(CFG && CFG.provider_id && CFG.provider_id!=='mock'){ engramOnboardMark(); return engramMaybeTour(); }
+  if(CFG && CFG.http_enabled===false){ engramOnboardMark(); return engramMaybeTour(); } // offline-only build: no point
   setTimeout(engramOnboard, 350);
 }
 function engramOnboard(){
@@ -6120,7 +6169,51 @@ function obClose(skip){
   document.removeEventListener('keydown', obEsc);
   engramOnboardMark();
   if(skip) notify('You can connect a model anytime from Settings › Gateways','ok');
+  engramMaybeTour();   // the wizard is done either way - now show where things live
 }
+
+// ---- first-run tour: a few quiet coach marks that name the load-bearing controls. Non-blocking
+// (clicks pass through everywhere except the card), Esc or Skip ends it, never shows twice. ----
+const TOUR_STEPS=[
+  { sel:'#composer',   title:'Ask anything',                 body:'↵ sends a chat message. ⌘↵ turns the same words into a background task that can browse, run code, and write files.' },
+  { sel:'#ctxChip',    title:'See what ships with a message', body:'Project scope, working memory, persona, pinned files - the exact context, inspectable before you send.' },
+  { sel:'.modelpick',  title:'Pick the brain',               body:'Switch the model and its reasoning effort per chat. Providers and keys live in Settings → Gateways.' },
+  { sel:'.nav a[href="#Tasks"]', title:'Work runs in the background', body:'Tasks research and act on their own, and land with a signed receipt. ⌘2 jumps here; ⌘1-9 reach every view.' },
+  { sel:'#ledgerChip', title:'Proof, not trust',             body:'Every action - the agent’s and yours - is signed into a tamper-evident ledger. Click it anytime to verify.' },
+];
+function tourSeen(){ try{ return localStorage.getItem('engram.tourDone')==='1'; }catch(_){ return true; } }
+function tourMark(){ try{ localStorage.setItem('engram.tourDone','1'); }catch(_){ } }
+function engramMaybeTour(){
+  if(tourSeen()) return;
+  const ob=document.getElementById('onboard');
+  if(ob && !ob.hidden) return;                 // the connect-a-model wizard goes first
+  if(state.route!=='Chat') return;             // anchors live in the chat view
+  setTimeout(()=>tourShow(0), 450);
+}
+function tourShow(i){
+  tourHide();
+  while(i<TOUR_STEPS.length && !document.querySelector(TOUR_STEPS[i].sel)) i++;   // skip missing anchors
+  if(i>=TOUR_STEPS.length){ tourEnd(); return; }
+  const st=TOUR_STEPS[i], r=document.querySelector(st.sel).getBoundingClientRect(), pad=6;
+  const ov=document.createElement('div'); ov.id='tour';
+  ov.innerHTML=`
+    <div class="tour-hole" style="left:${r.left-pad}px;top:${r.top-pad}px;width:${r.width+2*pad}px;height:${r.height+2*pad}px"></div>
+    <div class="tour-card" id="tourCard" role="dialog" aria-label="${escAttr(st.title)}">
+      <div class="tour-t">${esc(st.title)}</div><div class="tour-b">${st.body}</div>
+      <div class="tour-f"><span class="tour-dots">${TOUR_STEPS.map((_,d)=>`<i class="${d===i?'on':''}"></i>`).join('')}</span>
+        <button class="tour-skip" onclick="tourEnd()">Skip</button>
+        <button class="tour-next" onclick="tourShow(${i+1})">${i===TOUR_STEPS.length-1?'Done':'Next'}</button></div>
+    </div>`;
+  document.body.appendChild(ov);
+  const card=ov.querySelector('#tourCard'), cw=310;
+  const cx=Math.min(Math.max(12, r.left + r.width/2 - cw/2), innerWidth-cw-12);
+  const cy= r.top > innerHeight/2 ? Math.max(12, r.top - card.offsetHeight - 14) : Math.min(innerHeight-card.offsetHeight-12, r.bottom + 14);
+  card.style.left=cx+'px'; card.style.top=cy+'px';
+  document.addEventListener('keydown', tourEsc);
+}
+function tourEsc(e){ if(e.key==='Escape'){ e.preventDefault(); tourEnd(); } }
+function tourHide(){ const el=document.getElementById('tour'); if(el) el.remove(); document.removeEventListener('keydown', tourEsc); }
+function tourEnd(){ tourHide(); tourMark(); }
 function obEsc(e){ if(e.key==='Escape') obClose(true); }
 function obShell(inner){
   return `<div class="ob-back" onclick="if(event.target===this)obClose(true)">

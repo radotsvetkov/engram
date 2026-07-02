@@ -6188,12 +6188,21 @@ function engramMaybeTour(){
   const ob=document.getElementById('onboard');
   if(ob && !ob.hidden) return;                 // the connect-a-model wizard goes first
   if(state.route!=='Chat') return;             // anchors live in the chat view
-  setTimeout(()=>tourShow(0), 450);
+  // A hidden window has no reliable layout (and rAF is suspended) - anchoring now would strand the
+  // spotlight on a stale rect. Wait for visibility, then let a frame settle before measuring.
+  if(document.visibilityState!=='visible'){
+    document.addEventListener('visibilitychange', function once(){ document.removeEventListener('visibilitychange', once); engramMaybeTour(); });
+    return;
+  }
+  setTimeout(()=>requestAnimationFrame(()=>tourShow(0)), 450);
 }
+let _tourI=0;
+function tourRepos(){ tourShow(_tourI); }
 function tourShow(i){
   tourHide();
   while(i<TOUR_STEPS.length && !document.querySelector(TOUR_STEPS[i].sel)) i++;   // skip missing anchors
   if(i>=TOUR_STEPS.length){ tourEnd(); return; }
+  _tourI=i;
   const st=TOUR_STEPS[i], r=document.querySelector(st.sel).getBoundingClientRect(), pad=6;
   const ov=document.createElement('div'); ov.id='tour';
   ov.innerHTML=`
@@ -6210,9 +6219,10 @@ function tourShow(i){
   const cy= r.top > innerHeight/2 ? Math.max(12, r.top - card.offsetHeight - 14) : Math.min(innerHeight-card.offsetHeight-12, r.bottom + 14);
   card.style.left=cx+'px'; card.style.top=cy+'px';
   document.addEventListener('keydown', tourEsc);
+  window.addEventListener('resize', tourRepos);   // keep the spotlight glued to its anchor
 }
 function tourEsc(e){ if(e.key==='Escape'){ e.preventDefault(); tourEnd(); } }
-function tourHide(){ const el=document.getElementById('tour'); if(el) el.remove(); document.removeEventListener('keydown', tourEsc); }
+function tourHide(){ const el=document.getElementById('tour'); if(el) el.remove(); document.removeEventListener('keydown', tourEsc); window.removeEventListener('resize', tourRepos); }
 function tourEnd(){ tourHide(); tourMark(); }
 function obEsc(e){ if(e.key==='Escape') obClose(true); }
 function obShell(inner){

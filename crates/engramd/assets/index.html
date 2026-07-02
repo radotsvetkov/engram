@@ -421,6 +421,9 @@
   .msg.user { align-self:flex-end; background:var(--surface-2); border:1px solid var(--border); border-radius:13px 13px 4px 13px; padding:10px 14px; max-width:78%; font-size:14.5px; line-height:1.55; white-space:pre-wrap; overflow-wrap:anywhere; }
   .msg.engram { font-family:var(--sans); font-size:14.5px; line-height:1.65; max-width:72ch; color:var(--text-primary); overflow-wrap:anywhere; }
   .msg.engram del { color:var(--text-muted); }
+  .msg.engram .md-list li.task { list-style:none; margin-left:-16px; }
+  .msg.engram .md-task { color:var(--text-muted); margin-right:2px; }
+  .msg.engram .md-task.done { color:var(--accent); }
   /* rendered markdown in replies */
   .msg.engram > :first-child { margin-top:0; } .msg.engram > :last-child { margin-bottom:0; }
   .msg.engram p { margin:0 0 11px; }
@@ -595,7 +598,10 @@
   .mind-foot .sbtn { flex:1; justify-content:center; }
   .mind-empty { padding:22px 16px; color:var(--text-muted); font-size:12.5px; line-height:1.55; text-align:center; }
   .mind-empty b { color:var(--text-secondary); }
-  @media (max-width:880px){ .mind-panel { display:none; } }
+  /* Narrow windows force the panel COLLAPSED (header stays as the reopen handle) - display:none
+     left no way to get working memory back at <880px. */
+  @media (max-width:880px){ .mind-panel { width:min(300px, 66vw); }
+    .mind-panel:not(.collapsed) .mind-lines { max-height:38vh; } }
   .brain-hint { position:absolute; right:18px; bottom:16px; font:11px var(--mono); color:var(--text-muted); opacity:.5; pointer-events:none; letter-spacing:.01em; transition:opacity .7s var(--ease-out,ease); }
   .brain-hint.faded { opacity:0; }
   /* Offset below center so the message never sits on top of the EPISODIC anchor label. */
@@ -1933,7 +1939,7 @@ function wireComposer(){
   // Repaint any pinned attachments from ATTACH so they survive a mid-compose re-render
   // (renderChat re-runs wireComposer); no-ops when #attachPills is absent (tasks ctx).
   if(typeof attachRenderPills==='function') attachRenderPills();
-  c.addEventListener('input',()=>{ c.style.height='auto'; c.style.height=Math.min(c.scrollHeight,180)+'px'; if(typeof slashSync==='function') slashSync(); });
+  c.addEventListener('input',()=>{ c.style.height='auto'; c.style.height=Math.min(c.scrollHeight,180)+'px'; if(typeof slashSync==='function') slashSync(); if(typeof updateJumpBtn==='function') updateJumpBtn(); });
   c.addEventListener('blur',()=>{ setTimeout(()=>{ if(typeof slashHide==='function') slashHide(); },120); });
   c.addEventListener('keydown',e=>{
     if(typeof slashKeydown==='function' && slashKeydown(e)) return;   // slash menu owns nav keys when open
@@ -1958,6 +1964,9 @@ function feedToBottom(){ const f=document.getElementById('feed'); if(f) f.scroll
 // Show the jump-to-latest button only when the reader has scrolled up away from the bottom.
 function updateJumpBtn(){
   const f=document.getElementById('feed'), b=document.getElementById('jumpBottom'); if(!f||!b) return;
+  // Anchor above the composer whatever its height - a grown multi-line draft used to swallow it.
+  const comp=document.querySelector('.chat > .composer');
+  if(comp) b.style.bottom=(comp.offsetHeight + 40)+'px';
   b.classList.toggle('show', (f.scrollHeight - f.scrollTop - f.clientHeight) > 120);
 }
 // Turn-level helpers: hover actions on every message, plus the activity fold's toggle.
@@ -1967,6 +1976,10 @@ function fmtDur(s){ s=Math.max(1,s|0); if(s<60) return s+'s'; const m=(s/60)|0, 
 function actToggle(mi){
   const s=WS.byId[WS.activeSession]; const m=s&&s.messages&&s.messages[mi]; if(!m) return;
   m._actOpen=!m._actOpen; paintFeed(false);
+}
+function ribMore(mi){
+  const s=WS.byId[WS.activeSession]; const m=s&&s.messages&&s.messages[mi]; if(!m) return;
+  m._ribAll=true; paintFeed(false);
 }
 function copyTurn(mi,btn){
   const s=WS.byId[WS.activeSession]; const m=s&&s.messages&&s.messages[mi]; if(!m) return;
@@ -2587,7 +2600,8 @@ function mdToHtml(raw){
   // GFM table helpers: a header row, a |---|:--:|---| separator, then body rows.
   const tIsSep=l=>/^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$/.test(l);
   const tIsRow=l=>/\|/.test(l)&&/\S/.test(l);
-  const tCells=l=>l.replace(/^\s*\|/,'').replace(/\|\s*$/,'').split('|').map(c=>c.trim());
+  // \| inside a cell is an escaped pipe, not a column break - protect, split, restore.
+  const tCells=l=>l.replace(/\\\|/g,'\uE000').replace(/^\s*\|/,'').replace(/\|\s*$/,'').split('|').map(c=>c.trim().replace(/\uE000/g,'|'));
   const BRE=/^\s*\x00B(\d+)\x00\s*$/;
   const isBlock=l=>/^\s*$/.test(l)||BRE.test(l)||/^#{1,6}\s/.test(l)||/^\s*([-*]|\d+\.)\s+/.test(l)||/^\s*>\s?/.test(l)||/^---+\s*$/.test(l)||tIsRow(l);
   while(i<lines.length){
@@ -2609,8 +2623,8 @@ function mdToHtml(raw){
     if(/^\s*>\s?/.test(ln)){ const buf=[]; while(i<lines.length&&/^\s*>\s?/.test(lines[i])){ buf.push(mdInline(esc(lines[i].replace(/^\s*>\s?/,'')))); i++; } out.push(`<blockquote>${buf.join('<br>')}</blockquote>`); continue; }
     if(/^\s*([-*]|\d+\.)\s+/.test(ln)){
       // Real list semantics: nesting from marker indent, ordered/bulleted switches at the same
-      // depth close and reopen the list (no silent renumbering), and an indented continuation
-      // line folds into its item instead of ending the list as a stray paragraph.
+      // depth close and reopen the list (no silent renumbering), an indented continuation line
+      // folds into its item, and GFM task items ([ ] / [x]) render as checklist glyphs.
       const items=[];
       while(i<lines.length){
         const l=lines[i];
@@ -2630,7 +2644,10 @@ function mdToHtml(raw){
           html+='</li>';
           if(stack[stack.length-1]!==it.ord){ close(); open(it.ord); }
         }
-        html+=`<li>${mdInline(esc(it.text))}`;
+        const tm=it.text.match(/^\[([ xX])\]\s+(.*)$/);
+        html+= tm
+          ? `<li class="task"><span class="md-task${tm[1]===' '?'':' done'}">${tm[1]===' '?'☐':'☑'}</span> ${mdInline(esc(tm[2]))}`
+          : `<li>${mdInline(esc(it.text))}`;
       }
       while(stack.length){ html+='</li>'; close(); }
       out.push(html); continue;
@@ -2690,9 +2707,12 @@ function paintFeed(toBottom=true){
     if(m.role==='user') return `<div class="turn t-user"><div class="msg user">${esc(m.text)}</div>
       <div class="turn-acts">${when}<button title="Copy" onclick="copyTurn(${mi},this)">${ICO_COPY} copy</button><button title="Put this back in the composer to tweak and resend" onclick="draftTurn(${mi})">${ICO_EDIT} edit</button></div></div>`;
     const refs=(m.recalled_refs&&m.recalled_refs.length)?m.recalled_refs:null;
+    // "grounded on 14" with only 6 chips and no way to see the rest read as a broken promise -
+    // a quiet "+N more" expands the full list in place.
+    const ribCap=m._ribAll?refs?.length:6;
     const ribbon = refs
-      ? `<div class="ribbon"><span class="rb-lbl">grounded on ${refs.length}</span>${refs.slice(0,6).map(r=>{const reg=BRAIN_REGIONS[r.region]||BRAIN_REGIONS.semantic; const sc=r.scope_kind==='project'?'<span class="sc-tag sc-proj" title="scoped to this project — it won\'t surface in your other projects">project</span>':r.scope_kind==='session'?'<span class="sc-tag sc-sess" title="scoped to this chat session">session</span>':''; return `<span class="recall clk" style="--lc:${reg.color}" title="${escAttr(r.text)}" onclick="recallOpen(${r.id|0})"><span class="rg">◇</span> ${esc((r.text||'').replace(/\s+/g,' ').slice(0,48))}${sc}</span>`;}).join('')}</div>`
-      : (m.recalled&&m.recalled.length)?`<div class="ribbon">${m.recalled.slice(0,5).map(r=>`<span class="recall" title="${escAttr(r)}"><span class="rg">◇</span> ${esc((r||'').replace(/\s+/g,' ').slice(0,54))}</span>`).join('')}</div>`:'';
+      ? `<div class="ribbon"><span class="rb-lbl">grounded on ${refs.length}</span>${refs.slice(0,ribCap).map(r=>{const reg=BRAIN_REGIONS[r.region]||BRAIN_REGIONS.semantic; const sc=r.scope_kind==='project'?'<span class="sc-tag sc-proj" title="scoped to this project — it won\'t surface in your other projects">project</span>':r.scope_kind==='session'?'<span class="sc-tag sc-sess" title="scoped to this chat session">session</span>':''; return `<span class="recall clk" style="--lc:${reg.color}" title="${escAttr(r.text)}" onclick="recallOpen(${r.id|0})"><span class="rg">◇</span> ${esc((r.text||'').replace(/\s+/g,' ').slice(0,48))}${sc}</span>`;}).join('')}${refs.length>6&&!m._ribAll?`<span class="recall clk" style="--lc:var(--text-muted)" title="Show all ${refs.length} memories" onclick="ribMore(${mi})">+${refs.length-6} more</span>`:''}</div>`
+      : (m.recalled&&m.recalled.length)?`<div class="ribbon"><span class="rb-lbl">grounded on ${m.recalled.length}</span>${m.recalled.slice(0,6).map(r=>`<span class="recall" title="${escAttr(r)}"><span class="rg">◇</span> ${esc((r||'').replace(/\s+/g,' ').slice(0,54))}</span>`).join('')}</div>`:'';
     const learned=(m.learned&&m.learned.length)?`<div class="learned">learned about you · ${m.learned.map(esc).join(' · ')}</div>`:'';
     const steps=turnStepsHtml(m), notes=turnNotesHtml(m);
     const body = m.text ? (m.streaming ? mdStream(m.text) : mdToHtml(m.text)) : (m.streaming?'':'...');
@@ -2795,8 +2815,12 @@ function streamTick(msg){
   _streamRAF=requestAnimationFrame(()=>{
     _streamRAF=0;
     if(!msg.streaming) return;                 // the final full paint already ran
+    // A pending frame can fire AFTER a session switch: #streamMsg then belongs to the newly
+    // painted session, and writing msg's tokens into it bled one chat's reply into another.
+    const cur=WS.byId[WS.activeSession];
+    if(!cur || !cur.messages || cur.messages.indexOf(msg)===-1) return;
     const el=document.getElementById('streamMsg'), f=document.getElementById('feed');
-    if(!el){ paintFeed(); return; }            // structure changed (e.g. session switch) -> full paint
+    if(!el){ paintFeedSticky(); return; }      // structure changed -> full (sticky, no force-scroll)
     // Sticky bottom: only auto-scroll when the reader is already near the end, so a long reply
     // doesn't yank them back down while they've scrolled up to read.
     const stick = !f || (f.scrollHeight - f.scrollTop - f.clientHeight) < 160;
@@ -3007,7 +3031,7 @@ async function renderMemory(){
   }
   const stats=data.stats||{}, total=stats.total ?? (data.nodes||[]).length;
   const legend = Object.entries(BRAIN_REGIONS).map(([k,r])=>
-    `<span class="lg" data-region="${k}" onclick="brainToggleRegion('${k}')"><i style="background:${r.color};color:${r.color}"></i>${r.label} <b>${stats.by_region?.[k]||0}</b></span>`).join('');
+    `<span class="lg" data-region="${k}" onclick="brainToggleRegion('${k}')" title="Click to dim/undim the ${escAttr(r.label)} region on the graph"><i style="background:${r.color};color:${r.color}"></i>${r.label} <b>${stats.by_region?.[k]||0}</b></span>`).join('');
   document.getElementById('view').innerHTML = `<div class="brain-wrap">
     <canvas id="brainCanvas"></canvas>
     <div class="brain-overlay">
@@ -3155,6 +3179,9 @@ function brainDraw(){
       if(d2<rr*rr && d2<best){ best=d2; hv=n; } }
     B.hover=hv;
   } else B.hover=null;
+  // The cursor tells the truth: pointer over a clickable node, grabbing mid-orbit, grab otherwise.
+  const cv=document.getElementById('brainCanvas');
+  if(cv) cv.style.cursor = (B.drag&&B.drag.moved>4) ? 'grabbing' : (B.hover ? 'pointer' : 'grab');
   const order=[...B.nodes].sort((a,b)=>a.depth-b.depth);   // back-to-front (painter's)
   // Synapses: faint connections from each node to its nearest same-region neighbours, computed once
   // and cached, so the cloud reads as a connected neural network rather than loose dots. A light
@@ -4825,9 +4852,20 @@ async function renderArtifacts(force){
       return;
     }
   }
-  const items=_artifacts.items, q=_artifacts.q.trim().toLowerCase();
+  const items=_artifacts.items;
   const counts={}; items.forEach(i=>{ counts[i.kind]=(counts[i.kind]||0)+1; });
   const chips=AF_KINDS.map(([k,lbl])=>{ const n=k==='all'?items.length:(counts[k]||0); return `<button class="afchip${_artifacts.filter===k?' active':''}" onclick="afFilter('${k}')">${lbl}${n?` <span class="afn">${n}</span>`:''}</button>`; }).join('');
+  view.innerHTML=`<div class="artifacts-view">
+    <div class="act-title">Artifacts</div>
+    <div class="act-sub">Everything your tasks and chats have produced, newest first. Click an image to preview, an HTML file to open it in your browser, a doc to read it. Each links back to the task or chat that made it.</div>
+    <div class="af-bar"><input class="af-search" placeholder="Search by name or task…" value="${escAttr(_artifacts.q)}" oninput="afSearch(this.value)"><div class="af-chips">${chips}</div><button class="afchip af-refresh" onclick="renderArtifacts(true)" title="Reload artifacts">↻ Refresh</button></div>
+    <div id="afBody">${afBodyHtml(items)}</div>
+  </div>`;
+}
+// The results alone - search repaints just this container, so the input is never recreated
+// (recreating it flashed every thumbnail and threw the caret to the end on each keystroke).
+function afBodyHtml(items){
+  const q=_artifacts.q.trim().toLowerCase();
   let shown=items.filter(i=>(_artifacts.filter==='all'||i.kind===_artifacts.filter) && (!q || (i.name+' '+(i.title||'')).toLowerCase().includes(q)));
   const truncated = shown.length>400; if(truncated) shown=shown.slice(0,400);
   const cards=shown.map(i=>{
@@ -4841,26 +4879,20 @@ async function renderArtifacts(force){
     if(i.kind==='image') return `<div class="af-card" onclick="imgLightbox('${escAttr(url)}')" title="${escAttr(i.name)}"><div class="af-thumb">${ctrls}<img loading="lazy" src="${escAttr(url)}" alt="" onerror="this.closest('.af-thumb').classList.add('broken')"></div>${meta}</div>`;
     return `<div class="af-card" onclick="artOpenFile(${escAttr(JSON.stringify(i.task))},${escAttr(JSON.stringify(i.path))},${escAttr(JSON.stringify(i.name))})" title="Open ${escAttr(i.name)}"><div class="af-thumb fileic">${ctrls}${AF_ICON[i.kind]||'📎'}</div>${meta}</div>`;
   }).join('');
-  const body = shown.length
+  return shown.length
     ? `<div class="af-grid">${cards}</div>${truncated?'<div class="muted" style="text-align:center;padding:14px">Showing the first 400. Narrow with a filter or search.</div>':''}`
     : (items.length
         ? `<div class="muted" style="padding:52px;text-align:center">No artifacts match that filter or search.</div>`
         : `<div class="sched-empty"><span class="se-glyph">${ICONS.Artifacts}</span>
              <div class="se-title">No artifacts yet</div>
              <div class="se-hint">When a task or chat creates a file — a chart, a report, data — it collects here, linked back to the run that made it. Try asking for one: <code>write a comparison to report.md</code></div></div>`);
-  view.innerHTML=`<div class="artifacts-view">
-    <div class="act-title">Artifacts</div>
-    <div class="act-sub">Everything your tasks and chats have produced, newest first. Click an image to preview, an HTML file to open it in your browser, a doc to read it. Each links back to the task or chat that made it.</div>
-    <div class="af-bar"><input class="af-search" placeholder="Search by name or task…" value="${escAttr(_artifacts.q)}" oninput="afSearch(this.value)"><div class="af-chips">${chips}</div><button class="afchip af-refresh" onclick="renderArtifacts(true)" title="Reload artifacts">↻ Refresh</button></div>
-    ${body}
-  </div>`;
 }
 function afFilter(k){ _artifacts.filter=k; renderArtifacts(); }
 function afSearch(v){
   _artifacts.q=v;
-  const focused=document.activeElement===document.querySelector('.af-search');
+  const el=document.getElementById('afBody');
+  if(el && _artifacts.items){ el.innerHTML=afBodyHtml(_artifacts.items); return; }   // input untouched: caret + focus survive
   renderArtifacts();
-  if(focused){ const s=document.querySelector('.af-search'); if(s){ s.focus(); s.setSelectionRange(s.value.length,s.value.length); } }
 }
 // Open the SOURCE that produced an artifact — a chat session opens in Chat, a board task opens its
 // run panel. (Previously every artifact tried to open a task, so chat artifacts opened nothing.)
@@ -5416,6 +5448,22 @@ function schedProgress(job){
   return Math.max(0.04, Math.min(1, (now - start) / span));
 }
 const SCHED_RUNNING = new Set();   // job ids currently firing from the UI
+// Countdown/meter tick: rendered-at-paint labels ("next in 2m") froze forever. A light in-place
+// updater keeps them honest while the Schedule view is open - no re-render, drafts stay safe.
+setInterval(()=>{
+  if(state.route!=='Schedule') return;
+  document.querySelectorAll('.sc-next[data-next]').forEach(el=>{
+    const next=+el.dataset.next||0; if(!next) return;
+    const dt=next-Date.now();
+    el.innerHTML = dt<=0 ? '<b>due</b> now' : ('next in <b>'+schedRel(dt)+'</b>');
+  });
+  document.querySelectorAll('.sc-meter[data-next]').forEach(el=>{
+    const next=+el.dataset.next||0, start=+el.dataset.start||(next-60000); if(!next) return;
+    const span=next-start, pct=span<=0?100:Math.round(Math.max(0.04,Math.min(1,(Date.now()-start)/span))*100);
+    const i=el.querySelector('i'); if(i) i.style.width=pct+'%';
+    el.classList.toggle('sc-due', next<=Date.now());
+  });
+}, 30000);
 
 function schedCardHtml(job){
   const cad = cadenceSchedule(job.recurrence);
@@ -5446,8 +5494,8 @@ function schedCardHtml(job){
       ${badge}
       <span class="sc-actions">${runBtn}${delBtn}</span>
     </div>
-    <div class="sc-meter${due?' sc-due':''}"><i style="width:${pct}%"></i></div>
-    <div class="sc-foot"><span class="sc-next">${schedNextLabel(job)}</span>${last}</div>
+    <div class="sc-meter${due?' sc-due':''}" data-start="${job.last_fire_ms||job.created_ms||0}" data-next="${job.next_fire_ms||0}"><i style="width:${pct}%"></i></div>
+    <div class="sc-foot"><span class="sc-next" data-next="${job.next_fire_ms||0}">${schedNextLabel(job)}</span>${last}</div>
   </div>`;
 }
 
@@ -5552,9 +5600,9 @@ async function runJobNow(id, e){
   SCHED_RUNNING.add(id);
   const card = document.querySelector(`.sched-card[data-job="${CSS.escape(id)}"]`);
   if(card){ const b = card.querySelector('.sc-run'); if(b){ b.disabled = true; b.innerHTML = '<span class="sc-spin"></span>'; } card.classList.add('is-running'); }
+  notify('Running now — the receipt opens when it lands', 'ok');   // before the await: the endpoint blocks for the whole run
   try {
     const r = await J('/v1/schedule/' + encodeURIComponent(id) + '/run', { method:'POST' });
-    notify('Running now', 'ok');
     if(r && r.task_id) setTimeout(()=>openTaskReceipt(r.task_id), 250);
   } catch(err){ notify('Couldn\'t run job - ' + err.message); }
   finally { SCHED_RUNNING.delete(id); if(state.route === 'Schedule') renderScheduleView(); }

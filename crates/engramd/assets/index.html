@@ -160,6 +160,13 @@
   body.dragging-active .card { transition:none; }            /* don't fight the drag ghost */
   .card .t { font-size:13.5px; font-weight:500; }
   .col[data-col] .card::before { content:''; position:absolute; left:0; top:11px; bottom:11px; width:2.5px; border-radius:2px; background:var(--border-strong); }
+  /* One-click Run on a queued card - appears on hover, doesn't join the drag. */
+  .card-run { position:absolute; top:8px; right:8px; width:26px; height:26px; border-radius:8px; display:inline-flex;
+    align-items:center; justify-content:center; background:var(--surface-3); border:1px solid var(--border);
+    color:var(--text-secondary); cursor:pointer; opacity:0; transition:opacity var(--dur-2) var(--ease-out), background var(--dur-1), color var(--dur-1), border-color var(--dur-1); }
+  .card:hover .card-run, .card-run:focus-visible { opacity:1; }
+  .card-run:hover { background:var(--accent); color:var(--accent-ink); border-color:transparent; }
+  .card-run svg { width:13px; height:13px; margin-left:1px; }
   .col[data-col="doing"] .card::before { background:var(--accent); }
   .col[data-col="done"] .card::before { background:var(--text-muted); opacity:.5; }
   .pulse { width:7px; height:7px; border-radius:50%; background:var(--accent); animation:pulse 1.2s ease-in-out infinite; }
@@ -170,6 +177,8 @@
   .check { color:var(--accent); } .xmark { color:var(--danger); }
   .empty { text-align:center; color:var(--text-muted); padding:48px 16px; }
   .empty b { color:var(--text-secondary); font-weight:500; display:block; margin-bottom:12px; font-size:15px; }
+  .empty .se-glyph svg { width:34px; height:34px; }
+  .empty .empty-sub { font-size:12.5px; line-height:1.55; max-width:400px; margin:-4px auto 14px; }
   .examplechips { display:flex; gap:8px; justify-content:center; flex-wrap:wrap; }
   .examplechips button { background:var(--surface-2); border:1px solid var(--border); color:var(--text-secondary);
     border-radius:16px; padding:5px 12px; cursor:pointer; transition:border-color var(--dur-1) var(--ease-out), color var(--dur-1), background var(--dur-1); }
@@ -323,6 +332,61 @@
   .cthinking.ct-foot { margin-top:8px; padding-top:9px; border-top:1px solid var(--border); width:100%; }
   @keyframes engram-spin { 0%{transform:rotate(0deg)} 50%{transform:rotate(360deg)} 100%{transform:rotate(0deg)} }
   @keyframes ct-blink { 0%,100%{opacity:1} 50%{opacity:.22} }
+  /* Activity fold: the run's whole working trail (narration + tool steps + screenshots) lives in ONE
+     calm, collapsible block above the answer — live and open while the agent works, folded into a
+     one-line summary ("Worked for 43s · 8 steps") once the answer lands, so long agentic runs never
+     bury the reply under a wall of chips. */
+  .act-fold { border:1px solid var(--border); border-radius:11px; background:var(--surface-1); margin:0 0 10px; overflow:hidden; max-width:72ch; }
+  .act-fold.live { border-color:rgba(69,200,168,.30); box-shadow:0 0 14px -8px rgba(69,200,168,.5); }
+  .af-head { display:flex; align-items:center; gap:9px; width:100%; padding:8px 12px; background:none; border:none;
+    color:var(--text-secondary); font-size:12.5px; text-align:left; font-family:inherit; }
+  button.af-head { cursor:pointer; transition:background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out); }
+  button.af-head:hover { background:var(--hover); color:var(--text-primary); }
+  .af-head .ct-mark { width:18px; height:18px; }
+  .af-title { font-weight:500; color:var(--text-primary); }
+  .af-count { color:var(--text-muted); font-size:11.5px; }
+  .af-now { color:var(--text-muted); font-size:11.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; flex:1; font-style:italic; }
+  .af-ic { flex:none; font-size:11px; width:16px; text-align:center; }
+  .af-ic.ok { color:var(--accent); } .af-ic.bad { color:var(--danger); }
+  .af-badn { color:var(--warning); font-size:11.5px; }
+  .af-chev { margin-left:auto; flex:none; color:var(--text-muted); display:inline-flex; transition:transform var(--dur-2) var(--ease-out); }
+  .af-chev svg { width:13px; height:13px; }
+  .act-fold.open .af-chev { transform:rotate(180deg); }
+  .af-body { display:none; padding:9px 12px 10px; border-top:1px solid var(--border); }
+  .act-fold.open .af-body { display:block; }
+  .af-body .chat-steps { margin:0; } .af-body .chat-notes { margin:0 0 7px; }
+  /* Message hover actions: quiet, only on hover, never shift layout (like Claude's copy/retry). */
+  .turn { position:relative; }
+  .turn.t-user { display:flex; flex-direction:column; align-items:flex-end; }
+  .turn-acts { display:flex; align-items:center; gap:2px; margin-top:2px; height:22px;
+    opacity:0; transition:opacity var(--dur-2) var(--ease-out); }
+  .turn:hover .turn-acts, .turn:focus-within .turn-acts { opacity:1; }
+  .turn-acts button { display:inline-flex; align-items:center; gap:4px; background:none; border:none; border-radius:6px;
+    color:var(--text-muted); font-size:11px; padding:3px 7px; cursor:pointer; transition:background var(--dur-1), color var(--dur-1); }
+  .turn-acts button:hover { background:var(--hover); color:var(--text-primary); }
+  .turn-acts button svg { width:13px; height:13px; }
+  .turn-acts button.done { color:var(--accent); }
+  .turn-acts .turn-when { font-size:10.5px; color:var(--text-muted); opacity:.7; padding:0 5px; cursor:default; }
+  /* Context chip: shows what ships with the next message (scope, working memory, pins, files) —
+     click for the exact breakdown. The "glass box" applied to the prompt itself. */
+  .ctx-wrap { position:relative; display:inline-flex; }
+  .ctx-chip { display:inline-flex; align-items:center; gap:6px; background:var(--surface-2); border:1px solid var(--border);
+    border-radius:9px; padding:4px 10px; font-size:11.5px; color:var(--text-secondary); cursor:pointer;
+    transition:border-color var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out), background var(--dur-1) var(--ease-out); }
+  .ctx-chip:hover { border-color:var(--border-strong); color:var(--text-primary); background:var(--surface-3); }
+  .ctx-chip .cx-dot { width:6px; height:6px; border-radius:50%; background:var(--accent); box-shadow:0 0 6px rgba(69,200,168,.5); flex:none; }
+  .ctx-chip .cx-n { color:var(--text-muted); font:10.5px var(--mono); }
+  .ctx-pop { position:absolute; bottom:calc(100% + 8px); left:0; z-index:40; width:340px; background:var(--surface-2);
+    border:1px solid var(--border-strong); border-radius:12px; box-shadow:var(--e3); padding:6px; animation:menuIn .14s var(--ease-out); }
+  .ctx-pop .cx-h { font-size:10.5px; color:var(--text-muted); text-transform:uppercase; letter-spacing:.07em; padding:7px 9px 3px; }
+  .ctx-row { display:flex; align-items:flex-start; gap:9px; padding:7px 9px; border-radius:8px; font-size:12.5px; color:var(--text-secondary); }
+  .ctx-row.clk { cursor:pointer; } .ctx-row.clk:hover { background:var(--hover); color:var(--text-primary); }
+  .ctx-row .cx-ic { flex:none; width:15px; height:15px; color:var(--text-muted); margin-top:1px; }
+  .ctx-row .cx-ic svg { width:15px; height:15px; }
+  .ctx-row b { font-weight:500; color:var(--text-primary); }
+  .ctx-row .cx-sub { display:block; font-size:11.5px; color:var(--text-muted); margin-top:1px; line-height:1.45; }
+  .ctx-row .cx-badge { margin-left:auto; flex:none; font:10.5px var(--mono); color:var(--text-muted); background:var(--surface-3); border:1px solid var(--border); border-radius:5px; padding:1px 6px; }
+  .ctx-foot { border-top:1px solid var(--border); margin-top:5px; padding:8px 9px 4px; font-size:11px; color:var(--text-muted); line-height:1.5; }
   /* Follow-ups typed while a run is busy: queued below the feed, sent when the run finishes. */
   .queued-strip { display:flex; flex-direction:column; gap:6px; padding:6px max(18px, calc((100% - 720px) / 2)) 0; }
   .queued-msg { display:flex; align-items:center; gap:8px; font-size:13px; color:var(--text-secondary);
@@ -777,6 +841,8 @@
   .statusbar .sb-left { display:flex; align-items:center; gap:7px; }
   .statusbar .sb-center { position:absolute; left:50%; transform:translateX(-50%); display:flex; align-items:center; gap:7px; }
   .statusbar .sb-right { margin-left:auto; display:flex; align-items:center; gap:11px; }
+  .statusbar .sb-clk { cursor:pointer; transition:color var(--dur-1) var(--ease-out); }
+  .statusbar .sb-clk:hover { color:var(--text-primary); }
   .statusbar .dot { width:7px; height:7px; border-radius:50%; background:var(--text-muted); transition:background .5s, box-shadow .5s; }
   .statusbar .dot.awake { background:var(--accent); box-shadow:0 0 7px rgba(69,200,168,.55); }
   .statusbar .mono, .statusbar .sb-center b, .statusbar .sb-right { font-variant-numeric:tabular-nums; }
@@ -856,6 +922,23 @@
     border:1px solid var(--border-strong); border-radius:10px; padding:9px 12px; font-size:13px; cursor:pointer; transition:.15s; }
   .newchat:hover { border-color:var(--accent); }
   .newchat svg { width:16px; height:16px; }
+  /* The chats sidebar belongs to Chat; every other view gets the full width. Project context moves
+     to the always-visible topbar switcher, so scope never disappears with the sidebar. */
+  body.no-sb .app { grid-template-columns:56px 1fr; }
+  body.no-sb .sidebar { display:none; }
+  .proj-top-wrap { position:relative; display:inline-flex; margin-right:2px; }
+  .proj-top { display:inline-flex; align-items:center; gap:7px; background:none; border:1px solid var(--border);
+    border-radius:8px; padding:4px 10px; font-size:12.5px; color:var(--text-secondary); cursor:pointer;
+    transition:background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out); }
+  .proj-top:hover { background:var(--hover); color:var(--text-primary); border-color:var(--border-strong); }
+  .proj-top .proj-caret { font-size:10px; color:var(--text-muted); }
+  .proj-top-menu { position:absolute; top:calc(100% + 6px); left:0; z-index:45; min-width:230px; background:var(--surface-2);
+    border:1px solid var(--border-strong); border-radius:11px; box-shadow:var(--e3); padding:5px; animation:menuIn .13s var(--ease-out); }
+  .proj-top-menu div { padding:7px 9px; border-radius:7px; font-size:12.5px; color:var(--text-secondary); cursor:pointer; display:flex; align-items:center; gap:8px; }
+  .proj-top-menu div:hover { background:var(--hover); color:var(--text-primary); }
+  .proj-top-menu div.cur { color:var(--text-primary); }
+  .proj-top-menu div.cur::after { content:'✓'; margin-left:auto; color:var(--accent); font-size:11px; }
+  .proj-top-menu .add { color:var(--accent); border-top:1px solid var(--border); margin-top:4px; padding-top:9px; }
   .proj { position:relative; }
   .proj-btn { display:flex; align-items:center; gap:8px; width:100%; background:none; border:1px solid var(--border);
     border-radius:9px; padding:7px 10px; color:var(--text-secondary); font-size:12px; cursor:pointer; transition:.15s; }
@@ -874,6 +957,8 @@
   .ses:hover { background:var(--hover); color:var(--text-primary); }
   .ses.active { background:var(--active); color:var(--text-primary); }
   .ses .ses-t { flex:1; font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .ses .ses-when { flex:none; font:10px var(--mono); color:var(--text-muted); opacity:.75; }
+  .ses:hover .ses-when, .ses.active .ses-when { display:none; }   /* actions take the slot on hover */
   .ses .ses-actions { display:none; gap:1px; flex:none; }
   .ses:hover .ses-actions, .ses.active .ses-actions { display:flex; }
   .ses .ses-actions button { background:none; border:none; color:var(--text-muted); cursor:pointer; font-size:12px; padding:2px 4px; border-radius:4px; line-height:1; }
@@ -1118,6 +1203,9 @@
 .sc-btn.sc-run:hover { color:var(--accent); border-color:var(--ring); }
 .sc-btn.sc-del:hover { color:var(--danger); border-color:rgba(226,103,95,.45); }
 .sc-btn:disabled { opacity:.45; cursor:default; }
+/* sc-btn is a 28px ICON square; text actions (Checkpoints' Restore/Delete) need their own width
+   or the labels overlap. */
+.sc-btn.sc-text { width:auto; padding:0 11px; height:26px; font-size:12px; border-color:var(--border); }
 .sc-btn .sc-spin { width:13px; height:13px; border:2px solid var(--accent-soft); border-top-color:var(--accent); border-radius:50%; animation:scSpin .7s linear infinite; }
 @keyframes scSpin { to { transform:rotate(360deg); } }
 .sc-meter { height:3px; border-radius:3px; background:var(--surface-3); overflow:hidden; }
@@ -1452,10 +1540,11 @@
   <div class="main">
     <div id="banner" aria-live="assertive"></div>
     <header class="topbar">
+      <span class="proj-top-wrap" id="projTopWrap"><button class="proj-top" id="projTop" onclick="projTopToggle(event)" title="Switch project — scopes chats, tasks, and memory"><span class="proj-dot"></span><span id="projTopName">…</span><span class="proj-caret">⌄</span></button></span>
       <h1 id="viewname">Tasks</h1>
       <div class="right">
         <button class="kbtn" onclick="openPalette()" title="Command palette"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3-3"/></svg> <kbd>⌘K</kbd></button>
-        <button id="haltBtn" class="stopbtn" onclick="toggleHalt()" title="Emergency stop: halts every running task at its next step"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2.5"/></svg><span id="haltLabel">Stop</span></button>
+        <button id="haltBtn" class="stopbtn" style="display:none" onclick="toggleHalt()" title="Emergency stop: halts every running task at its next step"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2.5"/></svg><span id="haltLabel">Stop</span></button>
       </div>
     </header>
     <div class="view" id="view"></div>
@@ -1464,7 +1553,7 @@
 <footer class="statusbar">
   <span class="sb-left"><span class="dot" id="sbDot"></span><span id="sbDaemon" class="mono">engramd</span></span>
   <span class="sb-center" id="sbSpine"><span class="chip ok" id="ledgerChip" role="status" aria-live="polite" onclick="go('Activity')" title="every action is signed into a hash-chained ledger - click to browse and verify it"><span class="seal"></span>ledger ...</span></span>
-  <span class="sb-right"><span id="sbTaint" title="taint policy - the agent can't send your context to the web unless you allow it">no egress</span><span class="chip" id="costChip" role="status" aria-live="polite" title="model spend today">$0.00</span></span>
+  <span class="sb-right"><span id="sbTaint" class="sb-clk" onclick="openCC('tools')" title="Privacy guard: your private context can't leave this machine unless you allow it. Click to review tool & egress settings.">no egress</span><span class="chip sb-clk" id="costChip" role="status" aria-live="polite" onclick="openCC('cost')" title="Model spend today - click for budgets & limits">$0.00</span></span>
 </footer>
 <div class="overlay palette" id="palette" hidden onclick="if(event.target===this)closePalette()">
   <div class="pal-box"><input class="pal-input" id="palInput" placeholder="Search actions, views, settings..." autocomplete="off" spellcheck="false"><div class="pal-list" id="palList"></div></div>
@@ -1569,6 +1658,20 @@ async function toggleHalt(){
   catch(_){ notify('Couldn\'t reach Engram'); return; }
   const lbl=document.getElementById('haltLabel'); if(lbl) lbl.textContent = halted?'Resume':'Stop';
   notify(halted?'Emergency stop engaged - running tasks will halt':'Resumed');
+  updateHaltBtn();
+}
+// The topbar Stop control is status-aware: hidden when nothing is running (an always-on emergency
+// stop reads as noise and implies something is wrong), shown with a live count while chats or tasks
+// are in flight, and pinned visible while halted so Resume is always reachable.
+function updateHaltBtn(){
+  const b=document.getElementById('haltBtn'); if(!b) return;
+  const lbl=document.getElementById('haltLabel');
+  if(halted){ b.style.display='inline-flex'; if(lbl) lbl.textContent='Resume'; b.title='Resume - let queued and running tasks continue'; return; }
+  const n=((state&&state.tasks)||[]).filter(t=>t.status==='doing').length + _busySessions.size;
+  if(!n){ b.style.display='none'; return; }
+  b.style.display='inline-flex';
+  if(lbl) lbl.textContent = n>1 ? ('Stop · '+n) : 'Stop';
+  b.title = n===1 ? 'One run in flight - emergency-stop it at its next step' : (n+' runs in flight - emergency-stop them at their next step');
 }
 // Clean, cohesive line icons: 24px grid, 1.75 stroke, round caps and joins.
 const SVG = p => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
@@ -1593,11 +1696,34 @@ function renderNav(){
   // Real anchors with a hash href: keyboard-focusable and Enter-activatable for free; the
   // hashchange listener routes. aria-current marks the active view for screen readers. Primary
   // views sit up top; tools (Terminal) are pinned to the bottom of the rail.
-  const item=v=>`<a class="${state.route===v?'active':''}" href="#${v}" title="${v}"${state.route===v?' aria-current="page"':''}>${ICONS[v]}<span class="lbl">${v}</span></a>`;
+  const item=v=>{ const i=ALL_VIEWS.indexOf(v); const kbd=i>=0&&i<9?` (⌘${i+1})`:'';
+    return `<a class="${state.route===v?'active':''}" href="#${v}" title="${v}${kbd}"${state.route===v?' aria-current="page"':''}>${ICONS[v]}<span class="lbl">${v}</span></a>`; };
   document.getElementById('nav').innerHTML = VIEWS.map(item).join('');
   const tn=document.getElementById('navTools'); if(tn) tn.innerHTML = TOOLS.map(item).join('');
+  if(typeof projTopSync==='function') projTopSync();
 }
 function go(v){ if(typeof voiceCloseConversation==='function' && v!=='Chat') voiceCloseConversation(); if(typeof voiceStopRecog==='function' && v!=='Chat') voiceStopRecog(); state.route=v; if(location.hash.slice(1)!==v) location.hash=v; document.getElementById('viewname').textContent=v; renderNav(); renderView(); }
+// The chats sidebar is Chat's; other views take the full width. The topbar project switcher keeps
+// scope visible (and switchable) everywhere, so leaving Chat never loses the project context.
+function projTopSync(){
+  document.body.classList.toggle('no-sb', state.route!=='Chat');
+  const n=document.getElementById('projTopName'); if(n) n.textContent=curProject().name;
+}
+function projTopClose(){ const m=document.getElementById('projTopMenu'); if(m) m.remove(); }
+function projTopToggle(ev){
+  if(ev) ev.stopPropagation();
+  if(document.getElementById('projTopMenu')){ projTopClose(); return; }
+  const wrap=document.getElementById('projTopWrap'); if(!wrap) return;
+  const m=document.createElement('div'); m.id='projTopMenu'; m.className='proj-top-menu'; m.setAttribute('role','menu');
+  const cur=curProject();
+  m.innerHTML = WS.projects.map(p=>`<div class="${p.id===cur.id?'cur':''}" onclick="projTopClose();pickProject('${escAttr(p.id)}')"><span class="proj-dot"></span>${esc(p.name)}</div>`).join('')
+    +`<div class="add" onclick="projTopClose();openProjPersona()">✎ Edit "${esc(cur.name)}" persona</div>`
+    +(WS.projects.length>1?`<div class="add" style="color:var(--danger)" onclick="projTopClose();deleteProject()">Delete "${esc(cur.name)}"</div>`:'')
+    +`<div class="add" onclick="projTopClose();addProject()">+ New project</div>`;
+  wrap.appendChild(m);
+}
+document.addEventListener('click', e=>{ if(!e.target.closest||!e.target.closest('#projTopWrap')) projTopClose(); });
+document.addEventListener('keydown', e=>{ if(e.key==='Escape'&&document.getElementById('projTopMenu')) projTopClose(); });
 window.addEventListener('hashchange',()=>{ const v=location.hash.slice(1); if(ALL_VIEWS.includes(v)&&v!==state.route) go(v); });
 
 // ---- the trust spine (bottom status bar) ----
@@ -1653,10 +1779,12 @@ function card(t){
   const agentBadge = t.agent ? `<span class="card-agent" title="runs as this agent">◇ ${esc((AGENTS.find(a=>a.id===t.agent)||{}).name||'agent')}</span>` : '';
   // Failed/stopped tasks live in the same 'Finished' column as done ones (STATUS_COLS maps
   // failed→done); a distinct class keeps them visually separable from healthy completions.
+  // A one-click Run affordance right on the card - opening the panel first was a hidden extra step.
+  const runBtn = t.status==='todo' ? `<button class="card-run" title="Run now" aria-label="Run this task now" onclick="event.stopPropagation();runWithReview('${t.id}')"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M8 5.5v13l11-6.5z"/></svg></button>` : '';
   return `<div class="card ${running?'running':''}${t.status==='failed'?' failed':''}" data-id="${t.id}"
      role="button" tabindex="0" aria-label="${escAttr(t.title)}"
      onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openTask('${t.id}')}">
-     <div class="t">${esc(t.title)}</div>${agentBadge}${foot}</div>`;
+     ${runBtn}<div class="t">${esc(t.title)}</div>${agentBadge}${foot}</div>`;
 }
 function renderBoard(){
   // Load the team once so card badges can name the assigned agent (guarded; repaints once).
@@ -1670,10 +1798,13 @@ function renderBoard(){
   const v=document.getElementById('view');
   if(state.tasks.length===0){
     v.innerHTML = `<div class="board-wrap">${offlineNotice()}
-      <div class="empty"><b>Tell Engram what to do.</b>
+      <div class="empty"><span class="se-glyph" style="display:inline-block;opacity:.6">${ICONS.Tasks}</span>
+        <b>Run work in the background</b>
+        <div class="empty-sub">A task works on its own — researching, browsing, writing files — and lands here with a signed receipt. Chat is for talking; tasks are for doing.</div>
         <div class="examplechips">
           <button onclick="prefill('Summarize this week\'s top Rust news')">Summarize Rust news</button>
           <button onclick="prefill('Find me 3 quotes about curiosity')">Find 3 quotes</button>
+          <button onclick="prefill('Research the best static site generators and write a comparison to compare.md')">Write a comparison file</button>
         </div></div>
       <div style="padding:16px">${composerHtml('tasks')}</div></div>`;
   } else {
@@ -1708,7 +1839,7 @@ function composerHtml(ctx){
   const pills = ctx==='chat' ? `<div class="attach-pills" id="attachPills"></div>` : '';
   return `<div class="composer">
     <div id="slashMenu" class="slash-menu" hidden></div>
-    <div class="composer-top">${modelpickHtml()}</div>
+    <div class="composer-top">${modelpickHtml()}${ctx==='chat'?`<span class="ctx-wrap" id="ctxWrap"><button class="ctx-chip" id="ctxChip" type="button" aria-haspopup="true" aria-expanded="false" title="What ships with your next message" onclick="ctxToggle(event)"><span class="cx-dot"></span>Context<span class="cx-n" id="ctxN"></span></button></span>`:''}</div>
     ${pills}<textarea id="composer" data-ctx="${ctx}" rows="1" placeholder="${ctx==='chat'?'Message Engram...':'Tell Engram what to do...'}"></textarea>
     <div class="hint">${hint}<div class="comp-actions">${attachCtl}<button id="voiceMic" class="voice-mic" type="button" aria-pressed="false" aria-label="Dictate" title="Dictate (push to talk)" onclick="voiceToggleDictation(this)">${voiceMicSvg()}</button>${sendBtn}</div></div></div>`;
 }
@@ -1742,25 +1873,25 @@ function updateJumpBtn(){
   const f=document.getElementById('feed'), b=document.getElementById('jumpBottom'); if(!f||!b) return;
   b.classList.toggle('show', (f.scrollHeight - f.scrollTop - f.clientHeight) > 120);
 }
-// The loading indicator shown while waiting on the model: spinning Engram mark + blinking green dot
-// + "thinking" + a live seconds counter (driven by tickThinking while a run is busy).
-function thinkingIndicator(t0){
-  t0 = t0 || Date.now();
-  return `<div class="cthinking"><span class="ct-mark">${CW_MARK}</span><span class="ct-dot"></span><span class="ct-label">thinking</span><span class="ct-secs" data-t0="${t0}">0s</span></div>`;
+// Turn-level helpers: hover actions on every message, plus the activity fold's toggle.
+const ICO_COPY='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2.5"/><path d="M5 15V6.5A1.5 1.5 0 0 1 6.5 5H15"/></svg>';
+const ICO_EDIT='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3.5 20.5 7 8.5 19H5v-3.5z"/></svg>';
+function fmtDur(s){ s=Math.max(1,s|0); if(s<60) return s+'s'; const m=(s/60)|0, r=s%60; if(m<60) return r?`${m}m ${r}s`:`${m}m`; const h=(m/60)|0; return `${h}h ${m%60}m`; }
+function actToggle(mi){
+  const s=WS.byId[WS.activeSession]; const m=s&&s.messages&&s.messages[mi]; if(!m) return;
+  m._actOpen=!m._actOpen; paintFeed(false);
 }
-// A persistent "still working" footer kept under the in-flight reply for the ENTIRE run — through the
-// tool phase, not just the opening wait. Unlike thinkingIndicator it does NOT vanish when tool pills
-// or narration appear, so a long agentic run never looks stalled. The spinning mark + blinking dot +
-// live seconds + a phase-aware label + a calm reassurance keep the user company until the run ends.
-function thinkingFooter(m){
-  const n=(m.steps&&m.steps.length)||0;
-  const label = m.text ? 'Writing the answer' : (n ? ('Working — '+n+' step'+(n===1?'':'s')+' done') : 'Thinking');
-  const hint = n>=3 ? 'big task — this can take a minute, hang tight' : 'staying on it…';
-  // Show the REAL elapsed time on every render. Hardcoding "0s" made the counter flash back to 0
-  // on each tool-step repaint until the next 1s tick — "the timer keeps going to 0s".
-  const t0 = m.t0 || Date.now();
-  const secs = Math.max(0, (Date.now()-t0)/1000|0);
-  return `<div class="cthinking ct-foot" id="thinkFoot"><span class="ct-mark">${CW_MARK}</span><span class="ct-dot"></span><span class="ct-label">${label}</span><span class="ct-secs" data-t0="${t0}">${secs}s</span><span class="ct-hint">${hint}</span></div>`;
+function copyTurn(mi,btn){
+  const s=WS.byId[WS.activeSession]; const m=s&&s.messages&&s.messages[mi]; if(!m) return;
+  (navigator.clipboard?navigator.clipboard.writeText(m.text||''):Promise.reject()).then(()=>{
+    if(btn){ const old=btn.innerHTML; btn.innerHTML=ICO_COPY+' copied'; btn.classList.add('done'); setTimeout(()=>{ btn.innerHTML=old; btn.classList.remove('done'); },1200); }
+  }).catch(()=>{});
+}
+function draftTurn(mi){
+  const s=WS.byId[WS.activeSession]; const m=s&&s.messages&&s.messages[mi]; if(!m) return;
+  const c=document.getElementById('composer'); if(!c) return;
+  c.value=m.text||''; c.style.height='auto'; c.style.height=Math.min(c.scrollHeight,180)+'px'; c.focus();
+  try{ c.setSelectionRange(c.value.length,c.value.length); }catch(_){}
 }
 function tickThinking(){
   let any=false;
@@ -1773,6 +1904,7 @@ function tickThinking(){
 function refreshSendBtn(){
   if(_busySessions.size){ if(!_thinkTimer) _thinkTimer=setInterval(tickThinking,1000); }
   else if(_thinkTimer){ clearInterval(_thinkTimer); _thinkTimer=0; }
+  if(typeof updateHaltBtn==='function') updateHaltBtn();
   const b=document.getElementById('sendBtn'); if(!b) return;
   if(_busySessions.has(WS.activeSession)){
     b.classList.add('is-stop'); b.title='Stop this chat'; b.setAttribute('aria-label','Stop the run');
@@ -1915,6 +2047,7 @@ function boardPointerDown(e){
   if(e.button!==0) return;
   const cardEl=e.target.closest('.card'); if(!cardEl) return;
   if(e.target.closest('.rcpt-chip')) return;            // let the receipt chip take its own click
+  if(e.target.closest('.card-run')) return;             // the hover Run button takes its own click
   const board=cardEl.closest('.board'); if(!board) return;
   const r=cardEl.getBoundingClientRect();
   kdrag={ id:cardEl.dataset.id, cardEl, startX:e.clientX, startY:e.clientY,
@@ -2148,7 +2281,6 @@ async function deleteSession(id,e){ if(e) e.stopPropagation();
   try{ await J('/v1/sessions/'+id,{method:'DELETE'}); }
   catch(err){ if(s){ WS.sessions.splice(Math.max(0,idx),0,s); if(cached) WS.byId[id]=cached; WS.activeSession=prevActive; renderSidebar(); if(state.route==='Chat') renderChat(); } notify('Couldn\'t delete the chat - '+((err&&err.message)||'try again')); }
 }
-function toggleProjMenu(){ projMenuOpen=!projMenuOpen; renderSidebar(); }
 async function deleteProject(){
   projMenuOpen=false; const p=curProject();
   if(WS.projects.length<=1){ renderSidebar(); return; }
@@ -2209,16 +2341,16 @@ async function saveProjPersona(){
 }
 function renderSidebar(){
   const el=document.getElementById('sidebar'); if(!el) return;
-  const proj=curProject(), sess=curSessions(), favs=sess.filter(s=>s.fav), rest=sess.filter(s=>!s.fav);
+  if(typeof projTopSync==='function') projTopSync();
+  const sess=curSessions(), favs=sess.filter(s=>s.fav), rest=sess.filter(s=>!s.fav);
   const row=s=>`<div class="ses ${s.id===WS.activeSession?'active':''}" onclick="openSession('${s.id}')" title="${escAttr(s.title)}">
-    ${_busySessions.has(s.id)?'<span class="ses-busy" title="Working…"></span>':''}<span class="ses-t">${esc(s.title||'New chat')}</span><span class="ses-actions">
+    ${_busySessions.has(s.id)?'<span class="ses-busy" title="Working…"></span>':''}<span class="ses-t">${esc(s.title||'New chat')}</span>${s.updated_ms?`<span class="ses-when">${fmtAgo(s.updated_ms)}</span>`:''}<span class="ses-actions">
       <button class="${s.fav?'star':''}" title="${s.fav?'Unfavorite':'Favorite'}" onclick="favSession('${s.id}',event)">${s.fav?'★':'☆'}</button>
       <button title="Rename" onclick="renameSession('${s.id}',event)">✎</button>
       <button title="Delete" onclick="deleteSession('${s.id}',event)">✕</button></span></div>`;
-  const menu = projMenuOpen ? `<div class="proj-menu">${WS.projects.map(p=>`<div onclick="pickProject('${p.id}')"><span class="proj-dot"></span>${esc(p.name)}${(p.persona&&p.persona.trim())?'<span style="margin-left:auto;color:var(--text-muted);font:10px var(--mono)">persona</span>':''}</div>`).join('')}<div class="add" onclick="openProjPersona()">✎ Edit "${esc(curProject().name)}" persona</div>${WS.projects.length>1?`<div class="add" onclick="deleteProject()" style="color:var(--danger)">🗑 Delete "${esc(curProject().name)}"</div>`:''}<div class="add" onclick="addProject()">+ New project</div></div>` : '';
+  // The project switcher lives in the topbar (visible on every view) — the sidebar is purely chats.
   el.innerHTML = `
     <button class="newchat" onclick="newSession()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg> New chat</button>
-    <div class="proj"><button class="proj-btn" onclick="toggleProjMenu()"><span class="proj-dot"></span><span class="proj-name">${esc(proj.name)}</span><span class="proj-caret">⌄</span></button>${menu}</div>
     <div class="ses-scroll">
       ${favs.length?`<div class="ses-group">★ Favorites</div>${favs.map(row).join('')}`:''}
       <div class="ses-group">Chats</div>
@@ -2232,7 +2364,7 @@ async function renderChat(){
   // render the shell even if no session could be created (offline) - the composer must still show
   if(WS.activeSession && !WS.byId[WS.activeSession]){ try{ WS.byId[WS.activeSession]=await J('/v1/sessions/'+encodeURIComponent(WS.activeSession)); }catch(_){} }
   const meta=WS.sessions.find(x=>x.id===WS.activeSession);
-  document.getElementById('viewname').textContent = curProject().name+' / '+((meta&&meta.title)||'New chat');
+  document.getElementById('viewname').textContent = (meta&&meta.title)||'New chat';
   // Artifacts split: wrap the chat column in a flex row so a right-hand artifact pane can open
   // beside it. The pane starts collapsed (width 0); artOpen()/artClose() toggle .arts-open.
   ARTS.open=false; ARTS.current=null; ARTS._sig='';
@@ -2381,8 +2513,10 @@ function paintFeed(toBottom=true){
   // fresh feed blocks never reuse a live id.
   cbStorePrune();
   const s=WS.byId[WS.activeSession], log=s?(s.messages||[]):[];
-  f.innerHTML = log.map(m=>{
-    if(m.role==='user') return `<div class="msg user">${esc(m.text)}</div>`;
+  f.innerHTML = log.map((m,mi)=>{
+    const when = m.ts ? `<span class="turn-when" title="${escAttr(new Date(m.ts).toLocaleString())}">${fmtAgo(m.ts)}</span>` : '';
+    if(m.role==='user') return `<div class="turn t-user"><div class="msg user">${esc(m.text)}</div>
+      <div class="turn-acts">${when}<button title="Copy" onclick="copyTurn(${mi},this)">${ICO_COPY} copy</button><button title="Put this back in the composer to tweak and resend" onclick="draftTurn(${mi})">${ICO_EDIT} edit</button></div></div>`;
     const refs=(m.recalled_refs&&m.recalled_refs.length)?m.recalled_refs:null;
     const ribbon = refs
       ? `<div class="ribbon"><span class="rb-lbl">grounded on ${refs.length}</span>${refs.slice(0,6).map(r=>{const reg=BRAIN_REGIONS[r.region]||BRAIN_REGIONS.semantic; const sc=r.scope_kind==='project'?'<span class="sc-tag sc-proj" title="scoped to this project — it won\'t surface in your other projects">project</span>':r.scope_kind==='session'?'<span class="sc-tag sc-sess" title="scoped to this chat session">session</span>':''; return `<span class="recall clk" style="--lc:${reg.color}" title="${escAttr(r.text)}" onclick="recallOpen(${r.id|0})"><span class="rg">◇</span> ${esc((r.text||'').replace(/\s+/g,' ').slice(0,48))}${sc}</span>`;}).join('')}</div>`
@@ -2407,10 +2541,31 @@ function paintFeed(toBottom=true){
     // long run reads as activity, not a silent wait.
     const notes=(m.notes&&m.notes.length)?`<div class="chat-notes">${m.notes.map(n=>`<div class="cnote">${mdInline(esc(n))}</div>`).join('')}</div>`:'';
     const body = m.text ? (mdToHtml(m.text) + (m.streaming?'<span class="caret"></span>':'')) : (m.streaming?'':'...');
-    // The spinning Engram mark + live seconds stay for the whole run (sibling of the reply node so
-    // streamTick's token repaints never wipe it) — fixes the logo vanishing once tool pills appear.
-    const foot = m.streaming ? thinkingFooter(m) : '';
-    return `<div>${notes}${steps}<div class="msg engram"${m.streaming?' id="streamMsg"':''}>${body}</div>${foot}${ribbon}${learned}</div>`;
+    // The whole working trail (narration + steps) lives in ONE collapsible activity fold above the
+    // answer: open + live-updating while the run is in flight, folded to a quiet summary line once
+    // the answer lands. The spinning mark + seconds counter live in its header (sibling of the reply
+    // node, so streamTick's token repaints never wipe it).
+    const nSteps=(m.steps&&m.steps.length)||0, nNotes=(m.notes&&m.notes.length)||0;
+    let act='';
+    if(m.streaming){
+      const label = m.text ? 'Writing the answer' : (nSteps ? 'Working' : 'Thinking');
+      const t0 = m.t0 || Date.now();
+      const secs = Math.max(0,(Date.now()-t0)/1000|0);
+      const lastNote = nNotes ? (m.notes[nNotes-1]||'') : '';
+      act = `<div class="act-fold live open"><div class="af-head" id="thinkFoot"><span class="ct-mark">${CW_MARK}</span><span class="af-title ct-label">${label}</span><span class="ct-secs af-secs" data-t0="${t0}">${secs}s</span>${nSteps?`<span class="af-count">· ${nSteps} step${nSteps===1?'':'s'}</span>`:''}${(!nSteps&&!nNotes)?'':`<span class="af-now">${esc(lastNote.replace(/\s+/g,' ').slice(0,90))}</span>`}</div>${(nSteps||nNotes)?`<div class="af-body">${notes}${steps}</div>`:''}</div>`;
+    } else if(nSteps||nNotes){
+      // A failed step inside a run that still answered is a footnote, not a failure — the icon only
+      // goes red when EVERY step failed (the run really went nowhere).
+      const nBad=(m.steps||[]).filter(st=>st.ok===false).length;
+      const allBad=nSteps>0&&nBad===nSteps;
+      const dur=m.dur?fmtDur(m.dur/1000|0):null;
+      const open=!!m._actOpen;
+      const parts=[nSteps?`${nSteps} step${nSteps===1?'':'s'}`:'',nNotes&&!nSteps?`${nNotes} note${nNotes===1?'':'s'}`:''].filter(Boolean).join(' · ');
+      const badNote=(nBad&&!allBad)?`<span class="af-badn">· ${nBad} failed</span>`:'';
+      act = `<div class="act-fold${open?' open':''}"><button class="af-head" onclick="actToggle(${mi})" aria-expanded="${open}" title="${open?'Hide':'Show'} how this answer was made"><span class="af-ic ${allBad?'bad':'ok'}">${allBad?'✕':'✓'}</span><span class="af-title">${dur?('Worked for '+dur):'Worked'}</span><span class="af-count">${parts?('· '+parts):''}</span>${badNote}<span class="af-chev"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span></button><div class="af-body">${notes}${steps}</div></div>`;
+    }
+    const acts = m.streaming ? '' : `<div class="turn-acts">${when}<button title="Copy the reply as markdown" onclick="copyTurn(${mi},this)">${ICO_COPY} copy</button></div>`;
+    return `<div class="turn">${act}<div class="msg engram"${m.streaming?' id="streamMsg"':''}>${body}</div>${ribbon}${learned}${acts}</div>`;
   }).join('') || chatWelcome();
   artsAfterPaint();   // detect substantial code/doc blocks, inject "Open in canvas" chips, sync the pane
   if(typeof renderQueued==='function') renderQueued(WS.activeSession);   // re-show any queued follow-ups
@@ -2473,12 +2628,12 @@ async function chatSay(text, attachments){
     }
   }
   if(!sess.messages) sess.messages=[];
-  sess.messages.push({role:'user',text});
+  sess.messages.push({role:'user',text,ts:Date.now()});
   const meta=WS.sessions.find(x=>x.id===sid);
-  if(meta && (!meta.title || meta.title==='New chat')){ meta.title=text.replace(/\s+/g,' ').slice(0,42); document.getElementById('viewname').textContent=curProject().name+' / '+meta.title; }
+  if(meta && (!meta.title || meta.title==='New chat')){ meta.title=text.replace(/\s+/g,' ').slice(0,42); if(state.route==='Chat') document.getElementById('viewname').textContent=meta.title; }
   if(meta){ WS.sessions=[meta, ...WS.sessions.filter(x=>x.id!==sid)]; }   // bump to top
   _busySessions.add(sid); renderSidebar();
-  const msg={role:'engram',text:'',streaming:true,t0:Date.now()}; sess.messages.push(msg); paintFeed();
+  const msg={role:'engram',text:'',streaming:true,t0:Date.now(),ts:Date.now()}; sess.messages.push(msg); paintFeed();
   const ac=new AbortController(); _chatAborts.set(sid, ac); refreshSendBtn();
   try {
     const r = await fetch('/v1/converse/stream',{method:'POST',headers:{...AUTH,'content-type':'application/json'},body:JSON.stringify({text, session:sid, attachments}), signal:ac.signal});
@@ -2508,12 +2663,12 @@ async function chatSay(text, attachments){
       }
     }
     if(!msg.text) msg.text='(no reply)';
-    msg.streaming=false; if(typeof _artifacts==='object') _artifacts.items=null; if(WS.activeSession===sid) paintFeedSticky();
+    msg.streaming=false; msg.dur=Date.now()-msg.t0; if(typeof _artifacts==='object') _artifacts.items=null; if(WS.activeSession===sid) paintFeedSticky();
   } catch(e){
     const stopped = e && e.name==='AbortError';
     _stoppedSession = stopped;
     msg.text = stopped ? (msg.text || '(stopped)') : (msg.text || friendlyChatError(e.message||'try again'));
-    msg.streaming=false; if(WS.activeSession===sid) paintFeedSticky();
+    msg.streaming=false; msg.dur=Date.now()-msg.t0; if(WS.activeSession===sid) paintFeedSticky();
   } finally {
     _chatAborts.delete(sid); _busySessions.delete(sid);
     refreshSendBtn(); renderSidebar();   // stop the sidebar blink + reset the button for this session
@@ -2653,7 +2808,7 @@ async function renderMemory(){
     <canvas id="brainCanvas"></canvas>
     <div class="brain-overlay">
       <div class="brain-head">
-        <div class="brain-title">Memory <span class="brain-count">${total} ${total===1?'memory':'memories'} · ${(stats.by_tier?.warm||0)} warm · ${(stats.by_tier?.cold||0)} cold</span></div>
+        <div class="brain-title"><span class="brain-count" style="margin-left:0">${total} ${total===1?'memory':'memories'} · ${(stats.by_tier?.warm||0)} warm · ${(stats.by_tier?.cold||0)} cold</span></div>
         <div class="brain-legend">${legend}<button class="brain-teach ghost" onclick="brainRecentToggle()" title="Browse recent memories as a list, filter by region">Recent</button><button class="brain-teach" onclick="openTeach()">+ Teach</button></div>
       </div>
       <div class="brain-foot"><div class="brain-recall">
@@ -4257,6 +4412,10 @@ window.addEventListener('keydown', e=>{
   if((e.metaKey||e.ctrlKey) && k===','){ e.preventDefault(); document.getElementById('cc').hidden? openCC(): closeCC(); return; }
   if((e.metaKey||e.ctrlKey) && k==='m' && document.getElementById('modelMenu')){ e.preventDefault(); toggleModelMenu(); return; }
   if((e.metaKey||e.ctrlKey) && k==='u' && document.getElementById('attachFileInput')){ e.preventDefault(); attachPickFiles(); return; }
+  // ⌘1..⌘9 jump straight to a view (matching the rail order) — muscle-memory nav like Slack/Linear.
+  if((e.metaKey||e.ctrlKey) && !e.shiftKey && !e.altKey && k>='1' && k<='9'){
+    const v=ALL_VIEWS[+k-1]; if(v){ e.preventDefault(); go(v); return; }
+  }
   if(!document.getElementById('palette').hidden){
     if(k==='escape'){ e.preventDefault(); closePalette(); }
     else if(k==='arrowdown'){ e.preventDefault(); palMove(1); }
@@ -4550,8 +4709,8 @@ function cpCardHtml(cp){
   return `<div class="sched-card" data-cp="${escAttr(cp.id)}">
     <div class="sc-main"><div class="sc-name">${esc(cp.label||'checkpoint')}${trunc}</div>
       <div class="sc-sub">${esc(sub)}</div></div>
-    <div class="sc-actions"><button class="sc-btn" onclick="restoreCheckpoint(${attrJson(cp.id)})" title="Restore this checkpoint">Restore</button>
-      <button class="sc-btn sc-del" onclick="deleteCheckpoint(${attrJson(cp.id)})" title="Delete this checkpoint">Delete</button></div>
+    <div class="sc-actions"><button class="sc-btn sc-text" onclick="restoreCheckpoint(${attrJson(cp.id)})" title="Restore this checkpoint">Restore</button>
+      <button class="sc-btn sc-text sc-del" onclick="deleteCheckpoint(${attrJson(cp.id)})" title="Delete this checkpoint">Delete</button></div>
   </div>`;
 }
 
@@ -4593,6 +4752,7 @@ async function refreshTasks(){
   }
   const sig=JSON.stringify(state.tasks);
   if(sig!==lastTasksSig){ lastTasksSig=sig; if(state.route==='Tasks') renderBoard(); if(panelId) openTask(panelId, true); }
+  if(typeof updateHaltBtn==='function') updateHaltBtn();
 }
 // Live updates over Server-Sent Events - instant board changes, no constant polling.
 function connectEvents(){
@@ -6080,6 +6240,7 @@ function attachRenderPills(){
       ${meta?`<span class="ap-meta">${esc(meta)}</span>`:''}
       <button class="ap-x" type="button" aria-label="Remove" title="Remove" onclick="attachRemove(${i})">&times;</button></span>`;
   }).join('');
+  if(typeof ctxChipSync==='function') ctxChipSync();
 }
 function attachRemove(i){ ATTACH.items.splice(i,1); attachRenderPills(); }
 function attachClear(){ ATTACH.items.length=0; attachRenderPills(); }
@@ -6120,6 +6281,58 @@ document.addEventListener('keydown', e=>{
     attachCloseMenu(); attachCloseRecall();
   }
 });
+
+// ---- context popover: exactly what ships with the next message — the glass box, applied to the
+// prompt itself. Scope, working memory, persona, and pinned files/memories, each inspectable. ----
+const _CTXC={t:0,lines:null};
+async function ctxLines(){
+  if(_CTXC.lines && Date.now()-_CTXC.t<60000) return _CTXC.lines;
+  try{ _CTXC.lines=((await J('/v1/consciousness'))||{}).lines||[]; }catch(_){ _CTXC.lines=[]; }
+  _CTXC.t=Date.now(); return _CTXC.lines;
+}
+// The chip's count badge tracks the removable part of the context (attached files + pinned memories).
+function ctxChipSync(){ const n=document.getElementById('ctxN'); if(n) n.textContent=ATTACH.items.length?String(ATTACH.items.length):''; }
+function ctxClose(){ const p=document.getElementById('ctxPop'); if(p) p.remove();
+  const b=document.getElementById('ctxChip'); if(b) b.setAttribute('aria-expanded','false'); }
+const CTX_ICONS={
+  scope:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5 12 4l9 4.5-9 4.5z"/><path d="m3 15.5 9 4.5 9-4.5"/></svg>',
+  mind:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="4" r="1.6"/><circle cx="5" cy="16" r="1.6"/><circle cx="19" cy="16" r="1.6"/><path d="M12 9V5.6M14.6 13.5l3-1.7M9.4 13.5l-3-1.7"/></svg>',
+  voice:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>',
+  pins:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.5 12.5 21a5 5 0 0 1-7-7l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7L9.6 18.7a1.6 1.6 0 0 1-2.3-2.3l8-8"/></svg>',
+};
+async function ctxToggle(ev){
+  if(ev) ev.stopPropagation();
+  if(document.getElementById('ctxPop')){ ctxClose(); return; }
+  const wrap=document.getElementById('ctxWrap'); if(!wrap) return;
+  const b=document.getElementById('ctxChip'); if(b) b.setAttribute('aria-expanded','true');
+  const pop=document.createElement('div'); pop.id='ctxPop'; pop.className='ctx-pop'; pop.setAttribute('role','dialog');
+  pop.innerHTML=`<div class="cx-h">With your next message</div><div class="ctx-row"><span class="cx-sub">reading…</span></div>`;
+  wrap.appendChild(pop);
+  const proj=curProject(), pins=ATTACH.items;
+  const lines=await ctxLines();
+  if(!document.getElementById('ctxPop')) return;   // closed while loading
+  const mindPrev=lines.length?esc((lines[0].text||'').replace(/\s+/g,' ').slice(0,70))+(lines.length>1?` — and ${lines.length-1} more`:''):'Empty — teach Engram a fact or distill it from your brain.';
+  const personaSet=!!(proj.persona&&proj.persona.trim());
+  const pinRows=pins.length?pins.map(it=>`<div class="ctx-row"><span class="cx-ic">${CTX_ICONS.pins}</span><span><b>${esc(it.name)}</b><span class="cx-sub">${it.kind==='memory'?'pinned memory':it.kind==='url'?'linked page':'attached file'}</span></span></div>`).join(''):'';
+  pop.innerHTML=`
+    <div class="cx-h">With your next message</div>
+    <div class="ctx-row clk" onclick="ctxClose();go('Memory')" title="Open this project's memory">
+      <span class="cx-ic">${CTX_ICONS.scope}</span>
+      <span><b>${esc(proj.name)}</b> scope<span class="cx-sub">Recall searches this project's memories plus your global ones. Other projects stay invisible.</span></span>
+      <span class="cx-badge">scope</span></div>
+    <div class="ctx-row clk" onclick="ctxClose();go('Memory')" title="Open working memory">
+      <span class="cx-ic">${CTX_ICONS.mind}</span>
+      <span><b>Working memory</b><span class="cx-sub">${mindPrev}</span></span>
+      <span class="cx-badge">${lines.length} line${lines.length===1?'':'s'}</span></div>
+    <div class="ctx-row clk" onclick="ctxClose();openProjPersona()" title="${personaSet?'Edit':'Set'} this project's persona">
+      <span class="cx-ic">${CTX_ICONS.voice}</span>
+      <span><b>Persona</b><span class="cx-sub">${personaSet?esc(proj.persona.replace(/\s+/g,' ').slice(0,70)):'None — set standing instructions to shape this project’s voice.'}</span></span>
+      <span class="cx-badge">${personaSet?'set':'add'}</span></div>
+    ${pinRows||`<div class="ctx-row"><span class="cx-ic">${CTX_ICONS.pins}</span><span><b>Nothing pinned</b><span class="cx-sub">Attach files or pin a memory with the paperclip — they ride along with the message.</span></span></div>`}
+    <div class="ctx-foot">After each answer, the memories it actually used appear beneath it — click any to inspect. Every step is signed into the ledger.</div>`;
+}
+document.addEventListener('click', e=>{ if(!e.target.closest||!e.target.closest('#ctxWrap')) ctxClose(); });
+document.addEventListener('keydown', e=>{ if(e.key==='Escape'&&document.getElementById('ctxPop')) ctxClose(); });
 // ---- files ----
 function attachPickFiles(){ attachCloseMenu(); const inp=document.getElementById('attachFileInput'); if(inp){ inp.value=''; inp.click(); } }
 // Classify an upload so the pill, the icon, and the handling all match the file type.

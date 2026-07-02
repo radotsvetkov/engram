@@ -240,10 +240,23 @@
   .artifacts-view { max-width:980px; margin:0 auto; padding:22px 24px 60px; }
   .af-bar { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin:4px 0 18px; }
   /* Sticky toolbars: on long lists the search/filters pin to the top of the scroller, so finding
-     and filtering never means scrolling back up. Slight blur keeps passing content legible. */
-  .af-bar, .act-controls, .sk-filter, .sched-stick { position:sticky; top:0; z-index:12; padding:12px 0 10px;
-    background:color-mix(in srgb, var(--surface-0) 86%, transparent);
-    backdrop-filter:blur(9px); -webkit-backdrop-filter:blur(9px); }
+     and filtering never means scrolling back up. SOLID surface + full-bleed over the view's side
+     padding + a hairline: the earlier translucent blur let content ghost through and cards peek
+     past the bar's edges - it read as broken, not layered. */
+  .af-bar, .act-controls, .sk-filter, .sched-stick { position:sticky; top:0; z-index:12;
+    background:var(--surface-0); border-bottom:1px solid var(--border); }
+  .sk-filter   { margin:0 -30px 16px; padding:14px 30px 12px; }
+  .af-bar      { margin:0 -24px 18px; padding:14px 24px 12px; }
+  /* typed document tiles: a coloured glyph on its type's soft field + an extension badge */
+  .af-thumb.fileic { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px; }
+  .af-thumb .af-glyph { width:34px; height:34px; opacity:.9; }
+  .af-thumb .af-ext { font:600 9.5px var(--mono); letter-spacing:.08em; border:1px solid currentColor; border-radius:5px; padding:2px 7px; opacity:.85; }
+  .af-ft-doc   { color:var(--web);        background:color-mix(in srgb, var(--web) 9%, var(--surface-2)); }
+  .af-ft-data  { color:var(--warning);    background:color-mix(in srgb, var(--warning) 9%, var(--surface-2)); }
+  .af-ft-audio { color:#b48cf2;           background:color-mix(in srgb, #b48cf2 9%, var(--surface-2)); }
+  .af-ft-other { color:var(--text-muted); background:var(--surface-2); }
+  .act-controls{ margin:0 -24px 8px;  padding:14px 24px 12px; }
+  .sched-stick { margin:0 -24px;      padding:14px 24px 12px; }
   /* Floating back-to-top for list views (Skills/Artifacts/Activity/Schedule/Checkpoints). */
   .view-top { position:fixed; right:22px; bottom:44px; z-index:40; width:36px; height:36px; border-radius:50%;
     background:var(--surface-2); border:1px solid var(--border-strong); color:var(--text-secondary);
@@ -477,6 +490,13 @@
   .cb pre { margin:0; padding:12px 14px; overflow-x:auto; }
   .cb code { font:12.5px/1.55 var(--mono); color:var(--text-primary); }
   .cb .t-kw { color:var(--accent); } .cb .t-st { color:var(--web); } .cb .t-co { color:var(--text-muted); font-style:italic; } .cb .t-nu { color:var(--warning); }
+  /* diff blocks: full-width added/removed line fields, muted file headers, hunk markers */
+  .cb .t-add { color:#8fd6ae; background:rgba(69,200,168,.10); display:inline-block; width:100%; }
+  .cb .t-del { color:#e59a94; background:rgba(226,103,95,.10); display:inline-block; width:100%; }
+  .cb .t-hunk { color:var(--web); }
+  .cb .t-fh { color:var(--text-muted); }
+  html[data-engram-theme="light"] .cb .t-add { color:#116b46; }
+  html[data-engram-theme="light"] .cb .t-del { color:#a33128; }
   .caret { display:inline-block; width:2px; height:1em; background:var(--accent); margin-left:1px; vertical-align:text-bottom; animation:blink .9s steps(1) infinite; }
   @keyframes blink { 50% { opacity:0; } }
   .thinking { display:inline-flex; gap:4px; align-items:center; padding:3px 0; }
@@ -618,6 +638,14 @@
   .mind-foot .sbtn { flex:1; justify-content:center; }
   .mind-empty { padding:22px 16px; color:var(--text-muted); font-size:12.5px; line-height:1.55; text-align:center; }
   .mind-empty b { color:var(--text-secondary); }
+  /* Surface palettes ("tone"): the same design system on differently-tempered surfaces. Graphite
+     is the default; Warm tints toward candlelight, Navy toward deep blue. Each has a light-theme
+     counterpart (paper -> cream / cool-white). Only the surface/rail tokens change - text, borders,
+     and the accent system stay consistent, so every component keeps its contrast guarantees. */
+  html[data-engram-tone="warm"] { --rail:#0b0907; --surface-0:#110d0a; --surface-1:#171210; --surface-2:#1f1915; --surface-3:#2a211b; }
+  html[data-engram-tone="navy"] { --rail:#06090f; --surface-0:#0a0e17; --surface-1:#0f141f; --surface-2:#161c2a; --surface-3:#1e2638; }
+  html[data-engram-theme="light"][data-engram-tone="warm"] { --rail:#ece4d8; --surface-0:#fbf7f0; --surface-1:#f5eee3; --surface-2:#ece2d3; --surface-3:#e0d3bf; }
+  html[data-engram-theme="light"][data-engram-tone="navy"] { --rail:#e2e8f1; --surface-0:#f8fafd; --surface-1:#eff3f9; --surface-2:#e4eaf3; --surface-3:#d7dfec; }
   /* Narrow windows force the panel COLLAPSED (header stays as the reopen handle) - display:none
      left no way to get working memory back at <880px. */
   @media (max-width:880px){ .mind-panel { width:min(300px, 66vw); }
@@ -714,7 +742,10 @@
   .exp-t { color:var(--text-muted); font-size:11px; min-width:62px; text-align:right; }
   .exp-empty { color:var(--text-muted); font-size:12.5px; line-height:1.55; padding:14px 2px; }
   /* skills view - the honest expertise ladder */
-  .skills-wrap { padding:26px 30px; max-width:920px; margin:0 auto; height:100%; overflow-y:auto; }
+  /* padding-top lives on the HEADER, not the wrap: the wrap is its own scrollport, and scrollport
+     padding offsets position:sticky - the pinned search bar floated 26px below the top edge. */
+  .skills-wrap { padding:0 30px 26px; max-width:920px; margin:0 auto; height:100%; overflow-y:auto; }
+  .skills-head { padding-top:26px; }
   .skills-head h2 { margin:0; font-size:20px; }
   .skills-head .sub { margin:5px 0 18px; color:var(--text-muted); font-size:13px; line-height:1.5; max-width:700px; }
   .skills-head .sh-row { display:flex; align-items:center; gap:12px; }
@@ -1264,6 +1295,14 @@
 .sched-preview.empty { display:none; }   /* opacity:0 still reserved phantom height under the form */
 .sched-list { display:flex; flex-direction:column; gap:10px; }
 .sched-stick { display:flex; gap:10px; align-items:center; }
+/* the date/time cadence builder */
+.sched-pick summary { cursor:pointer; font-size:11.5px; color:var(--text-muted); list-style:none; padding:1px 2px; }
+.sched-pick summary:hover { color:var(--text-secondary); }
+.sched-pick .sp-row { display:flex; gap:8px; align-items:center; margin:8px 0 2px; flex-wrap:wrap; }
+.sched-pick .sp-row select, .sched-pick .sp-row input { background:var(--surface-2); border:1px solid var(--border);
+  border-radius:8px; padding:7px 10px; color:var(--text-primary); outline:none; color-scheme:dark; }
+html[data-engram-theme="light"] .sched-pick .sp-row select, html[data-engram-theme="light"] .sched-pick .sp-row input { color-scheme:light; }
+.sched-pick .sp-row select:focus, .sched-pick .sp-row input:focus { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
 /* "Run as" as a real form element: label above, control, explanation below, action aligned right. */
 .sched-runas { display:flex; gap:14px; align-items:flex-end; margin-top:4px; }
 .sched-runas .sr-field { flex:1; min-width:0; }
@@ -2633,6 +2672,17 @@ const HL_KW = {
   json:'true false null',
 };
 function hl(code, lang){
+  // Diffs/patches get real +/- line colouring - the way changes SHOULD read in a chat about code.
+  if(lang==='diff'||lang==='patch'){
+    return code.split('\n').map(l=>{
+      const e=esc(l);
+      if(/^(\+\+\+|---) /.test(l)) return `<span class="t-fh">${e}</span>`;
+      if(l.startsWith('@@')) return `<span class="t-hunk">${e}</span>`;
+      if(l[0]==='+') return `<span class="t-add">${e}</span>`;
+      if(l[0]==='-') return `<span class="t-del">${e}</span>`;
+      return e;
+    }).join('\n');
+  }
   const hashComment = ['python','py','bash','sh','shell','yaml','yml','toml','ruby','rb'].includes(lang);
   const cp = hashComment ? '(#[^\\n]*)' : '(\\/\\/[^\\n]*|\\/\\*[\\s\\S]*?\\*\\/)';
   const re = new RegExp(cp + '|("(?:[^"\\\\]|\\\\.)*"|\'(?:[^\'\\\\]|\\\\.)*\'|`(?:[^`\\\\]|\\\\.)*`)|(\\b\\d[\\d_.eExXa-fA-F]*\\b)|([A-Za-z_$][\\w$]*)|([\\s\\S])', 'g');
@@ -4817,6 +4867,7 @@ function paletteCommands(){
   ((WS&&WS.sessions)||[]).slice(0,5).forEach(s=>cmds.push({group:'Chats', t:s.title||'New chat', sub:s.updated_ms?fmtAgo(s.updated_ms):'', ic:ICONS.Chat, run:()=>{ go('Chat'); openSession(s.id); }}));
   cmds.push({group:a, t:'New task', sub:'create a task', run:()=>{ go('Tasks'); setTimeout(()=>document.getElementById('composer')?.focus(),60); }});
   cmds.push({group:a, t:'Ask Engram', sub:'open chat', ic:ICONS.Chat, run:()=>go('Chat')});
+  cmds.push({group:a, t:'Browse files', sub:'the working folder tree, in the glass-box terminal', ic:ICONS.Terminal, run:()=>go('Terminal')});
   cmds.push({group:a, t:'Verify ledger', sub:'re-check the signed chain', run:verifyLedgerNow});
   cmds.push({group:a, t:halted?'Resume agents':'Emergency stop', sub:'halt running tasks at the next step', run:toggleHalt});
   cmds.push({group:a, t:'Pending approvals', sub:'review what unattended agents staged to send', run:openApprovals});
@@ -5044,7 +5095,10 @@ function afBodyHtml(items){
     const ctrls=`<div class="af-ctrls">${chat}${del}</div>`;
     const meta=`<div class="af-name" title="${escAttr(i.name)}">${esc(i.name)}</div><div class="af-sub">${esc(i.title||origin)} · ${afSize(i.size)} · ${afAge(i.mtime)}</div>`;
     if(i.kind==='image') return `<div class="af-card" onclick="imgLightbox('${escAttr(url)}')" title="${escAttr(i.name)}"><div class="af-thumb">${ctrls}<img loading="lazy" src="${escAttr(url)}" alt="" onerror="this.closest('.af-thumb').classList.add('broken')"></div>${meta}</div>`;
-    return `<div class="af-card" onclick="artOpenFile(${escAttr(JSON.stringify(i.task))},${escAttr(JSON.stringify(i.path))},${escAttr(JSON.stringify(i.name))})" title="Open ${escAttr(i.name)}"><div class="af-thumb fileic">${ctrls}${AF_ICON[i.kind]||'📎'}</div>${meta}</div>`;
+    // Non-image files get a proper document tile: a type-coloured glyph + the extension badge,
+    // instead of a lone emoji floating in a grey box.
+    const ext=(i.name.split('.').pop()||'').toUpperCase().slice(0,5);
+    return `<div class="af-card" onclick="artOpenFile(${escAttr(JSON.stringify(i.task))},${escAttr(JSON.stringify(i.path))},${escAttr(JSON.stringify(i.name))})" title="Open ${escAttr(i.name)}"><div class="af-thumb fileic af-ft-${esc(i.kind||'other')}">${ctrls}<svg class="af-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2.8h7.5L19 8.3V21a1.2 1.2 0 0 1-1.2 1.2H6A1.2 1.2 0 0 1 4.8 21V4A1.2 1.2 0 0 1 6 2.8Z"/><path d="M13.5 2.8v5.5H19"/></svg><span class="af-ext">${esc(ext||i.kind)}</span></div>${meta}</div>`;
   }).join('');
   return shown.length
     ? `<div class="af-grid">${cards}</div>${truncated?'<div class="muted" style="text-align:center;padding:14px">Showing the first 400. Narrow with a filter or search.</div>':''}`
@@ -5713,6 +5767,7 @@ async function renderScheduleView(){
         <input id="sname" placeholder="name (a short label)" style="flex:.5">
         <input id="swhen" placeholder="every Monday at 9am" oninput="schedPreviewCadence()" onkeydown="if(event.key==='Enter')document.getElementById('sprompt').focus()">
       </div>
+      ${schedPickerHtml('swhen')}
       <textarea id="sprompt" class="sched-prompt" rows="2" placeholder="What should Engram do when this fires? e.g. Summarize my unread email and send me the top 5."></textarea>
       <div class="sched-runas">
         <div class="sr-field">
@@ -5746,6 +5801,44 @@ function schedFilter(q){
     : `<div class="ses-empty" style="padding:18px 4px">No schedules match "${esc(q)}".</div>`;
 }
 
+// A point-and-click cadence builder that COMPOSES the natural-language phrase - the phrase stays
+// the visible, editable source of truth, so the picker teaches the grammar instead of hiding it.
+// pfx is the id of the target "when" input ('swhen' in the composer, 'ejWhen' in the edit modal).
+function schedPickerHtml(pfx){
+  const days=['monday','tuesday','wednesday','thursday','friday','saturday','sunday'];
+  return `<details class="sched-pick"><summary>… or pick date &amp; time</summary>
+    <div class="sp-row">
+      <select id="${pfx}_rep" onchange="schedPickApply('${pfx}')">
+        <option value="daily">Every day</option>
+        <option value="weekdays">Weekdays (Mon–Fri)</option>
+        ${days.map(d=>`<option value="${d}">Every ${d[0].toUpperCase()+d.slice(1)}</option>`).join('')}
+        <option value="date">Once, on a date</option>
+        <option value="tomorrow">Once, tomorrow</option>
+        <option value="interval">Every N minutes</option>
+      </select>
+      <input type="date" id="${pfx}_date" style="display:none" onchange="schedPickApply('${pfx}')">
+      <input type="time" id="${pfx}_time" value="09:00" onchange="schedPickApply('${pfx}')">
+      <input type="number" id="${pfx}_n" min="1" value="30" style="display:none;width:78px" title="minutes" onchange="schedPickApply('${pfx}')">
+    </div></details>`;
+}
+function schedPickApply(pfx){
+  const rep=document.getElementById(pfx+'_rep').value;
+  const dateEl=document.getElementById(pfx+'_date'), timeEl=document.getElementById(pfx+'_time'), nEl=document.getElementById(pfx+'_n');
+  dateEl.style.display = rep==='date' ? '' : 'none';
+  nEl.style.display    = rep==='interval' ? '' : 'none';
+  timeEl.style.display = rep==='interval' ? 'none' : '';
+  const time=timeEl.value||'09:00';
+  let phrase='';
+  if(rep==='daily') phrase=`every day at ${time}`;
+  else if(rep==='weekdays') phrase=`every weekday at ${time}`;
+  else if(rep==='tomorrow') phrase=`tomorrow at ${time}`;
+  else if(rep==='interval') phrase=`every ${Math.max(1,parseInt(nEl.value,10)||30)} minutes`;
+  else if(rep==='date'){ if(!dateEl.value) return; phrase=`on ${dateEl.value} at ${time}`; }
+  else phrase=`every ${rep} at ${time}`;
+  const target=document.getElementById(pfx); if(!target) return;
+  target.value=phrase;
+  target.dispatchEvent(new Event('input',{bubbles:true}));   // fires the live cadence preview
+}
 // Live cadence preview in the composer: renders the parsed badge + glyph, not just a date.
 let schedPrevTimer = null;
 function schedPreviewCadence(){
@@ -5828,6 +5921,7 @@ async function editJob(id, e){
     <div class="field"><label>Name</label><input class="ask-input" id="ejName" value="${escAttr(job.name)}" autocomplete="off" style="width:100%"></div>
     <div class="field"><label>Cadence <span class="muted" style="font-weight:400">— now: ${esc(cad.label)}</span></label>
       <input class="ask-input" id="ejWhen" placeholder="e.g. every weekday at 9am · blank keeps the current cadence" autocomplete="off" style="width:100%" oninput="schedPreview('ejWhen','ejWhenPrev')"></div>
+    ${schedPickerHtml('ejWhen')}
     <div id="ejWhenPrev" class="sub" style="min-height:16px"></div>
     <div class="field"><label>What Engram does when it fires</label><textarea class="ask-input" id="ejPrompt" rows="3" style="width:100%;resize:vertical;font:inherit">${esc(p.prompt||p.title||'')}</textarea></div>
     <div class="field"><label>Run as</label><select class="ask-input" id="ejAgent" style="width:100%">${agents}</select></div>
@@ -6303,6 +6397,7 @@ function engramSavePrefs(p){
 function applyEngramAppearance(){
   const p = engramPrefs(), root = document.documentElement;
   root.setAttribute('data-engram-theme', p.theme==='light' ? 'light' : 'dark');
+  root.setAttribute('data-engram-tone', ['warm','navy'].includes(p.tone) ? p.tone : 'graphite');
   root.setAttribute('data-engram-density', p.density==='compact' ? 'compact' : 'comfortable');
   const base = ENGRAM_ACCENTS[p.accent] || ENGRAM_ACCENTS.teal;
   const a = (p.theme==='light' && base.light) ? base.light : base;
@@ -6344,8 +6439,10 @@ function ccAppearance2(){
   }).join('');
   return ccHead('Appearance','Theme, accent, type, and motion - applied live and remembered on this device.')+`
     <div class="scard">
-      ${ccSeg('Theme', [{v:'dark',l:'Graphite'},{v:'light',l:'Light'}], p.theme==='light'?'light':'dark', "v=>setEngramPref('theme',v)")}
-      <div class="desc" style="margin:9px 0 0">Each accent carries its own light-theme shade, tuned for readable contrast on both.</div>
+      ${ccSeg('Theme', [{v:'dark',l:'Dark'},{v:'light',l:'Light'}], p.theme==='light'?'light':'dark', "v=>setEngramPref('theme',v)")}
+      <div style="height:16px"></div>
+      ${ccSeg('Palette', [{v:'graphite',l:'Graphite'},{v:'warm',l:'Warm'},{v:'navy',l:'Navy'}], ['warm','navy'].includes(p.tone)?p.tone:'graphite', "v=>setEngramPref('tone',v)")}
+      <div class="desc" style="margin:9px 0 0">The surface temperature - cool graphite, candlelit warm, or deep navy. Works with either theme; each accent carries its own light-theme shade, tuned for readable contrast.</div>
       <div style="height:16px"></div>
       <span class="seg-lbl">Accent · the trust colour, used only where trust is real</span>
       <div class="acc-rail">${accents}</div>

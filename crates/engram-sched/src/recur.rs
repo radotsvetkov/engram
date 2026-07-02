@@ -121,6 +121,35 @@ pub fn parse(input: &str, now: DateTime<Utc>) -> Result<Recurrence, ParseError> 
         });
     }
 
+    // One-off at an absolute local date: "on 2026-07-10 at 9:30" / "2026-07-10 17:00". This is
+    // what a date-picker UI naturally produces; without it, one-shots could only be relative.
+    if let Some((y, m, d)) = find_iso_date(&s) {
+        let (hour, min) = find_time(&s).unwrap_or((9, 0));
+        let local = Local
+            .with_ymd_and_hms(y, m, d, hour, min, 0)
+            .single()
+            .ok_or_else(|| ParseError(input.to_string()))?;
+        return Ok(Recurrence::Once {
+            at_ms: local.with_timezone(&Utc).timestamp_millis(),
+        });
+    }
+
+    // "tomorrow at 8" - a one-off at tomorrow's local clock time.
+    if s.contains("tomorrow") {
+        let (hour, min) = find_time(&s).unwrap_or((9, 0));
+        let date = (now.with_timezone(&Local) + Duration::days(1)).date_naive();
+        let naive = date
+            .and_hms_opt(hour, min, 0)
+            .ok_or_else(|| ParseError(input.to_string()))?;
+        let local = Local
+            .from_local_datetime(&naive)
+            .single()
+            .ok_or_else(|| ParseError(input.to_string()))?;
+        return Ok(Recurrence::Once {
+            at_ms: local.with_timezone(&Utc).timestamp_millis(),
+        });
+    }
+
     // Weekday-specific (check before the generic "every").
     for (name, n) in WEEKDAYS {
         if s.contains(name) {
@@ -171,6 +200,25 @@ const WEEKDAYS: &[(&str, u8)] = &[
     ("saturday", 5),
     ("sunday", 6),
 ];
+
+/// An ISO date token anywhere in the string: "2026-07-10" -> (y, m, d).
+fn find_iso_date(s: &str) -> Option<(i32, u32, u32)> {
+    for tok in s.split_whitespace() {
+        let p: Vec<&str> = tok.split('-').collect();
+        if p.len() == 3 {
+            if let (Ok(y), Ok(m), Ok(d)) = (
+                p[0].parse::<i32>(),
+                p[1].parse::<u32>(),
+                p[2].parse::<u32>(),
+            ) {
+                if (2000..=2200).contains(&y) && (1..=12).contains(&m) && (1..=31).contains(&d) {
+                    return Some((y, m, d));
+                }
+            }
+        }
+    }
+    None
+}
 
 /// Parse "N unit" or "unit" durations: minutes/mins/m, hours/hr/h, seconds/secs/s, days.
 fn parse_duration(s: &str) -> Option<Duration> {
@@ -327,5 +375,27 @@ mod tests {
     #[test]
     fn rejects_gibberish() {
         assert!(parse("sometime soon-ish", now()).is_err());
+    }
+
+    #[test]
+    fn parses_absolute_dates_and_tomorrow() {
+        // "on YYYY-MM-DD at T" -> a one-off in the future (what the date-picker UI produces).
+        let r = parse("on 2199-07-10 at 9:30", now()).unwrap();
+        match r {
+            Recurrence::Once { at_ms } => assert!(at_ms > now().timestamp_millis()),
+            other => panic!("expected Once, got {other:?}"),
+        }
+        // "tomorrow at 8" -> a one-off within the next ~48h.
+        let r = parse("tomorrow at 8", now()).unwrap();
+        match r {
+            Recurrence::Once { at_ms } => {
+                let dt = at_ms - now().timestamp_millis();
+                assert!(dt > 0 && dt < 48 * 3600 * 1000, "dt={dt}");
+            }
+            other => panic!("expected Once, got {other:?}"),
+        }
+        // A date in the past parses but never fires -> add() will reject it cleanly.
+        let r = parse("on 2001-01-01 at 9:00", now()).unwrap();
+        assert!(matches!(r, Recurrence::Once { .. }));
     }
 }

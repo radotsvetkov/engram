@@ -25,6 +25,7 @@ mod agents;
 mod budget;
 mod channels;
 mod checkpoints;
+mod git;
 mod config;
 mod conscious;
 mod converse;
@@ -129,7 +130,7 @@ impl App {
 }
 
 /// Uniform error → JSON 500.
-struct ApiError(String);
+pub(crate) struct ApiError(pub(crate) String);
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         (
@@ -139,8 +140,8 @@ impl IntoResponse for ApiError {
             .into_response()
     }
 }
-type ApiResult = Result<Json<Value>, ApiError>;
-fn err(e: impl std::fmt::Display) -> ApiError {
+pub(crate) type ApiResult = Result<Json<Value>, ApiError>;
+pub(crate) fn err(e: impl std::fmt::Display) -> ApiError {
     ApiError(e.to_string())
 }
 
@@ -1022,6 +1023,9 @@ async fn run(mode: RunMode) -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/policy", get(policy_get).post(policy_set))
         .route("/v1/shell", post(terminal::shell_handler))
         .route("/v1/fs", get(terminal::fs_handler))
+        .route("/v1/git/status", get(git::git_status))
+        .route("/v1/git/diff", get(git::git_diff))
+        .route("/v1/tasks/{id}/changes", get(git::task_changes))
         .route("/v1/config", get(config_get).post(config_set))
         .route("/v1/config/test", post(config_test))
         .route("/v1/config/mcp-test", post(config_mcp_test))
@@ -3899,16 +3903,20 @@ pub(crate) async fn run_task_core(
         .clone()
         .unwrap_or_else(|| app.workdir.clone());
     let artifacts_before = snapshot_files(&run_workdir);
-    // Auto-checkpoint the workdir before the run so a user can REWIND the file changes this task
-    // makes (Claude-Code-style /rewind). Skipped for git repos (they have real history) and for
-    // worktree-isolated runs (whose edits are preserved on a branch instead). Bounded + off-runtime.
-    if workdir_override.is_none() && !run_workdir.join(".git").exists() {
+    // Auto-checkpoint the workdir before the run: it powers REWIND (Claude-Code-style) and the
+    // task panel's "changes this run made" diff. Git repos are snapshotted too now — history
+    // explains commits, but a run's UNCOMMITTED edits need a baseline to diff against. Worktree-
+    // isolated runs are still skipped (their edits live on a branch). Bounded + off-runtime, and
+    // old auto-checkpoints are pruned so runs can't accumulate unbounded disk.
+    if workdir_override.is_none() {
         let home = app.home.clone();
         let wd = run_workdir.clone();
         let label = format!("before task: {}", task.title);
         let tid = task.id.clone();
         let _ = tokio::task::spawn_blocking(move || {
-            checkpoints::snapshot(&home, &wd, &label, None, Some(tid), engram_core::now_ms() as u64)
+            let r = checkpoints::snapshot(&home, &wd, &label, None, Some(tid), engram_core::now_ms() as u64);
+            checkpoints::prune_auto(&home, 20);
+            r
         })
         .await;
     }

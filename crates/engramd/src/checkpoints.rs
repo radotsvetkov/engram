@@ -84,6 +84,36 @@ fn collect(root: &Path, dir: &Path, rel: &mut PathBuf, out: &mut Vec<(PathBuf, u
     }
 }
 
+/// Delete the OLDEST auto-snapshots ("before task: ...") beyond `keep`, so every-run checkpointing
+/// can't grow disk without bound. Manual snapshots (any other label) are never touched.
+pub fn prune_auto(home: &str, keep: usize) {
+    let mut auto: Vec<Checkpoint> = list(home)
+        .into_iter()
+        .filter(|c| c.label.starts_with("before task:"))
+        .collect();
+    if auto.len() <= keep {
+        return;
+    }
+    auto.sort_by_key(|c| std::cmp::Reverse(c.created_ms));
+    for cp in auto.into_iter().skip(keep) {
+        let _ = std::fs::remove_dir_all(store_dir(home).join(&cp.id));
+    }
+}
+
+/// The workdir's current (bounded) file set, as relative POSIX paths — the same walk snapshot()
+/// uses, exposed so the change inspector can compare "now" against a checkpoint's manifest.
+pub fn collect_tree(workdir: &Path, home: &str) -> Vec<String> {
+    let mut collected = Vec::new();
+    let mut total = 0u64;
+    let mut truncated = false;
+    let store = store_dir(home);
+    collect(workdir, workdir, &mut PathBuf::new(), &mut collected, &mut total, &mut truncated, &store);
+    collected
+        .into_iter()
+        .map(|(rel, _)| rel.to_string_lossy().replace('\\', "/"))
+        .collect()
+}
+
 /// Snapshot `workdir` into a new checkpoint under `<home>/checkpoints/<id>/`. `now_ms` is passed in
 /// (the module never reads the clock itself). Returns the manifest, or an error string on IO failure.
 pub fn snapshot(

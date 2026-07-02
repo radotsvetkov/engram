@@ -508,6 +508,42 @@
   .term-wrap { height:100%; display:grid; grid-template-columns:232px minmax(0,1fr); }
   .ftree { border-right:1px solid var(--border); overflow:auto; padding:10px 8px; background:var(--surface-0); }
   .ft-head { font:11px var(--mono); color:var(--text-muted); text-transform:uppercase; letter-spacing:.06em; padding:2px 6px 9px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  /* git panel above the file tree - read-only status/diffs/log */
+  #gitPanel { margin-bottom:10px; }
+  .git-head { display:flex; align-items:center; gap:7px; padding:7px 8px; border:1px solid var(--border); border-radius:9px;
+    background:var(--surface-1); cursor:pointer; font-size:12px; color:var(--text-secondary); }
+  .git-head:hover { border-color:var(--border-strong); }
+  .git-head svg { width:14px; height:14px; flex:none; color:var(--text-muted); }
+  .git-head b { font-weight:600; color:var(--text-primary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .git-ab { font:10.5px var(--mono); color:var(--web); flex:none; }
+  .git-n { flex:none; font:600 10.5px var(--mono); color:var(--warning); background:color-mix(in srgb, var(--warning) 14%, transparent); border-radius:9px; padding:1px 7px; }
+  .git-clean { flex:none; color:var(--accent); font-size:11px; }
+  .git-r { flex:none; background:none; border:none; color:var(--text-muted); cursor:pointer; font-size:13px; padding:0 2px; }
+  .git-r:hover { color:var(--text-primary); }
+  .git-body { padding:7px 2px 2px; }
+  .git-sec { font:10.5px var(--mono); color:var(--text-muted); text-transform:uppercase; letter-spacing:.06em; padding:7px 6px 4px; }
+  .git-row { display:flex; align-items:center; gap:7px; padding:3px 7px; border-radius:6px; cursor:pointer; font-size:12px; color:var(--text-secondary); }
+  .git-row:hover { background:var(--hover); color:var(--text-primary); }
+  .git-row .git-dot { width:7px; height:7px; border-radius:50%; flex:none; background:var(--text-muted); }
+  .git-row.st-modified .git-dot, .chg-row.st-modified .git-dot { background:var(--web); }
+  .git-row.st-added .git-dot, .git-row.st-untracked .git-dot, .chg-row.st-added .git-dot { background:var(--accent); }
+  .git-row.st-deleted .git-dot, .chg-row.st-deleted .git-dot { background:var(--danger); }
+  .git-row.st-renamed .git-dot, .git-row.st-copied .git-dot { background:#b48cf2; }
+  .git-row .git-path { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .git-row .git-st { flex:none; font:10px var(--mono); color:var(--text-muted); }
+  .git-ci { display:flex; align-items:baseline; gap:7px; padding:3px 7px; font-size:11.5px; color:var(--text-secondary); }
+  .git-ci .git-h { flex:none; font:10.5px var(--mono); color:var(--text-muted); cursor:pointer; }
+  .git-ci .git-h:hover { color:var(--accent); }
+  .git-ci .git-s { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .git-ci .git-t { flex:none; font-size:10px; color:var(--text-muted); }
+  .git-none { font-size:11.5px; color:var(--text-muted); padding:6px 8px; }
+  /* task-panel Changes section */
+  .chg-row { display:flex; align-items:center; gap:8px; padding:5px 8px; border-radius:7px; cursor:pointer; font-size:12.5px; color:var(--text-secondary); }
+  .chg-row:hover { background:var(--hover); color:var(--text-primary); }
+  .chg-row .git-dot { width:7px; height:7px; border-radius:50%; flex:none; background:var(--text-muted); }
+  .chg-row .chg-path { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:var(--mono); font-size:11.5px; }
+  .chg-row .chg-counts { flex:none; font:10.5px var(--mono); }
+  .chg-row .chg-counts .a { color:var(--accent); } .chg-row .chg-counts .d { color:var(--danger); }
   .ft-row { display:flex; align-items:center; gap:7px; padding:4px 7px; border-radius:6px; cursor:pointer; font-size:13px; color:var(--text-secondary); white-space:nowrap; overflow:hidden; }
   .ft-row:hover { background:var(--hover); color:var(--text-primary); }
   .ft-row .fi { width:13px; flex:none; color:var(--text-muted); text-align:center; }
@@ -2425,6 +2461,10 @@ async function openTask(id, fromPoll){
       }).join('');
       html+=`<div class="muted" style="font-size:11px;margin:14px 0 6px">artifacts · ${n} file${n===1?'':'s'} this run produced</div><div class="artifact-grid">${cards}</div>`;
     }
+    // What the run CHANGED on disk - computed from the pre-run checkpoint, no git required.
+    // Loaded async so the panel opens instantly; hidden when there's no checkpoint.
+    html+=`<div id="chgBox"></div>`;
+    if(t.status!=='doing') setTimeout(()=>taskChangesLoad(id), 30);
     // The agent's own plan (latest update_plan call), as a live checklist - glass-box intent.
     const planStep=[...(t.run.steps||[])].reverse().find(s=>s.tool==='update_plan'&&s.args&&Array.isArray(s.args.steps));
     if(planStep){
@@ -2452,6 +2492,27 @@ async function openTask(id, fromPoll){
     <div id="pwhenprev" class="sub"></div></div>`;
   html+=`<div class="row" style="margin-top:14px"><button onclick="delTask('${id}')" style="background:var(--surface-2);color:var(--danger)">Delete</button></div>`;
   body.innerHTML=html;
+}
+// Fetch + render the run's file changes (checkpoint delta) into the open panel.
+const _taskChanges={};
+async function taskChangesLoad(id){
+  if(!document.getElementById('chgBox') || panelId!==id) return;
+  let r=_taskChanges[id];
+  if(!r){ try{ r=_taskChanges[id]=await J('/v1/tasks/'+encodeURIComponent(id)+'/changes'); }catch(_){ r=_taskChanges[id]={files:[]}; } }
+  // Re-query AFTER the await: a concurrent openTask repaint (the agents lazy-load, a poll) swaps
+  // the panel body, and writing into the captured node lands in a detached tree - silently blank.
+  const box=document.getElementById('chgBox'); if(!box || panelId!==id) return;
+  const files=r.files||[];
+  if(!files.length){ box.innerHTML=''; return; }
+  const adds=files.reduce((s,f)=>s+(f.adds||0),0), dels=files.reduce((s,f)=>s+(f.dels||0),0);
+  box.innerHTML=`<div class="muted" style="font-size:11px;margin:14px 0 5px">changes this run made · ${files.length} file${files.length===1?'':'s'} <span style="color:var(--accent)">+${adds}</span> <span style="color:var(--danger)">−${dels}</span>${r.more?` · ${r.more} more not shown`:''}</div>`
+    + files.map((f,i)=>`<div class="chg-row st-${esc(f.status)}" title="${escAttr(f.path)} · ${esc(f.status)} — click for the diff" onclick="chgOpenDiff('${escAttr(id)}',${i})">
+        <span class="git-dot"></span><span class="chg-path">${esc(f.path)}</span>
+        <span class="chg-counts"><span class="a">+${f.adds||0}</span> <span class="d">−${f.dels||0}</span></span></div>`).join('');
+}
+function chgOpenDiff(id,i){
+  const f=(_taskChanges[id]&&_taskChanges[id].files||[])[i]; if(!f) return;
+  diffModal(f.path+' · '+f.status, f.diff||'(no textual diff)');
 }
 async function scheduleTask(id){
   const t=state.tasks.find(x=>x.id===id); const title=t?t.title:'';   // read from state, never the DOM
@@ -4952,17 +5013,63 @@ async function renderTerminal(){
   TERM.cwd=fs.path; TERM.parent=fs.parent; TERM.tree=fs.entries||[];
   if(!TERM.log.length) TERM.log=[{k:'sys',t:'Engram terminal - every command you run is signed into the ledger. Try ls, git status, pwd. Type clear to reset.'}];
   v.innerHTML=`<div class="term-wrap">
-    <aside class="ftree" id="ftree"></aside>
+    <aside class="ftree" id="ftree"><div id="gitPanel"></div><div id="ftreeList"></div></aside>
     <div class="term" id="term">
       <div class="term-out" id="termOut"></div>
       <div class="term-in"><span class="term-prompt" id="termPrompt">${esc(termShort(TERM.cwd))} $</span><input id="termCmd" class="term-cmd" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="run a command..."></div>
     </div></div>`;
-  renderTree(); paintTerm();
+  renderTree(); paintTerm(); gitPanelLoad();
   const inp=document.getElementById('termCmd'); inp.onkeydown=termKey; inp.focus();
   document.getElementById('term').addEventListener('mousedown', e=>{ if(e.target.tagName!=='INPUT' && (''+window.getSelection()).length===0) setTimeout(()=>inp.focus(),0); });
 }
+// ---- Git panel (read-only): branch, working-tree changes, recent commits ----------------------
+// Viewing only, by design - staging/committing/pushing stay deliberate terminal acts. Clicking a
+// file opens its unified diff, rendered with the same diff blocks chat uses.
+const GITP={ open:true };
+async function gitPanelLoad(){
+  const box=document.getElementById('gitPanel'); if(!box) return;
+  let st=null; try{ st=await J('/v1/git/status'+(WS.activeSession?('?session='+encodeURIComponent(WS.activeSession)):'')); }catch(_){}
+  if(!st){ box.innerHTML=''; return; }
+  if(!st.repo){ box.innerHTML=`<div class="git-none" title="${escAttr(st.workdir||'')}">not a git repository</div>`; return; }
+  const n=(st.staged||[]).length+(st.unstaged||[]).length+(st.untracked||[]).length;
+  const ab=(st.ahead||st.behind)?`<span class="git-ab" title="ahead/behind the upstream">${st.ahead?('↑'+st.ahead):''}${st.behind?(' ↓'+st.behind):''}</span>`:'';
+  const row=(f,staged)=>`<div class="git-row st-${esc(f.status)}" title="${escAttr(f.path)} · ${esc(f.status)} — click for the diff" onclick="gitOpenDiff(${attrJson(f.path)},${staged})">
+      <span class="git-dot"></span><span class="git-path">${esc(f.path.split('/').pop())}</span><span class="git-st">${esc(f.status[0].toUpperCase())}</span></div>`;
+  const sec=(label,list,staged)=>list.length?`<div class="git-sec">${label} · ${list.length}</div>${list.map(f=>row(f,staged)).join('')}`:'';
+  const log=(st.log||[]).slice(0,8).map(c=>`<div class="git-ci" title="${escAttr(c.subject)} — ${escAttr(c.author)}"><span class="git-h" title="copy ${escAttr(c.hash)}" onclick="navigator.clipboard&&navigator.clipboard.writeText('${escAttr(c.hash)}')">${esc(c.hash)}</span><span class="git-s">${esc(c.subject)}</span><span class="git-t">${fmtAgo(c.ts_ms)}</span></div>`).join('');
+  box.innerHTML=`<div class="git-head" onclick="GITP.open=!GITP.open;gitPanelLoad()" title="${escAttr(st.workdir||'')}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.4"/><circle cx="6" cy="18" r="2.4"/><circle cx="18" cy="9" r="2.4"/><path d="M6 8.4v7.2M18 11.4c0 3-2.5 3.6-5 3.6H8.4"/></svg>
+      <b>${esc(st.branch||'(no branch)')}</b>${ab}
+      ${n?`<span class="git-n">${n}</span>`:'<span class="git-clean" title="working tree clean">✓</span>'}
+      <span class="grow"></span><button class="git-r" title="Refresh" onclick="event.stopPropagation();gitPanelLoad()">↻</button></div>
+    ${GITP.open?`<div class="git-body">
+      ${sec('Staged', st.staged||[], true)}
+      ${sec('Changes', st.unstaged||[], false)}
+      ${sec('Untracked', st.untracked||[], false)}
+      ${n?'':'<div class="git-none">nothing to commit</div>'}
+      ${log?`<div class="git-sec">Recent commits</div>${log}`:''}
+    </div>`:''}`;
+}
+async function gitOpenDiff(path, staged){
+  let r=null;
+  try{ r=await J('/v1/git/diff?path='+encodeURIComponent(path)+(staged?'&staged=true':'')+(WS.activeSession?('&session='+encodeURIComponent(WS.activeSession)):'')); }
+  catch(e){ notify('Couldn\'t diff - '+((e&&e.message)||'error')); return; }
+  diffModal((staged?'staged · ':'')+path, r.diff||'(no changes)');
+}
+// A dismissible overlay showing one unified diff, rendered with the chat's diff code blocks.
+function diffModal(title, diffText){
+  const ov=document.createElement('div'); ov.className='overlay'; ov.style.display='flex';
+  ov.onclick=e=>{ if(e.target===ov) ov.remove(); };
+  ov.innerHTML=`<div class="fv-card" style="width:min(880px,94vw);max-height:88vh;display:flex;flex-direction:column">
+    <div class="fv-head"><span class="fv-name" style="font:12.5px var(--mono)">${esc(title)}</span><span class="grow"></span>
+      <button class="fv-x" aria-label="Close" onclick="this.closest('.overlay').remove()">×</button></div>
+    <div class="fv-body">${codeBlock(diffText,'diff')}</div></div>`;
+  document.body.appendChild(ov);
+  const esc_=e=>{ if(e.key==='Escape'){ ov.remove(); document.removeEventListener('keydown',esc_); } };
+  document.addEventListener('keydown',esc_);
+}
 function renderTree(){
-  const el=document.getElementById('ftree'); if(!el) return;
+  const el=document.getElementById('ftreeList')||document.getElementById('ftree'); if(!el) return;
   const up = TERM.parent ? `<div class="ft-row dir" onclick="termCd(${attrJson(TERM.parent)})"><span class="fi">↰</span><span class="fname">..</span></div>` : '';
   const rows = (TERM.tree||[]).map(e=>{
     const full=(TERM.cwd.endsWith('/')?TERM.cwd:TERM.cwd+'/')+e.name;

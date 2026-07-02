@@ -12,6 +12,7 @@ name = "engramd"
 path = "src/main.rs"
 
 [dependencies]
+similar = "2"
 engram-core = { path = "../engram-core" }
 engram-memory = { path = "../engram-memory" }
 engram-gateway = { path = "../engram-gateway" }

@@ -211,6 +211,11 @@ impl Agent {
         // Every tool-call id seen this run - backends can omit or repeat them; uniqueness here
         // protects spill filenames and tool_result pairing (see the fix-up before each echo).
         let mut seen_call_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        // Output-token headroom for tool calls that carry whole files. When a call comes back
+        // TRUNCATED at this limit, the turn is retried once or twice with doubled headroom
+        // instead of bouncing the failure to the model - big single-file writes just work.
+        let mut turn_max_tokens: u32 = 8192;
+        let mut trunc_bumps: u8 = 0;
         let mut reflected = false;
         let mut last_sig = String::new();
         let mut repeat = 0usize;
@@ -310,10 +315,9 @@ impl Agent {
 
             let req = CompletionRequest::new(&self.model, messages.clone())
                 .tools(tool_defs.clone())
-                // Headroom for a tool call that carries a whole file (e.g. write_file with an HTML
-                // page): at 2048 the content arg was truncated mid-JSON → "missing content" → the
-                // model retried the same broken call and the stuck-loop guard killed the run.
-                .max_tokens(8192);
+                // Headroom for a tool call that carries a whole file. Starts at 8192 and grows
+                // automatically (below) when a call is truncated at this limit.
+                .max_tokens(turn_max_tokens);
             // Resilient model call: a transient provider failure retries with backoff instead of
             // aborting the whole run; a terminal failure salvages the work gathered so far (below).
             let mut completion = match self.complete_with_retry(req, ctx.taint, &spent_counter).await {
@@ -324,6 +328,26 @@ impl Agent {
                         .await)
                 }
             };
+
+            // A tool call cut at the output-token limit is OUR ceiling, not the model's mistake:
+            // retry the same turn with more headroom before involving the model at all. Nothing
+            // is recorded for the failed attempt (no echo, no step), so the transcript stays clean.
+            let truncated_call = completion.tool_calls.iter().any(|c| {
+                c.arguments
+                    .get(engram_gateway::ARGS_ERROR_KEY)
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|m| m.contains("TRUNCATED"))
+            });
+            if truncated_call && trunc_bumps < 2 {
+                trunc_bumps += 1;
+                turn_max_tokens = (turn_max_tokens * 2).min(32_768);
+                let _ = ctx.ledger.append(
+                    "agent.retry",
+                    self.actor.as_str(),
+                    json!({ "reason": "tool_call_truncated", "max_tokens": turn_max_tokens }),
+                );
+                continue;
+            }
 
             if completion.tool_calls.is_empty() {
                 // If the last thing the run did was ask the user something (clarify) or request
@@ -515,8 +539,27 @@ impl Agent {
             self.actor.as_str(),
             json!({ "steps": steps.len(), "limit": true }),
         );
+        // Don't end a long run with a shrug: one final NO-TOOLS turn turns the work already done
+        // into an actual answer - what got finished (files by name), what remains.
+        messages.push(Message::user(
+            "You have reached the step limit. STOP using tools. Reply NOW with your best final \
+             answer: summarize what you completed (name the files you created or changed) and \
+             list exactly what remains unfinished."
+                .to_string(),
+        ));
+        self.maybe_compact(&mut messages, &ctx, &spent_counter).await;
+        let req = CompletionRequest::new(&self.model, messages.clone()).max_tokens(2048);
+        let answer = match self.complete_with_retry(req, ctx.taint, &spent_counter).await {
+            Ok(c) if !c.text.trim().is_empty() => format!(
+                "{}\n\n---\n_This run hit its step limit ({} steps). Say \"continue\" to pick up \
+                 from here._",
+                c.text.trim(),
+                self.max_steps
+            ),
+            _ => "(reached step limit without a final answer — say \"continue\" to resume)".into(),
+        };
         Ok(AgentRun {
-            answer: "(reached step limit without a final answer)".into(),
+            answer,
             steps,
             stopped: "limit",
         })
@@ -1398,6 +1441,75 @@ mod tests {
             "recall should see the fact"
         );
         assert!(ledger.verify().unwrap() > 0);
+    }
+
+    #[tokio::test]
+    async fn truncated_tool_call_retries_with_more_headroom() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Arc::new(Ledger::open(dir.path()).unwrap());
+        let memory = Arc::new(
+            Memory::open(
+                dir.path().join("b.db"),
+                Arc::new(TrigramHashEmbedder::default()),
+                ledger.clone(),
+            )
+            .unwrap(),
+        );
+        let signer = Arc::new(SkillSigner::load_or_create(dir.path().join("k")).unwrap());
+        let skills = Arc::new(Registry::open(dir.path(), signer, ledger.clone()).unwrap());
+
+        // Turn 1: a call diagnosed as TRUNCATED at the output limit (what the provider emits when
+        // finish_reason=length cut the arguments). Turn 2: the same write, intact. Then the answer.
+        // The loop must retry turn 1 invisibly - no failed step, no diagnosis reaching the model.
+        let truncated = Completion {
+            text: String::new(),
+            model: "test".into(),
+            tokens_in: 1,
+            tokens_out: 1,
+            tool_calls: vec![ToolCall {
+                id: "t1".into(),
+                name: "write_file".into(),
+                arguments: json!({ engram_gateway::ARGS_ERROR_KEY:
+                    "this tool call was TRUNCATED at the output-token limit" }),
+            }],
+        };
+        let provider = ScriptedProvider::new(vec![
+            truncated,
+            call("2", "write_file", json!({ "path": "big.txt", "content": "whole file\n" })),
+            final_answer("written"),
+        ]);
+        let gateway = Arc::new(Gateway::new(Box::new(provider), ledger.clone()));
+        let ctx = ToolCtx {
+            memory,
+            skills,
+            gateway: gateway.clone(),
+            ledger: ledger.clone(),
+            taint: Taint::Trusted,
+            sensitive: false,
+            policy: Policy::default(),
+            workdir: dir.path().to_path_buf(),
+            model: "test".into(),
+            depth: 0,
+            browser: Arc::new(crate::tool::NoBrowser),
+            scope: engram_core::ScopeCtx::any(),
+            halt: None,
+            spend_counter: None,
+            token_budget: None,
+            on_step: None,
+            on_narration: None,
+            allowed_tools: None,
+        };
+        let agent = Agent::new(gateway, crate::default_tools(), "test");
+        let run = agent.run("write the file", ctx).await.unwrap();
+
+        assert_eq!(run.answer, "written");
+        // Only the SUCCESSFUL write is recorded - the truncated attempt was retried silently.
+        assert_eq!(run.steps.len(), 1);
+        assert!(run.steps[0].ok, "{}", run.steps[0].observation);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("big.txt")).unwrap(),
+            "whole file\n"
+        );
     }
 
     #[tokio::test]

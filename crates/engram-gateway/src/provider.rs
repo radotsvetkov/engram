@@ -73,17 +73,88 @@ pub fn normalize_tool_args(raw: &serde_json::Value) -> serde_json::Value {
             match serde_json::from_str::<serde_json::Value>(t) {
                 // Double-encoded: a JSON string whose content is itself JSON.
                 Ok(serde_json::Value::String(inner)) => serde_json::from_str(&inner)
+                    .or_else(|_| repair_json(&inner).ok_or(()))
                     .unwrap_or_else(|_| args_error_value("arguments were not valid JSON", &inner)),
                 Ok(v) => v,
-                // PRESENT but unparseable is a signal, not an empty call: truncation at the
-                // output-token limit cuts JSON mid-string (the live edit_file failure), and some
-                // backends emit trailing-comma JSON. Coercing to {} made that look like the model
-                // sent nothing - the loop retried the identical call until the stuck guard fired.
-                Err(_) => args_error_value("arguments were not valid JSON", t),
+                // PRESENT but unparseable is a signal, not an empty call. First try to REPAIR it:
+                // models writing code into JSON strings routinely emit raw newlines/tabs and bad
+                // escapes (invalid JSON but unambiguous intent) - fixing those locally beats
+                // bouncing the whole call back. Only what can't be repaired becomes a diagnosis.
+                Err(_) => match repair_json(t) {
+                    Some(v) => {
+                        tracing::debug!("repaired almost-JSON tool arguments");
+                        v
+                    }
+                    None => args_error_value("arguments were not valid JSON", t),
+                },
             }
         }
         _ => serde_json::json!({}),
     }
+}
+
+/// Best-effort repair of the ALMOST-JSON models actually emit inside big code payloads: raw
+/// control characters inside string literals (a raw newline in file content is invalid JSON),
+/// invalid escape sequences (`\'`, a lone backslash), and trailing commas. It NEVER invents
+/// closing quotes or braces - a truncated payload must stay an error, because auto-completing
+/// it would silently half-write a file.
+fn repair_json(s: &str) -> Option<serde_json::Value> {
+    let mut out = String::with_capacity(s.len() + 16);
+    let mut chars = s.chars().peekable();
+    let mut in_str = false;
+    while let Some(c) = chars.next() {
+        if in_str {
+            match c {
+                '\\' => match chars.peek() {
+                    Some(&n) if matches!(n, '"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't' | 'u') => {
+                        out.push('\\');
+                        out.push(n);
+                        chars.next();
+                    }
+                    // Invalid escape (e.g. \' or a lone trailing backslash): keep it as a
+                    // literal backslash character.
+                    _ => out.push_str("\\\\"),
+                },
+                '"' => {
+                    in_str = false;
+                    out.push('"');
+                }
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+                c => out.push(c),
+            }
+        } else {
+            match c {
+                '"' => {
+                    in_str = true;
+                    out.push('"');
+                }
+                ',' => {
+                    // Trailing comma: drop it when the next non-whitespace closes the scope.
+                    let mut look = chars.clone();
+                    let mut nx = None;
+                    while let Some(&pk) = look.peek() {
+                        if pk.is_whitespace() {
+                            look.next();
+                        } else {
+                            nx = Some(pk);
+                            break;
+                        }
+                    }
+                    if !matches!(nx, Some('}') | Some(']')) {
+                        out.push(',');
+                    }
+                }
+                c => out.push(c),
+            }
+        }
+    }
+    if in_str {
+        return None; // unterminated string = truncation; never invent an ending
+    }
+    serde_json::from_str(&out).ok()
 }
 
 /// Reserved key carrying a parse/truncation diagnosis through the ToolCall's `arguments`. The
@@ -189,6 +260,23 @@ mod arg_norm_tests {
             .is_some_and(|m| m.contains("not valid JSON")), "{garbage}");
         let truncated = normalize_tool_args(&json!("{\"path\":\"a.txt\",\"content\":\"abc"));
         assert!(truncated.get(super::ARGS_ERROR_KEY).is_some(), "{truncated}");
+    }
+
+    #[test]
+    fn repairs_the_almost_json_models_emit_in_code_payloads() {
+        // raw newline + tab inside a string value (invalid JSON, unambiguous intent)
+        let v = normalize_tool_args(&json!("{\"path\":\"a.js\",\"new\":\"// header\nline2\tend\"}"));
+        assert_eq!(v["path"], "a.js");
+        assert_eq!(v["new"], "// header\nline2\tend");
+        // trailing comma
+        let v = normalize_tool_args(&json!("{\"path\":\"a\",}"));
+        assert_eq!(v, json!({"path":"a"}));
+        // invalid escape \' becomes a literal backslash-apostrophe, not a parse failure
+        let v = normalize_tool_args(&json!("{\"new\":\"it\\'s\"}"));
+        assert!(v.get(super::ARGS_ERROR_KEY).is_none(), "{v}");
+        // an unterminated string is TRUNCATION - repair must refuse, diagnosis must fire
+        let v = normalize_tool_args(&json!("{\"new\":\"unfinished"));
+        assert!(v.get(super::ARGS_ERROR_KEY).is_some(), "{v}");
     }
 }
 
@@ -721,7 +809,9 @@ mod anthropic {
                                 serde_json::json!({})
                             } else {
                                 serde_json::from_str(&p.json)
-                                    .unwrap_or_else(|_| args_error_value("tool arguments were not valid JSON (possibly truncated at the token limit)", &p.json))
+                                    .ok()
+                                    .or_else(|| repair_json(&p.json))
+                                    .unwrap_or_else(|| args_error_value("tool arguments were not valid JSON (possibly truncated at the token limit)", &p.json))
                             };
                             tool_calls.push(ToolCall {
                                 id: p.id,

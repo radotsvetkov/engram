@@ -3935,7 +3935,7 @@ pub(crate) async fn run_task_core(
     let run_res = run_agent_task_cb(
         app,
         &prompt,
-        10,
+        16,
         engram_core::Taint::Trusted,
         false,
         Some(on_step),

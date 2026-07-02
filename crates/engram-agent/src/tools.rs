@@ -994,7 +994,9 @@ impl Tool for WriteFileTool {
         true
     }
     fn description(&self) -> &str {
-        "Create or overwrite a text file inside the working directory."
+        "Create or overwrite a text file inside the working directory. For LARGE content (over \
+         ~150 lines), send the first part here and continue with append_file calls - one huge \
+         call can exceed the output limit and fail."
     }
     fn schema(&self) -> Value {
         json!({ "type": "object",
@@ -1080,7 +1082,9 @@ impl Tool for EditFileTool {
         "Replace a unique substring in a file inside the working directory. `old` should match \
          verbatim; if it doesn't match exactly, a whitespace-tolerant per-line match is tried as a \
          fallback (so indentation/trailing-space drift doesn't fail the edit). The match must still \
-         be UNIQUE or the edit is refused. The safe way to change part of a file without re-sending it."
+         be UNIQUE or the edit is refused. The safe way to change part of a file without re-sending \
+         it. Keep old/new SMALL - one function or block per call; make several calls for bigger \
+         changes (huge payloads can exceed the output limit)."
     }
     fn schema(&self) -> Value {
         json!({ "type": "object",

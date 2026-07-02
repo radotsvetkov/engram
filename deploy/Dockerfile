@@ -5,7 +5,10 @@
 #   docker run -d -p 8088:8088 -e ENGRAM_API_TOKEN=$(openssl rand -hex 16) \
 #              -e ANTHROPIC_API_KEY=sk-ant-... -v engram-data:/var/lib/engram engram
 #
-# Interactive browser automation needs Chromium; build that variant from deploy/Dockerfile.browser.
+# This image builds without the browser-cdp feature, so the interactive browser tools are not
+# available in the container. Web search / fetch (the default `web` feature) work; for
+# JS-heavy pages, run the agent outside the container or add Chromium + `--features browser-cdp`
+# to the build below.
 
 FROM rust:1.94-bookworm AS build
 RUN rustup target add x86_64-unknown-linux-musl \

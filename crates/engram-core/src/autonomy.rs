@@ -70,9 +70,11 @@ impl EgressRule {
 pub struct EgressBudget {
     /// Max number of egress actions this policy authorizes.
     pub max_actions: u32,
-    /// RESERVED — a spend cap in cents. NOT yet enforced: `resolve()` does not read it and no
-    /// per-action amount is threaded, so do not present it as a guarantee. Pay-class actions are
-    /// governed today only by `allowed_actions` + the destination allowlist. (0 = unset.)
+    /// A spend cap in cents (0 = unset). Per-action amounts are not yet threaded into `resolve()`, so
+    /// a running total cannot be enforced here. Rather than present this as a guarantee it does not
+    /// keep, `resolve()` FAILS CLOSED on Pay-class actions: a Pay egress is always `Stage`d for async
+    /// human review, never auto-allowed, until amount-level enforcement lands. So this field is not a
+    /// silently-ignored spend cap — money never moves unattended on a standing grant.
     #[serde(default)]
     pub max_spend_cents: u64,
     /// Unix-epoch ms after which the grant is dead (0 = no expiry).
@@ -118,8 +120,9 @@ impl AutonomyPolicy {
     /// atomically claims a slot and re-checks the count, so the budget is correct under concurrency.
     ///
     /// Order matters: the floor is checked FIRST (it overrides everything), then expiry, then action
-    /// class, then the allowlist. Anything not explicitly allowed is `Stage`d (parked for async
-    /// review), never silently dropped — default-deny without becoming a hard wall.
+    /// class, then the Pay fail-closed gate, then the allowlist. Anything not explicitly allowed is
+    /// `Stage`d (parked for async review), never silently dropped — default-deny without becoming a
+    /// hard wall.
     pub fn resolve(&self, dest: &str, class: ActionClass, now_ms: u64) -> EgressDecision {
         if self.hardline_floor.iter().any(|r| r.matches(dest)) {
             return EgressDecision::Refuse("egress_refused_floor");
@@ -129,6 +132,14 @@ impl AutonomyPolicy {
         }
         if !self.allowed_actions.is_empty() && !self.allowed_actions.contains(&class) {
             return EgressDecision::Stage("action_not_allowed");
+        }
+        // Pay fails closed: no per-action amount is threaded and no running spend total is tracked
+        // here, so `max_spend_cents` cannot actually be enforced. Rather than let money move
+        // unattended under a phantom cap, a Pay action is always parked for async human review — even
+        // if its destination is allowlisted. (The floor and an explicit action-class deny above still
+        // take precedence.) Remove this once amount-level enforcement lands.
+        if class == ActionClass::Pay {
+            return EgressDecision::Stage("pay_requires_review");
         }
         if self.allowed_egress.iter().any(|r| r.matches(dest)) {
             return EgressDecision::Allow;
@@ -261,10 +272,36 @@ mod tests {
     }
 
     #[test]
-    fn empty_allowed_actions_permits_any_class() {
+    fn empty_allowed_actions_permits_any_non_pay_class() {
         let mut p = policy();
         p.allowed_actions.clear();
-        assert_eq!(p.resolve("mail.example.com", ActionClass::Pay, 0), EgressDecision::Allow);
+        // Empty allowed_actions means the destination allowlist alone suffices for non-pay classes.
+        assert_eq!(p.resolve("mail.example.com", ActionClass::Post, 0), EgressDecision::Allow);
+        assert_eq!(p.resolve("mail.example.com", ActionClass::Other, 0), EgressDecision::Allow);
+    }
+
+    #[test]
+    fn pay_fails_closed_even_when_allowlisted() {
+        // Pay is never auto-allowed while spend is unenforceable — it stages for review even for an
+        // allowlisted destination and an explicitly Pay-permitting policy.
+        let mut p = policy();
+        p.allowed_actions = vec![ActionClass::Pay];
+        assert_eq!(
+            p.resolve("mail.example.com", ActionClass::Pay, 0),
+            EgressDecision::Stage("pay_requires_review")
+        );
+        // The floor still wins over the pay gate.
+        assert_eq!(
+            p.resolve("x.evil.test", ActionClass::Pay, 0),
+            EgressDecision::Refuse("egress_refused_floor")
+        );
+        // A Pay action outside the allowed_actions set stages as action_not_allowed (checked first).
+        let mut q = policy(); // allowed_actions = [Send]
+        q.allowed_actions = vec![ActionClass::Send];
+        assert_eq!(
+            q.resolve("mail.example.com", ActionClass::Pay, 0),
+            EgressDecision::Stage("action_not_allowed")
+        );
     }
 
     #[test]

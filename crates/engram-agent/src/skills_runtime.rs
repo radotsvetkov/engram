@@ -55,6 +55,17 @@ pub struct SkillRunParams<'a> {
     /// True during A/B replay: forces network isolation for process skills so scoring a net/egress
     /// skill cannot cause real side effects.
     pub scoring: bool,
+    /// The code about to be verified/executed originated from an UNTRUSTED-provenance run — e.g. a
+    /// skill distilled by `reflect_on_skills` after a run that read injected web/document content.
+    /// `p.taint` cannot carry this, because the distillation *reflection* is itself a separate Trusted
+    /// model call and the params legitimately run as Trusted; the *provenance of the proposed bytes*
+    /// is the thing at risk. When this is set, a Process skill may only run under a network-isolated OS
+    /// sandbox (built-in `sandbox` or `docker --network none`); on any non-isolating backend
+    /// (local / ssh / singularity) it is REFUSED rather than replay-executed on the host.
+    ///
+    /// **Fail-closed default: treat as `true`.** Any caller that has NOT established the bytes come
+    /// from a trusted source (a signed, human-authored/adopted skill) must leave this `true`.
+    pub source_tainted: bool,
 }
 
 /// Character-bigram Jaccard similarity in [0,1] — partial credit for a near-correct output, so a
@@ -91,6 +102,20 @@ fn truncate(s: &str, max: usize) -> String {
         .map(|(i, _)| i)
         .unwrap_or(0);
     format!("{}…", &s[..cut])
+}
+
+/// Whether a shell backend actually enforces network isolation on the code it runs. Only the built-in
+/// OS sandbox (`sandbox`, which passes `allow_net=false` to Seatbelt/bwrap) and Docker (`--network
+/// none`) can hold a process off the network. `local` (`None`), `ssh:` and `singularity:` all inherit
+/// the host/remote network — they are NOT isolating, so untrusted-provenance code must never run on
+/// them. This is the OS-sandbox test the tainted-provenance gate keys off of.
+fn backend_is_network_isolated(backend: Option<&str>) -> bool {
+    match backend {
+        Some("sandbox") => true,
+        // Docker: any image string that is not the ssh:/singularity: pseudo-backend.
+        Some(img) if !img.starts_with("ssh:") && !img.starts_with("singularity:") => true,
+        _ => false, // None (local), ssh:, singularity:
+    }
 }
 
 /// Build `(program, args)` for a process skill, deriving the docker network flag from `allow_net`.
@@ -155,6 +180,21 @@ async fn run_process_skill(
             "skill refused: this run read untrusted content (code-execution guard)".into(),
         );
     }
+    // Untrusted-PROVENANCE guard (distinct from run taint above). When the *bytes* being executed came
+    // from an untrusted source — a skill distilled from a tainted run, whose model-proposed source can
+    // embed injected web/document content — replay-executing them to verify/adopt is exactly the
+    // dangerous step. Such code may run ONLY under a network-isolated OS sandbox (built-in `sandbox` or
+    // `docker --network none`). On a non-isolating backend (local / ssh / singularity) we FAIL CLOSED
+    // and refuse, rather than replay-execute attacker-influenced code on the host. This complements the
+    // `scoring` flag, which requests isolation but is only physically enforced on those same backends.
+    if p.source_tainted && !backend_is_network_isolated(p.backend) {
+        return Err(
+            "skill refused: untrusted-provenance code (distilled from a tainted run) can only be \
+             verified inside a network-isolated OS sandbox — enable the built-in sandbox or a Docker \
+             backend (Settings → Tools); it will NOT be run on the local/ssh/singularity host"
+                .into(),
+        );
+    }
     let interpreter = m.interpreter.as_deref().unwrap_or("python3");
     // Last line of defense against shell-command injection: the interpreter is interpolated into a
     // `sh -c` command, so it must carry no shell metacharacters regardless of how the skill was
@@ -193,7 +233,10 @@ async fn run_process_skill(
     // user's "local = same trust as the shell tool" choice; true isolation requires the docker backend.
     let allow_net = m.capabilities.contains(&Capability::Net)
         && !p.taint.is_untrusted()
-        && !p.scoring;
+        && !p.scoring
+        // Untrusted-provenance code never gets the network, even on an isolating backend that reached
+        // this point — verifying a distilled net skill must have no live side effects.
+        && !p.source_tainted;
     let command = format!("{interpreter} {script_rel} < {input_rel}");
     let (program, args) = skill_shell_command(p.backend, p.workdir, &command, allow_net);
 
@@ -548,6 +591,7 @@ mod tests {
             host: &f.host,
             scope: engram_core::ScopeCtx::any(),
             scoring: false,
+            source_tainted: false,
         }
     }
 
@@ -800,6 +844,50 @@ mod tests {
         .unwrap();
         assert_eq!(d["decision"], "needs_shell", "decision was {d}");
         assert_eq!(f.registry.active_version("upper").unwrap(), None);
+    }
+
+    #[test]
+    fn only_sandbox_and_docker_are_network_isolated() {
+        assert!(backend_is_network_isolated(Some("sandbox")));
+        assert!(backend_is_network_isolated(Some("alpine"))); // docker image
+        assert!(backend_is_network_isolated(Some("ubuntu:24.04")));
+        assert!(!backend_is_network_isolated(None)); // local host
+        assert!(!backend_is_network_isolated(Some("ssh:deploy@host")));
+        assert!(!backend_is_network_isolated(Some("singularity:img.sif")));
+    }
+
+    #[tokio::test]
+    async fn tainted_provenance_skill_refused_on_local_backend() {
+        // A skill distilled from a tainted run (source_tainted=true) must NOT replay-execute on the
+        // non-isolating local backend, even with a Trusted run taint and the shell gate open.
+        let f = setup();
+        f.registry.install(upper_skill(), b"tr a-z A-Z").unwrap();
+        let mut p = params(&f, Taint::Trusted, true);
+        assert_eq!(p.backend, None, "this test needs the local backend");
+        p.source_tainted = true;
+        let err = run_active(&f.registry, "upper", b"hello", &p)
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("untrusted-provenance") || err.contains("network-isolated"),
+            "tainted-provenance code must be refused on the local host, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn tainted_provenance_skill_runs_under_builtin_sandbox() {
+        // On macOS/Linux the built-in `sandbox` backend IS network-isolated, so verifying an
+        // untrusted-provenance skill is allowed there (it just can't reach the network).
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            let f = setup();
+            f.registry.install(upper_skill(), b"tr a-z A-Z").unwrap();
+            let mut p = params(&f, Taint::Trusted, true);
+            p.backend = Some("sandbox");
+            p.source_tainted = true;
+            let out = run_active(&f.registry, "upper", b"hello", &p).await.unwrap();
+            assert_eq!(String::from_utf8_lossy(&out.output).trim(), "HELLO");
+        }
     }
 
     #[tokio::test]

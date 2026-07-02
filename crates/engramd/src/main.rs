@@ -24,6 +24,7 @@ use serde_json::{json, Value};
 mod agents;
 mod budget;
 mod channels;
+mod checkpoints;
 mod config;
 mod conscious;
 mod converse;
@@ -31,6 +32,7 @@ mod corpus;
 mod dissent;
 mod distill;
 mod embedder;
+mod hooks;
 mod scope;
 mod seed;
 mod tasks;
@@ -86,6 +88,33 @@ struct App {
     consciousness: Arc<conscious::Consciousness>,
     /// Durable, named, role-scoped agents assignable to kanban cards - the auditable team.
     agents: Arc<agents::AgentStore>,
+    /// How many agent runs are executing right now. The idle-clock (`Activity`) is reset only by the
+    /// `keep_awake` HTTP middleware, so a scheduled / Telegram / detached-stream run with no open HTTP
+    /// connection did NOT keep the daemon awake: after the idle window the process exited mid-run,
+    /// killing unattended work and leaving scheduled jobs to double-fire. A background keepalive task
+    /// touches activity while this is non-zero, and shutdown drains in-flight runs before returning.
+    in_flight: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+/// RAII counter for an in-flight agent run. Incrementing touches the idle clock so a run started
+/// without an open HTTP connection (scheduler, Telegram, a stream whose client disconnected) keeps
+/// the daemon awake; the count is decremented on drop, so it is correct across every early-return
+/// and `?` in the run path. The background keepalive task (spawned in `run()`) re-touches while the
+/// count is non-zero, and graceful shutdown waits for it to reach zero.
+struct RunGuard {
+    counter: Arc<std::sync::atomic::AtomicUsize>,
+}
+impl RunGuard {
+    fn new(activity: &Activity, counter: Arc<std::sync::atomic::AtomicUsize>) -> Self {
+        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        activity.touch();
+        RunGuard { counter }
+    }
+}
+impl Drop for RunGuard {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 impl App {
@@ -131,6 +160,12 @@ async fn main() {
         // ledger, embedder, channels, port, build features), the way `claude-desktop --doctor`
         // checks an install. Exits 0 when nothing is broken, 1 when a hard problem is found.
         Some("doctor") => std::process::exit(doctor_cmd(args.get(2).map(String::as_str))),
+        // `engramd --next-wake [HOME]` - print the soonest scheduled job's fire time (epoch millis)
+        // so a deploy wake-timer can arm itself for the NEXT actual job instead of polling on a static
+        // calendar. Exits 1 (no output) when nothing is scheduled. Never binds the socket.
+        Some("--next-wake") | Some("next-wake") => {
+            std::process::exit(next_wake_cmd(args.get(2).map(String::as_str)))
+        }
         Some("help") | Some("--help") | Some("-h") => {
             print_help();
             std::process::exit(0);
@@ -150,6 +185,27 @@ async fn main() {
                     tracing::error!(error = %e, "run-due failed");
                     std::process::exit(1);
                 }
+            }
+        }
+        // Hidden: `engramd --extract-doc <name>` reads a document from STDIN and writes its
+        // extracted text to STDOUT (exit 0), 3 = no text, 1 = read error. This is the isolated
+        // child `extract_document_text_isolated` spawns so a panic inside a third-party parser
+        // (pdf-extract/calamine/zip) — which would abort the whole daemon under `panic="abort"` —
+        // only kills this short-lived child. Runs BEFORE init_tracing so stdout stays clean.
+        Some("--extract-doc") => {
+            use std::io::Read;
+            let name = args.get(2).cloned().unwrap_or_default();
+            let mut buf = Vec::new();
+            if std::io::stdin().read_to_end(&mut buf).is_err() {
+                std::process::exit(1);
+            }
+            match extract_document_text(&name, &buf) {
+                Some(text) => {
+                    use std::io::Write;
+                    let _ = std::io::stdout().write_all(text.as_bytes());
+                    std::process::exit(0);
+                }
+                None => std::process::exit(3),
             }
         }
         // Reject an unrecognized flag with usage instead of silently launching the server.
@@ -178,6 +234,35 @@ enum RunMode {
 /// Offline verification of `<HOME>/ledger.jsonl` against `<HOME>/ledger.pub`. Exit codes:
 /// 0 = signed chain intact, 1 = tampered/broken, 2 = setup error. This is the trust
 /// payoff - anyone can confirm conduct without trusting the machine that produced it.
+/// `engramd --next-wake [HOME]` — print the epoch-millis of the soonest scheduled job to STDOUT
+/// (exit 0), exit 1 (no output) when nothing is scheduled, exit 2 on an open error. A deploy
+/// wake-timer consults this to arm itself for the NEXT actual job (true zero-idle scheduling) instead
+/// of a static daily poll. Read-only: it opens jobs.json + the ledger and never starts the daemon.
+fn next_wake_cmd(home_arg: Option<&str>) -> i32 {
+    let home = home_arg
+        .map(String::from)
+        .or_else(|| std::env::var("ENGRAM_HOME").ok())
+        .unwrap_or_else(|| "./brain".into());
+    let ledger = match Ledger::open(&home) {
+        Ok(l) => Arc::new(l),
+        Err(e) => {
+            eprintln!("cannot open ledger: {e}");
+            return 2;
+        }
+    };
+    match Scheduler::open(&home, ledger).map(|s| s.next_wake()) {
+        Ok(Some(ms)) => {
+            println!("{ms}");
+            0
+        }
+        Ok(None) => 1,
+        Err(e) => {
+            eprintln!("cannot open scheduler: {e}");
+            2
+        }
+    }
+}
+
 fn verify_cmd(home_arg: Option<&str>) -> i32 {
     let home = home_arg
         .map(String::from)
@@ -531,6 +616,8 @@ USAGE:
     engramd doctor [HOME]   Health-check the local install (config, provider, ledger, ports)
     engramd verify [HOME]   Verify the signed audit ledger offline, without trusting the daemon
     engramd verify-autonomy [HOME]  Reconstruct every autonomous egress from the signed ledger
+    engramd --run-due       Fire any scheduled jobs that are due, then exit (systemd wake-timer)
+    engramd --next-wake     Print the next scheduled job's fire time (epoch ms); exit 1 if none
     engramd help            Show this help
     engramd --version       Print the version
 
@@ -831,6 +918,7 @@ async fn run(mode: RunMode) -> Result<(), Box<dyn std::error::Error>> {
         telegram: Arc::new(std::sync::Mutex::new(None)),
         consciousness: Arc::new(conscious::Consciousness::open(&home)),
         agents: Arc::new(agents::AgentStore::open(std::path::Path::new(&home))),
+        in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     };
     // Seed working memory once on first run, so the always-loaded block is never empty when the
     // brain already holds memories. Best-effort: a fresh brain just yields an empty block.
@@ -895,6 +983,9 @@ async fn run(mode: RunMode) -> Result<(), Box<dyn std::error::Error>> {
         )
         .route("/v1/ledger/tail", get(ledger_tail))
         .route("/v1/ledger/verify", get(ledger_verify))
+        .route("/v1/checkpoints", get(checkpoints_list).post(checkpoints_create))
+        .route("/v1/checkpoints/{id}/restore", post(checkpoints_restore))
+        .route("/v1/checkpoints/{id}", axum::routing::delete(checkpoints_delete))
         .route("/v1/schedule", get(schedule_list).post(schedule_add))
         .route("/v1/schedule/preview", get(schedule_preview))
         .route("/v1/schedule/{id}", axum::routing::delete(schedule_remove))
@@ -979,16 +1070,13 @@ async fn run(mode: RunMode) -> Result<(), Box<dyn std::error::Error>> {
         let now = chrono::Utc::now();
         let mut fired = 0usize;
         for job in app.sched.due(now) {
-            let title = job
-                .payload
-                .get("title")
-                .and_then(|v| v.as_str())
-                .unwrap_or(&job.name)
-                .to_string();
-            let task = app.tasks.create(title, String::new(), "schedule".into());
+            let task = task_from_schedule(&app, &job.payload, &job.name);
             let _ = app.sched.set_last_task(&job.id, &task.id);
-            let _ = run_task_core(&app, &task.id, None, false, false).await;
+            // Mark fired BEFORE running (matching spawn_scheduler_tick): if this one-shot process dies
+            // mid-run, the occurrence is still consumed, so the next wake doesn't re-fire it — the same
+            // double-fire (e.g. a digest sent twice) the in-daemon tick was fixed to avoid.
             let _ = app.sched.mark_fired(&job.id, now);
+            let _ = run_task_core(&app, &task.id, None, false, false).await;
             fired += 1;
         }
         tracing::info!(fired, "ran due scheduled jobs (--run-due), exiting");
@@ -998,6 +1086,10 @@ async fn run(mode: RunMode) -> Result<(), Box<dyn std::error::Error>> {
     // Fire scheduled jobs while the daemon is awake.
     spawn_scheduler_tick(app.clone());
     spawn_consolidation_tick(app.clone());
+    // Keep the daemon awake while ANY agent run is in flight, even one with no open HTTP connection
+    // (scheduled / Telegram / a stream whose client disconnected). Without this the idle clock — reset
+    // only by inbound HTTP — would fire after the idle window and drop the runtime mid-run.
+    spawn_run_keepalive(app.clone());
 
     // Load the persisted API key OFF the startup path. Reading the OS keyring can pop a blocking
     // macOS Keychain password prompt (adhoc-signed app); doing it before the bind stalled the server
@@ -1081,11 +1173,27 @@ async fn run(mode: RunMode) -> Result<(), Box<dyn std::error::Error>> {
     // Tell a Type=notify supervisor we're ready to accept (no-op when not under systemd).
     sd_notify_ready();
 
+    let in_flight_shutdown = app.in_flight.clone();
     axum::serve(listener, router)
         .with_graceful_shutdown(async move {
             match run_until_idle(activity, idle).await {
                 engram_core::WakeReason::Idle => tracing::info!("idle - sleeping to zero"),
                 engram_core::WakeReason::Signal => tracing::info!("signal - sleeping to zero"),
+            }
+            // Drain in-flight agent runs before letting the runtime drop. The idle path won't fire
+            // while a run is live (the keepalive touches activity), but a shutdown SIGNAL can arrive
+            // mid-run — without this wait the runtime would drop and abort the detached run, losing its
+            // receipt and re-firing scheduled jobs. Bounded so a truly stuck run can't wedge shutdown.
+            use std::sync::atomic::Ordering;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while in_flight_shutdown.load(Ordering::SeqCst) > 0
+                && std::time::Instant::now() < deadline
+            {
+                tracing::info!(
+                    in_flight = in_flight_shutdown.load(Ordering::SeqCst),
+                    "waiting for in-flight agent runs to drain before sleeping"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }
         })
         .await?;
@@ -1124,11 +1232,59 @@ async fn require_auth(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
+    // DNS-rebinding defense, applied even when there is NO token (the default desktop posture: bound
+    // to 127.0.0.1 with an empty token). A malicious website can rebind its own hostname to 127.0.0.1
+    // and issue same-origin requests to :8088 from the victim's browser — driving a shell-capable,
+    // self-modifying agent. CORS does NOT stop this (the request is same-origin to the attacker's
+    // domain). The standard local-daemon fix (Chrome DevTools, Ollama, …) is to require the Host
+    // header be a loopback name and reject state-changing requests carrying a foreign Origin — a
+    // rebind attack sends the attacker's hostname in Host, which won't match a loopback name.
+    let path = req.uri().path();
+    // Health/dashboard-root probes stay open (the dashboard HTML carries no secret); everything else
+    // must present a loopback Host. A missing Host is allowed (HTTP/1.0 / some proxies) — the token
+    // gate below still applies when configured.
+    if path != "/" && path != "/health" {
+        if let Some(host) = req
+            .headers()
+            .get(axum::http::header::HOST)
+            .and_then(|h| h.to_str().ok())
+        {
+            if !is_loopback_host(host) {
+                return (
+                    axum::http::StatusCode::FORBIDDEN,
+                    "forbidden: non-loopback Host (DNS-rebinding defense)",
+                )
+                    .into_response();
+            }
+        }
+        // Reject a foreign Origin on state-changing methods (CSRF / rebind write). Same-origin
+        // first-party requests either omit Origin or send a loopback one; a null Origin (opaque
+        // sandbox) is also rejected for writes.
+        let method = req.method().clone();
+        let mutating = !matches!(
+            method,
+            axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS
+        );
+        if mutating {
+            if let Some(origin) = req
+                .headers()
+                .get(axum::http::header::ORIGIN)
+                .and_then(|h| h.to_str().ok())
+            {
+                if !is_loopback_origin(origin) {
+                    return (
+                        axum::http::StatusCode::FORBIDDEN,
+                        "forbidden: cross-origin write blocked",
+                    )
+                        .into_response();
+                }
+            }
+        }
+    }
     let token = app.cfg().security.api_token.clone();
     if token.is_empty() {
         return next.run(req).await;
     }
-    let path = req.uri().path();
     // The dashboard root and the liveness probe are always open. Inbound channel webhooks are
     // exempt from the bearer token ONLY when they carry their own shared secret (the handler
     // enforces it); without a channel secret they fall under the token gate, so an exposed
@@ -1138,6 +1294,10 @@ async fn require_auth(
     {
         return next.run(req).await;
     }
+    // The `?token=` fallback exists ONLY for EventSource/WebSocket, which cannot set an Authorization
+    // header. Restrict it to those routes so a normal fetch that chose the query form doesn't leak the
+    // bearer token into browser history, proxies, and access logs. Everything else must use the header.
+    let query_token_ok = matches!(path, "/v1/events" | "/v1/voice/stream");
     let presented = req
         .headers()
         .get(axum::http::header::AUTHORIZATION)
@@ -1145,16 +1305,102 @@ async fn require_auth(
         .and_then(|h| h.strip_prefix("Bearer "))
         .map(str::to_string)
         .or_else(|| {
+            if !query_token_ok {
+                return None;
+            }
             req.uri()
                 .query()
                 .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("token=")))
-                .map(str::to_string)
+                // Percent-decode: a token with reserved chars (+, =, &, %) is sent url-encoded by a
+                // correct client, so comparing the raw substring would spuriously reject it.
+                .map(percent_decode)
         });
     if presented.map(|t| ct_eq(&t, &token)).unwrap_or(false) {
         next.run(req).await
     } else {
         (axum::http::StatusCode::UNAUTHORIZED, "unauthorized").into_response()
     }
+}
+
+/// Whether a Host header names the loopback interface (any port). Used as the DNS-rebinding gate: a
+/// rebind attack carries the attacker's own hostname in Host, which is not a loopback name.
+fn is_loopback_host(host: &str) -> bool {
+    // Strip the optional port. IPv6 hosts are bracketed: [::1]:8088.
+    let hostname = if let Some(rest) = host.strip_prefix('[') {
+        // [::1]:port or [::1]
+        rest.split(']').next().unwrap_or("")
+    } else {
+        host.split(':').next().unwrap_or("")
+    };
+    let hostname = hostname.trim();
+    hostname.eq_ignore_ascii_case("localhost")
+        // RFC 6761 reserves the `.localhost` TLD as loopback; Tauri's WKWebView on Windows/Linux
+        // serves the app from `tauri.localhost`, so accept any `*.localhost` name (still loopback).
+        || hostname.to_ascii_lowercase().ends_with(".localhost")
+        || hostname == "127.0.0.1"
+        || hostname == "::1"
+        || hostname == "0.0.0.0" // some clients send the bind addr
+        // Any 127.0.0.0/8 loopback address.
+        || hostname
+            .parse::<std::net::Ipv4Addr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false)
+}
+
+/// Whether an Origin header is a loopback origin (scheme://loopback[:port]). A missing Origin is
+/// handled by the caller; here we only classify a present one.
+fn is_loopback_origin(origin: &str) -> bool {
+    // Origin is `scheme://host[:port]` (or the literal "null" for opaque origins, which we reject).
+    let after_scheme = origin.split_once("://").map(|(_, rest)| rest);
+    match after_scheme {
+        Some(host_port) => is_loopback_host(host_port),
+        None => false,
+    }
+}
+
+/// Minimal application/x-www-form-urlencoded percent-decoder for a single query value. Decodes `%XX`
+/// escapes and `+` → space; leaves malformed escapes as-is. Enough for the `?token=` fallback.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' if i + 2 < bytes.len() => {
+                let hi = (bytes[i + 1] as char).to_digit(16);
+                let lo = (bytes[i + 2] as char).to_digit(16);
+                match (hi, lo) {
+                    (Some(h), Some(l)) => {
+                        out.push((h * 16 + l) as u8);
+                        i += 3;
+                    }
+                    _ => {
+                        out.push(bytes[i]);
+                        i += 1;
+                    }
+                }
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Monotonic counter making each chat run's halt-map key unique within its session, so two runs in
+/// the same session don't clobber each other's stop flag.
+static RUN_HALT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Whether a run-halt map key belongs to a given session. Keys are `<session>#<n>`; an exact match
+/// (a legacy bare-session key) is also honored so a stop never silently misses.
+fn halt_key_matches(key: &str, session: &str) -> bool {
+    key == session || key.split('#').next() == Some(session)
 }
 
 /// Constant-time string compare (length may leak; contents do not).
@@ -1225,12 +1471,22 @@ struct PromoteReq {
 
 /// Promote a project/session memory to the user-global ring, so a fact that turns out to be a
 /// durable cross-project preference follows the user everywhere. Ledgered; trusted-only.
-async fn memory_promote(State(app): State<App>, Json(r): Json<PromoteReq>) -> ApiResult {
-    let ok = app
-        .memory
-        .promote_to_user(r.id, "user")
-        .map_err(|_| ApiError("could not promote (only trusted memories can become global)".into()))?;
-    Ok(Json(json!({ "promoted": ok })))
+async fn memory_promote(State(app): State<App>, Json(r): Json<PromoteReq>) -> Response {
+    match app.memory.promote_to_user(r.id, "user") {
+        Ok(ok) => Json(json!({ "promoted": ok })).into_response(),
+        // A caller-visible constraint, not a server fault: surface it as a 4xx with a clear reason
+        // so the UI can gate the "Make global" button instead of showing an opaque 500.
+        Err(engram_memory::MemoryError::UntrustedPromotion) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "untrusted memories cannot be promoted to the global ring" })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("could not promote: {e}") })),
+        )
+            .into_response(),
+    }
 }
 
 #[derive(Deserialize)]
@@ -1253,11 +1509,20 @@ async fn memory_recent(State(app): State<App>, Query(q): Query<RecentQuery>) -> 
 #[derive(serde::Deserialize)]
 struct ShotQuery {
     path: String,
+    /// The run this screenshot belongs to (a chat session id or task/artifact bucket id). A chat in a
+    /// project with a bound working directory runs the agent in THAT dir, so the browser screenshot
+    /// lands there — not the shared daemon workdir. Without this, `/v1/screenshot?path=…` resolved only
+    /// against the shared workdir and 404'd for every project chat (the flagship "shows what it saw"
+    /// feature silently never appeared). We try the session's workdir, then the shared workdir, then
+    /// the persisted artifacts bucket (where post-run capture copies it), so the image resolves live
+    /// AND after the worktree/workdir is gone.
+    #[serde(default)]
+    session: Option<String>,
 }
 
 /// Serve a browser screenshot (or any image the agent saved) from the workspace so the chat/task
-/// view can show it inline. Strictly confined to the workdir and to image types - it can never read
-/// an arbitrary file off the box.
+/// view can show it inline. Strictly confined to a known run root and to image types - it can never
+/// read an arbitrary file off the box.
 async fn screenshot_get(State(app): State<App>, Query(q): Query<ShotQuery>) -> Response {
     use axum::http::{header, StatusCode};
     let lower = q.path.to_lowercase();
@@ -1270,16 +1535,36 @@ async fn screenshot_get(State(app): State<App>, Query(q): Query<ShotQuery>) -> R
     } else {
         return (StatusCode::BAD_REQUEST, "not an image").into_response();
     };
-    let base = std::path::Path::new(&app.workdir);
-    let full = base.join(&q.path);
-    // Canonicalize both and require the target to stay under the workdir (defeats ../ traversal).
-    let ok = match (base.canonicalize(), full.canonicalize()) {
-        (Ok(b), Ok(f)) => f.starts_with(&b),
-        _ => false,
-    };
-    if !ok {
-        return (StatusCode::NOT_FOUND, "not found").into_response();
+    // The candidate roots this screenshot could live under, each confined by canonicalize+starts_with:
+    //   1. the session's project workdir (project chats run there),
+    //   2. the shared daemon workdir (project-less chats / task runs on the shared tree),
+    //   3. the persisted per-bucket artifacts dir (post-run capture, survives worktree cleanup).
+    let mut roots: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(sid) = q.session.as_deref() {
+        if let Some(wd) = app.workspace.workdir_for_session(sid) {
+            roots.push(wd);
+        }
+        // Guard the bucket id like /v1/artifact does (single path segment) before joining it.
+        if !sid.is_empty() && !sid.contains('/') && !sid.contains('\\') && !sid.contains("..") {
+            roots.push(
+                std::path::Path::new(&app.home)
+                    .join("artifacts")
+                    .join(sid),
+            );
+        }
     }
+    roots.push(app.workdir.clone());
+    // Find the first root under which the requested path canonicalizes and stays confined.
+    let resolved = roots.into_iter().find_map(|base| {
+        let full = base.join(&q.path);
+        match (base.canonicalize(), full.canonicalize()) {
+            (Ok(b), Ok(f)) if f.starts_with(&b) => Some(f),
+            _ => None,
+        }
+    });
+    let Some(full) = resolved else {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    };
     // Cap the read so a pathologically large file in the workspace can't exhaust memory (a screenshot
     // is normally well under this).
     const MAX_SHOT: u64 = 32 * 1024 * 1024;
@@ -1872,12 +2157,71 @@ struct EgressResolve {
 /// Approve a staged egress destination: add it to the scoped agent's SIGNED allowlist (re-signing the
 /// policy) so future unattended runs send there without asking — the approval moment captured once,
 /// out of band. Ledger `egress.allowlisted`.
+/// After a staged egress is approved (its destination allowlisted), re-run the task that parked it so
+/// the approved action actually happens — the "approve → it proceeds" loop. Best-effort: finds the
+/// most recent task linked to this destination via `task.staged_egress` and re-runs it unattended in
+/// the background. `try_begin` inside `run_task_core` prevents a double-run, and the destination is now
+/// allowlisted so the re-run's egress passes instead of re-staging (no approval loop).
+fn requeue_task_for_dest(app: &App, dest: &str) {
+    let tail = app.ledger.tail(1000).unwrap_or_default();
+    let task_id = tail.iter().rev().find_map(|e| {
+        if e.kind != "task.staged_egress" {
+            return None;
+        }
+        let p = serde_json::from_str::<Value>(e.payload.get()).ok()?;
+        let d = p.get("dest").and_then(|v| v.as_str())?;
+        if d.eq_ignore_ascii_case(dest) {
+            p.get("task").and_then(|v| v.as_str()).map(String::from)
+        } else {
+            None
+        }
+    });
+    if let Some(tid) = task_id {
+        let app2 = app.clone();
+        tokio::spawn(async move {
+            if let Err(e) = run_task_core(&app2, &tid, None, false, false).await {
+                tracing::warn!(task = %tid, error = %e, "re-run after egress approval failed");
+            }
+        });
+    }
+}
+
 async fn egress_approve(State(app): State<App>, Json(r): Json<EgressResolve>) -> ApiResult {
     let dest = r.dest.trim().to_string();
     if dest.is_empty() {
         return Err(err("dest required"));
     }
     let id = r.scope.strip_prefix("agent:").unwrap_or(&r.scope).to_string();
+    // A staged action from a run with NO per-agent policy carries an empty scope. It has no agent
+    // allowlist to extend, so the approval persists to the daemon-global allowlist instead (the egress
+    // gate consults it for policy-less runs) — previously this path hard-errored, so the Approve button
+    // did nothing for the common default-agent case.
+    if id.trim().is_empty() {
+        // Store the destination as given; the egress gate normalises both sides (scheme/port/userinfo)
+        // when it matches, so no pre-normalisation is needed here.
+        {
+            let mut cfg = app.config.write().expect("config lock");
+            if !cfg
+                .security
+                .egress_allowlist
+                .iter()
+                .any(|h| h.eq_ignore_ascii_case(&dest))
+            {
+                cfg.security.egress_allowlist.push(dest.clone());
+                if let Err(e) = cfg.save(&app.home) {
+                    return Err(err(format!("could not persist allowlist: {e}")));
+                }
+            }
+        }
+        let _ = app.ledger.append(
+            "egress.allowlisted",
+            "user",
+            json!({ "scope": r.scope, "dest": dest, "via": "daemon_allowlist" }),
+        );
+        // Approve → it proceeds: re-run the task that parked this destination so the action completes.
+        requeue_task_for_dest(&app, &dest);
+        return Ok(Json(json!({ "ok": true, "allowlisted": dest, "scope": "daemon" })));
+    }
     let def = app
         .agents
         .get(&id)
@@ -1898,6 +2242,8 @@ async fn egress_approve(State(app): State<App>, Json(r): Json<EgressResolve>) ->
         "user",
         json!({ "scope": r.scope, "dest": dest }),
     );
+    // Approve → it proceeds: re-run the task that parked this destination so the action completes.
+    requeue_task_for_dest(&app, &dest);
     Ok(Json(json!({ "ok": true, "allowlisted": dest })))
 }
 
@@ -1908,6 +2254,72 @@ async fn egress_deny(State(app): State<App>, Json(r): Json<EgressResolve>) -> Ap
         json!({ "scope": r.scope, "dest": r.dest }),
     );
     Ok(Json(json!({ "ok": true, "denied": r.dest })))
+}
+
+#[derive(serde::Deserialize)]
+struct CheckpointCreateReq {
+    #[serde(default)]
+    label: String,
+    /// Snapshot this chat session's project workdir; omit for the shared workspace.
+    #[serde(default)]
+    session: Option<String>,
+}
+
+/// Snapshot the working directory as a restorable checkpoint (Claude-Code-style rewind). The
+/// (blocking) file walk runs off the async runtime.
+async fn checkpoints_create(State(app): State<App>, Json(r): Json<CheckpointCreateReq>) -> ApiResult {
+    let workdir = r
+        .session
+        .as_ref()
+        .and_then(|sid| app.workspace.workdir_for_session(sid))
+        .unwrap_or_else(|| app.workdir.clone());
+    let label = if r.label.trim().is_empty() {
+        "manual checkpoint".to_string()
+    } else {
+        r.label.trim().to_string()
+    };
+    let home = app.home.clone();
+    let session = r.session.clone();
+    let cp = tokio::task::spawn_blocking(move || {
+        checkpoints::snapshot(&home, &workdir, &label, session, None, engram_core::now_ms() as u64)
+    })
+    .await
+    .map_err(err)?
+    .map_err(err)?;
+    let _ = app
+        .ledger
+        .append("checkpoint.created", "user", json!({ "id": cp.id, "files": cp.file_count }));
+    Ok(Json(serde_json::to_value(cp).map_err(err)?))
+}
+
+async fn checkpoints_list(State(app): State<App>) -> ApiResult {
+    let home = app.home.clone();
+    let list = tokio::task::spawn_blocking(move || checkpoints::list(&home))
+        .await
+        .map_err(err)?;
+    Ok(Json(serde_json::to_value(list).map_err(err)?))
+}
+
+async fn checkpoints_restore(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
+    let home = app.home.clone();
+    let res = tokio::task::spawn_blocking(move || checkpoints::restore(&home, &id))
+        .await
+        .map_err(err)?
+        .map_err(err)?;
+    let _ = app.ledger.append(
+        "checkpoint.restored",
+        "user",
+        json!({ "restored": res.restored }),
+    );
+    Ok(Json(serde_json::to_value(res).map_err(err)?))
+}
+
+async fn checkpoints_delete(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
+    let home = app.home.clone();
+    let ok = tokio::task::spawn_blocking(move || checkpoints::delete(&home, &id))
+        .await
+        .map_err(err)?;
+    Ok(Json(json!({ "ok": ok })))
 }
 
 /// Reconstruct the autonomy story from the signed ledger: per agent scope, the policy granted and a
@@ -2034,13 +2446,27 @@ struct RememberReq {
     region: Option<String>,
     text: String,
     importance: Option<f32>,
+    /// The chat session this add belongs to. When set, the memory is routed to that session's scope
+    /// (its project ring for durable facts) instead of user-global — so a fact taught while working
+    /// inside a project stays in that project rather than bleeding into every other project's recall.
+    /// Omitted → user-global, preserving the previous behavior for existing API/CLI clients.
+    #[serde(default)]
+    session: Option<String>,
 }
 
 async fn remember(State(app): State<App>, Json(r): Json<RememberReq>) -> ApiResult {
     let region = parse_region(r.region.as_deref());
-    let mut req = WriteReq::new(region, r.text).actor("user");
+    let mut req = WriteReq::new(region, r.text.clone()).actor("user");
     if let Some(i) = r.importance {
         req = req.importance(i);
+    }
+    // Route the write to the right ring. With a session, classify against that session's scope so a
+    // project-context add lands in the project ring; without one, WriteReq keeps its user-global
+    // default (back-compat). This closes the "manual adds always bleed into every project" gap.
+    if let Some(sid) = r.session.as_deref() {
+        let ctx = app.workspace.scope_for_session(sid);
+        let write_scope = crate::scope::classify(region, &ctx, &r.text);
+        req = req.scope(write_scope);
     }
     let rec = app.memory.remember(req).map_err(err)?;
     // A new identity/semantic fact should appear in the always-loaded consciousness right away, not
@@ -2145,27 +2571,84 @@ pub(crate) async fn run_agent_task(
 struct WorktreeGuard {
     repo: std::path::PathBuf,
     path: std::path::PathBuf,
+    task_id: String,
+}
+/// Before a worktree is torn down, commit whatever the agent changed onto a durable
+/// `engram/task-<id>` branch so the work is NEVER lost to `worktree remove --force`. Returns the
+/// branch name when a commit was made (there were changes), or None when the tree was clean.
+/// Best-effort: a repo with no commits yet, or git failures, just leave nothing behind.
+fn preserve_worktree_changes(path: &std::path::Path, task_id: &str) -> Option<String> {
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(args)
+            .output()
+    };
+    let _ = git(&["add", "-A"]);
+    // Nothing staged → clean worktree, nothing to preserve.
+    match git(&["diff", "--cached", "--quiet"]) {
+        Ok(o) if o.status.success() => return None, // exit 0 = no staged changes
+        Err(_) => return None,
+        _ => {}
+    }
+    let branch = format!("engram/task-{task_id}");
+    // Commit with an explicit identity so it works even in a repo with no user.name/email set.
+    let msg = format!("engram: changes from task {task_id}");
+    let committed = std::process::Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args([
+            "-c",
+            "user.name=Engram",
+            "-c",
+            "user.email=engram@localhost",
+            "commit",
+            "-m",
+            &msg,
+        ])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !committed {
+        return None;
+    }
+    // Point (or move) the durable branch at the new commit so it survives worktree removal.
+    let branched = git(&["branch", "-f", &branch, "HEAD"])
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if branched {
+        tracing::info!(task = task_id, branch = %branch, "worktree changes committed to branch (merge with `git merge {branch}`)");
+        Some(branch)
+    } else {
+        None
+    }
 }
 impl Drop for WorktreeGuard {
     fn drop(&mut self) {
         let repo = std::mem::take(&mut self.repo);
         let path = std::mem::take(&mut self.path);
-        let remove = move || match std::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo)
-            .args(["worktree", "remove", "--force"])
-            .arg(&path)
-            .output()
-        {
-            Ok(o) if !o.status.success() => tracing::warn!(
-                path = %path.display(),
-                "git worktree remove failed: {}",
-                String::from_utf8_lossy(&o.stderr).trim()
-            ),
-            Err(e) => {
-                tracing::warn!(path = %path.display(), "git worktree remove could not spawn: {e}")
+        let task_id = std::mem::take(&mut self.task_id);
+        let remove = move || {
+            // Preserve edits to a branch BEFORE the destructive remove, on every exit path.
+            preserve_worktree_changes(&path, &task_id);
+            match std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(["worktree", "remove", "--force"])
+                .arg(&path)
+                .output()
+            {
+                Ok(o) if !o.status.success() => tracing::warn!(
+                    path = %path.display(),
+                    "git worktree remove failed: {}",
+                    String::from_utf8_lossy(&o.stderr).trim()
+                ),
+                Err(e) => {
+                    tracing::warn!(path = %path.display(), "git worktree remove could not spawn: {e}")
+                }
+                _ => {}
             }
-            _ => {}
         };
         // Drop runs on a tokio worker thread; `git worktree remove` is a BLOCKING syscall that would
         // stall the executor (and every other task on it) if a repo lock or slow disk made git hang.
@@ -2243,6 +2726,7 @@ fn prepare_worktree(
             Some(WorktreeGuard {
                 repo: app.workdir.clone(),
                 path: dest,
+                task_id: task_id.to_string(),
             }),
         )
     } else {
@@ -2275,6 +2759,10 @@ pub(crate) async fn run_agent_task_cb(
     // inbound runs with no project pass `ScopeCtx::user_only()` and see only user-global memory.
     scope: engram_core::ScopeCtx,
 ) -> Result<engram_agent::AgentRun, String> {
+    // Mark this run in-flight for the whole call, so the idle clock can't fire and drop the runtime
+    // mid-step for a run with no open HTTP connection (scheduler / Telegram / detached stream). The
+    // guard touches activity now and the count keeps the keepalive task touching until it drops.
+    let _run_guard = RunGuard::new(&app.activity, app.in_flight.clone());
     // A named agent may carry a signed standing AutonomyPolicy that lets it egress unattended within
     // an allowlist + budget. Verify the signature with the skill key before honoring it; an
     // unsigned/forged/tampered policy fails closed (treated as no policy = default-deny).
@@ -2337,6 +2825,8 @@ pub(crate) async fn run_agent_task_cb(
         // instead of a live human; with no policy it stages novel egress rather than refusing.
         attended,
         autonomy,
+        // Daemon-global allowlist for policy-less runs (the user's persisted approvals live here).
+        daemon_allowlist: app.cfg().security.egress_allowlist.clone(),
         ..Default::default()
     };
     // A named agent brings its own model (the right model per task); else the global default.
@@ -2431,6 +2921,11 @@ pub(crate) async fn run_agent_task_cb(
             ))
         })
     };
+    // Hoisted above the ctx literal so `allowed` can seed ctx.allowed_tools (delegated subagents
+    // inherit the parent's tool scope). CURATION: drop tools the user turned off globally
+    // (disabled_tools), then, if the assigned agent is scoped (allowed_tools), keep only those.
+    let disabled = app.cfg().security.disabled_tools.clone();
+    let allowed = agent_def.and_then(|a| a.allowed_tools.clone());
     let ctx = engram_agent::ToolCtx {
         memory: app.memory.clone(),
         skills: app.registry.clone(),
@@ -2456,13 +2951,18 @@ pub(crate) async fn run_agent_task_cb(
         // The run's memory rings, so the agent's memory_recall / memory_remember tools (and any
         // subagents it delegates to, via the cloned ctx) stay inside this project's world.
         scope: scope.clone(),
+        // halt/token_budget/on_step/on_narration are seeded by Agent::run from the builder calls the
+        // daemon already makes below; a delegated subagent inherits them (and the tool scope) via the
+        // cloned ctx, so it honors cancel/budget, emits steps, and can't exceed the parent's toolbelt.
+        halt: None,
+        spend_counter: None,
+        token_budget: None,
+        on_step: None,
+        on_narration: None,
+        allowed_tools: allowed.clone(),
     };
-    // CURATION: drop tools the user turned off globally (disabled_tools), then, if the assigned agent
-    // is scoped (allowed_tools), keep only those — so a named specialist has exactly the toolbelt it
-    // should. The global deny-list is also pushed into engram_agent so base_tools()/sub_tools() apply
-    // it, which is what makes the curation hold for delegated SUBAGENTS (they never pass here).
-    let disabled = app.cfg().security.disabled_tools.clone();
-    let allowed = agent_def.and_then(|a| a.allowed_tools.clone());
+    // The global deny-list is also pushed into engram_agent so base_tools()/sub_tools() apply it,
+    // which is what makes the curation hold for delegated SUBAGENTS (they never pass here).
     engram_agent::set_global_disabled_tools(disabled.clone());
     let mut tools = engram_agent::default_tools();
     for t in app.mcp_tools.read().expect("mcp lock").iter() {
@@ -2474,9 +2974,17 @@ pub(crate) async fn run_agent_task_cb(
         sched: app.sched.clone(),
     }));
     // base_tools() already dropped globally-disabled built-ins; we still filter here to (a) cover the
-    // MCP tools added above and (b) apply the per-agent allowed_tools scope at this chokepoint.
-    if !disabled.is_empty() || allowed.is_some() {
+    // MCP tools added above, (b) apply the per-agent allowed_tools scope at this chokepoint, and
+    // (c) strip the memory tools from untrusted-origin runs. An inbound channel/Telegram/webhook run
+    // is Untrusted AND returns run.answer verbatim to an anonymous requester — that reply IS an
+    // egress surface the trifecta gate does not cover, and memory_recall serves untrusted runs the
+    // ALL-provenance user-global (private) ring. No scope value excludes the private ring, so the
+    // only safe defense is to make the memory tools unreachable on these runs.
+    if taint.is_untrusted() || !disabled.is_empty() || allowed.is_some() {
         tools = tools.retaining(|name| {
+            if taint.is_untrusted() && (name == "memory_recall" || name == "memory_remember") {
+                return false;
+            }
             if disabled.iter().any(|d| d == name) {
                 return false;
             }
@@ -2617,7 +3125,16 @@ pub(crate) async fn run_agent_task_cb(
                 && run.steps.len() >= MIN_STEPS_TO_DISTILL
                 && !app.cfg().security.disable_skill_author
             {
-                reflect_on_skills(app, &gateway, &model, task, &run.answer, run.steps.len()).await;
+                reflect_on_skills(
+                    app,
+                    &gateway,
+                    &model,
+                    task,
+                    &run.answer,
+                    run.steps.len(),
+                    taint.is_untrusted(),
+                )
+                .await;
             }
         }
     }
@@ -2637,6 +3154,9 @@ async fn reflect_on_skills(
     task: &str,
     answer: &str,
     steps: usize,
+    // Whether the source run read untrusted content. A distilled proposal built from a tainted run's
+    // answer can embed injected code, so its verify/replay must be sandboxed (fail-closed downstream).
+    source_tainted: bool,
 ) {
     let existing = app.registry.skills().unwrap_or_default();
     // A human-readable catalog (id — description) so the model can pick an improvement target.
@@ -2657,7 +3177,7 @@ async fn reflect_on_skills(
         let c = app.cfg();
         config::resolve_shell_backend(&c.security.shell_backend, &c.security.shell_target)
     };
-    let params = skill_run_params(app, backend.as_deref());
+    let params = skill_run_params(app, backend.as_deref(), source_tainted);
 
     if p.improves {
         // IMPROVEMENT to an existing skill: A/B-replay the candidate against the incumbent's gold and
@@ -2781,10 +3301,28 @@ async fn voice_stream(State(app): State<App>, ws: axum::extract::ws::WebSocketUp
 
 async fn voice_session(app: App, mut socket: axum::extract::ws::WebSocket) {
     use axum::extract::ws::Message as Ws;
+    // Cap accumulated audio to match /v1/upload (25MB): a buggy or malicious client (any local process
+    // on the default no-token desktop) could otherwise stream binary frames forever and OOM the daemon,
+    // since the buffer grows across messages. On overflow we drop the buffer, tell the client, and keep
+    // the socket open for the next turn rather than accumulating into a crash.
+    const MAX_AUDIO: usize = 25 * 1024 * 1024;
     let mut audio: Vec<u8> = Vec::new();
     while let Some(Ok(msg)) = socket.recv().await {
         match msg {
-            Ws::Binary(b) => audio.extend_from_slice(&b),
+            Ws::Binary(b) => {
+                if audio.len().saturating_add(b.len()) > MAX_AUDIO {
+                    audio.clear();
+                    let _ = socket
+                        .send(Ws::Text(
+                            json!({ "error": "audio too large (25MB cap) — turn discarded" })
+                                .to_string()
+                                .into(),
+                        ))
+                        .await;
+                    continue;
+                }
+                audio.extend_from_slice(&b);
+            }
             Ws::Text(t) if t.as_str() == "end" => {
                 let turn = process_voice_turn(&app, &audio).await;
                 audio.clear();
@@ -2917,10 +3455,13 @@ struct HaltReq {
 async fn halt_set(State(app): State<App>, Json(r): Json<HaltReq>) -> ApiResult {
     use std::sync::atomic::Ordering;
     if let Some(sid) = &r.session {
-        // Per-session: flip just that run's flag (a no-op if the run already finished/deregistered).
+        // Per-session: flip EVERY run registered under this session (keys are `<sid>#<n>`), so a
+        // concurrent second message in the same chat is also stopped. A no-op if nothing is running.
         if let Ok(g) = app.run_halts.lock() {
-            if let Some(h) = g.get(sid) {
-                h.store(r.on, Ordering::Relaxed);
+            for (key, h) in g.iter() {
+                if halt_key_matches(key, sid) {
+                    h.store(r.on, Ordering::Relaxed);
+                }
             }
         }
         let _ = app
@@ -2950,6 +3491,18 @@ async fn policy_set(State(app): State<App>, Json(r): Json<PolicyReq>) -> ApiResu
     if let Some(v) = r.allow_shell {
         app.allow_shell
             .store(v, std::sync::atomic::Ordering::Relaxed);
+        // Persist the SAME consent to config so it is one source of truth. Previously this only set
+        // the runtime atomic, so GET /v1/config still reported allow_shell:false — Settings › Tools
+        // rendered the checkbox unchecked while the agent could actually run shell, and the next Save
+        // on that page posted allow_shell:false and silently turned shell back off (the dogfooded
+        // "shell-off digest" failure). Also made the grant vanish on restart with no UI hint.
+        {
+            let mut cfg = app.config.write().expect("config lock");
+            cfg.security.allow_shell = v;
+            if let Err(e) = cfg.save(&app.home) {
+                tracing::warn!(error = %e, "could not persist allow_shell consent");
+            }
+        }
         let _ = app
             .ledger
             .append("policy.set", "user", json!({ "allow_shell": v }));
@@ -3109,7 +3662,14 @@ async fn task_review(State(app): State<App>, Path(id): Path<String>) -> ApiResul
         .and_then(|aid| app.agents.get(aid))
         .and_then(|a| (!a.model.is_empty()).then_some(a.model))
         .unwrap_or_else(|| app.model());
-    let d = dissent::review(&app.memory, &app.gateway, &model, &prompt).await;
+    let d = dissent::review(
+        &app.memory,
+        &app.gateway,
+        &model,
+        &prompt,
+        &engram_core::ScopeCtx::user_only(),
+    )
+    .await;
     Ok(Json(json!({ "dissent": d })))
 }
 
@@ -3290,6 +3850,9 @@ pub(crate) async fn run_task_core(
         ));
     }
     let before = app.gateway.meter();
+    // The ledger seq before the run, so we can find the egress destinations THIS run parks (the
+    // `agent.egress_staged` entries it appends) and link them to this task for re-run-on-approve.
+    let start_seq = app.ledger.head().0;
     let started_ms = engram_core::now_ms() as i64;
     // Stream live progress onto the card and over the event bus as each step completes.
     let tasks = app.tasks.clone();
@@ -3333,7 +3896,32 @@ pub(crate) async fn run_task_core(
         .clone()
         .unwrap_or_else(|| app.workdir.clone());
     let artifacts_before = snapshot_files(&run_workdir);
-    let run = match run_agent_task_cb(
+    // Auto-checkpoint the workdir before the run so a user can REWIND the file changes this task
+    // makes (Claude-Code-style /rewind). Skipped for git repos (they have real history) and for
+    // worktree-isolated runs (whose edits are preserved on a branch instead). Bounded + off-runtime.
+    if workdir_override.is_none() && !run_workdir.join(".git").exists() {
+        let home = app.home.clone();
+        let wd = run_workdir.clone();
+        let label = format!("before task: {}", task.title);
+        let tid = task.id.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            checkpoints::snapshot(&home, &wd, &label, None, Some(tid), engram_core::now_ms() as u64)
+        })
+        .await;
+    }
+    // Per-task halt: register a flag keyed `<task-id>#<n>` so `/v1/halt {session:"<task-id>"}` stops
+    // JUST this task (not the daemon-wide kill switch, which used to be the only option and silently
+    // killed every future run). The global emergency stop still flips it (halt_set iterates all
+    // registered flags), and each run removes only its own key.
+    let run_halt = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let halt_key = format!(
+        "{id}#{}",
+        RUN_HALT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    if let Ok(mut g) = app.run_halts.lock() {
+        g.insert(halt_key.clone(), run_halt.clone());
+    }
+    let run_res = run_agent_task_cb(
         app,
         &prompt,
         10,
@@ -3345,17 +3933,24 @@ pub(crate) async fn run_task_core(
         workdir_override,
         approved,
         attended,
-        app.halt.clone(),
+        run_halt,
         engram_core::ScopeCtx::user_only(), // task-board runs are not project-bound yet → user-global
     )
-    .await
-    {
+    .await;
+    if let Ok(mut g) = app.run_halts.lock() {
+        g.remove(&halt_key); // remove only THIS run's flag
+    }
+    let run = match run_res {
         Ok(r) => r,
         Err(e) => {
             // The agent errored (e.g. provider failure after retries). try_begin already
             // marked the task "doing"; record a failed receipt so it isn't stuck "doing"
             // forever (try_begin would reject every future run).
             let m = app.gateway.meter();
+            // Capture any files the run wrote before it errored — otherwise a run that produced files
+            // and then failed leaves them unreachable from the UI (the worktree copy is force-removed
+            // on the guard's drop). Best-effort; the worktree guard is still alive here.
+            let output_files = capture_artifacts(&app.home, id, &run_workdir, &artifacts_before);
             let receipt = tasks::TaskRun {
                 answer: format!("(run failed: {e})"),
                 steps: Vec::new(),
@@ -3366,7 +3961,7 @@ pub(crate) async fn run_task_core(
                 ledger_head_hash: app.ledger.head().1,
                 started_ms,
                 finished_ms: engram_core::now_ms() as i64,
-                output_files: Vec::new(),
+                output_files,
             };
             app.tasks.finish(id, receipt, "failed");
             app.bus.emit(Spike::new(
@@ -3374,6 +3969,11 @@ pub(crate) async fn run_task_core(
                 Priority::Normal,
                 json!({ "id": id, "status": "failed" }),
             ));
+            let hooks = app.cfg().hooks.clone();
+            if !hooks.is_empty() {
+                hooks::run_hooks(&hooks, "task.done", &json!({ "id": id, "status": "failed", "title": task.title }))
+                    .await;
+            }
             return Err(e);
         }
     };
@@ -3394,8 +3994,19 @@ pub(crate) async fn run_task_core(
     // Did THIS unattended run park an egress for approval? (checked before run.steps is moved)
     let staged_here =
         !attended && run.steps.iter().any(|s| s.observation.contains("egress staged for review"));
+    // If this ran in an isolated worktree, commit any edits to a durable `engram/task-<id>` branch
+    // (the guard's Drop is a backstop) and tell the user how to merge — otherwise the edits to
+    // EXISTING files would vanish with `git worktree remove --force`.
+    let mut answer = run.answer;
+    if run_workdir != app.workdir {
+        if let Some(branch) = preserve_worktree_changes(&run_workdir, id) {
+            answer.push_str(&format!(
+                "\n\n---\n_Edits from this run were committed to branch `{branch}` — review with `git diff ..{branch}` and apply with `git merge {branch}`._"
+            ));
+        }
+    }
     let receipt = tasks::TaskRun {
-        answer: run.answer,
+        answer,
         steps: run.steps,
         stopped: run.stopped.to_string(),
         tokens_in: after.tokens_in.saturating_sub(before.tokens_in),
@@ -3415,6 +4026,41 @@ pub(crate) async fn run_task_core(
         Priority::Normal,
         json!({ "id": id, "status": status }),
     ));
+    // Fire any user-configured task.done hooks (Claude-Code-style automation), best-effort — the
+    // event payload is piped to each hook command as JSON. Empty hooks list = no-op.
+    let hooks = app.cfg().hooks.clone();
+    if !hooks.is_empty() {
+        hooks::run_hooks(&hooks, "task.done", &json!({ "id": id, "status": status, "title": task.title }))
+            .await;
+    }
+    // Link this task to the egress destinations it parked (from the `agent.egress_staged` entries it
+    // appended this run), so approving one of those destinations can re-run THIS task and let the
+    // parked action complete — the "approve → it proceeds" loop. [16]
+    if staged_here {
+        let tail = app.ledger.tail(400).unwrap_or_default();
+        let mut linked = std::collections::HashSet::new();
+        for e in tail
+            .iter()
+            .filter(|e| e.seq > start_seq && e.kind == "agent.egress_staged")
+        {
+            if let Ok(p) = serde_json::from_str::<Value>(e.payload.get()) {
+                if let Some(dest) = p
+                    .get("dest")
+                    .and_then(|v| v.as_str())
+                    .filter(|d| !d.is_empty() && *d != "(opaque)")
+                {
+                    if linked.insert(dest.to_string()) {
+                        let scope = p.get("scope").and_then(|v| v.as_str()).unwrap_or("");
+                        let _ = app.ledger.append(
+                            "task.staged_egress",
+                            "core",
+                            json!({ "task": id, "dest": dest, "scope": scope }),
+                        );
+                    }
+                }
+            }
+        }
+    }
     // Async approve-queue notify: an unattended run that parked an action tells the user out of band
     // (channel webhook), so they learn there's something to approve without watching the app.
     if staged_here {
@@ -3560,26 +4206,93 @@ fn spawn_consolidation_tick(app: App) {
     });
 }
 
+/// Keep the idle clock reset while any agent run is executing, so a run with no open HTTP connection
+/// (scheduler / Telegram / a stream whose client disconnected) doesn't get killed when the idle window
+/// elapses. Cheap: it only touches activity when a run is actually in flight; on a quiet box it does
+/// nothing and the daemon still sleeps to zero as designed.
+fn spawn_run_keepalive(app: App) {
+    tokio::spawn(async move {
+        loop {
+            // Poll well inside the smallest sane idle window so activity never goes stale mid-run.
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            if app.in_flight.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+                app.activity.touch();
+            }
+        }
+    });
+}
+
+/// Build a task from a scheduled job's payload. Honors `detail`/`prompt` (the instructions the
+/// agent actually runs — previously scheduled jobs ran on the bare title) and `agent` (the durable
+/// agent whose SIGNED autonomy policy governs this UNATTENDED run). Without an agent the run has no
+/// policy, so every egress stages for review — which is why the flagship "runs for days" path needs
+/// a job to carry an agent. Returns the created (and agent-assigned) task.
+fn task_from_schedule(app: &App, payload: &Value, fallback_name: &str) -> tasks::Task {
+    // The UI puts the instructions in `payload.title` (falling back to `prompt`, then the job name),
+    // so THAT is the run prompt. `detail` is an OPTIONAL extra — never the prompt itself, or it would
+    // be duplicated for the jobs the UI already saved with title==instructions.
+    let title = payload
+        .get("title")
+        .or_else(|| payload.get("prompt"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(fallback_name)
+        .to_string();
+    let detail = payload
+        .get("detail")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let task = app.tasks.create(title, detail, "schedule".into());
+    if let Some(agent) = payload
+        .get("agent")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        if let Some(updated) = app.tasks.set_agent(&task.id, Some(agent.to_string())) {
+            return updated;
+        }
+    }
+    task
+}
+
 fn spawn_scheduler_tick(app: App) {
     tokio::spawn(async move {
+        // Bound how many scheduled jobs run at once so a burst of due jobs can't flood the box, while
+        // still letting them run CONCURRENTLY — one slow job (a long browser task, a hung provider)
+        // must not delay every other due job and the next tick behind it.
+        let sem = Arc::new(tokio::sync::Semaphore::new(4));
         loop {
             tokio::time::sleep(Duration::from_secs(30)).await;
             let now = chrono::Utc::now();
-            for job in app.sched.due(now) {
-                let title = job
-                    .payload
-                    .get("title")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(&job.name);
-                let task = app
-                    .tasks
-                    .create(title.to_string(), String::new(), "schedule".into());
+            let due = app.sched.due(now);
+            // Touch activity when work is due: a daemon that OWNS pending schedules must not sleep to
+            // zero (it would stop firing until the next inbound HTTP). The scheduler is the unattended
+            // surface, so its own liveness keeps the core awake.
+            if !due.is_empty() {
+                app.activity.touch();
+            }
+            for job in due {
+                let task = task_from_schedule(&app, &job.payload, &job.name);
                 tracing::info!(job = %job.name, task = %task.id, "scheduler firing a task");
                 // Record the task on the job before running so a crash mid-run still leaves a
                 // pointer to the (failed) receipt for the UI's "last run" affordance.
                 let _ = app.sched.set_last_task(&job.id, &task.id);
-                let _ = run_task_core(&app, &task.id, None, false, false).await;
+                // Mark fired BEFORE running: the occurrence is consumed once. Previously mark_fired ran
+                // only AFTER the run returned, so a daemon death mid-run (idle-exit, restart, crash)
+                // left next_fire_ms in the past and the job re-fired on next boot — duplicate task
+                // cards and duplicate side effects (e.g. the morning digest sent twice) for one
+                // scheduled occurrence.
                 let _ = app.sched.mark_fired(&job.id, now);
+                // Spawn each run on its own task under the concurrency bound so one long job cannot
+                // starve the schedule (the whole point of an unattended cron surface is punctuality).
+                let app_run = app.clone();
+                let sem = sem.clone();
+                let tid = task.id.clone();
+                tokio::spawn(async move {
+                    let _permit = sem.acquire().await;
+                    let _ = run_task_core(&app_run, &tid, None, false, false).await;
+                });
             }
         }
     });
@@ -3845,18 +4558,36 @@ async fn converse_stream_handler(
             },
         );
         // Stream the model's interim commentary ("I've kicked off two searches…") so the user sees
-        // what it's doing live instead of a silent wait that jumps to the final answer.
+        // what it's doing live instead of a silent wait that jumps to the final answer. Also collect
+        // the notes so they can be PERSISTED with the reply — otherwise the narration (and the whole
+        // glass-box trail) evaporates on reload, degrading the transcript to bare Q&A.
         let txn = tx.clone();
+        let notes_collected = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let notes_cb = notes_collected.clone();
         let on_narration: engram_agent::NarrationCallback = std::sync::Arc::new(move |note: &str| {
             let note: String = note.chars().take(600).collect();
+            if let Ok(mut g) = notes_cb.lock() {
+                g.push(note.clone());
+            }
             let _ = txn.send(Event::default().event("narration").data(json!({ "text": note }).to_string()));
         });
         // Per-session halt: register before the run so `/v1/halt {session}` stops THIS chat only,
         // then deregister after — so concurrent chats run independently and Stop targets just one.
+        // Key by a UNIQUE run id (session + counter), not the bare session id: a user can send a
+        // second message in the same session while the first run is still going, and a bare-session
+        // key made the second insert overwrite the first run's flag (so the first kept checking an
+        // orphaned Arc and its Stop button no-op'd). `/v1/halt {session}` flips every run under that
+        // session (see `halt_key_matches`), and each run removes only its own exact key.
         let run_halt = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        if let Some(sid) = r.session.clone() {
+        let halt_key = r.session.clone().map(|sid| {
+            format!(
+                "{sid}#{}",
+                RUN_HALT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            )
+        });
+        if let Some(key) = halt_key.clone() {
             if let Ok(mut g) = app.run_halts.lock() {
-                g.insert(sid, run_halt.clone());
+                g.insert(key, run_halt.clone());
             }
         }
         // The chat's scope: user-global ∪ this session's project ∪ this session. This is what keeps
@@ -3889,15 +4620,29 @@ async fn converse_stream_handler(
             chat_scope,
         )
         .await;
-        if let Some(sid) = &r.session {
+        if let Some(key) = &halt_key {
             if let Ok(mut g) = app.run_halts.lock() {
-                g.remove(sid);
+                g.remove(key); // remove only THIS run's flag, not any sibling run in the same session
             }
         }
+        // The narration notes collected across the run, for persistence in either arm.
+        let collected_notes = notes_collected
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default();
         match res {
             Ok(run) => {
                 if let Some(sid) = &r.session {
-                    // The user turn was already persisted up-front; append only the reply now.
+                    // The user turn was already persisted up-front; append only the reply now — WITH the
+                    // glass-box trail (tool steps + narration), serialized in the same shape the live
+                    // `step`/`done` events use, so a reloaded answer keeps its step chips, inline
+                    // screenshots, and clickable "wrote a file ↗" affordances instead of degrading to
+                    // bare Q&A.
+                    let steps_json: Vec<serde_json::Value> = run
+                        .steps
+                        .iter()
+                        .map(|s| serde_json::to_value(s).unwrap_or_default())
+                        .collect();
                     app.workspace.append_reply_turn(
                         sid,
                         &run.answer,
@@ -3907,7 +4652,17 @@ async fn converse_stream_handler(
                             .map(|rf| serde_json::to_value(rf).unwrap_or_default())
                             .collect(),
                         learned.clone(),
+                        steps_json,
+                        collected_notes.clone(),
                     );
+                    // Tell any other connected view (a second window, a reloaded tab whose fetch
+                    // raced the run) that this session got a reply, so it refetches immediately
+                    // instead of waiting for the periodic poll.
+                    app.bus.emit(Spike::new(
+                        "session.reply",
+                        Priority::Normal,
+                        json!({ "id": sid }),
+                    ));
                 }
                 // Capture any files this turn produced into the gallery (under the session bucket).
                 let _ = capture_artifacts(&app.home, &art_bucket, &run_workdir, &artifacts_before);
@@ -3919,7 +4674,8 @@ async fn converse_stream_handler(
             Err(e) => {
                 // Persist the failure as a reply too — the user turn was already saved up-front, so
                 // without this a stopped/errored run left the chat showing the question with no answer,
-                // which reads as "the chat vanished" after reopening the app.
+                // which reads as "the chat vanished" after reopening the app. Keep whatever narration
+                // was collected so the partial trail survives.
                 if let Some(sid) = &r.session {
                     app.workspace.append_reply_turn(
                         sid,
@@ -3930,8 +4686,18 @@ async fn converse_stream_handler(
                             .map(|rf| serde_json::to_value(rf).unwrap_or_default())
                             .collect(),
                         learned.clone(),
+                        Vec::new(),
+                        collected_notes.clone(),
                     );
+                    app.bus.emit(Spike::new(
+                        "session.reply",
+                        Priority::Normal,
+                        json!({ "id": sid }),
+                    ));
                 }
+                // Capture any files the (errored) run wrote before it failed — otherwise a run that
+                // produced files but then errored leaves those files unreachable from the UI forever.
+                let _ = capture_artifacts(&app.home, &art_bucket, &run_workdir, &artifacts_before);
                 let _ = tx.send(Event::default().event("error").data(e));
             }
         }
@@ -3961,6 +4727,47 @@ struct UploadReq {
 /// Extract readable text from an uploaded document (PDF / DOCX / XLSX / CSV / plain text) so the
 /// agent can actually read it. Returns `None` for an unknown/binary type or when the `docs` feature
 /// is off (the file is still stored; only text extraction is gated). Output is capped by the caller.
+/// Extract document text in an ISOLATED subprocess (a re-exec of this binary with `--extract-doc`),
+/// so a panic inside a third-party parser (pdf-extract/calamine/zip) — which aborts the whole daemon
+/// under `panic="abort"` — only kills the short-lived child. Bounded by a deadline so a pathological
+/// parser can't hang the request forever. Returns None on crash, timeout, spawn failure, or no text.
+async fn extract_document_text_isolated(name: &str, bytes: &[u8]) -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let mut child = tokio::process::Command::new(exe)
+        .arg("--extract-doc")
+        .arg(name)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .ok()?;
+    let mut stdin = child.stdin.take()?;
+    let payload = bytes.to_vec();
+    // Feed stdin from a separate task so a large extracted output filling the stdout pipe can't
+    // deadlock against our write (classic pipe deadlock); dropping stdin signals EOF to the child.
+    let writer = tokio::spawn(async move {
+        use tokio::io::AsyncWriteExt;
+        let _ = stdin.write_all(&payload).await;
+        let _ = stdin.shutdown().await;
+    });
+    let out = tokio::time::timeout(Duration::from_secs(45), child.wait_with_output()).await;
+    let _ = writer.await;
+    match out {
+        Ok(Ok(o)) if o.status.success() => {
+            let text = String::from_utf8_lossy(&o.stdout).into_owned();
+            (!text.trim().is_empty()).then_some(text)
+        }
+        // Non-zero exit (3 = no text, or the child crashed on a hostile file), timeout, or wait error.
+        Ok(Ok(_)) => None,
+        Ok(Err(_)) => None,
+        Err(_) => {
+            tracing::warn!(doc = %name, "document extraction timed out in the isolated parser");
+            None
+        }
+    }
+}
+
 fn extract_document_text(name: &str, bytes: &[u8]) -> Option<String> {
     let lower = name.to_lowercase();
     // Plain-text-ish formats are just UTF-8 (handled even without the docs feature).
@@ -3979,10 +4786,11 @@ fn extract_document_text(name: &str, bytes: &[u8]) -> Option<String> {
     {
         // Cap the text accumulated DURING extraction (not just the final output) so a decompression
         // bomb - a tiny compressed XLSX/DOCX that inflates to gigabytes - cannot exhaust memory
-        // before the caller's 600KB output cap is applied. (A file crafted to make pdf-extract or
-        // calamine itself panic still aborts the process under `panic = "abort"`; isolating the
-        // parser in a subprocess is the documented deferred hardening, see THREAT-MODEL T9. The
-        // 25MB input cap in upload_handler bounds that today.)
+        // before the caller's 600KB output cap is applied. A file crafted to make pdf-extract or
+        // calamine itself panic aborts THIS process under `panic = "abort"` - which is why the
+        // daemon only ever calls this via `extract_document_text_isolated` (a re-exec'd child), so
+        // such a crash kills the child, not the daemon. (Reached directly only in the `--extract-doc`
+        // child and in unit tests.)
         const EXTRACT_CAP: usize = 8 * 1024 * 1024;
         if lower.ends_with(".pdf") {
             return pdf_extract::extract_text_from_mem(bytes)
@@ -4090,8 +4898,12 @@ async fn upload_handler(State(app): State<App>, Json(r): Json<UploadReq>) -> Api
     let stored = format!("{:x}-{}", nanos, base);
     std::fs::write(dir.join(&stored), &bytes).map_err(err)?;
     // Extract readable text for documents so the agent can actually read them (capped so a huge
-    // PDF can't blow the context). The UI attaches this text to the turn.
-    let extracted = extract_document_text(&base, &bytes).map(|t| cap_text_on_boundary(t, 600_000));
+    // PDF can't blow the context). The UI attaches this text to the turn. The (synchronous,
+    // CPU-heavy) third-party parsers run in an ISOLATED subprocess — a panic on a hostile/malformed
+    // file (which aborts the process under panic=abort) only kills that child, not the daemon.
+    let extracted = extract_document_text_isolated(&base, &bytes)
+        .await
+        .map(|t| cap_text_on_boundary(t, 600_000));
     // If the upload belongs to a chat session, ALSO ingest the text into that session's project as
     // scoped, retrievable memory - so the document persists as a first-class part of the project's
     // corpus (recallable in later turns), not just this one turn's attachment. Project-scoped by
@@ -4257,13 +5069,22 @@ async fn skill_create(State(app): State<App>, Json(r): Json<SkillCreateReq>) -> 
         let w = r.when_to_use.trim();
         (!w.is_empty()).then(|| w.to_string())
     };
+    // Validate the category server-side (the UI renders it into a filter chip; a permissive value
+    // could carry markup even though the client sink is now data-attribute based). Keep it to the
+    // same id-like alphabet used elsewhere.
+    let category = {
+        let c = r.category.trim();
+        if c.is_empty() {
+            "problem_solving".to_string()
+        } else if c.len() <= 48 && c.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-')) {
+            c.to_string()
+        } else {
+            return Err(err("invalid category (letters, digits, _ and - only, max 48 chars)"));
+        }
+    };
     let new = engram_skills::NewSkill {
         id: id.clone(),
-        category: if r.category.trim().is_empty() {
-            "problem_solving".into()
-        } else {
-            r.category.trim().to_string()
-        },
+        category,
         description: r.description.trim().to_string(),
         capabilities,
         metric: "helpfulness".into(),
@@ -4385,9 +5206,14 @@ struct RunSkillReq {
 
 /// Build the runtime params for executing/scoring a skill from the live config. A process skill
 /// inherits the configured shell backend + the shell gate; WASM skills ignore those.
+/// `source_tainted` = the code being executed/verified originated from a run that read untrusted
+/// content (e.g. a distilled proposal built from a tainted run's answer). When true, the runtime
+/// refuses to replay-execute the code outside a network-isolated OS sandbox — fail-closed. Direct,
+/// already-adopted, or human-submitted skills pass false.
 fn skill_run_params<'a>(
     app: &'a App,
     backend: Option<&'a str>,
+    source_tainted: bool,
 ) -> engram_agent::SkillRunParams<'a> {
     engram_agent::SkillRunParams {
         backend,
@@ -4400,6 +5226,7 @@ fn skill_run_params<'a>(
         host: &app.host,
         scope: engram_core::ScopeCtx::user_only(), // direct skill-run endpoint has no project
         scoring: false,
+        source_tainted,
     }
 }
 
@@ -4413,7 +5240,7 @@ async fn run_skill(
         let c = app.cfg();
         config::resolve_shell_backend(&c.security.shell_backend, &c.security.shell_target)
     };
-    let p = skill_run_params(&app, backend.as_deref());
+    let p = skill_run_params(&app, backend.as_deref(), false);
     let outcome = engram_agent::run_active(&app.registry, &id, r.input.as_bytes(), &p)
         .await
         .map_err(ApiError)?;
@@ -4479,7 +5306,7 @@ async fn skill_improve(
         let c = app.cfg();
         config::resolve_shell_backend(&c.security.shell_backend, &c.security.shell_target)
     };
-    let p = skill_run_params(&app, backend.as_deref());
+    let p = skill_run_params(&app, backend.as_deref(), false);
     let decision = engram_agent::improve_skill(
         &app.registry,
         &id,
@@ -4521,7 +5348,7 @@ async fn skill_adopt(State(app): State<App>, Path(id): Path<String>) -> ApiResul
         let c = app.cfg();
         config::resolve_shell_backend(&c.security.shell_backend, &c.security.shell_target)
     };
-    let p = skill_run_params(&app, backend.as_deref());
+    let p = skill_run_params(&app, backend.as_deref(), false);
     let decision = engram_agent::verify_and_adopt(&app.registry, &id, "user", false, &p, Some(&app.halt))
         .await
         .map_err(ApiError)?;
@@ -4687,7 +5514,11 @@ async fn run_mission(State(app): State<App>, Json(r): Json<MissionReq>) -> ApiRe
         let sem = sem.clone();
         handles.push(tokio::spawn(async move {
             let _permit = sem.acquire().await;
-            let answer = match run_task_core(&appc, &cid, None, false, false).await { // channel run → unattended
+            // Missions are USER-INITIATED from the UI, so the subtask runs are attended: a watching
+            // user should get the interactive "Approve once & continue" card on a novel egress, not a
+            // silent "staged for review" they never see. (Was `false`, which mislabeled a mission as
+            // an unattended/channel run and removed the live approval affordance.)
+            let answer = match run_task_core(&appc, &cid, None, false, true).await {
                 Ok(t) => t.run.map(|r| r.answer).unwrap_or_default(),
                 Err(e) => format!("(failed: {e})"),
             };
@@ -4891,13 +5722,7 @@ async fn schedule_run(State(app): State<App>, Path(id): Path<String>) -> ApiResu
         .into_iter()
         .find(|j| j.id == id)
         .ok_or_else(|| ApiError("schedule not found".into()))?;
-    let title = job
-        .payload
-        .get("title")
-        .and_then(|v| v.as_str())
-        .unwrap_or(&job.name)
-        .to_string();
-    let task = app.tasks.create(title, String::new(), "schedule".into());
+    let task = task_from_schedule(&app, &job.payload, &job.name);
     // Record the task on the job before running so a crash mid-run still leaves a pointer to
     // the (failed) receipt for the UI's "last run" affordance.
     let _ = app.sched.set_last_task(&job.id, &task.id);
@@ -4928,6 +5753,7 @@ fn env_u64(key: &str, default: u64) -> u64 {
 #[derive(Deserialize)]
 struct McpServerCfg {
     name: String,
+    #[serde(default)]
     command: String,
     #[serde(default)]
     args: Vec<String>,
@@ -4937,6 +5763,11 @@ struct McpServerCfg {
     cwd: String,
     #[serde(default)]
     trusted: bool,
+    /// Remote streamable-HTTP endpoint; when set, `command` may be empty.
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    bearer: Option<String>,
 }
 
 /// Load MCP servers from `<home>/mcp.json` (a JSON array of {name, command, args}) and
@@ -4961,6 +5792,8 @@ async fn load_mcp(home: &str) -> Vec<Arc<dyn engram_agent::Tool>> {
             env: c.env,
             cwd: if c.cwd.is_empty() { None } else { Some(c.cwd) },
             trusted: c.trusted,
+            url: c.url.filter(|u| !u.is_empty()),
+            bearer: c.bearer.filter(|b| !b.is_empty()),
         })
         .collect();
     engram_agent::connect_servers(&specs).await
@@ -4975,6 +5808,8 @@ fn mcp_spec(c: config::McpServer) -> engram_agent::McpServerSpec {
         env: c.env,
         cwd: if c.cwd.is_empty() { None } else { Some(c.cwd) },
         trusted: c.trusted,
+        url: c.url.filter(|u| !u.is_empty()),
+        bearer: c.bearer.filter(|b| !b.is_empty()),
     }
 }
 
@@ -5074,6 +5909,17 @@ async fn config_set(State(app): State<App>, Json(patch): Json<Value>) -> ApiResu
     let before = app.cfg().clone();
     let mut cfg = before.clone();
     apply_config_patch(&mut cfg, &patch);
+    // `egress_allowlist` is SERVER-managed — grown by egress_approve, not the settings form. This
+    // handler is a read-modify-write on a clone, so an egress approval landing between our read and
+    // save would be clobbered (lost update). Unless the patch explicitly set it, re-take the LIVE
+    // value just before persisting so a concurrently-approved destination survives a settings save.
+    if patch
+        .get("security")
+        .and_then(|s| s.get("egress_allowlist"))
+        .is_none()
+    {
+        cfg.security.egress_allowlist = app.cfg().security.egress_allowlist.clone();
+    }
     apply_web_env(&cfg); // make a just-saved search key/URL live for web_search without a restart
 
     cfg.save(&app.home)
@@ -5178,8 +6024,19 @@ async fn config_mcp_test(Json(body): Json<Value>) -> ApiResult {
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    if command.is_empty() {
-        return Ok(Json(json!({ "ok": false, "error": "no command" })));
+    // Remote streamable-HTTP servers are addressed by `url` instead of a spawned `command`.
+    let url = body
+        .get("url")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let bearer = body
+        .get("bearer")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    if command.is_empty() && url.is_none() {
+        return Ok(Json(json!({ "ok": false, "error": "no command or url" })));
     }
     let args: Vec<String> = body
         .get("args")
@@ -5219,6 +6076,8 @@ async fn config_mcp_test(Json(body): Json<Value>) -> ApiResult {
         env,
         cwd,
         trusted,
+        url,
+        bearer,
     }];
     let (tools, connected) = engram_agent::connect_servers_reported(&specs).await;
     if connected.is_empty() {
@@ -5648,7 +6507,30 @@ async fn projects_update(
     Ok(Json(serde_json::to_value(p).map_err(err)?))
 }
 async fn projects_delete(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
-    Ok(Json(json!({ "ok": app.workspace.delete_project(&id) })))
+    // Gather the project's session ids BEFORE deleting so their session-scoped memories can be
+    // cascade-forgotten too (delete_project also drops those sessions from the workspace).
+    let session_ids: Vec<String> = app
+        .workspace
+        .sessions_meta(&id)
+        .into_iter()
+        .map(|s| s.id)
+        .collect();
+    let ok = app.workspace.delete_project(&id);
+    if ok {
+        // Cascade-forget the project's memories and each of its sessions' memories, so a deleted
+        // project can't leave scoped facts behind to bleed into other projects' recall.
+        if let Ok(n) = app.memory.forget_scope("project", &id, "user", "project deleted") {
+            if n > 0 {
+                tracing::info!(project = %id, count = n, "cascade-forgot project-scoped memories");
+            }
+        }
+        for sid in &session_ids {
+            let _ = app
+                .memory
+                .forget_scope("session", sid, "user", "project deleted");
+        }
+    }
+    Ok(Json(json!({ "ok": ok })))
 }
 async fn sessions_list(State(app): State<App>, Query(q): Query<SessionsQuery>) -> ApiResult {
     let proj = q.project.unwrap_or_else(|| "personal".into());
@@ -5692,7 +6574,14 @@ async fn session_update(
     Ok(Json(serde_json::to_value(s).map_err(err)?))
 }
 async fn session_delete(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
-    Ok(Json(json!({ "ok": app.workspace.delete_session(&id) })))
+    let ok = app.workspace.delete_session(&id);
+    if ok {
+        // Cascade-forget this session's scoped memories so a deleted chat leaves nothing behind.
+        let _ = app
+            .memory
+            .forget_scope("session", &id, "user", "session deleted");
+    }
+    Ok(Json(json!({ "ok": ok })))
 }
 
 fn init_tracing() {
@@ -5957,5 +6846,55 @@ mod tests {
             "extraction not bounded: {} bytes",
             out.len()
         );
+    }
+
+    #[test]
+    fn loopback_host_accepts_localhost_rejects_rebind() {
+        // Legitimate first-party Host values (any port, ipv4/ipv6/name) pass.
+        assert!(is_loopback_host("127.0.0.1:8088"));
+        assert!(is_loopback_host("localhost:8088"));
+        assert!(is_loopback_host("LocalHost")); // case-insensitive
+        assert!(is_loopback_host("[::1]:8088"));
+        assert!(is_loopback_host("127.0.0.1"));
+        assert!(is_loopback_host("127.5.5.5")); // 127.0.0.0/8 is all loopback
+        assert!(is_loopback_host("tauri.localhost")); // Tauri WKWebView (Win/Linux) app origin
+        // A DNS-rebind attack carries the attacker's own hostname — rejected.
+        assert!(!is_loopback_host("evil.example.com"));
+        assert!(!is_loopback_host("evil.example.com:8088"));
+        assert!(!is_loopback_host("10.0.0.5:8088"));
+        assert!(!is_loopback_host("engram.attacker.test"));
+    }
+
+    #[test]
+    fn loopback_origin_accepts_loopback_rejects_foreign_and_null() {
+        assert!(is_loopback_origin("http://127.0.0.1:8088"));
+        assert!(is_loopback_origin("http://localhost:8088"));
+        assert!(is_loopback_origin("https://localhost"));
+        assert!(!is_loopback_origin("https://evil.example.com"));
+        assert!(!is_loopback_origin("null")); // opaque origin → rejected for writes
+        assert!(!is_loopback_origin("file://"));
+    }
+
+    #[test]
+    fn percent_decode_handles_reserved_chars() {
+        assert_eq!(percent_decode("plain"), "plain");
+        assert_eq!(percent_decode("a%2Bb%3Dc"), "a+b=c"); // + and =
+        assert_eq!(percent_decode("x%26y"), "x&y"); // &
+        assert_eq!(percent_decode("a+b"), "a b"); // + → space
+        assert_eq!(percent_decode("100%25"), "100%"); // %
+        // A malformed trailing escape is left as-is rather than dropped.
+        assert_eq!(percent_decode("bad%2"), "bad%2");
+    }
+
+    #[test]
+    fn halt_key_matches_session_prefix_and_legacy() {
+        // Unique per-run keys `<session>#<n>` all belong to their session.
+        assert!(halt_key_matches("s-123#1", "s-123"));
+        assert!(halt_key_matches("s-123#42", "s-123"));
+        // A legacy bare-session key still matches (never silently miss a stop).
+        assert!(halt_key_matches("s-123", "s-123"));
+        // A different session is not matched (Stop targets only its own chat).
+        assert!(!halt_key_matches("s-999#1", "s-123"));
+        assert!(!halt_key_matches("s-1234#1", "s-123"));
     }
 }

@@ -51,7 +51,9 @@ const PROVIDERS: &[&str] = &[
 ];
 const EFFORT: &[&str] = &["", "low", "medium", "high"];
 const EMBED: &[&str] = &["trigram", "static", "gateway"];
-const SHELL: &[&str] = &["", "docker", "ssh"];
+// "" = host (no isolation), "sandbox" = built-in OS sandbox, then docker/ssh. Must include
+// "sandbox" or cycling from a sandboxed config silently jumps to "docker" (removing OS sandboxing).
+const SHELL: &[&str] = &["", "sandbox", "docker", "ssh"];
 
 pub const ROWS: &[Row] = &[
     Row {
@@ -580,8 +582,13 @@ pub fn handle_key(app: &mut App, k: KeyEvent) -> bool {
                         .and_then(|s| s.get(row.get))
                         .and_then(|x| x.as_str())
                         .unwrap_or("");
-                    let idx = opts.iter().position(|o| *o == cur).unwrap_or(0);
-                    let next = opts[(idx + 1) % opts.len()];
+                    // If the live value isn't one of our options, land on the FIRST option rather
+                    // than skipping past it — otherwise one keypress silently jumps two states
+                    // (e.g. an unknown backend → index 0 → index 1 in a single Enter).
+                    let next = match opts.iter().position(|o| *o == cur) {
+                        Some(idx) => opts[(idx + 1) % opts.len()],
+                        None => opts[0],
+                    };
                     // Switching the provider kind resets the endpoint so the daemon
                     // picks the right default for the new provider (else base_url
                     // still points at the old one and the provider silently breaks).

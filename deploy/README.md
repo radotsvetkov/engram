@@ -78,6 +78,21 @@ WantedBy=timers.target
 `Persistent=true` means a fire missed while the box was off runs once on next boot -
 matching the scheduler's skip-on-missed policy (one catch-up, never a stampede).
 
+The `OnCalendar` above is a fixed daily poll. For **precise zero-idle wakes** (fire exactly when
+the next job is due, not once a day), drive a one-shot timer from `engramd --next-wake`, which prints
+the soonest job's epoch-millis (exit 0), or exits 1 when nothing is scheduled — read-only, it never
+binds the socket, so run it while the core is asleep:
+
+```sh
+# after each run, (re)arm a one-shot timer for the next job:
+ms=$(engramd --next-wake) && [ -n "$ms" ] && \
+  systemd-run --on-calendar="$(date -u -d @"$((ms/1000))" +%Y-%m-%d\ %H:%M:%S)" \
+    --unit=engram-next-wake engramd --run-due
+```
+
+`engramd --run-due` fires any due jobs and exits without binding the socket (systemd owns it), so it
+composes with the socket-activation unit above.
+
 ## Footprint
 
 The full agent - hybrid memory + SQLite, the WASM skill sandbox, the gateway, the

@@ -29,6 +29,10 @@ pub struct Config {
     /// Web-search provider keys/URL (Tavily / Brave / SearXNG). Injected into the tool environment.
     #[serde(default)]
     pub web: WebCfg,
+    /// Lifecycle hooks: user commands the daemon runs when an event fires (e.g. `task.done`). Empty
+    /// (the default) = no hooks. See [`crate::hooks`]. The commands are the user's own automation.
+    #[serde(default)]
+    pub hooks: Vec<crate::hooks::HookCfg>,
 }
 
 /// Web/data API configuration. The keys here are injected into the daemon environment at boot and on
@@ -90,6 +94,12 @@ pub struct ChannelsCfg {
     /// the redacted API view (only presence is reported) and validated by the SSRF guard at use.
     #[serde(default)]
     pub webhook_url: String,
+    /// Owner's Telegram chat id. When non-zero, the bot ONLY answers this chat (fail-closed) — a
+    /// hard defense against anonymous senders exfiltrating memory through the reply. 0/unset falls
+    /// back to `ENGRAM_TELEGRAM_OWNER`, then to legacy any-sender behavior. Set from the desktop
+    /// Connect flow (capture the first chat that messages the bot).
+    #[serde(default)]
+    pub telegram_owner_chat_id: i64,
 }
 
 /// Which model backend to call, and with what credentials.
@@ -182,6 +192,13 @@ pub struct SecurityCfg {
     /// Enabling it also turns on the skill-sleep prune that retires proposed-but-never-adopted skills.
     #[serde(default)]
     pub auto_distill_skills: bool,
+    /// Daemon-global egress allowlist: destination hosts the user has approved for runs that carry NO
+    /// per-agent autonomy policy (the "default agent"). The egress gate consults this before staging a
+    /// novel destination, so approving a staged action from a policy-less run actually persists (it is
+    /// appended here) instead of having nowhere to live. A per-agent signed policy still takes
+    /// precedence; the hardline floor of any such policy is always evaluated first.
+    #[serde(default)]
+    pub egress_allowlist: Vec<String>,
 }
 
 /// Resolve a (backend, target) pair into the policy's shell-backend string the agent expects:
@@ -238,6 +255,13 @@ pub struct McpServer {
     /// i.e. treated as untrusted+sensitive so it can't launder content into an egress-capable run).
     #[serde(default)]
     pub trusted: bool,
+    /// Remote streamable-HTTP MCP endpoint. When set, the client speaks JSON-RPC over HTTP/SSE to
+    /// this URL instead of spawning `command` (requires the `http` feature). Empty = stdio subprocess.
+    #[serde(default)]
+    pub url: Option<String>,
+    /// Optional bearer token for a remote (`url`) MCP server. Masked in the redacted API view.
+    #[serde(default)]
+    pub bearer: Option<String>,
 }
 
 impl Config {
@@ -456,11 +480,16 @@ impl Config {
                 "disabled_tools": self.security.disabled_tools,
                 "disable_skill_author": self.security.disable_skill_author,
                 "auto_distill_skills": self.security.auto_distill_skills,
+                // Destination hosts (not secret) the user approved for policy-less runs; UI-visible.
+                "egress_allowlist": self.security.egress_allowlist,
             },
             "cost": { "task_token_budget": self.cost.task_token_budget },
             "channels": {
                 "telegram_set": !self.channels.telegram_token.is_empty(),
                 "telegram_username": self.channels.telegram_username,
+                // The owner chat id is not a secret (it's just a numeric id); expose it so the UI can
+                // show/set who the bot answers. 0 = unset (bot answers anyone — a warning-worthy state).
+                "telegram_owner_chat_id": self.channels.telegram_owner_chat_id,
                 // A Slack-style webhook URL embeds a secret, so report presence only - never the URL.
                 "webhook_url_set": !self.channels.webhook_url.is_empty(),
             },
@@ -489,8 +518,13 @@ impl Config {
                 "args": m.args,
                 "cwd": m.cwd,
                 "trusted": m.trusted,
+                // A remote endpoint URL is not itself a secret; the bearer token is, so report presence only.
+                "url": m.url,
+                "bearer_set": m.bearer.as_ref().map(|b| !b.is_empty()).unwrap_or(false),
                 "env": m.env.keys().map(|k| (k.clone(), json!("\u{2022}\u{2022}\u{2022}"))).collect::<serde_json::Map<_,_>>(),
             })).collect::<Vec<_>>(),
+            // User-authored automation (not secret) — the UI lists these so hooks are visible/editable.
+            "hooks": self.hooks.iter().map(|h| json!({ "event": h.event, "command": h.command })).collect::<Vec<_>>(),
         })
     }
 }

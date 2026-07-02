@@ -1,6 +1,8 @@
 # Engram Memory Architecture — Scoped, Scalable, Verifiable
 
-**Status:** definitive design / build plan. **Branch:** `feat/web-capabilities-and-autonomy`.
+**Status:** the original design/build plan below was **partly superseded during implementation**. **Branch:** `feat/scoped-scalable-memory`.
+
+> **What actually shipped — read [§10b](#10b-implementation-status-built-2026-07-01-autonomous-run) first.** The scope model, union-of-rings recall, layered consciousness, the completeness fix, the document corpus, MMR rerank, and the budget packer all shipped. But the vector-store choice changed: **`sqlite-vec` was rejected in favour of pure-Rust binary quantization over the existing SQLite** (see §10b for why), so the `vec_items` vec0 virtual table and the separate `documents`/`chunks`/`parents` tables in §§3–4/6–7 below **were not built** — document chunks land as scoped memory facts (`crates/engramd/src/corpus.rs`). The `engramd reindex` CLI, `/v1/metrics`, and `/v1/documents/*` referenced below **do not exist**; the shipped surfaces are `POST /v1/memory/reindex` and the on-open `backfill_binary`. Treat §§3–9 as the superseded design rationale, not the as-built system.
 
 This unifies two problems into one memory system:
 
@@ -49,6 +51,8 @@ Default narrowest; promote on explicit signal. A wrong "global" contaminates eve
 ---
 
 ## 3. Data model
+
+> **Superseded in part — see §10b.** The `facts` scope columns shipped. The `vec_items` vec0 virtual table (§3.2) and the `documents`/`chunks`/`parents` tables (§3.3) were **not** built: sqlite-vec was dropped, the binary-quantized vector lives inline on `facts` (`embedding_bin`), and document chunks are stored as scoped memory facts rather than in a separate corpus schema (`crates/engramd/src/corpus.rs`). The DDL below is retained as the design that motivated the shipped simpler form.
 
 One file `<home>/brain.db` (SQLite WAL); one ledger `<home>/ledger.jsonl` (unchanged). All DDL lands in `init_schema` ([store.rs:583](../crates/engram-memory/src/store.rs:583)) as `IF NOT EXISTS` + idempotent `ALTER TABLE ADD COLUMN` (the pattern already used for `superseded_by` at store.rs:611).
 
@@ -211,12 +215,12 @@ The always-loaded block splits ([conscious.rs:130](../crates/engramd/src/conscio
 - **Completeness (the headline fix):** delete the `SEM_SCAN_CAP=5000` salience cutoff ([store.rs:373](../crates/engram-memory/src/store.rs:373)) — the coarse pass considers *every live in-scope vector*, so an old, low-importance, semantically-perfect memory is always eligible. Leaves are never deleted for cost (demote-don't-delete); rollups are an *additional* entry point, never a replacement; prompt overflow is summarized, not dropped.
 - **Crash-safety:** ledger-first everywhere — a crash between append and commit leaves an unreferenced ledger entry (harmless, replay-detectable), never a landed-but-unsigned row. Ingest is a resumable state machine keyed on `documents.status`, landing per sub-batch. Re-embed is cursor-checkpointed (`meta.embed_migration_cursor`).
 - **Write serialization is intentional:** all writes serialize on the ledger tip lock ([ledger.rs:155](../crates/engram-core/src/ledger.rs:155)) — required for the signed hash-chain and *not* parallelizable. Reads parallelize via the RO pool; writes are batched coarsely (one ledger entry per ingest sub-batch) to keep the fsync/flush cost bounded. (Confirm `flush()` durability semantics; if fdatasync is needed for durability, batch harder.)
-- **Index is derived & rebuildable:** `vec_items` is derived from `facts`+`chunks` (the source of truth). `engramd reindex` drops and rebuilds it in batches — full recovery from a corrupt/missing index with zero data loss. `engramd verify` replays the ledger against the file offline, independent of the index.
+- **Index is derived & rebuildable:** the binary-quant index is derived from `facts` (the source of truth). *(As built: `POST /v1/memory/reindex` → `reindex_binary` drops and rebuilds it; there is no `engramd reindex` CLI subcommand.)* Full recovery from a corrupt/missing index with zero data loss. `engramd verify` replays the ledger against the file offline, independent of the index.
 - **sqlite-vec is pre-1.0 (alpha):** on-disk vec0 format may change across versions. Tolerable *only because* `vec_items` is derived: treat `reindex` as a first-class migration step run on every sqlite-vec version bump; keep the ledger/verify path independent of the vec0 format (it is). Do not treat `vec_items` as durable state.
 - **Static linking (security + musl):** integrate sqlite-vec via **static link + `sqlite3_auto_extension`**, with `conn.load_extension()` left **disabled**. Add a CI musl target that proves the sqlite-vec C translation unit links statically. Runtime `.so` loading would violate the single-binary invariant and open an extension-load attack surface — it is rejected.
 - **Embedding-space migration at scale:** `Memory::open` only *detects* a space change and stamps `embed_migration_pending`; a background job on the next active wake re-embeds in batches of ~256 (one batched gateway call per batch, not 256 serial), one ledger entry per batch, cursor-advanced, resumable. Boot stays <50 ms. Not-yet-migrated rows are `embed_dirty=1` and searched via their old-space vector (degraded, not dark). This replaces today's single mega-transaction inside `open` ([store.rs:160](../crates/engram-memory/src/store.rs:160)).
 - **Degradation:** gateway down → recall uses a local fallback vector, warms async, never blocks; a write-time gateway embed failure leaves the row `embed_dirty` and retried — it must **not** silently store a trigram vector into the transformer space (fixes the fallback at [embedder.rs](../crates/engramd/src/embedder.rs)).
-- **Observability:** `/v1/metrics` — per-recall coarse-scan size, per-arm candidate counts, rerank/MMR drops, budget utilization + overflow-summarize count, ingest queue depth, `embed_dirty` count, migration cursor, `verify` tip hash.
+- **Observability:** *(designed, not built — there is no `/v1/metrics` route)* per-recall coarse-scan size, per-arm candidate counts, rerank/MMR drops, budget utilization + overflow-summarize count, ingest queue depth, `embed_dirty` count, migration cursor, `verify` tip hash.
 
 ---
 
@@ -258,7 +262,7 @@ The always-loaded block splits ([conscious.rs:130](../crates/engramd/src/conscio
 ## 9. Migration (zero data loss, staged)
 
 1. **Additive schema** on next `Memory::open` — existing rows become `scope_kind='user'`, i.e. globally recallable exactly as today (I6). Old `brain.db` opens unchanged.
-2. **Backfill `vec_items`** from existing `facts.embedding` in batches (`engramd reindex` or lazy on first wake), one ledger entry per batch, idempotent/resumable. The old brute-force `recall_inner` stays live and correct until `vec_items` is fully populated; a feature flag flips recall to the new path.
+2. **Backfill** the vector index from existing `facts.embedding` in batches (lazy on first wake, or `POST /v1/memory/reindex` — *not* an `engramd reindex` CLI, which does not exist), one ledger entry per batch, idempotent/resumable. The old brute-force `recall_inner` stays live and correct until the index is fully populated; a feature flag flips recall to the new path.
 3. **Embedder upgrade** (`ENGRAM_EMBED=static`) triggers the reworked batched/checkpointed re-embed. Trigram → static → gateway are monotonic quality upgrades, each resumable; `embed_dirty` rows searchable via old vector meanwhile.
 4. **Documents** tables start empty; existing uploads re-ingested lazily on next reference. The inline 8000-char attachment path ([converse.rs:154](../crates/engramd/src/converse.rs:154)) stays as the fallback for un-ingested files.
 5. **Rollout flags** `ENGRAM_ANN`, `ENGRAM_CORPUS`, `ENGRAM_ROLLUPS`, `ENGRAM_BUDGET` default off, flipped per phase; every phase independently revertible.
@@ -266,6 +270,8 @@ The always-loaded block splits ([conscious.rs:130](../crates/engramd/src/conscio
 ---
 
 ## 10. Phased build plan
+
+> **This is the original plan; §10b records what actually shipped and what was deferred.** Where a phase names `sqlite-vec`/`vec_items`, the `documents`/`chunks`/`parents` DDL, an `engramd reindex` CLI, or `/v1/documents/*` routes, those were **not** built as written — see §10b. The shipped equivalents are pure-Rust binary quantization inline on `facts`, corpus chunks as scoped memory facts, and `POST /v1/memory/reindex`.
 
 Each phase: goal · files · proving test. Phases 0–2 are the isolation base (shippable alone, stops the bleed); 3–5 the retrieval core; 6–7 documents; 8–9 orchestration; 10 hardening.
 

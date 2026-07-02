@@ -40,6 +40,17 @@ pub struct Msg {
     pub recalled_refs: Vec<serde_json::Value>,
     #[serde(default)]
     pub learned: Vec<String>,
+    /// The run's tool steps (tool, args, observation, ok, …) as JSON, so a reloaded answer keeps its
+    /// glass-box trail — the step chips, inline screenshots, and clickable "wrote a file ↗" affordances
+    /// the chat renderer builds from these. Without it, every prior turn degrades to bare Q&A on reload,
+    /// erasing the verifiable-audit-trail that is the product's core pitch. Stored as raw JSON to stay
+    /// decoupled from the agent's StepRecord shape.
+    #[serde(default)]
+    pub steps: Vec<serde_json::Value>,
+    /// The model's interim narration notes streamed during the run ("I've kicked off two searches…"),
+    /// re-rendered under the reloaded answer exactly as they appeared live.
+    #[serde(default)]
+    pub notes: Vec<String>,
     pub ts_ms: u64,
 }
 
@@ -124,15 +135,33 @@ impl WorkspaceStore {
 
     /// Write atomically (temp file + rename) and owner-only, so a crash mid-write can't leave a
     /// half-written file that boot would discard, and chat content isn't world-readable.
+    ///
+    /// Each call writes to a UNIQUE tmp path, then renames it into place. This matters because the
+    /// daemon runs on a multithreaded runtime: two concurrent persists (e.g. `append_user_turn` in one
+    /// chat racing `append_reply_turn` in another) previously shared one `workspace.json.tmp`, so writer
+    /// B could truncate/overwrite the tmp while writer A was mid-write and A would then rename a torn
+    /// file into place — corrupting the store (detected on next boot, backed up, "starts fresh": every
+    /// project/session gone). With a per-write tmp path the writers can't corrupt each other and the
+    /// last rename to land is a consistent, complete snapshot. Stale tmp files are cleaned up by the
+    /// writer that created them.
     fn persist(&self) {
         let bytes = {
             let d = self.data.lock().expect("workspace mutex");
             serde_json::to_vec_pretty(&*d).unwrap_or_default()
         };
-        let tmp = self.path.with_extension("json.tmp");
+        // Unique per write: pid + a process-monotonic counter, so concurrent writers never share a tmp.
+        let uniq = format!(
+            "{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        );
+        let tmp = self.path.with_extension(format!("json.tmp.{uniq}"));
         if std::fs::write(&tmp, &bytes).is_ok() {
             restrict(&tmp);
-            let _ = std::fs::rename(&tmp, &self.path);
+            if std::fs::rename(&tmp, &self.path).is_err() {
+                // Rename failed: don't leak the tmp file.
+                let _ = std::fs::remove_file(&tmp);
+            }
         }
     }
     /// Whether a project id exists - used to keep sessions from being orphaned.
@@ -411,6 +440,8 @@ impl WorkspaceStore {
                         recalled: vec![],
                         recalled_refs: vec![],
                         learned: vec![],
+                        steps: vec![],
+                        notes: vec![],
                         ts_ms: now,
                     });
                     s.updated_ms = now;
@@ -425,7 +456,10 @@ impl WorkspaceStore {
         ok
     }
 
-    /// Append the agent's REPLY to a session (paired with a prior `append_user_turn`).
+    /// Append the agent's REPLY to a session (paired with a prior `append_user_turn`). `steps` is the `steps` is the
+    /// run's tool trail and `notes` its interim narration, persisted so the glass-box view survives a
+    /// reload rather than degrading to bare Q&A.
+    #[allow(clippy::too_many_arguments)]
     pub fn append_reply_turn(
         &self,
         id: &str,
@@ -433,6 +467,8 @@ impl WorkspaceStore {
         recalled: Vec<String>,
         recalled_refs: Vec<serde_json::Value>,
         learned: Vec<String>,
+        steps: Vec<serde_json::Value>,
+        notes: Vec<String>,
     ) -> bool {
         let now = now_ms();
         let ok = {
@@ -445,6 +481,8 @@ impl WorkspaceStore {
                         recalled,
                         recalled_refs,
                         learned,
+                        steps,
+                        notes,
                         ts_ms: now,
                     });
                     s.updated_ms = now;
@@ -483,6 +521,8 @@ impl WorkspaceStore {
                         recalled: vec![],
                         recalled_refs: vec![],
                         learned: vec![],
+                        steps: vec![],
+                        notes: vec![],
                         ts_ms: now,
                     });
                     s.messages.push(Msg {
@@ -491,6 +531,8 @@ impl WorkspaceStore {
                         recalled,
                         recalled_refs,
                         learned,
+                        steps: vec![],
+                        notes: vec![],
                         ts_ms: now,
                     });
                     s.updated_ms = now;

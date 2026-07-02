@@ -12,6 +12,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use engram_core::{AutonomyPolicy, Ledger, ScopeCtx, Taint};
 use engram_gateway::{Gateway, ToolDef};
+
+use crate::agent::{NarrationCallback, StepCallback};
 use engram_memory::Memory;
 use engram_skills::Registry;
 use serde_json::Value;
@@ -93,6 +95,36 @@ pub struct ToolCtx {
     /// and `memory_remember` tools honour this so a delegated worker in a project chat can't read
     /// or write another project's memory. Propagated into subagents via the cloned ctx.
     pub scope: ScopeCtx,
+    /// ORCHESTRATION PARITY (delegated subagents). The parent run's kill switch, shared token budget,
+    /// live callbacks, and tool scope — carried on the ctx so a subagent that `delegate_task` builds
+    /// inherits them via the cloned ctx (the sub-`Agent` is constructed from the ctx alone, so these
+    /// can't be threaded as builder args). `Agent::run` seeds any of these that are `None` from the
+    /// top-level Agent's own builder-set values at run entry, so the daemon keeps using the builders
+    /// and the values still flow down into delegated work. Defaulting all of them to "unset" keeps
+    /// every existing `ToolCtx` literal valid and behaviourally identical when delegation isn't used.
+    ///
+    /// The parent's kill switch: a delegated run checks it at each step boundary and stops when set,
+    /// so cancelling the parent cancels its subagents too.
+    pub halt: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// The shared, run-wide token-spend pool (in+out tokens). One `Arc` for the whole run tree, so a
+    /// delegated subagent's model calls count against the SAME budget the parent is bounded by (fan-out
+    /// can't escape the cost guard). `Agent::run` uses this when present instead of a fresh per-run
+    /// counter. `None` = the run makes its own local counter (unshared).
+    pub spend_counter: Option<Arc<std::sync::atomic::AtomicU64>>,
+    /// The run-wide token budget ceiling. Propagated so a delegated subagent honours the same ceiling
+    /// (checked against the shared `spend_counter`). `None` = unbounded (still bounded by max_steps).
+    pub token_budget: Option<u32>,
+    /// Live progress callback (`Agent::on_step`), carried so a delegated subagent's steps are visible
+    /// in the UI just like the parent's instead of running invisibly.
+    pub on_step: Option<StepCallback>,
+    /// Live narration callback (`Agent::on_narration`), carried so a delegated subagent's interim
+    /// commentary is surfaced in the UI like the parent's.
+    pub on_narration: Option<NarrationCallback>,
+    /// The parent run's per-agent tool scope (the daemon's `allowed_tools`). A subagent's toolset is
+    /// INTERSECTED with this in `delegate_task`, so a delegated worker can never exceed the tool
+    /// permissions the parent was restricted to. `None` = no scope (the parent could use every tool),
+    /// so the subagent gets the full base toolset. The daemon seeds this on the top-level ctx.
+    pub allowed_tools: Option<Vec<String>>,
 }
 
 /// What the agent is permitted to do. Safe by default.
@@ -131,6 +163,13 @@ pub struct Policy {
     /// the daemon sets this, and only after a real user approval; the model can *request* approval
     /// (`request_approval` tool) but can never grant its own. Every approved egress is ledgered.
     pub approved: bool,
+    /// When set, scopes `approved` to a SPECIFIC destination host (the one the user actually approved),
+    /// so a single "Approve once" click can't be laundered by injected content into blanket egress to
+    /// any host for the rest of the run. `None` = the approval is unscoped (legacy run-wide behaviour);
+    /// the hardline floor is still evaluated first either way, so an approved run can never reach a
+    /// floor-listed destination. The daemon SHOULD populate this with the host of the refused action it
+    /// is resuming, so the escape valve authorizes exactly that destination and nothing more.
+    pub approved_dest: Option<String>,
     /// Whether a human is watching THIS run (interactive UI/HTTP) vs scheduled/unattended. Decides
     /// what happens to an egress action that isn't pre-authorized: attended → the live approval
     /// prompt (today's behaviour); unattended → stage it for async review, never block the run.
@@ -143,6 +182,11 @@ pub struct Policy {
     /// Shared, monotonic count of egress actions consumed this run — the live half of the policy's
     /// budget. An `Arc` so delegated sub-agents share ONE pool (fan-out can't escape the budget).
     pub egress_consumed: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    /// Daemon-global egress allowlist (destination hosts the user approved for policy-less "default
+    /// agent" runs). Consulted by the egress gate before staging a novel destination, so a run with no
+    /// signed `autonomy` policy can still send to a user-approved host. A per-agent signed policy and
+    /// its hardline floor are evaluated FIRST, so this can never override a floor.
+    pub daemon_allowlist: Vec<String>,
 }
 
 impl Default for Policy {
@@ -158,10 +202,12 @@ impl Default for Policy {
             vision_model: None,
             webhook_url: None,
             approved: false,
+            approved_dest: None,
             // Interactive is the safe default; the scheduler explicitly marks unattended runs.
             attended: true,
             autonomy: None,
             egress_consumed: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            daemon_allowlist: Vec::new(),
         }
     }
 }
@@ -191,6 +237,18 @@ pub trait Tool: Send + Sync {
     /// Enforced centrally at the agent's dispatch boundary so every tool is covered.
     fn is_egress(&self) -> bool {
         false
+    }
+    /// The destination this egress tool will ACTUALLY contact for `args`, resolved from the tool's
+    /// OWN schema/precedence — a bare host for a URL, or a recipient string. The egress gate matches
+    /// this against the autonomy allowlist/floor, so it must reflect where the tool truly sends, not
+    /// whatever keys happen to appear in the model-authored JSON. Returning `None` means "opaque":
+    /// the destination cannot be verified, so the gate must never auto-allow it (it stages/refuses).
+    /// The DEFAULT is `None`, so any egress tool that doesn't override this (e.g. an MCP tool whose
+    /// real recipient arg we can't know) is treated as opaque — fail-closed, which is the safe side.
+    /// Takes `ctx` so a tool with a configured default (e.g. `send_message`'s webhook) can resolve
+    /// the effective destination even when the call omits an explicit one.
+    fn egress_dest(&self, _args: &Value, _ctx: &ToolCtx) -> Option<String> {
+        None
     }
     /// True if this tool surfaces the user's *private/sensitive* data into the run (recalling
     /// personal memory, reading local files, an authenticated MCP/service read). Combined with

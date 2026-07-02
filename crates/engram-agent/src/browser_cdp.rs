@@ -85,8 +85,31 @@ impl CdpBrowser {
             });
             // Apply anti-detection ONCE at session creation so every later navigation inherits it.
             Self::apply_stealth(guard.as_mut().unwrap()).await;
+            // Arm the SSRF guard for the whole session (see `arm_ssrf_guard`). Enabling `Fetch`
+            // request interception at session creation means every later navigation — including
+            // HTTP 3xx redirects, meta-refresh, JS `location=`, and 0-TTL DNS rebinds — is
+            // re-checked at the network layer, so the persistent CDP Chrome can't be steered to
+            // 127.0.0.1:8088 (our own unauthenticated API) or 169.254.169.254 (cloud metadata).
+            Self::arm_ssrf_guard(guard.as_mut().unwrap()).await;
         }
         Ok(guard.as_mut().unwrap())
+    }
+
+    /// Enable `Fetch` request interception for the session. Unlike the one-shot `chrome_dump_dom`
+    /// helper (which pins the single target host with `--host-resolver-rules` at launch), the
+    /// persistent session serves many hosts over its lifetime, so we cannot pin at launch. Instead
+    /// we intercept EVERY request and re-run the SSRF address check on its host — the same check the
+    /// one-shot pin enforces, but applied continuously. The `cmd` receive loop handles the
+    /// `Fetch.requestPaused` events this produces (via `guard_paused_request`); here we just turn it on.
+    async fn arm_ssrf_guard(conn: &mut Conn) {
+        // `Request` stage only (no response interception) keeps overhead minimal: we just need the
+        // URL to vet before the connection is made. An empty pattern set means "all requests".
+        let _ = Self::cmd(
+            conn,
+            "Fetch.enable",
+            json!({ "patterns": [ { "urlPattern": "*" } ] }),
+        )
+        .await;
     }
 
     /// Minimal anti-detection so the headless session isn't instantly flagged by Cloudflare/DataDome
@@ -190,6 +213,14 @@ impl CdpBrowser {
                 Ok(v) => v,
                 Err(_) => continue,
             };
+            // A paused request (Fetch domain is enabled for the whole session) MUST be answered or
+            // Chrome stalls the navigation waiting for a decision. Vet its host through the SSRF
+            // guard and continue or fail it — this is what closes the redirect/rebind hole, since
+            // it runs on the ACTUAL request Chrome is about to make, not just the URL we asked for.
+            if v.get("method").and_then(|m| m.as_str()) == Some("Fetch.requestPaused") {
+                Self::guard_paused_request(conn, &v).await;
+                continue;
+            }
             if v.get("id").and_then(|x| x.as_u64()) == Some(id) {
                 if let Some(err) = v.get("error") {
                     return Err(err.to_string());
@@ -197,6 +228,36 @@ impl CdpBrowser {
                 return Ok(v.get("result").cloned().unwrap_or(Value::Null));
             }
         }
+    }
+
+    /// Answer a `Fetch.requestPaused` event: allow the request only if its URL passes the SSRF
+    /// guard (public http(s) host that doesn't resolve to loopback/private/link-local/metadata),
+    /// otherwise fail it. Fire-and-forget the continue/fail command (we don't await its response so
+    /// we don't reenter `cmd` recursively); the guard's async DNS check is the only await.
+    async fn guard_paused_request(conn: &mut Conn, event: &Value) {
+        let rid = event["params"]["requestId"].as_str().unwrap_or("");
+        if rid.is_empty() {
+            return;
+        }
+        let url = event["params"]["request"]["url"].as_str().unwrap_or("");
+        // Only http(s) requests hit the network (and thus could reach a private/metadata IP); pass
+        // through non-network schemes (data:/blob:/about:/chrome-extension:) untouched so ordinary
+        // in-page resources aren't broken. http(s) requests are re-checked through the SSRF guard.
+        let is_http = url.starts_with("http://") || url.starts_with("https://");
+        let allowed = !is_http || crate::tools::guard_url(url).await.is_ok();
+        let (cmd_method, params) = if allowed {
+            ("Fetch.continueRequest", json!({ "requestId": rid }))
+        } else {
+            (
+                "Fetch.failRequest",
+                json!({ "requestId": rid, "errorReason": "AddressUnreachable" }),
+            )
+        };
+        let id = conn.next_id;
+        conn.next_id += 1;
+        let payload =
+            json!({ "id": id, "method": cmd_method, "params": params }).to_string();
+        let _ = conn.ws.send(Message::Text(payload)).await;
     }
 
     async fn eval(conn: &mut Conn, expr: &str) -> Result<Value, String> {
@@ -239,6 +300,21 @@ impl BrowserSession for CdpBrowser {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        // Defence in depth: even with per-request Fetch guarding, re-check where we actually ENDED
+        // up before returning any page text. A redirect/JS-navigation chain that landed on a
+        // non-public origin (loopback API, cloud metadata) must never have its body handed back to
+        // the model. `about:blank` is the benign initial page, so only a real http(s) location is
+        // vetted; anything else (or a blocked host) yields no text.
+        let href = Self::eval(conn, "location.href")
+            .await
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default();
+        if href.starts_with("http://") || href.starts_with("https://") {
+            crate::tools::guard_url(&href).await.map_err(|e| {
+                format!("refusing to read page: navigation landed on a non-public address ({e})")
+            })?;
         }
         let text = Self::eval(conn, "document.body ? document.body.innerText : ''").await?;
         Ok(text.as_str().unwrap_or("").chars().take(6000).collect())

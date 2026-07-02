@@ -36,10 +36,18 @@ fn shell_enabled(app: &App) -> bool {
     app.allow_shell.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// The shell backend selected by env - identical to the agent task runner's, so a human command
-/// and an agent command run in the same place (local, a network-isolated container, ssh, ...).
-fn backend() -> Option<String> {
-    match std::env::var("ENGRAM_SHELL_BACKEND").as_deref() {
+/// The shell backend for the human terminal - resolved exactly like the agent task runner's
+/// (`run_agent_task_cb` in main.rs), so a human command and an agent command run in the SAME place
+/// (host, the UI-selected OS sandbox / Docker container, ssh, ...). The live Settings-panel backend
+/// wins; the `ENGRAM_SHELL_BACKEND` env vars are the headless/server fallback. This is what keeps the
+/// glass-box promise honest: without it a user who selects sandbox/docker/ssh in Settings would get
+/// raw host execution here while the daemon signed it as if it ran where agent commands run.
+fn backend(app: &App) -> Option<String> {
+    let resolved = {
+        let c = app.cfg();
+        crate::config::resolve_shell_backend(&c.security.shell_backend, &c.security.shell_target)
+    };
+    resolved.or_else(|| match std::env::var("ENGRAM_SHELL_BACKEND").as_deref() {
         Ok("docker") => {
             Some(std::env::var("ENGRAM_DOCKER_IMAGE").unwrap_or_else(|_| "alpine".into()))
         }
@@ -50,7 +58,7 @@ fn backend() -> Option<String> {
             .ok()
             .map(|i| format!("singularity:{i}")),
         _ => None,
-    }
+    })
 }
 
 fn home() -> PathBuf {
@@ -131,13 +139,18 @@ pub async fn shell_handler(State(app): State<App>, Json(r): Json<ShellReq>) -> R
         };
     }
 
-    let (program, args) = engram_agent::tools::shell_command(backend().as_deref(), &cwd, &command);
+    let (program, args) =
+        engram_agent::tools::shell_command(backend(&app).as_deref(), &cwd, &command);
     // Set PWD to match the real working directory: the `pwd`/`$PWD` shell builtins trust an
     // inherited PWD over getcwd(), so without this they'd echo the daemon's stale PWD, not `cwd`.
+    // kill_on_drop(true): when the 60s timeout fires the output() future is dropped — without this
+    // the spawned child would keep running detached, still executing side effects while we report a
+    // timeout, and repeated hangs would leak processes. Dropping the child now sends it SIGKILL.
     let fut = tokio::process::Command::new(&program)
         .args(&args)
         .current_dir(&cwd)
         .env("PWD", &cwd)
+        .kill_on_drop(true)
         .output();
     let (exit, stdout, stderr) = match tokio::time::timeout(Duration::from_secs(60), fut).await {
         Ok(Ok(out)) => (

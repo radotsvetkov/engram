@@ -314,6 +314,59 @@ struct Learned {
     supersede: bool,
 }
 
+/// Find `needle` (assumed already lowercase, ASCII in practice) inside `hay` case-insensitively,
+/// returning `(start_byte, match_len_bytes)` as offsets into the ORIGINAL `hay` (so a subsequent
+/// `&hay[start + len..]` slice is always on a char boundary). This exists because `str::find` on a
+/// `to_lowercase()` copy yields offsets that are invalid for the original string whenever a char's
+/// lowercase form has a different byte length ('İ', 'ẞ', …) — slicing the original with those
+/// offsets silently corrupts facts or panics on a non-char-boundary. Here we walk the original by
+/// char, lowercasing each char on the fly, so every returned offset is a real boundary in `hay`.
+fn find_ci(hay: &str, needle: &str) -> Option<(usize, usize)> {
+    if needle.is_empty() {
+        return Some((0, 0));
+    }
+    let indices: Vec<(usize, char)> = hay.char_indices().collect();
+    // Try to anchor the needle at each char boundary in the original text.
+    for (start, &(byte_start, _)) in indices.iter().enumerate() {
+        let mut needle_it = needle.chars();
+        let mut nc = needle_it.next();
+        let mut end_byte = byte_start; // byte offset in `hay` just past the last matched char
+        let mut i = start;
+        while nc.is_some() && i < indices.len() {
+            let (b, ch) = indices[i];
+            // A single original char can lowercase to multiple chars (e.g. 'İ' → 'i' + combining
+            // dot); consume each against the needle in turn.
+            let mut matched_this_char = false;
+            for lc in ch.to_lowercase() {
+                match nc {
+                    Some(expected) if expected == lc => {
+                        matched_this_char = true;
+                        nc = needle_it.next();
+                    }
+                    // The needle char didn't match this piece of the original char's lowercasing.
+                    _ => {
+                        matched_this_char = false;
+                        break;
+                    }
+                }
+                if nc.is_none() {
+                    break;
+                }
+            }
+            if !matched_this_char {
+                break;
+            }
+            // Advance the end to just past this original char.
+            end_byte = b + ch.len_utf8();
+            i += 1;
+        }
+        if nc.is_none() {
+            return Some((byte_start, end_byte - byte_start));
+        }
+    }
+    None
+}
+
 /// Cheap, transparent identity extraction. Deliberately simple and auditable - every
 /// inferred fact lands in the identity region and the ledger, where it can be seen and
 /// forgotten. Singular attributes (name, where you live/work, who you are) supersede the
@@ -338,11 +391,15 @@ fn extract_identity(text: &str) -> Vec<Learned> {
         ("i work ", "User works ", true),
         ("i live ", "User lives ", true),
     ];
-    let lower = text.to_lowercase();
     let mut out: Vec<Learned> = Vec::new();
     for (pat, prefix, supersede) in RULES {
-        if let Some(idx) = lower.find(pat) {
-            let rest = &text[idx + pat.len()..];
+        // Search case-insensitively but resolve a byte offset into the ORIGINAL `text`, then slice
+        // `text`. Searching a lowercased copy and slicing the original is a bug: `to_lowercase()`
+        // changes byte lengths for some chars ('İ' → "i̇", 'ẞ' → "ss"), so a lowercased offset can
+        // land mid-fact (silent corruption) or off a char boundary (panic → daemon abort under
+        // panic=abort). `find_ci` returns the byte position and length of the match in `text` itself.
+        if let Some((idx, match_len)) = find_ci(text, pat) {
+            let rest = &text[idx + match_len..];
             let frag = rest.split(['.', '!', '?', '\n', ',']).next().unwrap_or("");
             // Stop at conjunctions so one clause doesn't swallow the next.
             let frag = frag.split(" and ").next().unwrap_or(frag);
@@ -404,5 +461,44 @@ mod tests {
     #[test]
     fn nothing_to_extract() {
         assert!(extract_identity("what time is it?").is_empty());
+    }
+
+    #[test]
+    fn unicode_prefix_does_not_panic_and_slices_correctly() {
+        // Regression: `to_lowercase()` changes byte lengths for 'İ' (U+0130 → "i̇", 2 bytes → 3)
+        // and 'ẞ' (U+1E9E → "ss", 3 bytes → 2). Searching a lowercased copy then slicing the
+        // ORIGINAL text produced offsets off a char boundary → panic (daemon abort under
+        // panic=abort). These must extract cleanly with no panic.
+        let f = extract_identity("İstanbul is nice. i live in Berlin");
+        assert!(
+            f.iter().any(|l| l.fact == "User lives in Berlin"),
+            "unicode prefix must not shift the slice; got {f:?}"
+        );
+
+        // A hard-panic reproducer from the dossier: mixed multibyte chars before the match.
+        let f = extract_identity("İ ẞ i love Rust");
+        assert!(
+            f.iter().any(|l| l.fact == "User loves Rust"),
+            "got {f:?}"
+        );
+
+        // Pattern beginning with a case-length-changing char: no panic, no false match.
+        let _ = extract_identity("ẞß İ");
+        // Pure non-ASCII with no identity pattern: must be empty, no panic.
+        assert!(extract_identity("İ ẞ merhaba").is_empty());
+    }
+
+    #[test]
+    fn find_ci_maps_offsets_into_original() {
+        // "i live " starts after "İstanbul is nice. " in the ORIGINAL (byte) string.
+        let hay = "İstanbul is nice. i live in Berlin";
+        let (idx, len) = find_ci(hay, "i live ").expect("should find pattern");
+        // The returned offset must be a real char boundary and slicing must not panic.
+        assert!(hay.is_char_boundary(idx));
+        assert!(hay.is_char_boundary(idx + len));
+        assert_eq!(&hay[idx + len..], "in Berlin");
+        // Case-insensitive match against an uppercase original.
+        assert!(find_ci("MY NAME IS Ada", "my name is ").is_some());
+        assert!(find_ci("no match here", "i live ").is_none());
     }
 }

@@ -1,11 +1,17 @@
 //! The scheduler - persisted jobs that fire even across sleep.
 //!
 //! Jobs are stored as plain JSON (`jobs.json`); each holds its [`Recurrence`] and a
-//! precomputed `next_fire_ms`. The core does not stay resident to wait: the deploy
-//! layer reads [`Scheduler::next_wake`] and arms a systemd timer (or platform cron)
-//! for that instant, which wakes the socket-activated core, which runs what is due
-//! and sleeps again. If the machine was asleep past several fires, rescheduling
-//! advances to the next *future* occurrence - one catch-up run, never a stampede.
+//! precomputed `next_fire_ms`. The core does not stay resident to wait: an external
+//! timer wakes the socket-activated core, which runs what is due (`--run-due`) and
+//! sleeps again. If the machine was asleep past several fires, rescheduling advances
+//! to the next *future* occurrence - one catch-up run, never a stampede.
+//!
+//! WAKE ARMING IS NOT YET WIRED. [`Scheduler::next_wake`] computes the soonest fire and
+//! [`crate::systemd::wake_timer`] can generate the `--run-due` timer unit, but nothing in the
+//! daemon or deploy command currently calls them, so the only wake in production is a static
+//! `OnCalendar=*-*-* 09:00:00` documented in `deploy/README.md`. Until the daemon recomputes
+//! `next_wake()` on job add/remove/fire (or a fine-grained recurring timer is installed),
+//! sub-daily and non-9am schedules only get a chance to fire at 09:00. See NEEDS-INTEGRATION.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -60,8 +66,19 @@ impl Scheduler {
         let dir = dir.as_ref();
         std::fs::create_dir_all(dir)?;
         let path = dir.join("jobs.json");
+        // Back up an unparseable file rather than hard-failing boot: on an unattended box a
+        // power-loss mid-save can leave a truncated jobs.json, and propagating that parse error
+        // (via `?` at the daemon's `Scheduler::open`) would take the whole product down until
+        // someone hand-deletes the file. Mirror TaskStore: move the bad file aside and start fresh.
         let jobs = match std::fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes)?,
+            Ok(bytes) => match serde_json::from_slice(&bytes) {
+                Ok(jobs) => jobs,
+                Err(e) => {
+                    let _ = std::fs::rename(&path, dir.join("jobs.corrupt.json"));
+                    tracing::error!(error = %e, "jobs.json was unparseable - backed it up and started fresh");
+                    Vec::new()
+                }
+            },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
             Err(e) => return Err(e.into()),
         };
@@ -187,8 +204,9 @@ impl Scheduler {
         self.jobs.lock().expect("sched mutex poisoned").clone()
     }
 
-    /// The soonest upcoming fire time across all jobs (epoch millis), if any. The
-    /// deploy layer arms a single timer for this instant.
+    /// The soonest upcoming fire time across all jobs (epoch millis), if any. Intended for the
+    /// deploy/daemon layer to arm a wake timer for this instant — but that arming is NOT yet wired
+    /// (see the module doc), so today this only feeds tests and callers that opt in.
     pub fn next_wake(&self) -> Option<i64> {
         self.jobs
             .lock()
@@ -199,8 +217,20 @@ impl Scheduler {
     }
 }
 
+/// Write jobs.json atomically (temp + rename) and owner-only. `save` runs on every
+/// add/mark_fired/set_last_task/remove, i.e. constantly on an unattended box; a bare
+/// `std::fs::write` can be interrupted mid-write and leave a truncated file, so we write a
+/// sibling temp file and rename it into place (rename is atomic on the same filesystem).
 fn save(path: &Path, jobs: &[Job]) -> Result<()> {
-    std::fs::write(path, serde_json::to_vec_pretty(jobs)?)?;
+    let bytes = serde_json::to_vec_pretty(jobs)?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, &bytes)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+    }
+    std::fs::rename(&tmp, path)?;
     Ok(())
 }
 

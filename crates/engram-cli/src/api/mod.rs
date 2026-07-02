@@ -77,10 +77,23 @@ impl Client {
     }
 
     async fn post_value(&self, path: &str, body: Value) -> Result<Value> {
-        let rb = self
-            .auth(self.http.post(self.url(path)))
-            .json(&body)
-            .timeout(std::time::Duration::from_secs(180));
+        self.post_value_timeout(path, body, Some(std::time::Duration::from_secs(180)))
+            .await
+    }
+
+    /// POST with an explicit timeout (or `None` for no client-side timeout). Long-running endpoints
+    /// like `/v1/agent` — multi-step tool loops that can run for minutes — must pass `None`, else the
+    /// CLI errors out while the daemon keeps running and the answer is lost.
+    async fn post_value_timeout(
+        &self,
+        path: &str,
+        body: Value,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<Value> {
+        let mut rb = self.auth(self.http.post(self.url(path))).json(&body);
+        if let Some(t) = timeout {
+            rb = rb.timeout(t);
+        }
         let resp = rb.send().await.with_context(|| format!("POST {path}"))?;
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
@@ -178,7 +191,8 @@ impl Client {
     }
 
     pub async fn consciousness_distill(&self) -> Result<Value> {
-        self.post_value("/v1/consciousness/distill", json!({}))
+        // Distillation can take a while (it summarizes the whole self-model) — no client timeout.
+        self.post_value_timeout("/v1/consciousness/distill", json!({}), None)
             .await
     }
 
@@ -209,7 +223,11 @@ impl Client {
     }
 
     pub async fn task_run(&self, id: &str) -> Result<Task> {
-        self.post(&format!("/v1/tasks/{id}/run"), json!({})).await
+        // A synchronous task run drives a full agent loop — no client timeout (see `agent`).
+        let v = self
+            .post_value_timeout(&format!("/v1/tasks/{id}/run"), json!({}), None)
+            .await?;
+        serde_json::from_value(v).context("typed-decode /v1/tasks/run")
     }
 
     pub async fn task_receipt(&self, id: &str) -> Result<Value> {
@@ -390,8 +408,16 @@ impl Client {
     // ---- agent / chat (non-stream) ---------------------------------------
 
     pub async fn agent(&self, task: &str, max_steps: Option<usize>) -> Result<AgentResp> {
-        self.post("/v1/agent", json!({ "task": task, "max_steps": max_steps }))
-            .await
+        // No client timeout: agent runs are 24-step tool loops (web/browser/shell) that routinely
+        // exceed any fixed cap. A timeout here would drop the answer the daemon is still producing.
+        let v = self
+            .post_value_timeout(
+                "/v1/agent",
+                json!({ "task": task, "max_steps": max_steps }),
+                None,
+            )
+            .await?;
+        serde_json::from_value(v).context("typed-decode /v1/agent")
     }
 
     pub async fn converse(&self, text: &str, session: Option<&str>) -> Result<ConverseDone> {
@@ -493,11 +519,19 @@ fn spawn_sse<T, M, D>(
         let mut decoder = SseDecoder::new();
         let mut frames = Vec::new();
         let mut stream = resp.bytes_stream();
+        // Did the run send a terminal frame before the stream closed? The daemon emits a `done` (or
+        // `error`) event and then closes the connection, so a clean EOF is EXPECTED after one — the
+        // synthetic disconnect below must fire ONLY when no terminal frame arrived, otherwise every
+        // successful reply is followed by a spurious "stream ended" error + reconnect in the TUI.
+        let mut saw_terminal = false;
         while let Some(chunk) = stream.next().await {
             match chunk {
                 Ok(bytes) => {
                     decoder.push(&bytes, &mut frames);
                     for (ev, data) in frames.drain(..) {
+                        if ev == "done" || ev == "error" {
+                            saw_terminal = true;
+                        }
                         if let Some(item) = map(&ev, &data) {
                             if tx.send(item).is_err() {
                                 return; // receiver dropped
@@ -510,6 +544,12 @@ fn spawn_sse<T, M, D>(
                     return;
                 }
             }
+        }
+        // Clean EOF with no terminal frame — the daemon's run task finished without sending one (a
+        // panic, or a graceful restart mid-run). Emit a synthetic disconnect so the consumer always
+        // sees a terminal event and never hangs "streaming" forever. Suppressed after a real terminal.
+        if !saw_terminal {
+            let _ = tx.send(on_disconnect("stream ended before the run finished".into()));
         }
     });
 }

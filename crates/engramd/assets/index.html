@@ -140,6 +140,7 @@
   .card { background:var(--surface-2); border:1px solid var(--border-strong); border-radius:var(--r-card); padding:11px 12px; cursor:pointer; box-shadow:var(--e1); }
   .card:hover { background:var(--surface-3); box-shadow:var(--e2); }
   .card.running { box-shadow:var(--e2), 0 0 0 1px var(--accent), 0 0 18px -4px rgba(69,200,168,.5); }
+  .card.failed { border-left:3px solid var(--danger); }
   .card .t { line-height:1.35; }
   .card .meta { display:flex; gap:6px; align-items:center; margin-top:8px; flex-wrap:wrap; font-size:11px; color:var(--text-muted); }
   .tag { font-size:11px; padding:1px 6px; border-radius:6px; }
@@ -259,6 +260,8 @@
   .act-verify { display:flex; align-items:center; gap:12px; background:var(--surface-1); border:1px solid var(--border); border-radius:12px; padding:13px 16px; margin-bottom:14px; }
   .act-verify.ok .act-seal { color:var(--accent); }
   .act-verify.bad { border-color:var(--danger); } .act-verify.bad .act-seal { color:var(--danger); }
+  .act-verify.unknown { border-color:var(--border); } .act-verify.unknown .act-seal { color:var(--text-muted); opacity:.6; }
+  .act-verify.unknown .av-status { color:var(--text-secondary); }
   .act-seal { flex:none; display:inline-flex; filter:drop-shadow(0 0 8px currentColor); }
   .av-text { min-width:0; }
   .av-status { font-weight:600; font-size:14px; }
@@ -320,6 +323,14 @@
   .cthinking.ct-foot { margin-top:8px; padding-top:9px; border-top:1px solid var(--border); width:100%; }
   @keyframes engram-spin { 0%{transform:rotate(0deg)} 50%{transform:rotate(360deg)} 100%{transform:rotate(0deg)} }
   @keyframes ct-blink { 0%,100%{opacity:1} 50%{opacity:.22} }
+  /* Follow-ups typed while a run is busy: queued below the feed, sent when the run finishes. */
+  .queued-strip { display:flex; flex-direction:column; gap:6px; padding:6px max(18px, calc((100% - 720px) / 2)) 0; }
+  .queued-msg { display:flex; align-items:center; gap:8px; font-size:13px; color:var(--text-secondary);
+    background:var(--surface-2); border:1px dashed var(--border); border-radius:9px; padding:6px 10px; }
+  .queued-msg .q-dot { flex:none; font-size:12px; opacity:.8; }
+  .queued-msg .q-txt { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .queued-msg .q-x { flex:none; background:none; border:none; color:var(--text-muted); cursor:pointer; font-size:12px; padding:0 2px; }
+  .queued-msg .q-x:hover { color:var(--danger); }
   /* Sidebar: a blinking green dot on a chat that's still being worked on; nothing once it's done. */
   .ses-busy { width:7px; height:7px; flex:none; border-radius:50%; background:#45c8a8; box-shadow:0 0 6px #45c8a8; animation:ct-blink 1s ease-in-out infinite; margin-right:1px; }
   /* Pin the composer: never let it shrink or scroll away when the feed fills. */
@@ -694,8 +705,10 @@
   .ws-projs { display:flex; flex-direction:column; gap:7px; }
   .ws-proj { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px 12px; border:1px solid var(--border); border-radius:10px; background:var(--surface-2); }
   .ws-proj.active { border-color:color-mix(in srgb,var(--accent) 35%,transparent); }
-  .ws-pinfo { display:flex; align-items:center; gap:8px; min-width:0; }
+  .ws-pinfo { display:flex; flex-direction:column; gap:3px; min-width:0; }
+  .ws-prow { display:flex; align-items:center; gap:8px; min-width:0; }
   .ws-pname { font-weight:600; font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .ws-pdir { font-size:11px; color:var(--text-muted); font-family:var(--mono); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:340px; }
   .ws-pacts { display:flex; gap:6px; flex-shrink:0; }
   /* settings */
   .settings { max-width:780px; margin:0 auto; padding:22px 24px 64px; overflow-y:auto; height:100%; }
@@ -1082,6 +1095,9 @@
 .sched-head .sched-count { font-size:11px; color:var(--text-muted); font-variant-numeric:tabular-nums; }
 .sched-compose { display:flex; flex-direction:column; gap:8px; }
 .sched-compose .row { margin-bottom:0; }
+.sched-prompt { width:100%; background:var(--surface-2); border:1px solid var(--border); border-radius:6px;
+  padding:7px 9px; outline:none; font:inherit; line-height:1.5; resize:vertical; min-height:52px; color:inherit; }
+.sched-prompt:focus { border-color:var(--accent); }
 .sched-preview { display:flex; align-items:center; gap:8px; min-height:22px; font-size:12px; color:var(--text-muted); }
 .sched-preview.empty { opacity:0; }
 .sched-list { display:flex; flex-direction:column; gap:10px; }
@@ -1485,10 +1501,15 @@ const J = async (u,o={}) => {
   if(!r.ok){ let m='HTTP '+r.status; try{ const b=await r.json(); if(b&&b.error) m=b.error; }catch(_){} throw new Error(m); }
   return r.json();
 };
-const esc = s => String(s??'').replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+// Strip C0 control chars (except \t \n \r) FIRST: model/tool output can contain raw NUL, and
+// mdInline uses a NUL-delimited placeholder for inline-code spans on the assumption NUL can't occur
+// in escaped text. A forged NUL would otherwise substitute the wrong (or an undefined) code span,
+// rendering the literal string "undefined" or corrupting the answer. Control chars have no visible
+// rendering, so dropping them is safe across every esc() call site.
+const esc = s => String(s??'').replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g,'').replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
 // For values placed inside a double-quoted HTML attribute, quotes must be escaped too, or a
 // stored config value (an MCP name, a model id) could break out of the attribute.
-const escAttr = s => String(s??'').replace(/[<>&"']/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]));
+const escAttr = s => String(s??'').replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g,'').replace(/[<>&"']/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]));
 // In-app input / confirm dialogs. The desktop shell is a WKWebView, where window.prompt() is
 // unsupported and returns null - which silently broke "new project", rename, the Telegram connect
 // flow, and more. These replace prompt()/confirm() with real, themed, awaitable modals.
@@ -1561,9 +1582,10 @@ const ICONS = {
   Terminal: SVG('<rect x="3" y="4.5" width="18" height="15" rx="2.6"/><path d="m7.5 9.5 2.6 2.5-2.6 2.5M13 14.5h3.6"/>'),
   Activity: SVG('<path d="M12 3.2l6.5 2.6v5.2c0 4.3-2.8 7-6.5 8.4-3.7-1.4-6.5-4.1-6.5-8.4V5.8L12 3.2Z"/><path d="m9.2 11.8 2 2 3.6-3.8"/>'),
   Settings: SVG('<path d="M21 5H10M6 5H3M21 12h-7M10 12H3M21 19h-4M13 19H3"/><circle cx="8" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="15" cy="19" r="2"/>'),
+  Checkpoints: SVG('<path d="M3 12a9 9 0 1 0 2.6-6.4"/><path d="M3 4v4h4"/><path d="M12 8v4.5l3 1.8"/>'),
 };
 const VIEWS = ['Chat','Tasks','Schedule','Memory','Skills','Artifacts'];
-const TOOLS = ['Activity','Terminal'];       // power tools - pinned to the bottom of the rail
+const TOOLS = ['Activity','Terminal','Checkpoints'];       // power tools - pinned to the bottom of the rail
 const ALL_VIEWS = [...VIEWS, ...TOOLS];
 let state = { route:'Tasks', tasks:[], offline:false };
 
@@ -1629,7 +1651,9 @@ function card(t){
   // No HTML5 draggable - we use a pointer-based drag (see boardPointerDown) that actually works
   // in WKWebView and feels like Linear. Click vs drag is discriminated by a movement threshold.
   const agentBadge = t.agent ? `<span class="card-agent" title="runs as this agent">◇ ${esc((AGENTS.find(a=>a.id===t.agent)||{}).name||'agent')}</span>` : '';
-  return `<div class="card ${running?'running':''}" data-id="${t.id}"
+  // Failed/stopped tasks live in the same 'Finished' column as done ones (STATUS_COLS maps
+  // failed→done); a distinct class keeps them visually separable from healthy completions.
+  return `<div class="card ${running?'running':''}${t.status==='failed'?' failed':''}" data-id="${t.id}"
      role="button" tabindex="0" aria-label="${escAttr(t.title)}"
      onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openTask('${t.id}')}">
      <div class="t">${esc(t.title)}</div>${agentBadge}${foot}</div>`;
@@ -1656,7 +1680,7 @@ function renderBoard(){
     const colHtml=(key,label)=>`<div class="col" data-col="${key}">
        <h3>${label} <span>${cols[key].length}</span></h3><div class="cards">${cols[key].map(card).join('')}</div></div>`;
     v.innerHTML = `<div class="board-wrap">${offlineNotice()}
-      <div class="board">${colHtml('todo','To do')}${colHtml('doing','Running')}${colHtml('done','Done')}</div>
+      <div class="board">${colHtml('todo','To do')}${colHtml('doing','Running')}${colHtml('done','Finished')}</div>
       <div style="padding:0 16px 16px">${composerHtml('tasks')}</div></div>`;
   }
   wireComposer();
@@ -1759,33 +1783,55 @@ function refreshSendBtn(){
   }
 }
 // Stop ONE session's run — abort its request + halt just that run server-side. Other chats keep going.
+// The halt flag is LATCHED on ({on:true}) and never cleared here: the daemon registers a FRESH
+// per-run Arc<AtomicBool> for every run (main.rs), so a set flag can't leak into the next run and
+// nothing needs resetting. The old 300ms {on:false} un-halt raced the agent's step-boundary check —
+// the flag was almost always back to false before the detached run ever read it, so Stop silently
+// did nothing while the run kept burning tokens and running tools. Leaving it latched fixes that.
 function stopChat(sid){
   sid = sid || WS.activeSession;
   const ac=_chatAborts.get(sid); if(ac){ try{ ac.abort(); }catch(_){} }
-  try{ J('/v1/halt',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({session:sid, on:true})})
-    .then(()=>setTimeout(()=>{ J('/v1/halt',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({session:sid, on:false})}).catch(()=>{}); },300)); }catch(_){}
+  try{ J('/v1/halt',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({session:sid, on:true})}).catch(()=>{}); }catch(_){}
   _busySessions.delete(sid); _chatAborts.delete(sid); refreshSendBtn(); renderSidebar();
 }
+// Follow-ups typed while a run is in flight are QUEUED here (per session) and auto-sent when that
+// run finishes — like Claude Code / Hermes. An Enter with an EMPTY composer while busy still means
+// Stop (the button's stop affordance); an Enter with text never kills the run.
+const _queued=new Map();   // session_id -> [{text, attachments}] waiting for the current run to end
 async function converseInline(text){
-  // The button is "Stop" only when the ACTIVE session is running; clicking it stops THAT chat. A send
-  // into any OTHER (idle) session starts a concurrent run without touching the busy one.
-  if(_busySessions.has(WS.activeSession)){ stopChat(WS.activeSession); return; }
-  text=text.trim();
+  text=(text||'').trim();
   // Snapshot any pinned context BEFORE the empty-text guard so an attachment-only send is
   // still possible, and BEFORE the re-render below clears the pills element.
   const attachments = (typeof attachTake==='function') ? attachTake() : [];
+  if(_busySessions.has(WS.activeSession)){
+    // Empty composer -> the send button is acting as Stop; abort the active chat.
+    if(!text && !attachments.length){ stopChat(WS.activeSession); return; }
+    // There IS a follow-up: queue it (don't abort the run), clear the composer, and show it as
+    // pending so the user sees it was captured. It sends automatically when the run completes.
+    const sid=WS.activeSession, q=_queued.get(sid)||[]; q.push({text, attachments}); _queued.set(sid, q);
+    const c=document.getElementById('composer'); if(c){ c.value=''; c.style.height='auto'; }
+    renderQueued(sid);
+    return;
+  }
   if(!text && !attachments.length) return;
   const c=document.getElementById('composer'); c.value=''; c.style.height='auto';
   // Settle on one session BEFORE switching/rendering, so go()->renderChat and chatSay don't
   // each create their own (the empty-state race).
   if(!WS.activeSession){ if(WS.sessions.length) WS.activeSession=WS.sessions[0].id; else await newSession(false); }
   if(state.route!=='Chat') go('Chat'); else renderChat();
+  // Keep the composer focused after a send (Claude-style) — clicking the send button moved focus to
+  // <body>, forcing a click back into the input before the next message.
+  const c2=document.getElementById('composer'); if(c2) c2.focus();
   chatSay(text, attachments);
 }
 async function submitComposer(run){
   const c=document.getElementById('composer'); const title=c.value.trim(); if(!title) return;
   c.value=''; c.style.height='auto';
-  const t = await J('/v1/tasks',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({title,origin:'chat'})});
+  // J() throws on failure; without this the typed text was cleared then lost (task never created,
+  // no error shown). Restore it and toast so the user can retry.
+  let t;
+  try{ t = await J('/v1/tasks',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({title,origin:'chat'})}); }
+  catch(e){ c.value=title; c.style.height='auto'; c.style.height=Math.min(c.scrollHeight,160)+'px'; notify('Couldn\'t create the task - '+((e&&e.message)||'try again')); return; }
   await loadTasks(); if(state.route==='Tasks') renderBoard();
   if(run){ runTask(t.id); }
 }
@@ -2024,11 +2070,13 @@ async function openTask(id, fromPoll){
 async function scheduleTask(id){
   const t=state.tasks.find(x=>x.id===id); const title=t?t.title:'';   // read from state, never the DOM
   const el=document.getElementById('pwhen'); const when=el.value.trim(); if(!when) return;
-  const r=await J('/v1/schedule',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name:title,when,payload:{title}})});
   const box=document.getElementById('schedbox');
-  box.innerHTML = r.error
-    ? `<div class="sub" style="color:var(--danger)">${esc(r.error)}</div>`
-    : `<div class="sub" style="color:var(--accent)">⟳ scheduled · next ${new Date(r.next_fire_ms).toLocaleString()}</div>`;
+  // J() throws on error — the old `r.error` branch was dead code, so a failed schedule showed
+  // nothing. Catch and surface it.
+  try{
+    const r=await J('/v1/schedule',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name:title,when,payload:{title}})});
+    if(box) box.innerHTML = `<div class="sub" style="color:var(--accent)">⟳ scheduled · next ${new Date(r.next_fire_ms).toLocaleString()}</div>`;
+  }catch(e){ if(box) box.innerHTML = `<div class="sub" style="color:var(--danger)">${esc((e&&e.message)||'couldn\'t schedule')}</div>`; }
 }
 let previewTimer=null;
 function schedPreview(inputId,outId){
@@ -2087,10 +2135,18 @@ async function renameSession(id,e){ if(e) e.stopPropagation(); const s=WS.sessio
   try{ await J('/v1/sessions/'+id,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({title})}); }catch(_){}
 }
 async function deleteSession(id,e){ if(e) e.stopPropagation();
+  const s=WS.sessions.find(x=>x.id===id);
+  // Confirm (like deleteProject) — a single mis-click next to rename/favorite used to destroy a
+  // whole conversation with no undo.
+  if(!await askConfirm({title:'Delete chat?',message:'Delete "'+((s&&s.title)||'this chat')+'"? This cannot be undone.',ok:'Delete',danger:true})){ renderSidebar(); return; }
+  const idx=WS.sessions.indexOf(s), prevActive=WS.activeSession, cached=WS.byId[id];
   WS.sessions=WS.sessions.filter(x=>x.id!==id); delete WS.byId[id];
   if(WS.activeSession===id) WS.activeSession=(WS.sessions[0]||{}).id||null;
   renderSidebar(); if(state.route==='Chat') renderChat();
-  try{ await J('/v1/sessions/'+id,{method:'DELETE'}); }catch(_){}
+  // Delete server-side; on failure roll the row back so the client doesn't silently diverge from
+  // the daemon (the chat survived a reload before).
+  try{ await J('/v1/sessions/'+id,{method:'DELETE'}); }
+  catch(err){ if(s){ WS.sessions.splice(Math.max(0,idx),0,s); if(cached) WS.byId[id]=cached; WS.activeSession=prevActive; renderSidebar(); if(state.route==='Chat') renderChat(); } notify('Couldn\'t delete the chat - '+((err&&err.message)||'try again')); }
 }
 function toggleProjMenu(){ projMenuOpen=!projMenuOpen; renderSidebar(); }
 async function deleteProject(){
@@ -2104,8 +2160,14 @@ async function deleteProject(){
     renderSidebar(); if(state.route==='Chat') renderChat(); notify('Project deleted','ok');
   }catch(e){ notify('Couldn\'t delete - '+e.message); }
 }
-async function pickProject(id){ projMenuOpen=false; WS.activeProject=id; WS.activeSession=null; WS.byId={}; renderSidebar();
+async function pickProject(id){ projMenuOpen=false; WS.activeProject=id; WS.activeSession=null;
+  // Don't detach sessions that are still STREAMING — chatSay keeps writing into their byId object
+  // and repaints on 'done'; wiping them mid-run silently dropped the finished answer from view.
+  WS.byId=keepBusyById(); renderSidebar();
   await loadSessions(); WS.activeSession=(WS.sessions[0]||{}).id||null; renderSidebar(); if(state.route==='Chat') renderChat(); }
+// Prune the session cache but keep any session with a live local run (so its streaming object and
+// its final repaint survive a project switch).
+function keepBusyById(){ const keep={}; for(const sid of _busySessions){ if(WS.byId[sid]) keep[sid]=WS.byId[sid]; } return keep; }
 // Pick a project working directory: a native folder picker inside the Tauri desktop app, a
 // text-path prompt in a plain browser. Returns a path string, or null if the user skipped it.
 async function pickDir(){
@@ -2174,9 +2236,15 @@ async function renderChat(){
   // Artifacts split: wrap the chat column in a flex row so a right-hand artifact pane can open
   // beside it. The pane starts collapsed (width 0); artOpen()/artClose() toggle .arts-open.
   ARTS.open=false; ARTS.current=null; ARTS._sig='';
+  // Preserve an in-progress draft + focus + caret across the rebuild (like renderBoard) — a stray
+  // renderChat (deleting a chat, a project op, an offline flip) used to silently discard the draft.
+  const oc=document.getElementById('composer');
+  const cv=oc?oc.value:'', wasFocused=document.activeElement===oc, selS=oc&&oc.selectionStart, selE=oc&&oc.selectionEnd;
   document.getElementById('view').innerHTML = `<div class="chat-shell"><div class="chat">${offlineNotice()}
     <div class="feed" id="feed"></div><button class="jump-bottom" id="jumpBottom" onclick="feedToBottom()" title="Scroll to latest" aria-label="Scroll to latest"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M19 12l-7 7-7-7"/></svg></button>${composerHtml('chat')}</div><div class="art-pane" id="artPane"></div></div>`;
-  document.getElementById('composer').placeholder='Ask Engram anything...';
+  const c=document.getElementById('composer'); c.placeholder='Ask Engram anything...';
+  if(cv){ c.value=cv; c.style.height='auto'; c.style.height=Math.min(c.scrollHeight,180)+'px'; }
+  if(wasFocused){ c.focus(); try{ c.setSelectionRange(selS??c.value.length, selE??c.value.length); }catch(_){} }
   wireComposer(); paintFeed();
 }
 // ---- markdown + code rendering for replies ----
@@ -2207,12 +2275,31 @@ function hl(code, lang){
   });
   return out;
 }
+// _cbN is MONOTONIC (never reset), so a code-block id is globally unique across every surface —
+// the feed, the task panel, the artifact canvas, and the file viewer all register into _cbStore
+// without colliding. paintFeed no longer clears the whole store (that broke Copy on the still-open
+// panel/canvas surfaces); copyCode reads the raw text straight from its own DOM block, so it works
+// even for a block whose store entry has been pruned.
 let _cbN=0; const _cbStore={};
 function codeBlock(code, lang){
   lang=(lang||'').toLowerCase(); const id='cb'+(_cbN++); _cbStore[id]=code;
   return `<div class="cb"><div class="cb-head"><span>${esc(lang||'code')}</span><button class="cb-copy" onclick="copyCode('${id}',this)">Copy</button></div><pre><code>${hl(code,lang)}</code></pre></div>`;
 }
-function copyCode(id,btn){ const t=_cbStore[id]||''; (navigator.clipboard?navigator.clipboard.writeText(t):Promise.reject()).then(()=>{ btn.textContent='Copied'; btn.classList.add('done'); setTimeout(()=>{ btn.textContent='Copy'; btn.classList.remove('done'); },1200); }).catch(()=>{}); }
+function copyCode(id,btn){
+  // Prefer the store (exact original), but fall back to the rendered block's textContent — hl()
+  // only wraps tokens in spans, so `pre code`.textContent reconstructs the raw source verbatim.
+  let t=_cbStore[id];
+  if(t==null && btn){ const cb=btn.closest('.cb'); const code=cb&&cb.querySelector('code'); t=code?code.textContent:''; }
+  t=t||'';
+  (navigator.clipboard?navigator.clipboard.writeText(t):Promise.reject()).then(()=>{ btn.textContent='Copied'; btn.classList.add('done'); setTimeout(()=>{ btn.textContent='Copy'; btn.classList.remove('done'); },1200); }).catch(()=>{});
+}
+// Drop _cbStore entries whose Copy button is no longer in the DOM anywhere — keeps the store from
+// growing without bound while leaving every currently-rendered surface's blocks intact.
+function cbStorePrune(){
+  const live=new Set();
+  document.querySelectorAll('.cb-copy').forEach(b=>{ const m=(b.getAttribute('onclick')||'').match(/copyCode\('([^']+)'/); if(m) live.add(m[1]); });
+  for(const k in _cbStore){ if(!live.has(k)) delete _cbStore[k]; }
+}
 function mdInline(t){ // t is already escaped
   // Pull inline-code out FIRST (behind a NUL-delimited placeholder that cannot occur in escaped
   // text) so emphasis/link rules never run inside literal code spans, then restore it.
@@ -2289,7 +2376,10 @@ function chatWelcome(){
 const CHAT_TOOL_LABEL={browser_open:'opened browser',browser_navigate:'opened browser',browser_screenshot:'took a screenshot',browser_click:'clicked',browser_type:'typed',browser_read:'read the page',browser_extract:'extracted from page',vision_analyze:'looked at the image',image_generate:'generated an image',text_to_speech:'spoke',web_fetch:'fetched a page',web_search:'searched the web',send_message:'sent a message',shell:'ran a command',read_file:'read a file',write_file:'wrote a file',edit_file:'edited a file',list_dir:'listed files',glob:'searched files',grep:'searched text',memory_recall:'recalled memory',memory_remember:'saved to memory',update_plan:'planned',delegate:'delegated'};
 function paintFeed(toBottom=true){
   const f=document.getElementById('feed'); if(!f) return;
-  _cbN=0; for(const k in _cbStore) delete _cbStore[k];   // rebuilt below; ids are per-paint, so clearing here bounds the store
+  // Bound _cbStore WITHOUT nuking entries other surfaces (task panel, canvas, file viewer) still
+  // rely on: drop only ids no longer present anywhere in the document. _cbN stays monotonic so
+  // fresh feed blocks never reuse a live id.
+  cbStorePrune();
   const s=WS.byId[WS.activeSession], log=s?(s.messages||[]):[];
   f.innerHTML = log.map(m=>{
     if(m.role==='user') return `<div class="msg user">${esc(m.text)}</div>`;
@@ -2323,6 +2413,7 @@ function paintFeed(toBottom=true){
     return `<div>${notes}${steps}<div class="msg engram"${m.streaming?' id="streamMsg"':''}>${body}</div>${foot}${ribbon}${learned}</div>`;
   }).join('') || chatWelcome();
   artsAfterPaint();   // detect substantial code/doc blocks, inject "Open in canvas" chips, sync the pane
+  if(typeof renderQueued==='function') renderQueued(WS.activeSession);   // re-show any queued follow-ups
   if(toBottom) f.scrollTop=f.scrollHeight;
   updateJumpBtn();
 }
@@ -2365,7 +2456,22 @@ function streamTick(msg){
 async function chatSay(text, attachments){
   attachments = Array.isArray(attachments) ? attachments : [];
   let sid=WS.activeSession, sess=WS.byId[sid];
-  if(!sess){ const s=await newSession(false); if(!s) return; sid=s.id; sess=WS.byId[sid]; }
+  if(!sess){
+    if(sid){
+      // The active session's thread just isn't cached (a transient fetch failure). Re-hydrate it
+      // instead of forking a NEW session — forking silently split the conversation and dropped its
+      // history. Fall back to an empty local shell (openSession's pattern) so the send still lands
+      // in THIS session.
+      try{ sess=WS.byId[sid]=await J('/v1/sessions/'+encodeURIComponent(sid)); }catch(_){ sess=WS.byId[sid]={id:sid,messages:[]}; }
+    } else {
+      const s=await newSession(false);
+      if(!s){ // nowhere to put the message — don't lose it: restore to the composer and tell the user
+        const c=document.getElementById('composer'); if(c && text){ c.value=text; c.style.height='auto'; c.style.height=Math.min(c.scrollHeight,180)+'px'; }
+        notify('Couldn\'t start a chat — your message is still in the box, try again'); return;
+      }
+      sid=s.id; sess=WS.byId[sid];
+    }
+  }
   if(!sess.messages) sess.messages=[];
   sess.messages.push({role:'user',text});
   const meta=WS.sessions.find(x=>x.id===sid);
@@ -2395,21 +2501,48 @@ async function chatSay(text, attachments){
         if(ev==='token'){ msg.text+=data; if(live) streamTick(msg); }
         else if(ev==='step'){ try{ const d=JSON.parse(data); (msg.steps=msg.steps||[]).push(d); if(live) paintFeedSticky(); }catch(_){} }
         else if(ev==='narration'){ try{ const d=JSON.parse(data); if(d.text&&d.text.trim()){ (msg.notes=msg.notes||[]).push(d.text.trim()); if(live) paintFeedSticky(); } }catch(_){} }
-        else if(ev==='done'){ try{const d=JSON.parse(data); if(d.reply) msg.text=d.reply; msg.recalled=d.recalled; msg.recalled_refs=d.recalled_refs; msg.learned=d.learned; if(d.steps) msg.steps=d.steps;}catch(_){} if(typeof _artifacts==='object') _artifacts.items=null; if(live) paintFeed(); }
-        else if(ev==='error'){ msg.text=friendlyChatError(data); if(live) paintFeed(); }
+        // done/error use the STICKY repaint (like token/step) so a reader scrolled up to an earlier
+        // answer isn't snapped to the bottom the instant a long run completes.
+        else if(ev==='done'){ try{const d=JSON.parse(data); if(d.reply) msg.text=d.reply; msg.recalled=d.recalled; msg.recalled_refs=d.recalled_refs; msg.learned=d.learned; if(d.steps) msg.steps=d.steps;}catch(_){} if(typeof _artifacts==='object') _artifacts.items=null; if(live) paintFeedSticky(); }
+        else if(ev==='error'){ msg.text=friendlyChatError(data); if(live) paintFeedSticky(); }
       }
     }
     if(!msg.text) msg.text='(no reply)';
-    msg.streaming=false; if(typeof _artifacts==='object') _artifacts.items=null; if(WS.activeSession===sid) paintFeed();
+    msg.streaming=false; if(typeof _artifacts==='object') _artifacts.items=null; if(WS.activeSession===sid) paintFeedSticky();
   } catch(e){
     const stopped = e && e.name==='AbortError';
+    _stoppedSession = stopped;
     msg.text = stopped ? (msg.text || '(stopped)') : (msg.text || friendlyChatError(e.message||'try again'));
-    msg.streaming=false; if(WS.activeSession===sid) paintFeed();
+    msg.streaming=false; if(WS.activeSession===sid) paintFeedSticky();
   } finally {
     _chatAborts.delete(sid); _busySessions.delete(sid);
     refreshSendBtn(); renderSidebar();   // stop the sidebar blink + reset the button for this session
+    drainQueued(sid, _stoppedSession);   // auto-send any follow-ups typed while this run was in flight
+    _stoppedSession=false;
   }
 }
+// Send the next follow-up queued for this session while its run was busy. If the run was STOPPED by
+// the user, we don't fire the queue — a Stop should end the exchange, not silently launch a follow-up.
+let _stoppedSession=false;
+function drainQueued(sid, wasStopped){
+  const q=_queued.get(sid);
+  if(!q||!q.length){ if(WS.activeSession===sid) renderQueued(sid); return; }
+  if(wasStopped){ _queued.delete(sid); if(WS.activeSession===sid) renderQueued(sid); return; }
+  const next=q.shift(); if(!q.length) _queued.delete(sid); else _queued.set(sid, q);
+  if(WS.activeSession===sid) renderQueued(sid);
+  chatSay(next.text, next.attachments||[]);
+}
+// A small "queued" strip under the feed showing follow-ups waiting for the current run to finish.
+function renderQueued(sid){
+  if(WS.activeSession!==sid) return;
+  const feed=document.getElementById('feed'); if(!feed) return;
+  let strip=document.getElementById('queuedStrip');
+  const q=_queued.get(sid)||[];
+  if(!q.length){ if(strip) strip.remove(); return; }
+  if(!strip){ strip=document.createElement('div'); strip.id='queuedStrip'; strip.className='queued-strip'; feed.parentNode.insertBefore(strip, feed.nextSibling); }
+  strip.innerHTML = q.map((m,i)=>`<div class="queued-msg" title="Queued — sends when the current reply finishes"><span class="q-dot">⏳</span><span class="q-txt">${esc((m.text||'').slice(0,120))}</span><button class="q-x" title="Remove" onclick="unqueue('${escAttr(sid)}',${i})">✕</button></div>`).join('');
+}
+function unqueue(sid, i){ const q=_queued.get(sid); if(!q) return; q.splice(i,1); if(!q.length) _queued.delete(sid); else _queued.set(sid,q); renderQueued(sid); }
 // Turn a raw provider/transport error into a clear, actionable message instead of a scary dump.
 function friendlyChatError(data){
   const s=String(data||'');
@@ -2506,7 +2639,13 @@ const BRAIN_REGIONS = {
 };
 let BRAIN = null;
 async function renderMemory(){
-  let data; try{ data = await J('/v1/memory/graph?n=80'); }catch(_){ data={nodes:[],stats:{}}; }
+  let data, memErr=null; try{ data = await J('/v1/memory/graph?n=80'); }catch(e){ data={nodes:[],stats:{}}; memErr=(e&&e.message)||'couldn\'t load'; }
+  // A fetch failure is NOT an empty brain — with a populated graph, "The brain is empty" on a
+  // transient error implied the user's memories were lost. Show a retry card instead.
+  if(memErr){
+    document.getElementById('view').innerHTML = `<div class="brain-wrap"><div class="brain-empty"><b>Couldn't load memory.</b><span>${esc(memErr)}</span><div class="row" style="justify-content:center;margin-top:8px"><button class="sbtn" onclick="renderMemory()">Retry</button></div></div></div>`;
+    return;
+  }
   const stats=data.stats||{}, total=stats.total ?? (data.nodes||[]).length;
   const legend = Object.entries(BRAIN_REGIONS).map(([k,r])=>
     `<span class="lg" data-region="${k}" onclick="brainToggleRegion('${k}')"><i style="background:${r.color};color:${r.color}"></i>${r.label} <b>${stats.by_region?.[k]||0}</b></span>`).join('');
@@ -2632,6 +2771,11 @@ function brainStep(){
 }
 function brainDraw(){
   const B=BRAIN, ctx=B.ctx, c=B.cam; ctx.clearRect(0,0,B.w,B.h);
+  // Theme-aware ink for the hover/selection ring: pure white is invisible on the light theme's near-
+  // white surface. Read --text-primary once per draw so the ring (and its contrast) tracks the theme.
+  const _light = document.documentElement.getAttribute('data-engram-theme')==='light';
+  const _ring = (getComputedStyle(document.documentElement).getPropertyValue('--text-primary')||'').trim() || (_light?'#1a1c1f':'#fff');
+  const _aBoost = _light ? 1.35 : 1;   // pastel labels/edges wash out on light — nudge alphas up
   // project every node + anchor through the orbit camera (yaw, pitch) with perspective
   const cyw=Math.cos(c.yaw), syw=Math.sin(c.yaw), cp=Math.cos(c.pitch), sp=Math.sin(c.pitch), F=3.0;
   const pr=(x,y,z)=>{ const x1=x*cyw+z*syw, z1=-x*syw+z*cyw, y2=y*cp-z1*sp, z2=y*sp+z1*cp, persp=F/(F-z2);
@@ -2664,13 +2808,13 @@ function brainDraw(){
   for(const [i,j,rk] of B.edges){ const na=B.nodes[i], nb=B.nodes[j], reg=BRAIN_REGIONS[rk];
     const dim=B.dim.has(rk)||(B.matched&&!(B.matched.has(na.id)&&B.matched.has(nb.id)));
     const dep=(na.depth+nb.depth)/2, da=0.55+0.45*((dep+1.2)/2.4);
-    ctx.strokeStyle=hexA(reg.color, dim?0.03:0.18*da); ctx.lineWidth=Math.max(0.5, 0.85*Math.min(na.ps,nb.ps));
+    ctx.strokeStyle=hexA(reg.color, (dim?0.03:0.18*da)*_aBoost); ctx.lineWidth=Math.max(0.5, 0.85*Math.min(na.ps,nb.ps));
     ctx.beginPath(); ctx.moveTo(na.sx,na.sy); ctx.lineTo(nb.sx,nb.sy); ctx.stroke(); }
   for(const n of order){ const a=ap[n.reg], reg=BRAIN_REGIONS[n.reg], dim=B.dim.has(n.reg)||(B.matched&&!B.matched.has(n.id));
     ctx.strokeStyle=hexA(reg.color, dim?0.015:0.04); ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(n.sx,n.sy); ctx.lineTo(a[0],a[1]); ctx.stroke(); }
   for(const k in BRAIN_REGIONS){ const a=ap[k], reg=BRAIN_REGIONS[k], dim=B.dim.has(k);
-    ctx.beginPath(); ctx.arc(a[0],a[1],5*a[3],0,7); ctx.fillStyle=hexA(reg.color,dim?0.3:0.9); ctx.fill();
-    ctx.fillStyle=hexA(reg.color,dim?0.3:0.72); ctx.font='600 11px ui-sans-serif,system-ui'; ctx.textAlign='center'; ctx.fillText(reg.label.toUpperCase(), a[0], a[1]-13); }
+    ctx.beginPath(); ctx.arc(a[0],a[1],5*a[3],0,7); ctx.fillStyle=hexA(reg.color,Math.min(1,(dim?0.3:0.9)*_aBoost)); ctx.fill();
+    ctx.fillStyle=hexA(reg.color,Math.min(1,(dim?0.3:0.72)*_aBoost)); ctx.font='600 11px ui-sans-serif,system-ui'; ctx.textAlign='center'; ctx.fillText(reg.label.toUpperCase(), a[0], a[1]-13); }
   for(const n of order){ const reg=BRAIN_REGIONS[n.reg], dim=B.dim.has(n.reg)||(B.matched&&!B.matched.has(n.id)), hit=B.matched&&B.matched.has(n.id);
     const b=Math.max(0,Math.min(1,n.born==null?1:n.born)), grow=1-Math.pow(1-b,3);
     const da=0.42+0.58*((n.depth+1.2)/2.4), rr=Math.max(1.3, n.r*grow*Math.min(2,n.ps)*0.82);
@@ -2682,7 +2826,7 @@ function brainDraw(){
     ctx.beginPath(); ctx.arc(n.sx,n.sy,rr,0,7); ctx.fillStyle=hexA(reg.color,(dim?0.1:n.tierA)*da); ctx.fill();
     ctx.shadowBlur=0;
     if(n.tier==='hot'&&!dim){ ctx.strokeStyle=hexA(reg.color,0.5*da); ctx.lineWidth=1; ctx.stroke(); }
-    if(n===B.hover||n===B.sel){ ctx.strokeStyle='#fff'; ctx.lineWidth=1.4; ctx.beginPath(); ctx.arc(n.sx,n.sy,rr+2.5,0,7); ctx.stroke(); } }
+    if(n===B.hover||n===B.sel){ ctx.strokeStyle=_ring; ctx.lineWidth=1.4; ctx.beginPath(); ctx.arc(n.sx,n.sy,rr+2.5,0,7); ctx.stroke(); } }
   brainTip();
 }
 function brainTip(){
@@ -2909,7 +3053,7 @@ function skillCardHTML(s){
       : (verified && !proposed ? `<div class="sk-muted">No promotions yet - v${active} is the best on ${runs} run${runs===1?'':'s'}.</div>` : '');
     const rt = s.runtime==='process' ? esc(s.interpreter||'script') : 'wasm';
     const rtBadge = `<span class="sk-rt" title="${s.runtime==='process'?'A small program the agent wrote, run in your shell sandbox':'A WASM transform run in the fuel-bounded sandbox'}">${rt}</span>`;
-    const catBadge = s.category ? `<span class="sk-rt" style="background:var(--surface-3);color:var(--text-muted)" title="category" onclick="setSkillCat('${esc(s.category)}')">${esc(s.category)}</span>` : '';
+    const catBadge = s.category ? `<span class="sk-rt" style="background:var(--surface-3);color:var(--text-muted)" title="category" data-cat="${escAttr(s.category)}" onclick="setSkillCat(this.dataset.cat)">${esc(s.category)}</span>` : '';
     const caps = (s.capabilities||[]).length ? `<span class="sk-caps" title="capabilities this skill is signed for">${(s.capabilities||[]).map(c=>esc(c)).join(' · ')}</span>` : '';
     const enabled = s.enabled !== false;
     const toggle = `<label class="sk-toggle" title="${enabled?'On — the agent can use this skill':'Off — hidden from the agent'}"><input type="checkbox" ${enabled?'checked':''} onchange="skillToggle('${esc(s.id)}',this.checked)"><span class="sk-sw"></span></label>`;
@@ -2938,10 +3082,18 @@ function skillCardHTML(s){
 }
 async function renderSkills(){
   document.getElementById('viewname').textContent='Skills';
-  let sk={skills:[]}; try{ sk=await J('/v1/skills'); }catch(_){}
+  let sk={skills:[]}, loadErr=null; try{ sk=await J('/v1/skills'); }catch(e){ loadErr=(e&&e.message)||'couldn\'t load'; }
   _skills=sk.skills||[];
   const headBtns = `<button class="sbtn ghost" onclick="downloadBoilerplate()" title="Download a ready-to-edit skill template">↓ Template</button>
         <button class="sbtn" onclick="skillUpload()" title="Write or upload your own skill">+ New skill</button>`;
+  // Distinguish a FETCH FAILURE from a genuinely empty library — with 40+ seeded skills, "No skills
+  // yet" on a transient error told the user their data was gone.
+  if(loadErr){
+    document.getElementById('view').innerHTML = `<div class="skills-wrap">
+      <div class="skills-head"><div class="sh-row"><h2>Skills</h2><span class="grow"></span>${headBtns}</div></div>
+      <div class="sk-empty"><b>Couldn't load skills.</b><span>${esc(loadErr)}</span><div class="row" style="justify-content:center;margin-top:6px"><button class="sbtn" onclick="renderSkills()">Retry</button></div></div></div>`;
+    return;
+  }
   if(!_skills.length){
     document.getElementById('view').innerHTML = `<div class="skills-wrap">
       <div class="skills-head"><div class="sh-row"><h2>Skills</h2><span class="grow"></span>${headBtns}</div></div>
@@ -2952,7 +3104,9 @@ async function renderSkills(){
   const counts={}; _skills.forEach(s=>{ const c=s.category||'other'; counts[c]=(counts[c]||0)+1; });
   const cats=Object.keys(counts).sort();
   if(_skFilter.cat!=='all' && !counts[_skFilter.cat]) _skFilter.cat='all';
-  const chip=(key,label,n)=>`<span class="sk-cat${_skFilter.cat===key?' active':''}" data-cat="${escAttr(key)}" onclick="setSkillCat('${esc(key)}')">${esc(label)}<span class="n">${n}</span></span>`;
+  // category comes from the skill manifest and is NOT charset-validated server-side, so it can
+  // contain quotes — never interpolate it into an inline JS string. Read it from data-cat instead.
+  const chip=(key,label,n)=>`<span class="sk-cat${_skFilter.cat===key?' active':''}" data-cat="${escAttr(key)}" onclick="setSkillCat(this.dataset.cat)">${esc(label)}<span class="n">${n}</span></span>`;
   const chips=[chip('all','all',_skills.length)].concat(cats.map(c=>chip(c,c,counts[c]))).join('');
   document.getElementById('view').innerHTML = `<div class="skills-wrap">
     <div class="skills-head"><div class="sh-row"><h2>Skills</h2><span class="grow"></span>${headBtns}
@@ -2985,9 +3139,21 @@ function setSkillCat(c){ _skFilter.cat=c;
   renderSkillList();
 }
 function onSkillSearch(v){ _skFilter.q=v; renderSkillList(); }
-async function runSkill(id){ const input=document.getElementById('in_'+id).value;
-  const r=await J('/v1/skills/'+encodeURIComponent(id)+'/run',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({input})});
-  document.getElementById('out_'+id).textContent = r.error?('error: '+r.error):('→ '+r.output); }
+async function runSkill(id){
+  const inEl=document.getElementById('in_'+id), out=document.getElementById('out_'+id);
+  const input=inEl?inEl.value:'';
+  const btn=out?out.parentNode.querySelector('button'):null;
+  if(out) out.textContent='…';
+  if(btn){ btn.disabled=true; }
+  // J() throws on any non-2xx (e.g. run refused because the shell tool is off — a common state).
+  // Without this try/catch the rejection was swallowed by the global unhandledrejection handler
+  // whenever the daemon was healthy, so clicking Run did nothing at all.
+  try{
+    const r=await J('/v1/skills/'+encodeURIComponent(id)+'/run',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({input})});
+    if(out) out.textContent = r.error?('error: '+r.error):('→ '+r.output);
+  }catch(e){ if(out) out.textContent='error: '+((e&&e.message)||'run failed'); }
+  finally{ if(btn) btn.disabled=false; }
+}
 // Activate a specific version (click a version chip). Signed to the ledger.
 // Turn a skill on/off (hide it from the agent without losing it). Re-render on failure to resync.
 async function skillToggle(id, enabled){
@@ -3089,22 +3255,35 @@ async function skillTeachSave(id,btn){
   try{ await J('/v1/skills/'+encodeURIComponent(id)+'/teach',{method:'POST',headers:MIND_JSON,body:JSON.stringify({input,gold})}); ov.remove(); notify('Example recorded · signed','ok'); renderSkills(); }
   catch(e){ notify('Couldn\'t save - '+((e&&e.message)||'error')); }
 }
-// Improve: author a new version as WAT; the daemon compiles, replays, and promotes only on a win.
+// Improve: author a new version. The daemon dispatches on the ACTIVE version's runtime — a WASM
+// skill takes `wat` (compiled here), a process skill takes `source` (its interpreter). The old modal
+// only ever offered WAT, so Improve failed on every process skill (41 of 43 seed skills, and every
+// agent-authored one) with "this is a process skill — provide `source`". Branch on s.runtime.
 function skillImprove(id){
+  const s=(_skills||[]).find(x=>x.id===id)||{runtime:'wasm'};
+  const isProc = s.runtime==='process';
+  const interp = s.interpreter||'python3';
   const ov=document.createElement('div'); ov.className='overlay ask';
   ov.innerHTML=`<div class="ask-card" style="width:min(660px,94vw)">
     <div class="ask-title">Improve ${esc(id)}</div>
-    <div class="ask-msg">Paste a new version as WebAssembly Text (WAT). It is compiled here, replayed against the recorded examples, and promoted only if it measurably beats the current version - the before/after signed to the ledger.</div>
-    <textarea class="ask-input" id="impWat" rows="10" placeholder="(module ... )" style="resize:vertical;font:12px var(--mono);line-height:1.5"></textarea>
-    <div class="ask-actions"><button class="ask-ghost" onclick="this.closest('.overlay').remove()">Cancel</button><button class="ask-ok" onclick="skillImproveSave('${escAttr(id)}',this)">Submit improvement</button></div>
+    ${isProc
+      ? `<div class="ask-msg">Paste a new version of the <b>${esc(interp)}</b> source (reads a JSON request on stdin, writes a JSON result on stdout). It is replayed against the recorded examples and promoted only if it measurably beats the current version — the before/after signed to the ledger.</div>
+    <textarea class="ask-input" id="impSrc" rows="12" placeholder="paste the new skill source…" style="resize:vertical;font:12px var(--mono);line-height:1.5"></textarea>`
+      : `<div class="ask-msg">Paste a new version as WebAssembly Text (WAT). It is compiled here, replayed against the recorded examples, and promoted only if it measurably beats the current version — the before/after signed to the ledger.</div>
+    <textarea class="ask-input" id="impWat" rows="10" placeholder="(module ... )" style="resize:vertical;font:12px var(--mono);line-height:1.5"></textarea>`}
+    <div class="ask-actions"><button class="ask-ghost" onclick="this.closest('.overlay').remove()">Cancel</button><button class="ask-ok" onclick="skillImproveSave(${attrJson(id)},this,${isProc?'true':'false'},${attrJson(interp)})">Submit improvement</button></div>
   </div>`;
-  document.body.appendChild(ov); setTimeout(()=>{ const t=ov.querySelector('#impWat'); if(t)t.focus(); },20);
+  document.body.appendChild(ov); setTimeout(()=>{ const t=ov.querySelector(isProc?'#impSrc':'#impWat'); if(t)t.focus(); },20);
 }
-async function skillImproveSave(id,btn){
-  const ov=btn.closest('.overlay'); const wat=ov.querySelector('#impWat').value.trim();
-  if(!wat){ notify('Paste the new version as WAT source'); return; }
+async function skillImproveSave(id,btn,isProc,interp){
+  const ov=btn.closest('.overlay');
+  let body;
+  if(isProc){ const src=ov.querySelector('#impSrc').value; if(!src.trim()){ notify('Paste the new skill source'); return; }
+    body=JSON.stringify({source:src, interpreter:interp||'python3'}); }
+  else { const wat=ov.querySelector('#impWat').value.trim(); if(!wat){ notify('Paste the new version as WAT source'); return; }
+    body=JSON.stringify({wat}); }
   const ok=ov.querySelector('.ask-ok'); if(ok){ ok.disabled=true; ok.textContent='Replaying...'; }
-  try{ const r=await J('/v1/skills/'+encodeURIComponent(id)+'/improve',{method:'POST',headers:MIND_JSON,body:JSON.stringify({wat})}); ov.remove();
+  try{ const r=await J('/v1/skills/'+encodeURIComponent(id)+'/improve',{method:'POST',headers:MIND_JSON,body}); ov.remove();
     notify(r.promoted?('Promoted to v'+(r.to||'?')+' - it won on replay'):'Submitted - it did not beat the current version, so the active one is kept','ok'); renderSkills(); }
   catch(e){ if(ok){ ok.disabled=false; ok.textContent='Submit improvement'; } notify('Couldn\'t improve - '+((e&&e.message)||'error')); }
 }
@@ -3220,10 +3399,12 @@ function renderCCBody(){
 // the real toolset). Unchecked = the user has turned that tool off (added to disabled_tools).
 async function renderToolToggles(){
   const el=document.getElementById('toollist'); if(!el) return;
-  let data={tools:[]}; try{ data=await J('/v1/tools'); }catch(_){ el.innerHTML='<div class="hint">couldn\'t load tools</div>'; return; }
+  el.removeAttribute('data-loaded');   // not authoritative until the real toggles are in the DOM
+  let data={tools:[]}; try{ data=await J('/v1/tools'); }catch(_){ el.innerHTML='<div class="hint">couldn\'t load tools — Save won\'t change your tool settings</div>'; return; }
   const tools=data.tools||[];
   if(!tools.length){ el.innerHTML='<div class="hint">no tools</div>'; return; }
   el.innerHTML = tools.map(t=>`<label class="tool-chip" title="${escAttr(t.description||'')}"><input type="checkbox" data-tool="${escAttr(t.name)}" ${t.disabled?'':'checked'}><span>${esc(t.name)}</span></label>`).join('');
+  el.setAttribute('data-loaded','1');   // now collectSettings may safely read disabled_tools
 }
 function renderCC(){ renderCatList(); renderCCBody(); }
 const ccHead=(t,s)=>`<h2>${t}</h2><div class="sub">${s}</div>`;
@@ -3373,8 +3554,10 @@ function ccWorkspace(){
   const projs=WS.projects||[];
   const rows=projs.map(p=>{
     const active=p.id===WS.activeProject, hasPersona=p.persona&&p.persona.trim();
+    const wd=(p.workdir&&p.workdir.trim()) ? esc(p.workdir) : 'shared workspace';
     return `<div class="ws-proj${active?' active':''}">
-      <div class="ws-pinfo"><span class="ws-pname">${esc(p.name)}</span>${active?'<span class="badge set">active</span>':''}${hasPersona?'<span class="badge" title="has its own standing instructions">persona</span>':''}</div>
+      <div class="ws-pinfo"><div class="ws-prow"><span class="ws-pname">${esc(p.name)}</span>${active?'<span class="badge set">active</span>':''}${hasPersona?'<span class="badge" title="has its own standing instructions">persona</span>':''}</div>
+        <div class="ws-pdir" title="the folder this project's agent reads and writes files in">📁 ${wd}</div></div>
       <div class="ws-pacts">${active?'':`<button class="sbtn" onclick="wsPick('${escAttr(p.id)}')">Open</button>`}<button class="sbtn ghost" onclick="wsEditProject('${escAttr(p.id)}')">Edit</button>${projs.length>1?`<button class="sbtn ghost" onclick="wsDeleteProject('${escAttr(p.id)}')">Delete</button>`:''}</div>
     </div>`;
   }).join('');
@@ -3398,17 +3581,32 @@ function wsEditProject(id){
   const ov=document.createElement('div'); ov.className='overlay ask';
   ov.innerHTML=`<div class="ask-card" style="width:min(560px,93vw)">
     <div class="ask-title">Edit project</div>
-    <div class="ask-msg">A project groups its sessions and gives them their own standing instructions.</div>
+    <div class="ask-msg">A project groups its sessions, gives them their own standing instructions, and can bind a working directory the agent reads and writes files in.</div>
     <input class="ask-input" id="wpName" placeholder="Project name" value="${escAttr(p.name)}" autocomplete="off">
+    <div class="row" style="gap:8px;align-items:center;margin:0">
+      <input class="ask-input" id="wpDir" placeholder="Working directory — blank = shared workspace" value="${escAttr(p.workdir||'')}" autocomplete="off" style="flex:1">
+      <button type="button" class="sbtn ghost" onclick="wsPickDir(this)">Choose…</button>
+      ${p.workdir&&p.workdir.trim()?'<button type="button" class="sbtn ghost" onclick="document.getElementById(\'wpDir\').value=\'\'" title="Use the shared workspace">Clear</button>':''}
+    </div>
     <textarea class="ask-input" id="wpPersona" rows="5" placeholder="Standing instructions for this project - how Engram should behave here (optional)." style="resize:vertical;font:inherit;line-height:1.5">${esc(p.persona||'')}</textarea>
     <div class="ask-actions"><button class="ask-ghost" onclick="this.closest('.overlay').remove()">Cancel</button><button class="ask-ok" onclick="wsSaveProject('${escAttr(id)}',this)">Save</button></div>
   </div>`;
   document.body.appendChild(ov); setTimeout(()=>{ const n=ov.querySelector('#wpName'); n.focus(); n.select(); },20);
 }
+async function wsPickDir(btn){
+  const dir=await pickDir(); if(dir==null) return;
+  const inp=btn.closest('.ask-card').querySelector('#wpDir'); if(inp) inp.value=dir;
+}
 async function wsSaveProject(id, btn){
   const ov=btn.closest('.overlay'); const name=ov.querySelector('#wpName').value.trim(), persona=ov.querySelector('#wpPersona').value;
+  const dirEl=ov.querySelector('#wpDir');
   if(!name){ notify('A project needs a name'); return; }
-  try{ const p=await J('/v1/projects/'+encodeURIComponent(id),{method:'PATCH',headers:MIND_JSON,body:JSON.stringify({name,persona})});
+  const body={name,persona};
+  // Always send workdir so an empty string can CLEAR the binding back to the shared workspace
+  // (the daemon treats '' as clear, a path as attach-or-create). The old modal couldn't set it,
+  // so a project's folder was write-once and invisible.
+  if(dirEl) body.workdir=dirEl.value.trim();
+  try{ const p=await J('/v1/projects/'+encodeURIComponent(id),{method:'PATCH',headers:MIND_JSON,body:JSON.stringify(body)});
     const i=(WS.projects||[]).findIndex(x=>x.id===id); if(i>=0) WS.projects[i]=p;
     ov.remove(); notify('Project saved','ok'); if(ccActive==='workspace') renderCC(); renderSidebar();
   }catch(e){ notify('Couldn\'t save - '+e.message); }
@@ -3869,7 +4067,11 @@ function collectSettings(){
     if(has('sworktree')) patch.security.enable_worktree_isolation=document.getElementById('sworktree').checked;
     if(has('sskillauthor')) patch.security.disable_skill_author=!document.getElementById('sskillauthor').checked;
     if(has('sautodistill')) patch.security.auto_distill_skills=document.getElementById('sautodistill').checked;
-    if(has('toollist')) patch.security.disabled_tools=[...document.querySelectorAll('#toollist input[data-tool]')].filter(i=>!i.checked).map(i=>i.getAttribute('data-tool')); }
+    // Only send disabled_tools once the toggle grid has ACTUALLY loaded (data-loaded='1'). Before
+    // that (or after a /v1/tools failure) the querySelectorAll is empty, and sending [] would make
+    // apply_config_patch replace the stored list wholesale — silently re-enabling every tool the
+    // user had turned off. A missing key leaves it unchanged.
+    { const tl=document.getElementById('toollist'); if(tl && tl.getAttribute('data-loaded')==='1'){ patch.security.disabled_tools=[...tl.querySelectorAll('input[data-tool]')].filter(i=>!i.checked).map(i=>i.getAttribute('data-tool')); } } }
   if(has('cbudget')) patch.cost={ task_token_budget: Math.max(1000, parseInt(gv('cbudget'),10)||250000) };
   if(has('wtav')||has('wbrave')||has('wsearx')||has('wtp')){ patch.web={};
     const tv=gv('wtav'); if(tv) patch.web.tavily_api_key=tv;
@@ -4260,16 +4462,24 @@ async function afDelete(task, path, ev){
 }
 async function renderActivity(){
   document.getElementById('viewname').textContent='Activity';
-  let tail=[], v={ok:true,entries:0}, pk={};
-  try{ [tail,v,pk]=await Promise.all([J('/v1/ledger/tail?n=200'),J('/v1/ledger/verify'),J('/v1/ledger/pubkey')]); }catch(_){}
+  // Default to UNVERIFIED, not green: only claim "Chain verified" if the verify call actually
+  // succeeded. The old default of {ok:true} rendered the green seal on any fetch failure — a false
+  // affirmative on the one surface whose whole point is "shown, never claimed".
+  let tail=[], v=null, pk={}, fetched=false;
+  try{ [tail,v,pk]=await Promise.all([J('/v1/ledger/tail?n=200'),J('/v1/ledger/verify'),J('/v1/ledger/pubkey')]); fetched=true; }catch(_){}
   ACT.entries=(tail||[]).slice().reverse(); ACT.verify=v; ACT.pubkey=pk;
+  const seal = !fetched||!v ? `<div class="act-verify unknown"><span class="act-seal">${ACT_SEAL_BAD}</span>
+      <div class="av-text"><div class="av-status">Couldn't reach the ledger — not verified</div>
+        <div class="av-meta">The daemon may be starting or unreachable. This is not a tamper signal.</div></div>
+      <button class="act-reverify" onclick="renderActivity()">Retry</button></div>`
+    : `<div class="act-verify ${v.ok?'ok':'bad'}"><span class="act-seal">${v.ok?ACT_SEAL_OK:ACT_SEAL_BAD}</span>
+      <div class="av-text"><div class="av-status">${v.ok?'Chain verified':'Tamper detected'}</div>
+        <div class="av-meta">${v.entries||ACT.entries.length} signed entries · key <span class="av-key" title="${escAttr(pk.pubkey||'')}" onclick="navigator.clipboard&&navigator.clipboard.writeText('${esc(pk.pubkey||'')}')">${esc((pk.pubkey||'').slice(0,16))}...</span></div></div>
+      <button class="act-reverify" onclick="renderActivity()">Re-verify</button></div>`;
   document.getElementById('view').innerHTML=`<div class="activity">
     <div class="act-title">Activity</div>
     <div class="act-sub">Every action Engram and you take is appended to a hash-chained, Ed25519-signed ledger - tamper-evident, and verifiable offline by anyone, even someone who doesn't trust this machine (<code>engramd verify</code>).</div>
-    <div class="act-verify ${v.ok?'ok':'bad'}"><span class="act-seal">${v.ok?ACT_SEAL_OK:ACT_SEAL_BAD}</span>
-      <div class="av-text"><div class="av-status">${v.ok?'Chain verified':'Tamper detected'}</div>
-        <div class="av-meta">${v.entries||ACT.entries.length} signed entries · key <span class="av-key" title="${escAttr(pk.pubkey||'')}" onclick="navigator.clipboard&&navigator.clipboard.writeText('${esc(pk.pubkey||'')}')">${esc((pk.pubkey||'').slice(0,16))}...</span></div></div>
-      <button class="act-reverify" onclick="renderActivity()">Re-verify</button></div>
+    ${seal}
     <div class="act-controls"><input class="act-search" id="actSearch" placeholder="Search the ledger..." oninput="actPaint()">
       <div class="act-filters">${['all','agent','user','core'].map(f=>`<button class="${ACT.filter===f?'on':''}" data-f="${f}" onclick="actSetFilter('${f}')">${f==='all'?'All':(f==='user'?'You':f[0].toUpperCase()+f.slice(1))}</button>`).join('')}</div></div>
     <div class="act-list" id="actList"></div></div>`;
@@ -4299,7 +4509,74 @@ function renderView(){
   else if(state.route==='Artifacts') renderArtifacts(true);
   else if(state.route==='Terminal') renderTerminal();
   else if(state.route==='Activity') renderActivity();
+  else if(state.route==='Checkpoints') renderCheckpointsView();
   voiceMaybeMountHeaderBtn();
+}
+
+// Checkpoints (workdir rewind): list saved snapshots, snapshot on demand, and restore one. The
+// daemon also auto-snapshots before a non-git task run, so a run's file changes can be undone.
+async function renderCheckpointsView(){
+  let cps = null;
+  try { cps = await J('/v1/checkpoints') || []; }
+  catch(e){ cps = null; }
+  let body;
+  if(cps === null){
+    body = `<div class="sched-empty"><span class="se-glyph">${ICONS.Checkpoints}</span>
+      <div class="se-title">Couldn't reach checkpoints</div>
+      <div class="se-hint">The daemon didn't answer. <button class="ghost" onclick="renderCheckpointsView()">Retry</button></div></div>`;
+  } else if(!cps.length){
+    body = `<div class="sched-empty"><span class="se-glyph">${ICONS.Checkpoints}</span>
+      <div class="se-title">No checkpoints yet</div>
+      <div class="se-hint">A checkpoint saves the working directory's files so you can rewind changes. Engram snapshots automatically before a task run — or snapshot now.</div></div>`;
+  } else {
+    body = `<div class="sched-list">${cps.map(cpCardHtml).join('')}</div>`;
+  }
+  const n = Array.isArray(cps) ? cps.length : 0;
+  document.getElementById('view').innerHTML = `<div class="panes"><div class="pane">
+    <div class="sched-head"><h2>Checkpoints</h2><span class="sched-count">${n} ${n===1?'checkpoint':'checkpoints'}</span></div>
+    <div class="sched-compose"><div class="row" style="justify-content:space-between;align-items:center;gap:.6rem">
+      <div class="se-hint" style="margin:0">Snapshot the working directory so you can restore it later. Restore reverts edits and un-deletes removed files; files created since a checkpoint are left in place.</div>
+      <button onclick="snapshotNow()">Snapshot now</button>
+    </div></div>
+  </div>
+  <div class="pane"><div class="sched-head"><h2>Saved</h2></div>${body}</div></div>`;
+}
+
+function cpCardHtml(cp){
+  const when = cp.created_ms ? new Date(cp.created_ms).toLocaleString() : '';
+  const files = cp.file_count||0;
+  const trunc = cp.truncated ? ' <span class="pill warn" title="the snapshot hit its size cap and is partial">partial</span>' : '';
+  const sub = [when, files+' file'+(files===1?'':'s'), cp.task?('task '+cp.task):''].filter(Boolean).join(' · ');
+  return `<div class="sched-card" data-cp="${escAttr(cp.id)}">
+    <div class="sc-main"><div class="sc-name">${esc(cp.label||'checkpoint')}${trunc}</div>
+      <div class="sc-sub">${esc(sub)}</div></div>
+    <div class="sc-actions"><button class="sc-btn" onclick="restoreCheckpoint(${attrJson(cp.id)})" title="Restore this checkpoint">Restore</button>
+      <button class="sc-btn sc-del" onclick="deleteCheckpoint(${attrJson(cp.id)})" title="Delete this checkpoint">Delete</button></div>
+  </div>`;
+}
+
+async function deleteCheckpoint(id){
+  if(!await askConfirm({title:'Delete this checkpoint?',message:'The saved snapshot is removed. You can no longer restore to this point.',ok:'Delete',danger:true})) return;
+  try { await J('/v1/checkpoints/'+encodeURIComponent(id), { method:'DELETE' }); notify('Checkpoint deleted','ok'); renderCheckpointsView(); }
+  catch(e){ notify('Couldn\'t delete - '+((e&&e.message)||'try again')); }
+}
+
+async function snapshotNow(){
+  try {
+    const sid = (typeof WS!=='undefined' && WS.activeSession) ? WS.activeSession : undefined;
+    const cp = await J('/v1/checkpoints', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(sid?{session:sid}:{}) });
+    notify('Checkpoint saved · '+((cp&&cp.file_count)||0)+' files', 'ok');
+    renderCheckpointsView();
+  } catch(e){ notify('Couldn\'t snapshot - '+((e&&e.message)||'try again')); }
+}
+
+async function restoreCheckpoint(id){
+  if(!await askConfirm({title:'Restore this checkpoint?',message:'Saved files are written back — reverting edits and un-deleting removed files. Files created after the checkpoint are left in place.',ok:'Restore',danger:true})) return;
+  try {
+    const r = await J('/v1/checkpoints/'+encodeURIComponent(id)+'/restore', { method:'POST' });
+    const extra = (r && r.created_since && r.created_since.length) ? ' · '+r.created_since.length+' newer file(s) left in place' : '';
+    notify('Restored '+((r&&r.restored)||0)+' file(s)'+extra, 'ok');
+  } catch(e){ notify('Couldn\'t restore - '+((e&&e.message)||'try again')); }
 }
 
 // Refresh the board only when tasks actually changed (so idle re-renders don't fight typing).
@@ -4322,10 +4599,33 @@ function connectEvents(){
   try {
     const es=new EventSource(tok('/v1/events'));
     es.addEventListener('spike', e=>{
-      let topic=''; try { topic=JSON.parse(e.data).topic||''; } catch(_){}
+      let d={}; try { d=JSON.parse(e.data)||{}; } catch(_){}
+      const topic=d.topic||'';
       if(topic.indexOf('task')===0){ clearTimeout(refreshTimer); refreshTimer=setTimeout(refreshTasks,150); }
+      // A reply landed in a session (this or another client finished a run). If it's the session
+      // we're viewing and WE aren't the one streaming it, refetch so the answer actually appears —
+      // the feed no longer permanently desyncs after a reload or a second-client write.
+      else if(topic.indexOf('session')===0){
+        const sid=(d.payload&&(d.payload.id||d.payload.session))||d.id||d.session;
+        if(sid) onSessionSpike(sid);
+      }
     });
   } catch(_){}
+}
+// A session's stored thread changed server-side. If it's the active chat and no LOCAL run is
+// streaming into it, refetch and repaint so the reply shows up. Guarded so a burst coalesces.
+let _sessRefetch=null;
+function onSessionSpike(sid){
+  if(sid!==WS.activeSession) return;
+  if(_busySessions.has(sid)) return;   // our own live stream is authoritative; don't clobber it
+  clearTimeout(_sessRefetch);
+  _sessRefetch=setTimeout(()=>refetchSession(sid), 120);
+}
+async function refetchSession(sid){
+  if(sid!==WS.activeSession || _busySessions.has(sid)) return;
+  try{ const s=await J('/v1/sessions/'+encodeURIComponent(sid));
+    if(sid===WS.activeSession && !_busySessions.has(sid)){ WS.byId[sid]=s; if(state.route==='Chat') paintFeedSticky(); }
+  }catch(_){}
 }
 // The desktop spawns the daemon a beat AFTER the window opens, so the very first fetches can race
 // it. Poll /health until it answers (or give up after ~25s) before booting, so a cold start doesn't
@@ -4385,7 +4685,12 @@ async function boot(){
   document.getElementById('viewname').textContent=state.route; renderNav(); renderView();
   poll(); connectEvents();
   // Chips poll + a slow board fallback if SSE is unavailable.
-  setInterval(async()=>{ try{ await poll(); await refreshTasks(); }catch(_){} }, 3000);
+  setInterval(async()=>{ try{ await poll(); await refreshTasks(); }catch(_){}
+    // Eventual-consistency fallback for the chat feed: even if session spikes aren't emitted,
+    // re-sync the viewed thread from the daemon so a reply that finished after a reload / on
+    // another client appears without a manual refresh. Skipped while WE are streaming it.
+    if(state.route==='Chat' && WS.activeSession && !_busySessions.has(WS.activeSession)){ try{ await refetchSession(WS.activeSession); }catch(_){} }
+  }, 3000);
   // First run with no live model: offer a one-screen setup wizard (once).
   engramMaybeOnboard();
 }
@@ -4712,6 +5017,9 @@ async function renderScheduleView(){
   let jobs = [];
   try { jobs = await J('/v1/schedule') || []; }
   catch(e){ notify('Couldn\'t load schedules - ' + e.message); jobs = []; }
+  // Load the agent roster once so the "Run as" picker can offer a durable agent (whose signed
+  // autonomy policy governs the unattended run); re-render when it arrives so the select fills.
+  if(!window._agentsLoaded){ window._agentsLoaded=true; J('/v1/agents').then(a=>{ AGENTS=a||[]; if(state.route==='Schedule') renderScheduleView(); }).catch(()=>{}); }
   jobs.sort((a,b)=> (a.next_fire_ms||0) - (b.next_fire_ms||0));   // soonest first
   const n = jobs.length;
   const list = n
@@ -4725,8 +5033,13 @@ async function renderScheduleView(){
     <div class="sched-head"><h2>Schedule a recurring run</h2><span class="sched-count">${n} ${n===1?'job':'jobs'}</span></div>
     <div class="sched-compose">
       <div class="row">
-        <input id="sname" placeholder="name" style="flex:.5">
-        <input id="swhen" placeholder="every Monday at 9am" oninput="schedPreviewCadence()" onkeydown="if(event.key==='Enter')addJobPro()">
+        <input id="sname" placeholder="name (a short label)" style="flex:.5">
+        <input id="swhen" placeholder="every Monday at 9am" oninput="schedPreviewCadence()" onkeydown="if(event.key==='Enter')document.getElementById('sprompt').focus()">
+      </div>
+      <textarea id="sprompt" class="sched-prompt" rows="2" placeholder="What should Engram do when this fires? e.g. Summarize my unread email and send me the top 5."></textarea>
+      <div class="row" style="align-items:center;gap:.5rem">
+        <label class="sched-agent-label" for="sagent" style="opacity:.8;font-size:.85em">Run as</label>
+        <select id="sagent" style="flex:1">${['<option value="">Default agent (no autonomy policy — egress stages for review)</option>'].concat((AGENTS||[]).map(a=>`<option value="${escAttr(a.id)}">${a.emoji?esc(a.emoji)+' ':''}${esc(a.name)}</option>`)).join('')}</select>
         <button onclick="addJobPro()">Add</button>
       </div>
       <div id="swhenprev" class="sched-preview empty"></div>
@@ -4766,13 +5079,24 @@ function schedPreviewCadence(){
 }
 
 async function addJobPro(){
-  const nameEl = document.getElementById('sname'), whenEl = document.getElementById('swhen');
-  const name = (nameEl?.value.trim()) || 'job';
+  const nameEl = document.getElementById('sname'), whenEl = document.getElementById('swhen'), promptEl = document.getElementById('sprompt');
   const when = whenEl?.value.trim();
+  const prompt = (promptEl?.value || '').trim();
+  // The task title IS the agent's prompt (schedule_run / --run-due / the tick all run the task with
+  // an empty description), so the instructions must go into payload.title. Without them a job named
+  // "Evening digest" ran with the whole prompt "Evening digest" — the "x"-prompt digest regression.
+  if(!prompt){ notify('Tell Engram what to do when this job fires'); promptEl?.focus(); return; }
   if(!when){ whenEl?.focus(); return; }
+  const name = (nameEl?.value.trim()) || prompt.replace(/\s+/g,' ').slice(0,42) || 'job';
+  const agent = (document.getElementById('sagent')?.value || '').trim();
   try {
+    // payload.title -> the run prompt (the daemon runs title, optionally + payload.detail). payload.agent
+    // (when set) makes the unattended run adopt that durable agent's SIGNED autonomy policy, so egress
+    // can proceed within the allowlist instead of always staging for review.
+    const payload = { title:prompt, prompt, label:name };
+    if(agent) payload.agent = agent;
     await J('/v1/schedule', { method:'POST', headers:{'content-type':'application/json'},
-      body: JSON.stringify({ name, when, payload:{ title:name } }) });
+      body: JSON.stringify({ name, when, payload }) });
     notify('Scheduled · ' + name, 'ok');
     renderScheduleView();
   } catch(e){ notify('Couldn\'t schedule - ' + e.message); }
@@ -5561,8 +5885,8 @@ function ccMessaging2(c){
     <div class="scard">
       <h3>Delivery routing</h3>
       <div class="desc">Where scheduled-job output (for example a morning brief) is delivered.</div>
-      ${ccSeg('Default channel', [{v:'inapp',l:'In-app'},{v:'telegram',l:'Telegram'}], p.deliverTo||'inapp', "v=>{const p=engramPrefs();p.deliverTo=v;engramSavePrefs(p);notify('Delivery routing saved','ok');}")}
-      ${tgReady ? '' : '<div class="hint" style="margin-top:9px">Telegram delivery needs a connected bot - see Integrations.</div>'}
+      <div class="seg" aria-disabled="true" style="opacity:.6;pointer-events:none"><button class="on">In-app</button><button>Telegram</button></div>
+      <div class="hint" style="margin-top:9px">Scheduled-job output currently lands in-app. Telegram delivery is coming soon${tgReady ? '' : ' — it will need a connected bot (see Integrations)'}.</div>
     </div>`;
 }
 async function toggleDesktopNotify(box){

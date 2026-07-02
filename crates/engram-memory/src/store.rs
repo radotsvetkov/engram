@@ -30,6 +30,15 @@ const ARM_LIMIT: usize = 64;
 /// cosine rerank. It scans EVERY live in-scope vector (no salience cap), so an old, low-importance,
 /// semantically-perfect memory is never silently dropped - the completeness fix.
 const COARSE_K: usize = 256;
+/// Below this many live in-scope candidates, recall SKIPS the binary coarse pre-filter and ranks
+/// them all by exact cosine. The binary code is a weak discriminator for the sparse default embedder
+/// (see `quantize_binary`), so at typical scale the coarse truncation could drop a genuine
+/// paraphrase; exact cosine over a few thousand 256-float vectors is cheap and provably complete.
+/// The coarse pass only re-engages past this threshold, to bound cost on very large rings.
+const EXACT_SCAN_MAX: usize = 5000;
+/// Chunk size for fetching candidate embeddings, so the `id IN (...)` fetch stays within SQLite's
+/// bound-variable limit even when the whole (un-truncated) in-scope ring is a candidate.
+const EXACT_FETCH_BATCH: usize = 500;
 /// MMR diversity/relevance trade-off for the semantic arm: relevance-dominant, but enough novelty
 /// pressure to break up near-duplicate passages.
 const MMR_LAMBDA: f32 = 0.7;
@@ -47,6 +56,12 @@ pub enum MemoryError {
     Ledger(#[from] engram_core::LedgerError),
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
+    /// The injection guard refused to promote an untrusted-provenance memory into the trusted
+    /// user-global ring. A deliberate rule (scraped/attacker content must never become a global fact
+    /// about the user), so it carries a human message the API/UI can surface as a 4xx rather than the
+    /// cryptic `sqlite: ...` this used to masquerade as.
+    #[error("untrusted memories cannot be promoted to the global ring")]
+    UntrustedPromotion,
 }
 
 type Result<T> = std::result::Result<T, MemoryError>;
@@ -219,10 +234,13 @@ impl Memory {
         if stored.as_deref() == Some(current.as_str()) {
             return Ok(());
         }
-        // Gather the live rows that need re-embedding (collect first so the statement is
-        // dropped before we open the write transaction).
+        // Gather EVERY row that needs re-embedding (collect first so the statement is dropped before
+        // we open the write transaction). Tombstoned (deleted = 1) rows are included on purpose: a
+        // later restore() only flips `deleted` back to 0 and does NOT re-embed, so skipping them here
+        // would leave a restored memory carrying an OLD-embedding-space vector forever - it would
+        // rank randomly in recall with no repair path. They are few, so migrating them is cheap.
         let rows: Vec<(i64, String)> = {
-            let mut stmt = conn.prepare("SELECT id, text FROM facts WHERE deleted = 0")?;
+            let mut stmt = conn.prepare("SELECT id, text FROM facts")?;
             let mapped =
                 stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
             let mut v = Vec::new();
@@ -285,26 +303,70 @@ impl Memory {
         // Dedup is scope-aware: the SAME fact text in two different rings (e.g. a note that is
         // both a user-global preference and a project fact) is two distinct rows, so bumping one
         // never reaches across the ring boundary.
-        let existing: Option<(i64, f64)> = conn
+        // The existing row's taint is part of the decision: dedup must respect provenance, not just
+        // text. A trusted re-assertion of a previously-untrusted fact should UPGRADE it (so it
+        // becomes visible to trusted recall and consciousness), and an untrusted write must NEVER
+        // inflate the salience of a trusted row (tainted activity cannot reinforce trusted memory).
+        let existing: Option<(i64, f64, String)> = conn
             .query_row(
-                "SELECT id, importance FROM facts WHERE region = ?1 AND content_hash = ?2 \
+                "SELECT id, importance, taint FROM facts WHERE region = ?1 AND content_hash = ?2 \
                  AND scope_kind = ?3 AND scope_id = ?4 AND deleted = 0 AND superseded_by IS NULL LIMIT 1",
                 params![req.region.as_str(), content_hash, req.scope.kind.as_str(), req.scope.id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()?;
-        if let Some((id, old_imp)) = existing {
-            let new_imp = (old_imp as f32).max(req.importance);
-            conn.execute(
-                "UPDATE facts SET importance = ?1, access_count = access_count + 1, last_access_ms = ?2 WHERE id = ?3",
-                params![new_imp as f64, now, id],
-            )?;
-            if let Some(rec) = get_record(&conn, id)? {
-                let _ = self.ledger.append(
+        if let Some((id, old_imp, old_taint)) = existing {
+            let existing_untrusted = old_taint != "trusted";
+            let writing_trusted = !req.taint.is_untrusted();
+            if existing_untrusted && !writing_trusted {
+                // Untrusted duplicate of an untrusted row: reinforce as before (bump importance +
+                // access). Ledger-first (append then mutate), matching remember/forget.
+                let new_imp = (old_imp as f32).max(req.importance);
+                self.ledger.append(
                     "memory.write",
                     &req.actor,
                     json!({ "region": req.region.as_str(), "content_hash": content_hash, "deduped": true }),
-                );
+                )?;
+                conn.execute(
+                    "UPDATE facts SET importance = ?1, access_count = access_count + 1, last_access_ms = ?2 WHERE id = ?3",
+                    params![new_imp as f64, now, id],
+                )?;
+            } else if existing_untrusted && writing_trusted {
+                // A TRUSTED assertion of a fact first captured Untrusted: upgrade the row's taint (a
+                // distinct, auditable event) so the trusted assertion isn't silently discarded and the
+                // fact becomes eligible for trusted recall / consciousness. Also bump importance.
+                let new_imp = (old_imp as f32).max(req.importance);
+                self.ledger.append(
+                    "memory.trust",
+                    &req.actor,
+                    json!({ "region": req.region.as_str(), "content_hash": content_hash, "from": old_taint, "to": "trusted" }),
+                )?;
+                conn.execute(
+                    "UPDATE facts SET taint = 'trusted', importance = ?1, access_count = access_count + 1, last_access_ms = ?2 WHERE id = ?3",
+                    params![new_imp as f64, now, id],
+                )?;
+            } else if !existing_untrusted && !writing_trusted {
+                // An UNTRUSTED write matching a TRUSTED row: dedup (no duplicate row) but do NOT let
+                // tainted activity mutate the trusted row's importance/access. Just record the touch.
+                self.ledger.append(
+                    "memory.write",
+                    &req.actor,
+                    json!({ "region": req.region.as_str(), "content_hash": content_hash, "deduped": true, "untrusted_touch": true }),
+                )?;
+            } else {
+                // Both trusted: reinforce (bump importance + access).
+                let new_imp = (old_imp as f32).max(req.importance);
+                self.ledger.append(
+                    "memory.write",
+                    &req.actor,
+                    json!({ "region": req.region.as_str(), "content_hash": content_hash, "deduped": true }),
+                )?;
+                conn.execute(
+                    "UPDATE facts SET importance = ?1, access_count = access_count + 1, last_access_ms = ?2 WHERE id = ?3",
+                    params![new_imp as f64, now, id],
+                )?;
+            }
+            if let Some(rec) = get_record(&conn, id)? {
                 return Ok(rec);
             }
             // (Effectively unreachable: we just updated this row.) Fall through to a fresh insert,
@@ -455,13 +517,18 @@ impl Memory {
             }
         }
 
-        // --- semantic arm: two-stage binary-quantized recall over ALL live in-scope vectors ---
-        // Stage A (coarse): scan every live in-scope row's SMALL binary code and keep the COARSE_K
-        // nearest by Hamming distance. This has NO salience cap - unlike the old top-5000-by-
-        // importance scan, an old, low-importance, semantically-perfect memory is always eligible
-        // (the completeness fix). The scope filter keeps the scan to the active rings, so per-recall
-        // cost tracks the current project, not the whole brain. Stage B (exact): cosine-rerank just
-        // those COARSE_K candidates on the full f32 embedding, for accurate ordering.
+        // --- semantic arm: exact-cosine recall over ALL live in-scope vectors, with a binary coarse
+        // pre-filter only at large scale ---
+        // The binary code is a WEAK discriminator for the sparse default embedder (a short text bumps
+        // only a handful of the 256 dims), so using Hamming as the sole gate lets short unrelated rows
+        // crowd out a genuine paraphrase once a ring exceeds the truncation. So: while a ring holds at
+        // most EXACT_SCAN_MAX live in-scope rows (the common case - weeks of episodic capture, a
+        // several-hundred-chunk document), skip the coarse stage entirely and rank ALL of them by
+        // exact cosine - provably complete, and 256-float dot products over a few thousand rows are
+        // trivial. Only past that threshold do we fall back to the coarse Hamming pass to bound cost,
+        // and even then we (a) center-quantize (see quantize_binary) for a better ordering and
+        // (b) break Hamming ties by recency (id desc), so truncation prefers newer rows over the old
+        // insertion-order (oldest-first) bias, then exact-cosine-rerank the survivors.
         let q_bin = quantize_binary(&q_emb);
         let (sem_scope_sql, sem_scope_binds) = scope_clause("", scope);
         let coarse_sql = format!(
@@ -486,25 +553,37 @@ impl Memory {
             }
             out
         };
-        coarse.sort_by_key(|(d, _)| *d);
-        coarse.truncate(COARSE_K);
-        // Stage B: exact cosine over the coarse candidates, then MMR to diversify - so near-duplicate
-        // passages (e.g. overlapping document chunks) don't crowd out other relevant memories.
+        if coarse.len() > EXACT_SCAN_MAX {
+            // Large ring: coarse pre-filter. Tie-break by id descending (recency) so the truncation
+            // no longer systematically favours the oldest rows.
+            coarse.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
+            coarse.truncate(COARSE_K);
+        }
+        // else: keep every candidate; exact cosine below is the sole (complete) ranker.
+        // Stage B: exact cosine over the (coarse or full) candidates, then MMR to diversify - so
+        // near-duplicate passages (e.g. overlapping document chunks) don't crowd out other relevant
+        // memories.
         let mut sims: Vec<(i64, f32, Vec<f32>)> = Vec::with_capacity(coarse.len());
         if !coarse.is_empty() {
             let ids: Vec<i64> = coarse.iter().map(|(_, id)| *id).collect();
-            let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-            let exact_sql = format!("SELECT id, embedding FROM facts WHERE id IN ({placeholders})");
-            let mut stmt = conn.prepare(&exact_sql)?;
-            let binds: Vec<Value> = ids.iter().map(|i| Value::Integer(*i)).collect();
-            let rows = stmt.query_map(params_from_iter(binds), |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?))
-            })?;
-            for row in rows {
-                let (id, blob) = row?;
-                let v = from_bytes(&blob);
-                let sim = cosine(&q_emb, &v);
-                sims.push((id, sim, v));
+            // Fetch embeddings in bounded batches: without the coarse pre-filter the candidate set is
+            // the whole in-scope ring (up to EXACT_SCAN_MAX), which can exceed SQLite's bound-variable
+            // limit for a single `IN (...)`, so chunk the id list.
+            for chunk in ids.chunks(EXACT_FETCH_BATCH) {
+                let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+                let exact_sql =
+                    format!("SELECT id, embedding FROM facts WHERE id IN ({placeholders})");
+                let mut stmt = conn.prepare(&exact_sql)?;
+                let binds: Vec<Value> = chunk.iter().map(|i| Value::Integer(*i)).collect();
+                let rows = stmt.query_map(params_from_iter(binds), |r| {
+                    Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?))
+                })?;
+                for row in rows {
+                    let (id, blob) = row?;
+                    let v = from_bytes(&blob);
+                    let sim = cosine(&q_emb, &v);
+                    sims.push((id, sim, v));
+                }
             }
         }
         sims.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -581,26 +660,81 @@ impl Memory {
         Ok(true)
     }
 
+    /// Tombstone every live memory in a non-user scope (a project or session) — the cascade for
+    /// deleting that project/session, so its facts don't linger to bleed into other recalls (the
+    /// exact cross-project-bleed failure the scope lattice exists to prevent). Refuses the
+    /// user-global ring and an empty scope id (either would erase durable facts about the person).
+    /// Ledger-first: one signed `memory.forget_scope` entry records the sweep. Returns the count.
+    pub fn forget_scope(
+        &self,
+        scope_kind: &str,
+        scope_id: &str,
+        actor: &str,
+        reason: &str,
+    ) -> Result<usize> {
+        if scope_kind == "user" || scope_kind.is_empty() || scope_id.is_empty() {
+            return Ok(0);
+        }
+        let count: i64 = {
+            let conn = self.conn.lock().expect("memory mutex poisoned");
+            conn.query_row(
+                "SELECT COUNT(*) FROM facts WHERE scope_kind = ?1 AND scope_id = ?2 AND deleted = 0",
+                params![scope_kind, scope_id],
+                |r| r.get(0),
+            )?
+        };
+        if count == 0 {
+            return Ok(0);
+        }
+        // Ledger-first (matches forget/supersede's I1 ordering): record the sweep before mutating.
+        let entry = self.ledger.append(
+            "memory.forget_scope",
+            actor,
+            json!({ "scope_kind": scope_kind, "scope_id": scope_id, "count": count, "reason": reason }),
+        )?;
+        let conn = self.conn.lock().expect("memory mutex poisoned");
+        conn.execute(
+            "UPDATE facts SET deleted = 1, ledger_seq = ?1 WHERE scope_kind = ?2 AND scope_id = ?3 AND deleted = 0",
+            params![entry.seq as i64, scope_kind, scope_id],
+        )?;
+        Ok(count as usize)
+    }
+
     /// Mark `old_id` as superseded by `by_id`: the old fact becomes history - kept (not
     /// deleted) and still in the ledger, but no longer surfaced by recall - while the new
     /// fact is the current truth. This is how a changed fact ("moved to Munich") evolves
     /// without erasing the past. Returns false if `old_id` wasn't a current, live memory.
     pub fn supersede(&self, old_id: i64, by_id: i64) -> Result<bool> {
+        // Ledger-first (I1), matching forget/remember: confirm the row is a current, live memory,
+        // then append the signed entry, then apply the mutation. Superseding is what recall SHOWS, so
+        // an unaudited supersede would be exactly the kind of silent memory rewrite the signed ledger
+        // is meant to make impossible - hence the append error propagates rather than being dropped.
+        let supersedable: bool = {
+            let conn = self.conn.lock().expect("memory mutex poisoned");
+            conn.query_row(
+                "SELECT 1 FROM facts WHERE id = ?1 AND deleted = 0 AND superseded_by IS NULL",
+                [old_id],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some()
+        };
+        if !supersedable {
+            return Ok(false);
+        }
+        let entry = self.ledger.append(
+            "memory.supersede",
+            "core",
+            json!({ "old": old_id, "by": by_id }),
+        )?;
         let n = {
             let conn = self.conn.lock().expect("memory mutex poisoned");
             conn.execute(
-                "UPDATE facts SET superseded_by = ?1 \
-                 WHERE id = ?2 AND deleted = 0 AND superseded_by IS NULL",
-                params![by_id, old_id],
+                "UPDATE facts SET superseded_by = ?1, ledger_seq = ?2 \
+                 WHERE id = ?3 AND deleted = 0 AND superseded_by IS NULL",
+                params![by_id, entry.seq as i64, old_id],
             )?
         };
-        if n > 0 {
-            let _ = self.ledger.append(
-                "memory.supersede",
-                "core",
-                json!({ "old": old_id, "by": by_id }),
-            );
-        }
         Ok(n > 0)
     }
 
@@ -661,7 +795,7 @@ impl Memory {
             return Ok(false);
         };
         if taint != "trusted" {
-            return Err(MemoryError::Sqlite(rusqlite::Error::InvalidQuery));
+            return Err(MemoryError::UntrustedPromotion);
         }
         if scope_kind == "user" {
             return Ok(true); // already global, nothing to do
@@ -724,9 +858,13 @@ impl Memory {
     ) -> Result<Vec<Record>> {
         let conn = self.conn.lock().expect("memory mutex poisoned");
         let (scope_sql, scope_binds) = scope_clause("", scope);
+        // `superseded_by IS NULL` keeps this to CURRENT facts only (mirrors recent_in_ring). Without
+        // it, a superseded row ("User lives Berlin") stays a distillation candidate alongside the
+        // fact that replaced it ("I live in Munich"), and consciousness would load the stale one into
+        // the AUTHORITATIVE working-memory block - the exact supersede-defeating bug this guards.
         let sql = format!(
-            "SELECT {COLS} FROM facts WHERE region = ? AND deleted = 0 AND {scope} \
-             ORDER BY created_ms DESC LIMIT ?",
+            "SELECT {COLS} FROM facts WHERE region = ? AND deleted = 0 AND superseded_by IS NULL \
+             AND {scope} ORDER BY created_ms DESC LIMIT ?",
             scope = scope_sql,
         );
         let mut binds: Vec<Value> = Vec::with_capacity(scope_binds.len() + 2);
@@ -772,18 +910,27 @@ impl Memory {
     pub fn consolidate(&self, warm_age: Duration) -> Result<i64> {
         let now = now_ms() as i64;
         let cutoff = warm_age.as_millis() as i64;
-        let demoted = {
-            let conn = self.conn.lock().expect("memory mutex poisoned");
-            conn.execute(
-                "UPDATE facts SET tier = 'cold' \
-                 WHERE tier = 'warm' AND deleted = 0 AND (?1 - last_access_ms) > ?2 AND importance < 0.7",
-                params![now, cutoff],
-            )? as i64
-        };
-        if demoted > 0 {
-            self.ledger
-                .append("memory.consolidate", "core", json!({ "demoted": demoted }))?;
+        // Ledger-first (I1): count the rows this consolidation WILL demote, append the signed entry,
+        // then apply the demotion - all under one held lock, so no concurrent write can slip in
+        // between the count and the UPDATE (append never re-enters the connection, so holding the
+        // lock across it is safe). Propagate the append error rather than demoting unaudited.
+        let conn = self.conn.lock().expect("memory mutex poisoned");
+        let predicate =
+            "tier = 'warm' AND deleted = 0 AND (?1 - last_access_ms) > ?2 AND importance < 0.7";
+        let would_demote: i64 = conn.query_row(
+            &format!("SELECT COUNT(*) FROM facts WHERE {predicate}"),
+            params![now, cutoff],
+            |r| r.get(0),
+        )?;
+        if would_demote == 0 {
+            return Ok(0);
         }
+        self.ledger
+            .append("memory.consolidate", "core", json!({ "demoted": would_demote }))?;
+        let demoted = conn.execute(
+            &format!("UPDATE facts SET tier = 'cold' WHERE {predicate}"),
+            params![now, cutoff],
+        )? as i64;
         Ok(demoted)
     }
 
@@ -1074,6 +1221,58 @@ mod tests {
     }
 
     #[test]
+    fn dedup_respects_taint_provenance() {
+        let (m, _d) = mem();
+        let fact = "the api token rotates every 24 hours";
+        // First captured UNTRUSTED (e.g. during a web-tainted run).
+        let u = m
+            .remember(WriteReq::new(Region::Semantic, fact).taint(Taint::Untrusted))
+            .unwrap();
+        assert_eq!(u.taint, "untrusted");
+        // Not visible to trusted recall yet.
+        assert!(m
+            .recall_trusted(fact, &[Region::Semantic], 5)
+            .unwrap()
+            .is_empty());
+        // A TRUSTED re-assertion of the identical text must UPGRADE the row, not be discarded.
+        let t = m
+            .remember(WriteReq::new(Region::Semantic, fact).taint(Taint::Trusted))
+            .unwrap();
+        assert_eq!(t.id, u.id, "still one row (deduped)");
+        assert_eq!(t.taint, "trusted", "trusted assertion upgrades provenance");
+        // Now visible to trusted recall.
+        assert!(!m
+            .recall_trusted(fact, &[Region::Semantic], 5)
+            .unwrap()
+            .is_empty());
+
+        // Conversely: an untrusted write must NOT inflate a trusted row's salience.
+        let tfact = "the user prefers metric units";
+        let base = m
+            .remember(WriteReq::new(Region::Semantic, tfact).importance(0.3))
+            .unwrap();
+        let before = m.get(base.id).unwrap().unwrap();
+        let bumped = m
+            .remember(
+                WriteReq::new(Region::Semantic, tfact)
+                    .importance(0.99)
+                    .taint(Taint::Untrusted),
+            )
+            .unwrap();
+        assert_eq!(bumped.id, base.id, "still one row (deduped)");
+        assert_eq!(bumped.taint, "trusted", "trusted row stays trusted");
+        let after = m.get(base.id).unwrap().unwrap();
+        assert!(
+            (after.importance - before.importance).abs() < 1e-6,
+            "an untrusted write must not raise a trusted row's importance"
+        );
+        assert_eq!(
+            after.access_count, before.access_count,
+            "an untrusted write must not bump a trusted row's access count"
+        );
+    }
+
+    #[test]
     fn scope_defaults_to_user_and_round_trips() {
         let (m, _d) = mem();
         // A default write is user-global.
@@ -1218,6 +1417,63 @@ mod tests {
             hits.iter().any(|h| h.record.id == target.id),
             "the low-importance paraphrase match must still be recalled"
         );
+    }
+
+    #[test]
+    fn paraphrase_survives_coarse_pass_in_a_large_ring() {
+        // Regression for the binary-coarse discriminator bug: the sparse default embedder makes
+        // Hamming a weak filter, so short unrelated rows could crowd out a genuine paraphrase once a
+        // ring exceeded the coarse truncation (256). Seed >1000 short noise rows plus one longer
+        // paraphrase target and assert recall still surfaces it. This crosses both COARSE_K and (with
+        // the seeded count) stays under EXACT_SCAN_MAX, exercising the skip-coarse exact path.
+        let (m, _d) = mem();
+        for i in 0..1200 {
+            m.remember(WriteReq::new(Region::Semantic, format!("note {i}")))
+                .unwrap();
+        }
+        let target = m
+            .remember(WriteReq::new(
+                Region::Semantic,
+                "the user strongly prefers a dark theme in the code editor at night",
+            ))
+            .unwrap();
+        let hits = m
+            .recall("preferred dark theming editor", &[Region::Semantic], 5)
+            .unwrap();
+        assert!(
+            hits.iter().any(|h| h.record.id == target.id),
+            "the paraphrase target must survive the coarse pass even in a >1000-row ring"
+        );
+    }
+
+    #[test]
+    fn recent_scoped_omits_superseded_facts() {
+        // The stale-fact guard (the "Mondaine vs Omega" class): once a fact is superseded, it must
+        // NOT be a distillation candidate. recent_scoped feeds consciousness's AUTHORITATIVE
+        // working-memory block, so a leaked superseded fact would override the current truth.
+        let (m, _d) = mem();
+        let old = m
+            .remember(WriteReq::new(Region::Identity, "the user lives in Berlin"))
+            .unwrap();
+        let new = m
+            .remember(WriteReq::new(Region::Identity, "the user lives in Munich"))
+            .unwrap();
+        assert!(m.supersede(old.id, new.id).unwrap());
+
+        let recent = m
+            .recent_scoped(Region::Identity, 50, &ScopeCtx::any())
+            .unwrap();
+        assert!(
+            recent.iter().any(|r| r.text.contains("Munich")),
+            "the current fact is still recalled"
+        );
+        assert!(
+            !recent.iter().any(|r| r.text.contains("Berlin")),
+            "the superseded (stale) fact must NOT be a distillation candidate"
+        );
+        // recent() (chat reload / Atlas working-memory) delegates here, so it is guarded too.
+        let any = m.recent(Region::Identity, 50).unwrap();
+        assert!(!any.iter().any(|r| r.text.contains("Berlin")));
     }
 
     #[test]
@@ -1472,6 +1728,11 @@ mod tests {
         );
         // Superseding a non-current id is a no-op.
         assert!(!m.supersede(berlin.id, munich.id).unwrap());
+        // Ledger-first: the supersede stamped the old row's ledger_seq (audit trail present).
+        assert!(
+            m.get(berlin.id).unwrap().unwrap().ledger_seq.is_some(),
+            "supersede must leave a ledger reference on the superseded row"
+        );
     }
 
     #[test]
@@ -1487,6 +1748,29 @@ mod tests {
             .is_empty());
         assert!(m.restore(rec.id, "user").unwrap());
         assert_eq!(m.recall("secret", &[Region::Semantic], 5).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn forget_scope_cascades_a_project_but_spares_user_global() {
+        let (m, _d) = mem();
+        m.remember(WriteReq::new(Region::Semantic, "project A fact one").scope(Scope::project("A")))
+            .unwrap();
+        m.remember(WriteReq::new(Region::Semantic, "project A fact two").scope(Scope::project("A")))
+            .unwrap();
+        m.remember(WriteReq::new(Region::Semantic, "project B fact").scope(Scope::project("B")))
+            .unwrap();
+        m.remember(WriteReq::new(Region::Semantic, "user global fact"))
+            .unwrap();
+        // Deleting project A forgets exactly its two facts.
+        let n = m.forget_scope("project", "A", "user", "project deleted").unwrap();
+        assert_eq!(n, 2);
+        // Idempotent: a second sweep finds nothing live.
+        assert_eq!(m.forget_scope("project", "A", "user", "again").unwrap(), 0);
+        // Project B and the user-global ring are untouched.
+        assert_eq!(m.forget_scope("project", "B", "user", "x").unwrap(), 1);
+        // The user ring can never be mass-forgotten by this call.
+        assert_eq!(m.forget_scope("user", "", "user", "x").unwrap(), 0);
+        assert_eq!(m.forget_scope("project", "", "user", "x").unwrap(), 0);
     }
 
     #[test]

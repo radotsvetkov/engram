@@ -8,7 +8,7 @@
 //! there is no dissent: silence, not a costume. The raised objection + the user's choice are signed
 //! together as one ledger artifact, so even the disagreement is auditable.
 
-use engram_core::Taint;
+use engram_core::{ScopeCtx, Taint};
 use engram_gateway::{Call, CompletionRequest, Gateway, Message};
 use engram_memory::{Memory, Region};
 use serde::Serialize;
@@ -30,18 +30,24 @@ pub struct Dissent {
 
 /// Review a task against recalled memory. Returns a grounded objection, or `None` when nothing real
 /// conflicts (or no model is connected to assess - in which case we stay silent rather than guess).
+///
+/// `scope` bounds the recall to the rings that apply to this task, so a dissent check for a task in
+/// project B can never surface (and then DISPLAY as citable grounds) project A's memories — the
+/// cross-project bleed this branch exists to stop. Pass the task's session/project scope, or
+/// [`ScopeCtx::user_only`] for the unscoped task board (task-board runs are user-global by design).
 pub async fn review(
     memory: &Memory,
     gateway: &Gateway,
     model: &str,
     task: &str,
+    scope: &ScopeCtx,
 ) -> Option<Dissent> {
     // Only a real model can assess conflict; the offline mock cannot, so we do not pretend it can.
     if gateway.provider_id() == "mock" {
         return None;
     }
     let regions = [Region::Identity, Region::Semantic, Region::Episodic];
-    let hits = memory.recall_trusted(task, &regions, 8).ok()?;
+    let hits = memory.recall_trusted_scoped(task, &regions, 8, scope).ok()?;
     if hits.is_empty() {
         return None;
     }

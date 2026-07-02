@@ -37,6 +37,18 @@ tauri-plugin-opener = "2"
 #  (the dashboard runs on the daemon's origin, so this is exposed to it via a remote capability).
 tauri-plugin-dialog = "2"
 
+#  updater: check for and install signed app updates from a self-hosted manifest. This is OPTIONAL
+#  and off by default: it only works once the maintainer has generated a Tauri signing keypair and
+#  filled in `plugins.updater.pubkey` + the `endpoints` URL in tauri.conf.json (see UPDATER.md).
+#  Building with a placeholder pubkey would fail at bundle/verify time, so the dep and all its wiring
+#  are gated behind the `updater` cargo feature. Enable with `--features updater` once configured.
+tauri-plugin-updater = { version = "2", optional = true }
+
+[features]
+# Off by default — see the `tauri-plugin-updater` note above and UPDATER.md. Turn on only after the
+# signing keypair + endpoint are configured, else `cargo tauri build` fails on the placeholder pubkey.
+updater = ["dep:tauri-plugin-updater"]
+
 [[bin]]
 name = "engram-desktop"
 path = "src/main.rs"

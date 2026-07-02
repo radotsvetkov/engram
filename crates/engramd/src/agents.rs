@@ -98,10 +98,22 @@ pub struct AgentStore {
 impl AgentStore {
     pub fn open(dir: &Path) -> Self {
         let path = dir.join("agents.json");
-        let agents = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<Vec<AgentDef>>(&s).ok())
-            .unwrap_or_default();
+        // agents.json holds the most security-sensitive durable state (per-agent API keys and signed
+        // AutonomyPolicies), so a parse failure must NOT be silently mapped to empty: that would erase
+        // every durable agent and its policy on the next boot, and the first save would overwrite the
+        // evidence. Mirror TaskStore/WorkspaceStore — back the bad file up to *.corrupt.json and log
+        // the cause — so a half-written or hand-edited file is recoverable, not lost.
+        let agents = match std::fs::read_to_string(&path) {
+            Ok(s) => match serde_json::from_str::<Vec<AgentDef>>(&s) {
+                Ok(a) => a,
+                Err(e) => {
+                    let _ = std::fs::rename(&path, dir.join("agents.corrupt.json"));
+                    tracing::error!(error = %e, "agents.json was unparseable - backed it up to agents.corrupt.json and started empty");
+                    Vec::new()
+                }
+            },
+            Err(_) => Vec::new(),
+        };
         Self {
             path,
             agents: Mutex::new(agents),
@@ -363,6 +375,23 @@ mod tests {
         let s2 = AgentStore::open(&d);
         assert_eq!(s2.list().len(), 1);
         assert_eq!(s2.list()[0].name, "Persisted");
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn corrupt_agents_json_is_backed_up_not_silently_erased() {
+        let d = tmpdir();
+        // A half-written / hand-edited file that won't parse. The OLD behavior mapped this to an
+        // empty store AND then the first save overwrote the evidence — silently destroying every
+        // durable agent, its API key, and its signed autonomy policy.
+        std::fs::write(d.join("agents.json"), b"{ this is not valid json ][").unwrap();
+        let s = AgentStore::open(&d);
+        assert!(s.list().is_empty(), "starts empty on an unparseable file");
+        // The bad bytes must be preserved for recovery, not discarded.
+        assert!(
+            d.join("agents.corrupt.json").exists(),
+            "the corrupt file must be backed up to agents.corrupt.json"
+        );
         std::fs::remove_dir_all(&d).ok();
     }
 }

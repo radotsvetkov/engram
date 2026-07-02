@@ -195,3 +195,96 @@ impl Spike {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn decode_all(decoder: &mut SseDecoder, chunks: &[&[u8]]) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        for c in chunks {
+            decoder.push(c, &mut out);
+        }
+        out
+    }
+
+    #[test]
+    fn parses_a_simple_frame() {
+        let mut d = SseDecoder::new();
+        let frames = decode_all(&mut d, &[b"event: step\ndata: {\"index\":1}\n\n"]);
+        assert_eq!(frames, vec![("step".into(), "{\"index\":1}".into())]);
+    }
+
+    #[test]
+    fn frame_split_across_chunks_is_reassembled() {
+        // Split mid-field and mid-value: the decoder must buffer until a full line arrives.
+        let mut d = SseDecoder::new();
+        let frames = decode_all(
+            &mut d,
+            &[b"eve", b"nt: done\nda", b"ta: {\"reply\":\"h", b"i\"}\n\n"],
+        );
+        assert_eq!(frames, vec![("done".into(), "{\"reply\":\"hi\"}".into())]);
+    }
+
+    #[test]
+    fn multibyte_char_split_across_chunks_is_lossless() {
+        // '€' is 3 bytes; split it across the chunk boundary. A line only completes on '\n', which
+        // never falls inside a UTF-8 sequence, so the reassembled data must be intact.
+        let mut d = SseDecoder::new();
+        let euro = "€".as_bytes();
+        let mut frames = Vec::new();
+        d.push(b"data: ", &mut frames);
+        d.push(&euro[..1], &mut frames);
+        d.push(&euro[1..], &mut frames);
+        d.push(b"\n\n", &mut frames);
+        assert_eq!(frames, vec![("message".into(), "€".into())]);
+    }
+
+    #[test]
+    fn keepalive_comments_and_crlf_are_handled() {
+        let mut d = SseDecoder::new();
+        // A `:` comment line (keep-alive) is ignored; CRLF line endings are stripped.
+        let frames = decode_all(&mut d, &[b": keep-alive\r\nevent: step\r\ndata: x\r\n\r\n"]);
+        assert_eq!(frames, vec![("step".into(), "x".into())]);
+    }
+
+    #[test]
+    fn multiple_data_lines_join_with_newline() {
+        let mut d = SseDecoder::new();
+        let frames = decode_all(&mut d, &[b"data: a\ndata: b\n\n"]);
+        assert_eq!(frames, vec![("message".into(), "a\nb".into())]);
+    }
+
+    #[test]
+    fn chat_event_maps_error_shapes() {
+        // Object form.
+        match ChatEvent::from_frame("error", "{\"error\":\"boom\"}") {
+            Some(ChatEvent::Error(m)) => assert_eq!(m, "boom"),
+            other => panic!("expected Error, got {other:?}"),
+        }
+        // Bare-string fallback.
+        match ChatEvent::from_frame("error", "just a string") {
+            Some(ChatEvent::Error(m)) => assert_eq!(m, "just a string"),
+            other => panic!("expected Error, got {other:?}"),
+        }
+        // Unknown events are dropped.
+        assert!(ChatEvent::from_frame("mystery", "{}").is_none());
+    }
+
+    #[test]
+    fn task_event_step_falls_back_to_raw_string_on_bad_json() {
+        match TaskEvent::from_frame("step", "not json") {
+            Some(TaskEvent::Step(Value::String(s))) => assert_eq!(s, "not json"),
+            other => panic!("expected raw-string Step, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn spike_ignores_non_spike_events() {
+        assert!(Spike::from_frame("message", "{}").is_none());
+        let s = Spike::from_frame("spike", "{\"topic\":\"task.step\",\"payload\":{\"n\":1}}")
+            .expect("spike");
+        assert_eq!(s.topic, "task.step");
+        assert_eq!(s.payload, serde_json::json!({ "n": 1 }));
+    }
+}

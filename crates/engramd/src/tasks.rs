@@ -130,7 +130,7 @@ impl TaskStore {
     pub fn open(dir: &Path) -> Self {
         let path = dir.join("tasks.json");
         // Back up an unparseable file rather than silently overwriting it with an empty default.
-        let tasks = match std::fs::read(&path) {
+        let mut tasks: Vec<Task> = match std::fs::read(&path) {
             Ok(b) => match serde_json::from_slice(&b) {
                 Ok(t) => t,
                 Err(e) => {
@@ -141,10 +141,54 @@ impl TaskStore {
             },
             Err(_) => Vec::new(),
         };
-        TaskStore {
+        // Boot-time crash recovery: a fresh process can never legitimately have a task mid-run, so any
+        // card persisted as "doing" was orphaned by a crash/abort/power-loss/restart mid-run. Left as
+        // "doing" it would jam forever — try_begin() refuses to re-run a "doing" task, so every future
+        // run (button, HTTP, or a schedule pointing at it) returns "already running" with no escape but
+        // a manual PATCH. Sweep them to "failed" with a synthetic interrupted receipt so the board is
+        // honest, the user sees why, and the card is runnable again. Internal to open() so main.rs's
+        // callers are unaffected; the recovery is persisted below.
+        let mut recovered = 0usize;
+        for t in tasks.iter_mut() {
+            if t.status == "doing" {
+                let now = now_ms() as i64;
+                t.status = "failed".into();
+                t.progress = None;
+                t.updated_ms = now;
+                // Preserve any real run already attached; otherwise attach a synthetic one so the
+                // Artifacts/answer view explains the interruption rather than showing an empty run.
+                if t.run.is_none() {
+                    t.run = Some(TaskRun {
+                        answer: "(interrupted: daemon restarted mid-run)".into(),
+                        steps: Vec::new(),
+                        stopped: "interrupted".into(),
+                        tokens_in: 0,
+                        tokens_out: 0,
+                        cost_usd: 0.0,
+                        ledger_head_hash: String::new(),
+                        started_ms: now,
+                        finished_ms: now,
+                        output_files: Vec::new(),
+                    });
+                }
+                recovered += 1;
+            }
+        }
+        let store = TaskStore {
             path,
             tasks: Mutex::new(tasks),
+        };
+        if recovered > 0 {
+            tracing::error!(
+                recovered,
+                "recovered {recovered} task(s) stuck in 'doing' after a mid-run restart → 'failed'"
+            );
+            // Persist the recovery so the swept state survives even if the daemon dies again before
+            // the first save.
+            let guard = store.tasks.lock().expect("tasks mutex");
+            store.save(&guard);
         }
+        store
     }
 
     /// Write atomically (temp + rename) and owner-only.
@@ -393,6 +437,32 @@ mod tests {
             .unwrap();
         assert_eq!(after2.handoffs.len(), 2);
         assert!(after2.agent.is_none());
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn boot_recovers_tasks_stuck_in_doing() {
+        let d = tmpdir();
+        let id = {
+            let s = TaskStore::open(&d);
+            let t = s.create("long job".into(), String::new(), "test".into());
+            // Simulate a crash mid-run: the task is claimed ("doing") and then the process dies
+            // before finish() ever runs.
+            assert!(s.try_begin(&t.id));
+            assert_eq!(s.get(&t.id).unwrap().status, "doing");
+            t.id
+        };
+        // A fresh boot must sweep the orphaned "doing" card to "failed" with an interrupted receipt,
+        // NOT leave it wedged (which would make try_begin refuse every future run forever).
+        let s2 = TaskStore::open(&d);
+        let recovered = s2.get(&id).unwrap();
+        assert_eq!(recovered.status, "failed", "stuck 'doing' must be swept to 'failed'");
+        assert!(recovered.progress.is_none());
+        let run = recovered.run.expect("a synthetic interrupted run is attached");
+        assert_eq!(run.stopped, "interrupted");
+        assert!(run.answer.contains("interrupted"));
+        // And it must be runnable again (the whole point): try_begin succeeds now.
+        assert!(s2.try_begin(&id), "a recovered card must be re-runnable");
         std::fs::remove_dir_all(&d).ok();
     }
 

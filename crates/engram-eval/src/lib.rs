@@ -96,6 +96,12 @@ pub async fn run_case(case: &Case) -> Result<Outcome, String> {
         depth: 0,
         browser: Arc::new(NoBrowser),
         scope: engram_core::ScopeCtx::any(),
+        halt: None,
+        spend_counter: None,
+        token_budget: None,
+        on_step: None,
+        on_narration: None,
+        allowed_tools: None,
     };
     let mut agent = Agent::new(gateway, engram_agent::default_tools(), "eval")
         .max_steps(case.max_steps.unwrap_or(12))

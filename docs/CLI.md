@@ -59,6 +59,7 @@ or unified-diff content) — in both the TUI chat pane and `engram ask` output.
 | Context | Key | Action |
 |---|---|---|
 | Global | `Ctrl-P` / `Ctrl-K` | command palette |
+| Global | `Ctrl-O` | project picker (switch the active project / memory scope) |
 | Global | `/` | palette (from an empty chat composer, or any list) |
 | Global | `Alt-1` … `Alt-9` | jump to a tab |
 | Global | `?` / `F1` | help |
@@ -88,6 +89,7 @@ engram status                   # health, cost, ledger, memory summary
 engram doctor                   # provider, tools, ledger integrity, config
 
 engram tasks list|show <id>|new <title> [--run]|run <id>|receipt <id>
+engram projects list|new <name> [--dir <path>]     # (alias: proj) scoped projects
 engram memory stats|recent|recall <q>|remember <text>|forget <id>|identity
 engram skills list [--filter]|run <id> <input>|enable <id>|disable <id>
 engram schedule list|add <name> <when>|preview <when…>|run <id>|delete <id>
@@ -108,7 +110,8 @@ the prompt from stdin if you don't pass one, so `echo "…" | engram ask` works.
 
 ```bash
 engram ask "what do you know about me?"
-engram recall "favorite watch" --k 5            # hybrid keyword+semantic recall
+engram memory recall "favorite watch" --k 5     # hybrid keyword+semantic recall
+engram projects new "My App" --dir ~/code/my-app # a scoped project bound to a dir
 engram tasks new "draft a weekly digest" --run  # create and stream the run
 engram ledger verify                            # exit 0 = chain intact, 1 = tampered
 engram schedule preview "every weekday at 9am"  # next-fire preview, no model call

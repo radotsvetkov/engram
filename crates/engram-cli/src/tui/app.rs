@@ -85,6 +85,8 @@ pub enum Msg {
     SessionLoaded {
         id: String,
         msgs: Vec<SessionMsg>,
+        /// The resumed session's project, so the active scope + footer badge follow the chat.
+        project_id: Option<String>,
     },
     /// A Ctrl-T task creation failed; restore the user's text and tell them.
     TaskCreateFailed {
@@ -93,6 +95,8 @@ pub enum Msg {
     },
     /// A daemon reconnect attempt finished (true = the daemon is back up).
     Reconnected(bool),
+    /// The task-cancel path finished releasing the daemon-wide kill switch; clear the halted state.
+    TaskHaltReleased,
     /// Model-only spine update (so it doesn't clobber the health probe).
     Model(String),
     Chat(ChatEvent),
@@ -307,6 +311,9 @@ pub struct App {
     pub board_col: usize,
     pub detail_open: bool,
     pub detail_scroll: u16,
+    /// True while a task cancel has latched the daemon-wide kill switch and the client is about to
+    /// release it. Surfaces a visible "halted — press c to release" state; `c` releases immediately.
+    pub task_halted: bool,
     /// The view to return to from Help (Esc).
     pub prev_view: View,
     /// A memory id armed for deletion — a second `f` within the window confirms.
@@ -495,6 +502,7 @@ impl App {
             board_col: 0,
             detail_open: false,
             detail_scroll: 0,
+            task_halted: false,
             prev_view: View::Chat,
             confirm_forget: None,
             confirm_agent: None,
@@ -629,7 +637,15 @@ impl App {
     pub fn load_view(&self, view: View) {
         match view {
             View::Chat => {
-                self.fetch(|c| async move { c.sessions(None).await.ok().map(Msg::Sessions) });
+                // Scope the session list to the active project, else the daemon defaults to
+                // "personal" and project-scoped chats are invisible in the resume picker.
+                let project = self.active_project.clone();
+                self.fetch(move |c| async move {
+                    c.sessions(project.as_deref())
+                        .await
+                        .ok()
+                        .map(Msg::Sessions)
+                });
             }
             View::Tasks => self.refresh_tasks(),
             View::Memory => {
@@ -803,8 +819,21 @@ impl App {
                 self.start_session_in(p.id);
             }
             Msg::SessionStarted(id) => {
-                self.chat.session = Some(id);
-                self.chat.turns.clear();
+                // The real server-side session id has arrived. If the user already started chatting
+                // before it landed (a wide window during cold-start/auto-spawn), DON'T wipe their
+                // visible transcript or retarget a streaming turn — that stranded the in-flight turn
+                // in an unpersisted phantom session and lost the ability to halt it. Only swap the id
+                // for future turns; clear the transcript only when it's genuinely empty and idle.
+                if self.chat.streaming || !self.chat.turns.is_empty() {
+                    // Keep the id already driving the streaming turn (so Esc-halt still targets it);
+                    // otherwise adopt the real id for the next turn.
+                    if !self.chat.streaming {
+                        self.chat.session = Some(id);
+                    }
+                } else {
+                    self.chat.session = Some(id);
+                    self.chat.turns.clear();
+                }
                 self.chat.stick = true;
             }
             Msg::Reconnected(ok) => {
@@ -816,6 +845,9 @@ impl App {
                 }
             }
             Msg::Model(m) => self.model = m,
+            Msg::TaskHaltReleased => {
+                self.task_halted = false;
+            }
             Msg::TaskCreateFailed { title, err } => {
                 // Restore the lost composer text and route back to chat.
                 self.chat.composer = title;
@@ -823,7 +855,11 @@ impl App {
                 self.set_view(View::Chat);
                 self.toast(format!("· couldn't create task: {err}"));
             }
-            Msg::SessionLoaded { id, msgs } => {
+            Msg::SessionLoaded {
+                id,
+                msgs,
+                project_id,
+            } => {
                 self.chat.turns = msgs
                     .into_iter()
                     .map(|m| Turn {
@@ -843,6 +879,11 @@ impl App {
                 self.chat.session = Some(id);
                 self.chat.scroll = 0;
                 self.chat.stick = true;
+                // Follow the resumed chat's scope so the footer badge + future turns use the right
+                // project (and stay consistent with the session the daemon persists under).
+                if let Some(pid) = project_id {
+                    self.active_project = Some(pid);
+                }
                 self.view = View::Chat;
             }
             Msg::Toast(s) => self.toast(s),
@@ -996,8 +1037,26 @@ impl App {
 
     pub fn on_paste(&mut self, s: &str) {
         if self.view == View::Chat && self.palette.is_none() {
-            for ch in s.chars().filter(|c| *c != '\n' && *c != '\r') {
-                self.insert_char(ch);
+            // Preserve newlines as a separator instead of stripping them — dropping them silently
+            // concatenated pasted lines ("line1\nline2" → "line1line2"), corrupting pasted code /
+            // logs / lists. The single-line composer renders one line, so collapse any CRLF/CR/LF
+            // run to a single space (a full multiline composer with Shift-Enter is a separate,
+            // render-side change). A trailing newline (common when copying a whole line) is dropped.
+            let mut prev_was_newline = false;
+            for ch in s.chars() {
+                if ch == '\n' || ch == '\r' {
+                    if !prev_was_newline {
+                        self.insert_char(' ');
+                        prev_was_newline = true;
+                    }
+                } else {
+                    self.insert_char(ch);
+                    prev_was_newline = false;
+                }
+            }
+            // Trim a lone trailing separator introduced by a final newline.
+            if self.chat.composer.ends_with(' ') && s.ends_with(['\n', '\r']) {
+                self.backspace();
             }
         }
     }
@@ -2097,8 +2156,16 @@ impl App {
     pub fn open_sessions(&mut self) {
         self.sessions_open = true;
         self.sessions_sel = 0;
-        // Refresh the list so it reflects any sessions created since launch.
-        self.fetch(|c| async move { c.sessions(None).await.ok().map(Msg::Sessions) });
+        // Refresh the list so it reflects any sessions created since launch. Scope to the active
+        // project — the daemon defaults an absent filter to "personal", which would hide every
+        // project-scoped chat from the resume picker.
+        let project = self.active_project.clone();
+        self.fetch(move |c| async move {
+            c.sessions(project.as_deref())
+                .await
+                .ok()
+                .map(Msg::Sessions)
+        });
     }
 
     fn sessions_key(&mut self, k: KeyEvent) {
@@ -2115,6 +2182,13 @@ impl App {
             KeyCode::Enter => {
                 if let Some(s) = self.sessions.get(self.sessions_sel) {
                     let id = s.id.clone();
+                    // Carry the picker row's project so the resumed chat adopts the right scope
+                    // (SessionDetail itself doesn't echo the project_id back).
+                    let project_id = if s.project_id.is_empty() {
+                        None
+                    } else {
+                        Some(s.project_id.clone())
+                    };
                     self.sessions_open = false;
                     self.fetch(move |c| async move {
                         c.session_detail(&id)
@@ -2123,6 +2197,7 @@ impl App {
                             .map(|d| Msg::SessionLoaded {
                                 id: d.id,
                                 msgs: d.messages,
+                                project_id,
                             })
                     });
                     self.toast("· resuming session");

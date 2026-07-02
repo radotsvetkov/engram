@@ -33,6 +33,9 @@ fn params<'a>(ctx: &'a ToolCtx, host: &'a SkillHost) -> SkillRunParams<'a> {
         host,
         scope: ctx.scope.clone(),
         scoring: false,
+        // Running an already-adopted, signed, active skill: its bytes are trusted provenance (a human
+        // or the verify/adopt gate accepted them). This is not the distillation path, so not tainted.
+        source_tainted: false,
     }
 }
 
@@ -186,19 +189,26 @@ impl Tool for SkillRunTool {
             "agent",
             json!({ "id": id, "bytes_out": outcome.output.len(), "duration_us": outcome.duration_us }),
         );
-        // AUTO-LEARN from real use: a PURE (no network / no LLM) skill is deterministic, so its real
-        // output IS reliable gold. Record this (input, output) as an accepted example — the skill grows
-        // its own test set from actual use, and future improvements get scored against it with ZERO
-        // manual "Add example". Deduped by input and capped so it can't grow without bound. Network/LLM
-        // skills are skipped (their output varies with the live world, so it isn't a stable answer).
+        // AUTO-LEARN from real use: record this (input, output) from a PURE (no network / no LLM)
+        // skill as a PROVISIONAL example (reward 0.5), NOT accepted gold (≥ 0.75). Deterministic is
+        // not the same as CORRECT: if the active version has a bug (wrong rounding, off-by-one), its
+        // wrong outputs are deterministic too — recording them as gold would make improve_skill score
+        // a FIXED candidate LOWER on those inputs and permanently reject the fix, so the loop
+        // converges on its own defects. At 0.5 the example stays in history for audit/analysis but is
+        // BELOW the accepted-runs replay threshold, so only human/author-asserted gold judges
+        // improvements. Deduped by input and capped so it can't grow without bound; network/LLM skills
+        // are skipped entirely (their output varies with the live world).
         if signed.manifest.capabilities.is_empty() && !outcome.output.is_empty() && !input.is_empty() {
-            if let Ok(existing) = ctx.skills.accepted_runs(id) {
-                let already = existing.iter().any(|(i, _)| i.as_slice() == input.as_bytes());
-                if !already && existing.len() < 30 {
+            if let Ok(accepted) = ctx.skills.accepted_runs(id) {
+                // Don't shadow a real gold example for this input, and cap capture volume by the
+                // accepted-set size so provisional records can't grow without bound. (A provisional
+                // record is below the accepted threshold, so it never enters the replay/gold set.)
+                let already = accepted.iter().any(|(i, _)| i.as_slice() == input.as_bytes());
+                if !already && accepted.len() < 30 {
                     if let Ok(Some(v)) = ctx.skills.active_version(id) {
                         let _ = ctx
                             .skills
-                            .record_run(id, v, input.as_bytes(), &outcome.output, 1.0);
+                            .record_run(id, v, input.as_bytes(), &outcome.output, 0.5);
                     }
                 }
             }
@@ -471,6 +481,12 @@ mod tests {
                 depth: 0,
                 browser: Arc::new(NoBrowser),
                 scope: engram_core::ScopeCtx::any(),
+                halt: None,
+                spend_counter: None,
+                token_budget: None,
+                on_step: None,
+                on_narration: None,
+                allowed_tools: None,
             },
             dir,
         )

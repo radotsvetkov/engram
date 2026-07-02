@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "updater",
+  "description": "Allow the main window's LOCAL context (the bundled splash / shell, NOT the remote daemon origin) to check for and install signed app updates. Scoped to `local: true` so the remote dashboard page served by the daemon can never reach the updater, only the shell's own code / on-demand command can. Inert unless the app is built with the `updater` cargo feature AND a signing pubkey + endpoint are configured (see ../../UPDATER.md).",
+  "windows": ["main"],
+  "local": true,
+  "permissions": ["updater:default"]
+}

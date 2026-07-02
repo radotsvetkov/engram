@@ -106,15 +106,30 @@ fn bump(v: &mut [f32], key: &[u8]) {
     v[idx] += sign;
 }
 
-/// Binary-quantize a vector to one sign bit per dimension, packed little-endian into bytes. This
-/// is the coarse index: comparing two quantized vectors by Hamming distance approximates their
-/// cosine ordering at ~1/32 the bytes and with a single XOR+popcount per byte, which is what lets
-/// recall scan EVERY in-scope vector (no salience cap) and still stay fast as the brain grows.
+/// Binary-quantize a vector to one bit per dimension, packed little-endian into bytes. This is the
+/// coarse index: comparing two quantized vectors by Hamming distance approximates their cosine
+/// ordering at ~1/32 the bytes and with a single XOR+popcount per byte, which is what lets recall
+/// scan EVERY in-scope vector (no salience cap) and still stay fast as the brain grows.
+///
+/// The bit is set for dimensions ABOVE the vector's own mean, not above a fixed zero. The default
+/// [`TrigramHashEmbedder`] is sparse - a short text bumps only a handful of the 256 dims, leaving
+/// the rest exactly 0.0 - so a plain `x >= 0.0` test made every untouched dim quantize to 1. Codes
+/// then collapsed toward all-ones and Hamming distance degenerated into "how few negative dims does
+/// this row have" (i.e. text shortness), a poor discriminator that lets short unrelated rows crowd
+/// out a genuine paraphrase once a ring exceeds the coarse truncation. Centering on the per-vector
+/// mean makes the split track the vector's own structure instead of the origin. (The coarse pass is
+/// still only a pre-filter: recall skips it entirely below a candidate threshold and reranks the
+/// survivors by exact cosine - see `recall_inner`.)
 pub fn quantize_binary(v: &[f32]) -> Vec<u8> {
     let nbytes = v.len().div_ceil(8);
     let mut out = vec![0u8; nbytes];
+    let mean = if v.is_empty() {
+        0.0
+    } else {
+        v.iter().sum::<f32>() / v.len() as f32
+    };
     for (i, &x) in v.iter().enumerate() {
-        if x >= 0.0 {
+        if x >= mean {
             out[i / 8] |= 1u8 << (i % 8);
         }
     }

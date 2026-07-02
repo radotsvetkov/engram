@@ -57,14 +57,26 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
         let tasks = column_tasks(app, ci);
         let focused = ci == app.board_col;
         let border = if focused { t.accent } else { t.faint };
+        // Surface the halted state on the Running column so the user knows the kill switch is
+        // engaged and that a second `c` releases it now.
+        let title = if ci == 1 && app.task_halted {
+            format!(" {} ({}) · halted — c to release ", COLUMNS[ci].0, tasks.len())
+        } else {
+            format!(" {} ({}) ", COLUMNS[ci].0, tasks.len())
+        };
+        let title_fg = if ci == 1 && app.task_halted {
+            t.warn
+        } else if focused {
+            t.accent
+        } else {
+            t.muted
+        };
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border))
             .title(Span::styled(
-                format!(" {} ({}) ", COLUMNS[ci].0, tasks.len()),
-                Style::default()
-                    .fg(if focused { t.accent } else { t.muted })
-                    .add_modifier(Modifier::BOLD),
+                title,
+                Style::default().fg(title_fg).add_modifier(Modifier::BOLD),
             ));
         let inner = block.inner(*area);
         f.render_widget(block, *area);
@@ -298,18 +310,27 @@ pub fn handle_key(app: &mut App, k: KeyEvent) -> bool {
             app.load_view(app.view);
             true
         }
-        // Cancel a running task (coarse: signals all in-flight runs to stop).
+        // Cancel a running task with a TASK-SCOPED halt. The daemon registers each task run's flag
+        // under "<task-id>#<n>" and matches it to session=<task-id>, so this stops JUST this run at
+        // its next step boundary — it never touches other runs or the daemon-wide kill switch (the
+        // old client-side global-pulse mitigation is no longer needed).
         KeyCode::Char('c') => {
-            let running = column_tasks(app, app.board_col)
+            let task = column_tasks(app, app.board_col)
                 .get(app.sel)
-                .map(|t| t.status_or_todo() == "doing")
-                .unwrap_or(false);
-            if running {
-                let client = app.client.clone();
-                tokio::spawn(async move {
-                    let _ = client.halt(None, true).await;
-                });
-                app.toast("· stop signal sent to running tasks");
+                .map(|t| (t.id.clone(), t.status_or_todo().to_string()));
+            if let Some((id, status)) = task {
+                if status == "doing" {
+                    let client = app.client.clone();
+                    let tx = app.tx.clone();
+                    tokio::spawn(async move {
+                        let _ = client.halt(Some(&id), true).await;
+                        if let Ok(tasks) = client.tasks().await {
+                            let _ = tx.send(crate::tui::app::Msg::Tasks(tasks));
+                        }
+                        let _ = tx.send(crate::tui::app::Msg::TaskHaltReleased);
+                    });
+                    app.toast("· stopping this task at its next step");
+                }
             }
             true
         }

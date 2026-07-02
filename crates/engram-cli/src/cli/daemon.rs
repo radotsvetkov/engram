@@ -36,19 +36,7 @@ pub fn find_engramd() -> Option<PathBuf> {
             }
         }
     }
-    // 3. Cargo target dirs relative to CWD (dev workflow).
-    for rel in [
-        "target/release/engramd",
-        "target/debug/engramd",
-        "../target/release/engramd",
-        "../target/debug/engramd",
-    ] {
-        let cand = PathBuf::from(rel);
-        if cand.exists() {
-            return Some(cand);
-        }
-    }
-    // 4. On PATH.
+    // 3. On PATH (a trusted, user-controlled location — preferred over anything CWD-relative).
     if let Ok(out) = std::process::Command::new("sh")
         .arg("-c")
         .arg("command -v engramd")
@@ -61,7 +49,32 @@ pub fn find_engramd() -> Option<PathBuf> {
             }
         }
     }
+    // 4. Cargo target dirs relative to CWD — DEV ONLY. Probing these unconditionally means running
+    // `engram` (even `engram status`) inside an untrusted cloned repo would silently execute THAT
+    // repo's `target/*/engramd` with the user's environment. Gate behind an explicit opt-in.
+    if dev_mode() {
+        for rel in [
+            "target/release/engramd",
+            "target/debug/engramd",
+            "../target/release/engramd",
+            "../target/debug/engramd",
+        ] {
+            let cand = PathBuf::from(rel);
+            if cand.exists() {
+                return Some(cand);
+            }
+        }
+    }
     None
+}
+
+/// Dev workflows (running from a checkout) opt in with `ENGRAM_DEV=1`, which re-enables
+/// CWD-relative discovery of both the `engramd` binary and a `./brain` home.
+fn dev_mode() -> bool {
+    matches!(
+        std::env::var("ENGRAM_DEV").ok().as_deref(),
+        Some("1") | Some("true")
+    )
 }
 
 /// The address engramd should bind, derived from the client base URL.
@@ -83,14 +96,19 @@ pub fn resolve_home() -> PathBuf {
             return PathBuf::from(h);
         }
     }
-    let cwd_brain = PathBuf::from("brain");
-    if cwd_brain.is_dir() {
-        return cwd_brain.canonicalize().unwrap_or(cwd_brain);
+    // A CWD-relative `./brain` is a dev convenience but a footgun elsewhere: from an untrusted
+    // directory it would point the daemon at a stranger's brain (a different signed ledger than the
+    // installed app's). Only honor it in dev mode; otherwise use the stable per-user ~/.engram.
+    if dev_mode() {
+        let cwd_brain = PathBuf::from("brain");
+        if cwd_brain.is_dir() {
+            return cwd_brain.canonicalize().unwrap_or(cwd_brain);
+        }
     }
     if let Some(home) = std::env::var_os("HOME") {
         return PathBuf::from(home).join(".engram");
     }
-    cwd_brain
+    PathBuf::from("brain")
 }
 
 /// Spawn `engramd` (detached) and poll `/health` until it answers or we give up.

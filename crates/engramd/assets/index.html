@@ -123,7 +123,10 @@
   .col.drop-target h3, .col.drop-target h3 span { color:var(--accent); }
   .card { cursor:grab; }
   .card:active { cursor:grabbing; }
-  .card.card-dragging { opacity:.32; box-shadow:none; }   /* the placeholder left behind */
+  .card.card-hidden { display:none; }                      /* original hides; the slot shows the landing spot */
+  .card.card-slot { background:var(--accent-soft); border:1.5px dashed color-mix(in srgb, var(--accent) 45%, transparent);
+    box-shadow:none; cursor:default; padding:0; transition:height var(--dur-1) var(--ease-out); }
+  .col[data-col] .card.card-slot::before { display:none; }
   .card-ghost { position:fixed; left:0; top:0; z-index:300; margin:0; pointer-events:none;
     background:var(--surface-3); box-shadow:var(--e4); transform:rotate(2deg) scale(1.03);
     cursor:grabbing; will-change:left,top; }
@@ -158,7 +161,7 @@
     transition:transform var(--dur-1) var(--ease-out), box-shadow var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out), background var(--dur-1) var(--ease-out); }
   .card:hover { transform:translateY(-1px); border-color:var(--border-strong); }
   body.dragging-active .card { transition:none; }            /* don't fight the drag ghost */
-  .card .t { font-size:13.5px; font-weight:500; }
+  .card .t { font-size:13.5px; font-weight:500; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
   .col[data-col] .card::before { content:''; position:absolute; left:0; top:11px; bottom:11px; width:2.5px; border-radius:2px; background:var(--border-strong); }
   /* One-click Run on a queued card - appears on hover, doesn't join the drag. */
   .card-run { position:absolute; top:8px; right:8px; width:26px; height:26px; border-radius:8px; display:inline-flex;
@@ -186,7 +189,8 @@
   .examplechips button:hover { border-color:var(--ring); color:var(--text-primary); background:var(--surface-3); }
 
   /* Detail panel */
-  .panel { position:fixed; top:0; right:0; width:340px; height:100vh; background:var(--surface-1);
+  /* Wide enough to READ a run's answer (tables, code) - 340px squeezed real results into a strip. */
+  .panel { position:fixed; top:0; right:0; width:min(520px,94vw); height:100vh; background:var(--surface-1);
     border-left:1px solid var(--border-strong); transform:translateX(100%); transition:transform .2s ease-out;
     display:flex; flex-direction:column; z-index:20; }
   .panel.open { transform:translateX(0); }
@@ -200,7 +204,8 @@
   .approval b { color:var(--warning); }
   .approval button { background:var(--accent); color:var(--accent-ink); border:none; border-radius:6px; padding:6px 12px; font-weight:500; cursor:pointer; }
   .approval button.ghost { background:var(--surface-2); color:var(--text-secondary); }
-  .answer { font-family:var(--font-voice); font-size:15px; line-height:1.5; margin:14px 0; }
+  .answer { margin:14px 0; }
+  .answer.msg.engram { font-size:13.5px; line-height:1.62; max-width:none; align-self:auto; }
   .artifact-grid { display:flex; flex-wrap:wrap; gap:9px; }
   .artifact { display:flex; flex-direction:column; gap:5px; width:104px; text-decoration:none; color:var(--text-secondary);
     border:1px solid var(--border-strong); border-radius:10px; padding:7px; background:var(--surface-2); transition:border-color .12s, background .12s; }
@@ -234,6 +239,19 @@
   .activity { max-width:840px; margin:0 auto; padding:22px 24px 60px; }
   .artifacts-view { max-width:980px; margin:0 auto; padding:22px 24px 60px; }
   .af-bar { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin:4px 0 18px; }
+  /* Sticky toolbars: on long lists the search/filters pin to the top of the scroller, so finding
+     and filtering never means scrolling back up. Slight blur keeps passing content legible. */
+  .af-bar, .act-controls, .sk-filter, .sched-stick { position:sticky; top:0; z-index:12; padding:12px 0 10px;
+    background:color-mix(in srgb, var(--surface-0) 86%, transparent);
+    backdrop-filter:blur(9px); -webkit-backdrop-filter:blur(9px); }
+  /* Floating back-to-top for list views (Skills/Artifacts/Activity/Schedule/Checkpoints). */
+  .view-top { position:fixed; right:22px; bottom:44px; z-index:40; width:36px; height:36px; border-radius:50%;
+    background:var(--surface-2); border:1px solid var(--border-strong); color:var(--text-secondary);
+    display:none; align-items:center; justify-content:center; cursor:pointer; box-shadow:var(--e2);
+    transition:color var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out); }
+  .view-top.show { display:inline-flex; }
+  .view-top:hover { color:var(--text-primary); border-color:var(--ring); }
+  .view-top svg { width:16px; height:16px; }
   .af-search { flex:1; min-width:200px; height:36px; padding:0 13px; border-radius:9px; border:1px solid var(--border-strong);
     background:var(--surface-2); color:var(--text); font-size:13px; outline:none; }
   .af-search:focus { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
@@ -307,12 +325,12 @@
      content (a flex child defaults to min-height:auto, which floors it at content height and makes
      the whole .chat overflow -> .view scrolls feed+composer together, the "everything scrolls" bug).
      overscroll-behavior:contain stops a feed scroll from chaining out to the page. */
-  .feed { flex:1 1 0; min-height:0; overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain; display:flex; flex-direction:column; gap:14px; padding:24px max(16px, calc((100% - 720px) / 2)) 14px;
+  .feed { flex:1 1 0; min-height:0; overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain; display:flex; flex-direction:column; gap:14px; padding:24px max(16px, calc((100% - var(--feed-w,720px)) / 2)) 14px;
     -webkit-mask-image:linear-gradient(to bottom, transparent 0, #000 26px, #000 calc(100% - 22px), transparent 100%);
     mask-image:linear-gradient(to bottom, transparent 0, #000 26px, #000 calc(100% - 22px), transparent 100%); }
-  .chat > .composer { margin:0 max(16px, calc((100% - 720px) / 2)) 24px; }
+  .chat > .composer { margin:0 max(16px, calc((100% - var(--feed-w,720px)) / 2)) 24px; }
   /* Jump-to-latest: a floating round button above the composer, shown only when scrolled up. */
-  .jump-bottom { position:absolute; right:max(18px, calc((100% - 720px) / 2)); bottom:140px; z-index:7;
+  .jump-bottom { position:absolute; right:max(18px, calc((100% - var(--feed-w,720px)) / 2)); bottom:140px; z-index:7;
     width:34px; height:34px; border-radius:50%; background:var(--surface-2); border:1px solid var(--border-strong);
     color:var(--text-secondary); display:none; align-items:center; justify-content:center; cursor:pointer;
     box-shadow:var(--e2,0 4px 14px rgba(0,0,0,.3)); opacity:0; transform:translateY(6px); transition:opacity .15s, transform .15s, color .12s, border-color .12s; }
@@ -405,7 +423,7 @@
   .tour-next { background:var(--accent); color:var(--accent-ink); border:none; border-radius:7px; padding:5px 13px; font-weight:600; font-size:12px; cursor:pointer; }
   .tour-next:hover { filter:brightness(1.06); }
   /* Follow-ups typed while a run is busy: queued below the feed, sent when the run finishes. */
-  .queued-strip { display:flex; flex-direction:column; gap:6px; padding:6px max(18px, calc((100% - 720px) / 2)) 0; }
+  .queued-strip { display:flex; flex-direction:column; gap:6px; padding:6px max(18px, calc((100% - var(--feed-w,720px)) / 2)) 0; }
   .queued-msg { display:flex; align-items:center; gap:8px; font-size:13px; color:var(--text-secondary);
     background:var(--surface-2); border:1px dashed var(--border); border-radius:9px; padding:6px 10px; }
   .queued-msg .q-dot { flex:none; font-size:12px; opacity:.8; }
@@ -498,7 +516,9 @@
   .tg-card .primary { background:var(--accent); color:var(--accent-ink); border:none; border-radius:9px; padding:10px 20px; font-weight:600; font-size:14px; cursor:pointer; }
   .tg-card .primary:hover { filter:brightness(1.06); }
   .tg-fine { margin-top:14px; font-size:12px; color:var(--text-muted); }
-  .panes { padding:16px; display:flex; flex-direction:column; gap:14px; max-width:920px; }
+  /* Centered like every other view (Skills/Artifacts/Activity) - Schedule and Checkpoints used to
+     hug the left edge, breaking the app's rhythm. */
+  .panes { padding:22px 24px 60px; display:flex; flex-direction:column; gap:14px; max-width:920px; margin:0 auto; }
   .pane { background:var(--surface-1); border:1px solid var(--border); border-radius:12px; padding:14px; }
   .pane h2 { margin:0 0 10px; font-size:13px; color:var(--text-secondary); font-weight:500; }
   .row { display:flex; gap:8px; margin-bottom:8px; }
@@ -817,11 +837,13 @@
   .settings h2 { font-size:17px; font-weight:600; margin:0 0 4px; }
   .settings .sub { color:var(--text-muted); font-size:12px; margin-bottom:18px; }
   .settings code { background:var(--surface-2); padding:1px 5px; border-radius:4px; font:12px var(--mono); }
-  .scard { background:var(--surface-1); border:1px solid var(--border); border-radius:12px; padding:16px 18px; margin-bottom:14px; }
-  .scard h3 { font-size:14px; font-weight:600; margin:0 0 3px; display:flex; align-items:center; gap:9px; flex-wrap:wrap; }
-  .scard .desc { color:var(--text-muted); font-size:12px; line-height:1.5; margin:0 0 14px; }
-  .field { margin-bottom:13px; }
-  .field > label { display:block; font-size:12px; color:var(--text-secondary); margin-bottom:5px; }
+  /* Breathing room: settings cards and fields were visually cramped (labels hugging inputs,
+     cards hugging each other). A slightly looser rhythm reads calmer without wasting space. */
+  .scard { background:var(--surface-1); border:1px solid var(--border); border-radius:12px; padding:18px 20px; margin-bottom:16px; }
+  .scard h3 { font-size:14px; font-weight:600; margin:0 0 5px; display:flex; align-items:center; gap:9px; flex-wrap:wrap; }
+  .scard .desc { color:var(--text-muted); font-size:12px; line-height:1.55; margin:0 0 15px; }
+  .field { margin-bottom:15px; }
+  .field > label { display:block; font-size:12px; color:var(--text-secondary); margin-bottom:6px; }
   .field input[type=text],.field input[type=password],.field input[type=number],.field select {
     width:100%; background-color:var(--surface-0); color:var(--text-primary); border:1px solid var(--border-strong);
     border-radius:8px; padding:9px 11px; outline:none; transition:border-color var(--dur-1,.15s) var(--ease-out), box-shadow var(--dur-1,.15s); }
@@ -857,9 +879,12 @@
   .toggle input:checked + .track::after { transform:translateX(16px); background:var(--accent-ink); }
   .mcprow { display:block; margin-bottom:10px; }
   .mcprow-main { display:grid; grid-template-columns:1fr 1.1fr 1.3fr auto auto; gap:8px; align-items:center; }
+  .mcprow-main > * { min-width:0; }   /* grid items default to min-width:auto -> inputs overflowed the card */
+  @media (max-width:1060px){ .mcprow-main { grid-template-columns:1fr 1fr; } .mcprow-main .tbtn, .mcprow-main .xbtn { justify-self:start; } }
   .mcprow input { background:var(--surface-0); border:1px solid var(--border-strong); border-radius:7px; padding:7px 9px; outline:none; color:var(--text-primary); font:inherit; }
   .mcprow input:hover, .mcp-adv textarea:hover, .mcp-adv .mcp-cwd:hover { border-color:var(--text-muted); }
   .mcprow input:focus, .mcp-adv textarea:focus, .mcp-adv .mcp-cwd:focus { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
+  .mcp-adv .mcp-url, .mcp-adv .mcp-bearer { width:100%; margin-top:6px; }
   .mcp-adv { margin-top:6px; }
   .mcp-adv > summary { cursor:pointer; font-size:11px; color:var(--text-muted); list-style:none; padding:2px 0; user-select:none; }
   .mcp-adv > summary::before { content:'+ '; }
@@ -942,6 +967,11 @@
   .cc-x { position:absolute; top:14px; right:18px; background:none; border:none; color:var(--text-muted); font-size:16px; cursor:pointer; z-index:1; }
   .cc-x:hover { color:var(--text-primary); }
   .kbd-row { display:flex; align-items:center; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--border); font-size:12px; color:var(--text-secondary); }
+  details.faq { border-bottom:1px solid var(--border); padding:2px 0; }
+  details.faq summary { cursor:pointer; padding:9px 2px; font-size:13px; color:var(--text-primary); list-style:none; display:flex; align-items:center; gap:8px; }
+  details.faq summary::before { content:'▸'; color:var(--text-muted); font-size:10px; transition:transform var(--dur-2) var(--ease-out); }
+  details.faq[open] summary::before { transform:rotate(90deg); }
+  details.faq .faq-a { padding:0 2px 12px 20px; font-size:12.5px; color:var(--text-secondary); line-height:1.6; }
   .kbd-row kbd { font:11px var(--mono); background:var(--surface-2); border:1px solid var(--border); border-radius:4px; padding:2px 7px; color:var(--text-primary); }
   .ph { color:var(--text-muted); font-size:12px; line-height:1.6; }
   .ph b { color:var(--text-secondary); font-weight:500; }
@@ -972,7 +1002,7 @@
     border-radius:8px; padding:4px 10px; font-size:12.5px; color:var(--text-secondary); cursor:pointer;
     transition:background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out); }
   .proj-top:hover { background:var(--hover); color:var(--text-primary); border-color:var(--border-strong); }
-  .proj-top .proj-caret { font-size:10px; color:var(--text-muted); }
+  .proj-top .proj-chev { width:12px; height:12px; color:var(--text-muted); flex:none; }
   .proj-top-menu { position:absolute; top:calc(100% + 6px); left:0; z-index:45; min-width:230px; background:var(--surface-2);
     border:1px solid var(--border-strong); border-radius:11px; box-shadow:var(--e3); padding:5px; animation:menuIn .13s var(--ease-out); }
   .proj-top-menu div { padding:7px 9px; border-radius:7px; font-size:12.5px; color:var(--text-secondary); cursor:pointer; display:flex; align-items:center; gap:8px; }
@@ -1231,8 +1261,18 @@
   padding:7px 9px; outline:none; font:inherit; line-height:1.5; resize:vertical; min-height:52px; color:inherit; }
 .sched-prompt:focus { border-color:var(--accent); }
 .sched-preview { display:flex; align-items:center; gap:8px; min-height:22px; font-size:12px; color:var(--text-muted); }
-.sched-preview.empty { opacity:0; }
+.sched-preview.empty { display:none; }   /* opacity:0 still reserved phantom height under the form */
 .sched-list { display:flex; flex-direction:column; gap:10px; }
+.sched-stick { display:flex; gap:10px; align-items:center; }
+/* "Run as" as a real form element: label above, control, explanation below, action aligned right. */
+.sched-runas { display:flex; gap:14px; align-items:flex-end; margin-top:4px; }
+.sched-runas .sr-field { flex:1; min-width:0; }
+.sched-runas label { display:block; font-size:11px; color:var(--text-muted); text-transform:uppercase; letter-spacing:.05em; margin-bottom:5px; }
+.sched-runas select { width:100%; background:var(--surface-2); border:1px solid var(--border); border-radius:8px; padding:8px 10px; outline:none; }
+.sched-runas select:focus { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
+.sched-runas .sr-hint { font-size:11.5px; color:var(--text-muted); line-height:1.5; margin-top:6px; }
+.sched-runas .sr-add { background:var(--accent); color:var(--accent-ink); border:none; border-radius:9px; padding:9px 18px; font-weight:600; cursor:pointer; flex:none; margin-bottom:26px; }
+.sched-runas .sr-add:hover { filter:brightness(1.06); }
 .sched-card { background:var(--surface-1); border:1px solid var(--border); border-radius:var(--r-card); box-shadow:var(--e1); padding:12px 13px; display:flex; flex-direction:column; gap:9px; transition:border-color var(--dur-2) var(--ease-out), transform var(--dur-2) var(--ease-out); }
 .sched-card:hover { border-color:var(--border-strong); }
 .sched-card.is-running { border-color:var(--ring); }
@@ -1440,7 +1480,7 @@
   /* light theme - opt-in via data-engram-theme; reuses existing token names so every screen follows */
   html[data-engram-theme="light"] {
     --rail:#e9eaed; --surface-0:#fbfbfc; --surface-1:#f3f4f6; --surface-2:#e9eaed; --surface-3:#dfe1e5;
-    --border:rgba(0,0,0,.08); --border-strong:rgba(0,0,0,.14);
+    --border:rgba(0,0,0,.10); --border-strong:rgba(0,0,0,.18);
     --border-hi:inset 0 1px 0 rgba(255,255,255,.6);
     --text-primary:#1a1c1f; --text-secondary:#4a4e56; --text-muted:#80858e;
     --hover:rgba(0,0,0,.04); --active:rgba(0,0,0,.07);
@@ -1477,6 +1517,8 @@
   @media (max-width: 620px) {
     .board { grid-template-columns: 1fr; }
   }
+  html[data-engram-motion="reduced"] *, html[data-engram-motion="reduced"] *::before, html[data-engram-motion="reduced"] *::after {
+    animation:none !important; transition:none !important; }
   html[data-engram-density="compact"] .scard { padding:11px 13px; margin-bottom:9px; }
   html[data-engram-density="compact"] .field { margin-bottom:9px; }
   html[data-engram-density="compact"] body { font-size:12.5px; }
@@ -1600,7 +1642,7 @@
     <div id="banner" aria-live="assertive"></div>
     <header class="topbar">
       <button class="sb-toggle" id="sbToggle" onclick="event.stopPropagation();document.body.classList.toggle('sb-drawer')" title="Chats" aria-label="Show chats"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h10M4 18h16"/></svg></button>
-      <span class="proj-top-wrap" id="projTopWrap"><button class="proj-top" id="projTop" onclick="projTopToggle(event)" title="Switch project — scopes chats, tasks, and memory"><span class="proj-dot"></span><span id="projTopName">…</span><span class="proj-caret">⌄</span></button></span>
+      <span class="proj-top-wrap" id="projTopWrap"><button class="proj-top" id="projTop" onclick="projTopToggle(event)" title="Switch project — scopes chats, tasks, and memory"><span class="proj-dot"></span><span id="projTopName">…</span><svg class="proj-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></button></span>
       <h1 id="viewname">Tasks</h1>
       <div class="right">
         <button class="kbtn" onclick="openPalette()" title="Command palette (⌘K)" aria-label="Command palette"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3-3"/></svg> <kbd aria-hidden="true">⌘K</kbd></button>
@@ -1610,6 +1652,7 @@
     <div class="view" id="view"></div>
   </div>
 </div>
+<button class="view-top" id="viewTop" title="Back to top" aria-label="Back to top" onclick="(document.querySelector('.skills-wrap')||document.getElementById('view')).scrollTo({top:0,behavior:'smooth'})"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
 <footer class="statusbar">
   <span class="sb-left"><span class="dot" id="sbDot"></span><span id="sbDaemon" class="mono">engramd</span></span>
   <span class="sb-center" id="sbSpine"><span class="chip ok" id="ledgerChip" role="status" aria-live="polite" onclick="go('Activity')" title="every action is signed into a hash-chained ledger - click to browse and verify it"><span class="seal"></span>ledger ...</span><span class="chip sb-run" id="sbRun" style="display:none" onclick="go('Tasks')" title="Runs in flight right now - click to watch"><span class="pulse"></span><span id="sbRunN"></span></span></span>
@@ -1782,12 +1825,21 @@ function go(v){ if(typeof voiceCloseConversation==='function' && v!=='Chat') voi
 function projTopSync(){
   document.body.classList.toggle('no-sb', state.route!=='Chat');
   if(state.route!=='Chat') document.body.classList.remove('sb-drawer');
+  const vt=document.getElementById('viewTop'); if(vt) vt.classList.remove('show');   // fresh view starts at top
   const n=document.getElementById('projTopName'); if(n) n.textContent=curProject().name;
 }
 // Click-away closes the narrow-width chats drawer (the sidebar overlays the feed there).
 document.addEventListener('click', e=>{
   if(document.body.classList.contains('sb-drawer') && !e.target.closest('.sidebar,#sbToggle')) document.body.classList.remove('sb-drawer');
 });
+// Back-to-top for the list views: watch whichever element actually scrolls (Skills scrolls its own
+// wrap; everything else scrolls #view). Chat has its own jump-to-latest control.
+document.addEventListener('scroll', ()=>{
+  const b=document.getElementById('viewTop'); if(!b) return;
+  if(state.route==='Chat'){ b.classList.remove('show'); return; }
+  const sc=document.querySelector('.skills-wrap')||document.getElementById('view');
+  b.classList.toggle('show', !!sc && sc.scrollTop>500);
+}, true);
 function projTopClose(){ const m=document.getElementById('projTopMenu'); if(m) m.remove(); }
 function projTopToggle(ev){
   if(ev) ev.stopPropagation();
@@ -2146,50 +2198,103 @@ async function previewTask(id){
 // we implement dragging directly on pointer events: a floating ghost that follows the cursor,
 // live column hit-testing with a highlighted drop target, a click/drag discriminator (so a tap
 // still opens the card), and an optimistic move that PATCHes the new status.
+// ---- kanban drag: pointer-captured, with a live insertion placeholder --------------------------
+// The old drag left the card dimly in place and teleported it on drop, lost the pointer when it
+// left the window, and gave no hint of WHERE the card would land. This version: captures the
+// pointer, hides the original, moves a same-size placeholder to the exact landing slot as you
+// drag, auto-scrolls a hovered column near its edges, animates the ghost into the slot on drop,
+// and cancels cleanly on Escape or pointer loss (ghost flies home).
 let kdrag=null;
 function boardPointerDown(e){
   if(e.button!==0) return;
   const cardEl=e.target.closest('.card'); if(!cardEl) return;
-  if(e.target.closest('.rcpt-chip')) return;            // let the receipt chip take its own click
-  if(e.target.closest('.card-run')) return;             // the hover Run button takes its own click
+  if(e.target.closest('.rcpt-chip,.card-run,button,a')) return;   // controls keep their clicks
   const board=cardEl.closest('.board'); if(!board) return;
   const r=cardEl.getBoundingClientRect();
   kdrag={ id:cardEl.dataset.id, cardEl, startX:e.clientX, startY:e.clientY,
-          offX:e.clientX-r.left, offY:e.clientY-r.top, w:r.width, moved:false, ghost:null };
+          offX:e.clientX-r.left, offY:e.clientY-r.top, w:r.width, h:r.height,
+          moved:false, ghost:null, ph:null, homeCol:cardEl.closest('.col'), scrollRAF:0 };
+  try{ cardEl.setPointerCapture(e.pointerId); }catch(_){}
   window.addEventListener('pointermove', boardPointerMove);
   window.addEventListener('pointerup', boardPointerUp, { once:true });
   window.addEventListener('pointercancel', boardPointerUp, { once:true });
+  window.addEventListener('keydown', boardDragKey, true);
 }
+function boardDragKey(e){ if(e.key==='Escape' && kdrag && kdrag.moved){ e.preventDefault(); boardDragCancel(); } }
 function columnUnder(x,y){
   for(const el of document.elementsFromPoint(x,y)){ const c=el.closest&&el.closest('.col'); if(c) return c; }
   return null;
 }
+// The card the pointer would insert BEFORE in this column (by vertical midpoint), skipping the
+// placeholder itself and the hidden original.
+function slotBefore(col, y){
+  const cards=[...col.querySelectorAll('.card')].filter(c=>c!==kdrag.cardEl && !c.classList.contains('card-slot'));
+  for(const c of cards){ const r=c.getBoundingClientRect(); if(y < r.top + r.height/2) return c; }
+  return null;
+}
 function boardPointerMove(e){
-  if(!kdrag) return;
-  if(!kdrag.moved){
-    if(Math.hypot(e.clientX-kdrag.startX, e.clientY-kdrag.startY) < 5) return;   // still a click
-    kdrag.moved=true;
-    const g=kdrag.cardEl.cloneNode(true);
-    g.className='card card-ghost'; g.style.width=kdrag.w+'px';
-    document.body.appendChild(g); kdrag.ghost=g;
-    kdrag.cardEl.classList.add('card-dragging');
+  const d=kdrag; if(!d) return;
+  if(!d.moved){
+    if(Math.hypot(e.clientX-d.startX, e.clientY-d.startY) < 6) return;   // still a click
+    d.moved=true;
+    const g=d.cardEl.cloneNode(true);
+    g.className='card card-ghost'; g.style.width=d.w+'px';
+    document.body.appendChild(g); d.ghost=g;
+    d.ph=document.createElement('div'); d.ph.className='card card-slot'; d.ph.style.height=d.h+'px';
+    d.cardEl.after(d.ph); d.cardEl.classList.add('card-hidden');
     document.body.classList.add('dragging-active');
   }
-  kdrag.ghost.style.left=(e.clientX-kdrag.offX)+'px';
-  kdrag.ghost.style.top=(e.clientY-kdrag.offY)+'px';
+  d.ghost.style.left=(e.clientX-d.offX)+'px';
+  d.ghost.style.top=(e.clientY-d.offY)+'px';
   const col=columnUnder(e.clientX, e.clientY);
   document.querySelectorAll('.col').forEach(c=>c.classList.toggle('drop-target', c===col));
+  if(col){
+    const cards=col.querySelector('.cards');
+    const before=slotBefore(col, e.clientY);
+    if(before) cards.insertBefore(d.ph, before); else cards.appendChild(d.ph);
+    // Edge auto-scroll: keep dragging usable in a column longer than its viewport.
+    const cr=cards.getBoundingClientRect();
+    const dy = e.clientY < cr.top+44 ? -9 : (e.clientY > cr.bottom-44 ? 9 : 0);
+    if(dy) cards.scrollTop += dy;
+  }
+}
+function boardDragTeardown(d){
+  window.removeEventListener('pointermove', boardPointerMove);
+  window.removeEventListener('keydown', boardDragKey, true);
+  document.querySelectorAll('.col').forEach(c=>c.classList.remove('drop-target'));
+  document.body.classList.remove('dragging-active');
+}
+// Fly the ghost to a target rect, then finish. 150ms of physicality instead of a teleport.
+function ghostFlyTo(d, rect, after){
+  if(!d.ghost){ after(); return; }
+  const g=d.ghost;
+  g.style.transition='left .15s cubic-bezier(.22,.61,.36,1), top .15s cubic-bezier(.22,.61,.36,1), transform .15s';
+  g.style.transform='none'; g.style.left=rect.left+'px'; g.style.top=rect.top+'px';
+  setTimeout(()=>{ g.remove(); after(); }, 160);
+}
+function boardDragCancel(){
+  const d=kdrag; kdrag=null; if(!d) return;
+  boardDragTeardown(d);
+  const home=d.cardEl.getBoundingClientRect();
+  ghostFlyTo(d, home, ()=>{ if(d.ph) d.ph.remove(); d.cardEl.classList.remove('card-hidden'); });
 }
 async function boardPointerUp(e){
-  window.removeEventListener('pointermove', boardPointerMove);
   const d=kdrag; kdrag=null; if(!d) return;
+  boardDragTeardown(d);
   if(!d.moved){ openTask(d.id); return; }                // no movement => it was a click
   const col=columnUnder(e.clientX, e.clientY);
-  document.querySelectorAll('.col').forEach(c=>c.classList.remove('drop-target'));
-  if(d.ghost) d.ghost.remove();
-  d.cardEl.classList.remove('card-dragging');
-  document.body.classList.remove('dragging-active');
-  if(col) await moveTask(d.id, col.dataset.col);
+  if(!col || !d.ph){ // dropped outside the board -> fly home, no change
+    const home=d.cardEl.getBoundingClientRect();
+    ghostFlyTo(d, home, ()=>{ if(d.ph) d.ph.remove(); d.cardEl.classList.remove('card-hidden'); });
+    return;
+  }
+  const slot=d.ph.getBoundingClientRect();
+  ghostFlyTo(d, slot, async ()=>{
+    // Land the real card in the slot instantly (optimistic), THEN persist + re-render.
+    d.ph.replaceWith(d.cardEl); d.cardEl.classList.remove('card-hidden');
+    d.cardEl.classList.add('just-dropped'); setTimeout(()=>d.cardEl.classList.remove('just-dropped'),420);
+    await moveTask(d.id, col.dataset.col);
+  });
 }
 async function moveTask(id, key){
   const t=state.tasks.find(x=>x.id===id);
@@ -2265,7 +2370,9 @@ async function openTask(id, fromPoll){
         ${opts?`<div class="row" style="flex-wrap:wrap;gap:6px;margin-top:6px">${opts}</div>`:''}
         <div class="sub" style="margin-top:6px">Reply in chat to continue.</div></div>`;
     }
-    html+=`<div class="answer">${mdToHtml(String(t.run.answer||''))}</div>`;
+    // The run's answer gets the SAME rich markdown treatment as chat replies (headings, lists,
+    // tables, code blocks with Copy) - reusing .msg.engram's styles instead of bare serif <p>s.
+    html+=`<div class="answer msg engram">${mdToHtml(String(t.run.answer||''))}</div>`;
     // Artifacts this run produced - files the agent created, copied to a persistent per-task dir so
     // they survive worktree cleanup. Images preview inline; everything else downloads.
     if(t.run.output_files && t.run.output_files.length){
@@ -3976,6 +4083,8 @@ function ccPersona(c){
   return ccHead('Persona','Standing instructions prepended to every agent run - your <code>SOUL.md</code>. Saved changes shape the very next run.')+`
     <div class="scard">
       <div class="field"><textarea id="persona" rows="9" placeholder="e.g. You are concise and precise. Prefer primary sources. Never guess - say so when you\'re unsure.">${esc(c._persona||'')}</textarea></div>
+      <div class="desc" style="margin:2px 0 6px">Need a starting point? One click drops an example in - edit it to taste, then save.</div>
+      <div class="tmpl-chips">${TEMPLATES.personas.map(t=>`<button class="tmpl-chip" title="${escAttr(t.text)}" onclick="document.getElementById('persona').value=${attrJson(t.text)}">${esc(t.name)}</button>`).join('')}</div>
       <div class="sactions"><span class="grow"></span><button class="sbtn primary" onclick="savePersona()">Save persona</button></div>
     </div>`;
 }
@@ -4051,16 +4160,35 @@ async function wsDeleteProject(id){
   }catch(e){ notify('Couldn\'t delete - '+e.message); }
 }
 function ccVoice(){
+  const p=engramPrefs();
   const stt = (typeof VOICE!=='undefined' && VOICE.supported);
   const tts = ('speechSynthesis' in window);
+  const voices = tts ? (window.speechSynthesis.getVoices()||[]).filter(v=>/^en/i.test(v.lang)) : [];
+  const cur = p.voiceName || (VOICE.voice&&VOICE.voice.name) || '';
+  const vopts = ['<option value="">Automatic (best English voice)</option>']
+    .concat(voices.map(v=>`<option value="${escAttr(v.name)}"${v.name===cur?' selected':''}>${esc(v.name)} · ${esc(v.lang)}</option>`)).join('');
   const row=(ok,label,detail)=>`<div class="kbd-row"><span>${label}<div class="sub" style="font-size:11px;color:var(--text-muted)">${detail}</div></span><span class="badge" style="${ok?'color:var(--accent);border-color:rgba(69,200,168,.32)':''}">${ok?'available':'unavailable'}</span></div>`;
-  return ccHead('Voice','Speech in and out - browser-native, fully offline.')+
+  return ccHead('Voice','Speech in and out - browser-native, fully offline, tuned here.')+
   `<div class="scard">
+    <label class="toggle"><input type="checkbox" ${p.voiceSpeak===false?'':'checked'} onchange="setEngramPref('voiceSpeak',this.checked)"><span class="track"></span> Speak replies aloud in Voice conversations</label>
+    <div style="height:14px"></div>
+    <div class="field"><label>Voice</label><select id="vcVoice" onchange="setEngramPref('voiceName',this.value);voicePickVoice()">${vopts}</select></div>
+    <div class="field"><label>Speaking rate <span class="muted" id="vcRateVal" style="font-weight:400">${(p.voiceRate||1.02).toFixed(2)}×</span></label>
+      <input type="range" min="0.7" max="1.5" step="0.05" value="${p.voiceRate||1.02}" oninput="document.getElementById('vcRateVal').textContent=(+this.value).toFixed(2)+'×'" onchange="setEngramPref('voiceRate',+this.value)"></div>
+    <div class="sactions"><button class="sbtn" onclick="voiceTestSpeak()">▶ Test voice</button></div>
+  </div>
+  <div class="scard">
     ${row(stt,'Speech-to-text (dictation &amp; conversation)','webkitSpeechRecognition. May be absent in this window; when so, voice replies still work and a typed fallback keeps conversation usable.')}
     ${row(tts,'Spoken replies','speechSynthesis reads Engram\'s replies aloud, sentence by sentence.')}
     <div class="ph" style="margin-top:12px">Dictate from the <b>mic</b> beside the composer. Start a hands-free <b>Voice</b> conversation from the Chat header - an animated orb listens, speaks, and supports tap-to-interrupt.</div>
-    <div class="ph" style="margin-top:8px;color:var(--text-muted)">A premium server-side engine (POST <code class="ic">/v1/voice</code> and the <code class="ic">/v1/voice/stream</code> socket) provides STT/TTS where the browser can\'t - configurable once a speech provider is connected.</div>
   </div>`; }
+function voiceTestSpeak(){
+  if(!('speechSynthesis' in window)) return notify('Speech synthesis is unavailable in this window');
+  const p=engramPrefs();
+  const u=new SpeechSynthesisUtterance('Hi - this is how Engram will sound.');
+  if(VOICE.voice) u.voice=VOICE.voice; u.rate=p.voiceRate||1.02;
+  try{ window.speechSynthesis.cancel(); window.speechSynthesis.speak(u); }catch(_){}
+}
 // A small, bounded starter set (deliberately NOT a marketplace) - enough to begin work
 // pre-shaped. Each starter is a real action: create a task, apply a persona, prefill the composer.
 const TEMPLATES = {
@@ -4144,9 +4272,18 @@ async function agentActivity(id){
 function ccAgents(){
   // Render from cache; refresh async and repaint the grid in place (renderCCBody is sync).
   J('/v1/agents').then(a=>{ AGENTS=a||[]; if(ccActive==='agents'){ const el=document.getElementById('agentsGrid'); if(el) el.innerHTML=agentsGridHtml(); } }).catch(()=>{});
+  const starters=[
+    {name:'Researcher', emoji:'🔎', color:'#85b7eb', role:'You research thoroughly. Gather from multiple sources, cross-check claims, cite where each fact came from, and end with a short synthesis of what matters.'},
+    {name:'Coder', emoji:'🛠️', color:'#45c8a8', role:'You write and review code. Prefer small, tested changes; explain trade-offs briefly; never leave code in a broken state; cite file paths and line numbers.'},
+    {name:'Writer', emoji:'✍️', color:'#e0a23c', role:'You draft clear, structured prose. Lead with the point, keep paragraphs short, and match the tone the user asks for. Offer one alternative angle when useful.'},
+  ].map(s=>`<div class="integ-card"><div class="ih"><span class="it">${s.emoji} ${s.name}</span></div>
+      <div class="id">${esc(s.role.slice(0,90))}…</div>
+      <div class="integ-act"><button class="sbtn" onclick="starterAgent(${attrJson(s.name)},${attrJson(s.emoji)},${attrJson(s.color)},${attrJson(s.role)},this)">Add to team</button></div></div>`).join('');
   return ccHead('Agents','Your auditable team. Each agent runs with its own role and model; assign one to a kanban card and every step it takes is signed as that agent - a team you can audit, not an opaque swarm.')+`
     <div class="scard"><div class="sactions" style="margin-bottom:12px"><button class="sbtn primary" onclick="agentEdit('')">+ New agent</button><span class="grow"></span></div>
-      <div class="integ-grid" id="agentsGrid">${agentsGridHtml()}</div></div>`;
+      <div class="integ-grid" id="agentsGrid">${agentsGridHtml()}</div></div>
+    <div class="scard"><h3>Starter agents</h3><div class="desc">One click adds a ready-made teammate - rename, restyle, or tighten its role any time.</div>
+      <div class="integ-grid">${starters}</div></div>`;
 }
 function agentEdit(id){
   const a = AGENTS.find(x=>x.id===id) || {id:'',name:'',role:'',model:'',provider:'',base_url:'',api_key_set:false};
@@ -4215,6 +4352,16 @@ function agPickColor(el, color){
   box.dataset.color = (box.dataset.color===color ? '' : color);
   box.querySelectorAll('.ag-sw').forEach(s=>s.classList.remove('on'));
   if(box.dataset.color) el.classList.add('on');
+}
+async function starterAgent(name, emoji, color, role, btn){
+  if((AGENTS||[]).some(a=>a.name===name)){ notify('"'+name+'" is already on the team'); return; }
+  if(btn) btn.disabled=true;
+  try{
+    await J('/v1/agents',{method:'POST',headers:MIND_JSON,body:JSON.stringify({name,role,emoji,color,model:'',provider:'',base_url:'',api_key:'',effort:''})});
+    AGENTS=await J('/v1/agents'); notify(emoji+' '+name+' joined the team','ok');
+    const el=document.getElementById('agentsGrid'); if(el) el.innerHTML=agentsGridHtml();
+  }catch(e){ notify('Couldn\'t add - '+((e&&e.message)||'error')); }
+  finally{ if(btn) btn.disabled=false; }
 }
 async function agentSave(id, btn){
   const ov=btn.closest('.overlay');
@@ -4438,11 +4585,23 @@ async function importSettings(input){
     notify('Settings imported - re-enter any API keys','ok');
   }catch(e){ notify('Import failed: '+e.message); }
 }
-function ccAbout(c){ return ccHead('About &amp; FAQ','What Engram is.')+`
-    <div class="scard"><div class="ph"><b>Engram</b> - a local AI workspace that proves what it did, remembers who you are, and costs nothing at rest.<br><br>
-    <b>Why it\'s different</b> · every action is signed into a hash-chained ledger you can verify offline - a glass-box receipt no black box can reproduce. The brain grows a model of you across sessions. It sleeps to zero when idle. Tools can\'t send your context to the web unless you allow it.<br><br>
-    <b>Verify offline</b> · run <code>engramd verify ~/.engram</code> to re-walk the signed chain without trusting the running daemon.<br><br>
-    Version ${esc((c&&c.version)||'0.1.0')}. The ledger spine sits at the bottom of every screen.</div></div>`;
+function ccAbout(c){
+  const faq=[
+    ['Where does my data live?','Everything - memories, chats, the signed ledger, artifacts - lives in <code>~/.engram</code> on this machine. Nothing syncs anywhere unless you connect a channel or a model provider yourself.'],
+    ['What does "signed ledger" actually mean?','Every action appends an Ed25519-signed, hash-chained entry. Change one byte of history and the chain stops verifying. Run <code>engramd verify ~/.engram</code> in a terminal to check it without trusting the running app.'],
+    ['Can the agent leak my data to the web?','Not silently. If a run has read untrusted content while holding private context, outbound actions are refused (the trifecta guard) and staged for your explicit, signed approval.'],
+    ['What is the difference between a chat and a task?','Chat answers you live. A task runs in the background with tools - browsing, files, shell if you allow it - and lands on the board with a receipt of every step.'],
+    ['What are projects?','Workspaces with their own chats, persona, working folder, and memory scope. Facts learned in one project don\'t bleed into another; global facts about you follow everywhere.'],
+    ['What is Working memory (consciousness)?','A distilled set of lines about you that ships with every answer. See and edit it on the Memory view - or from the Context chip in the composer.'],
+    ['Why does a skill say "unverified"?','It has no recorded input->output examples to score improvements against. Add an example and the improve loop can prove a rewrite is better before adopting it.'],
+    ['How much does it cost at rest?','Nothing. The daemon sleeps to zero when idle and wakes on demand; you pay only your model provider for the tokens you actually use.'],
+    ['My model key - where is it stored?','In a local secret store (a 0600 file, or the OS keychain if you opt in) - never in config.json, never in the ledger. A key is remembered per provider, so switching backends doesn\'t ask again.'],
+  ].map(q=>`<details class="faq"><summary>${q[0]}</summary><div class="faq-a">${q[1]}</div></details>`).join('');
+  return ccHead('About &amp; FAQ','What Engram is, and the questions everyone asks.')+`
+    <div class="scard"><div class="ph"><b>Engram ${esc((c&&c.version)||'')}</b> - a local AI workspace that proves what it did, remembers who you are, and costs nothing at rest.<br><br>
+    Every action is signed into a hash-chained ledger you can verify offline. The brain grows a model of you across sessions, scoped per project. Tools can't send your context to the web unless you allow it. The ledger spine sits at the bottom of every screen.</div>
+    <div class="sactions" style="margin-top:12px"><button class="sbtn" onclick="verifyLedgerNow()">Verify the ledger now</button><button class="sbtn ghost" onclick="go('Activity');closeCC()">Browse the ledger</button></div></div>
+    <div class="scard"><h3>FAQ</h3>${faq}</div>`;
 }
 
 function mcpRowHtml(s){
@@ -4472,7 +4631,15 @@ function wireProviderKind(){
     const base=document.getElementById('pbase'), model=document.getElementById('pmodel');
     base.placeholder = P.base || 'default';
     if(setVal){ base.value = P.base || ''; if(model && (!model.value || true)) model.value = P.models[0]||''; }
-    document.getElementById('keyHint').textContent = P.needsKey ? ('key format: '+P.keyHint) : 'no API key needed for this backend';
+    // Say when a key is ALREADY remembered for the selected backend - switching kinds no longer
+    // means retyping (the daemon keeps a per-provider key store), and the UI should say so.
+    const saved=(CFG&&CFG.keys_saved_for||[]).includes(sel.value);
+    const hint=document.getElementById('keyHint');
+    hint.innerHTML = !P.needsKey ? 'no API key needed for this backend'
+      : saved ? '<span style="color:var(--accent)">✓ a key for this backend is saved</span> — leave blank to use it, or type to replace'
+      : ('key format: '+P.keyHint);
+    const inp=document.getElementById('pkey');
+    if(inp) inp.placeholder = saved ? '•••••••• saved for this backend - blank keeps it' : (P.needsKey?'paste your API key':'');
     document.getElementById('keyField').style.opacity = P.needsKey ? '1' : '.55';
     const dl=document.getElementById('modellist'); if(dl) dl.innerHTML=P.models.map(m=>`<option value="${escAttr(m)}"></option>`).join('');
   };
@@ -4924,7 +5091,8 @@ async function renderActivity(){
   // succeeded. The old default of {ok:true} rendered the green seal on any fetch failure — a false
   // affirmative on the one surface whose whole point is "shown, never claimed".
   let tail=[], v=null, pk={}, fetched=false;
-  try{ [tail,v,pk]=await Promise.all([J('/v1/ledger/tail?n=200'),J('/v1/ledger/verify'),J('/v1/ledger/pubkey')]); fetched=true; }catch(_){}
+  ACT.limit=ACT.limit||200; ACT.shown=120;
+  try{ [tail,v,pk]=await Promise.all([J('/v1/ledger/tail?n='+ACT.limit),J('/v1/ledger/verify'),J('/v1/ledger/pubkey')]); fetched=true; }catch(_){}
   ACT.entries=(tail||[]).slice().reverse(); ACT.verify=v; ACT.pubkey=pk;
   const seal = !fetched||!v ? `<div class="act-verify unknown"><span class="act-seal">${ACT_SEAL_BAD}</span>
       <div class="av-text"><div class="av-status">Couldn't reach the ledger — not verified</div>
@@ -4943,20 +5111,35 @@ async function renderActivity(){
     <div class="act-list" id="actList"></div></div>`;
   actPaint();
 }
-function actSetFilter(f){ ACT.filter=f; document.querySelectorAll('.act-filters button').forEach(b=>b.classList.toggle('on', b.dataset.f===f)); actPaint(); }
+function actSetFilter(f){ ACT.filter=f; ACT.shown=120; document.querySelectorAll('.act-filters button').forEach(b=>b.classList.toggle('on', b.dataset.f===f)); actPaint(); }
+// Lazy list: render in chunks and grow on scroll (an IntersectionObserver on a sentinel), so a
+// 5,000-entry ledger doesn't paint 5,000 rows up front. "Load older" refetches a deeper tail.
 function actPaint(){
   const list=document.getElementById('actList'); if(!list) return;
   const q=(document.getElementById('actSearch')?.value||'').toLowerCase();
-  list.innerHTML = ACT.entries.filter(e=>{
+  const match=ACT.entries.filter(e=>{
     if(ACT.filter!=='all' && (e.actor||'core')!==ACT.filter) return false;
     if(q){ const hay=((e.kind||'')+' '+actShortJson(e.payload||{})).toLowerCase(); if(!hay.includes(q)) return false; }
     return true;
-  }).map(e=>{ const a=actEntry(e);
+  });
+  const shown=match.slice(0, ACT.shown||120);
+  const more = match.length>shown.length
+    ? `<div class="act-more" id="actMore"><button class="sbtn ghost" onclick="ACT.shown+=200;actPaint()">Show ${Math.min(200,match.length-shown.length)} more</button></div>`
+    : (ACT.entries.length>=ACT.limit
+        ? `<div class="act-more"><button class="sbtn ghost" onclick="ACT.limit=Math.min(5000,ACT.limit*2);renderActivity()">Load older entries from the ledger</button></div>`
+        : '');
+  list.innerHTML = (shown.map(e=>{ const a=actEntry(e);
     return `<div class="act-row"><span class="act-dot" style="background:${a.color};color:${a.color}"></span>
       <div class="act-main"><div class="act-kind">${esc(a.label)}</div>${a.summary?`<div class="act-summary">${esc(a.summary.slice(0,220))}</div>`:''}
         <div class="act-meta2"><span class="act-time">${esc(fmtAgo(e.ts_ms))}</span><span class="act-by">${esc(a.actor)}</span><span>#${esc(String(e.seq))}</span>
           <span class="act-hash" title="signed hash - click to copy" onclick="navigator.clipboard&&navigator.clipboard.writeText('${escAttr(e.hash||'')}')">◇ ${esc((e.hash||'').slice(0,10))}</span></div></div></div>`;
-  }).join('') || '<div class="ses-empty" style="padding:24px 2px">No matching entries.</div>';
+  }).join('') || '<div class="ses-empty" style="padding:24px 2px">No matching entries.</div>') + more;
+  // Auto-grow when the "Show more" sentinel scrolls into view - pagination without the clicking.
+  const sent=document.getElementById('actMore');
+  if(sent && 'IntersectionObserver' in window){
+    const io=new IntersectionObserver(es=>{ if(es.some(x=>x.isIntersecting)){ io.disconnect(); ACT.shown+=200; actPaint(); } },{root:document.getElementById('view'),rootMargin:'240px'});
+    io.observe(sent);
+  }
 }
 function renderView(){
   if(state.route==='Tasks') renderBoard();
@@ -5476,6 +5659,7 @@ function schedCardHtml(job){
   const runBtn = running
     ? `<button class="sc-btn sc-run" disabled aria-label="Running"><span class="sc-spin"></span></button>`
     : `<button class="sc-btn sc-run" onclick="runJobNow(${attrJson(job.id)},event)" title="Run now" aria-label="Run now">${SVG('<path d="M7 5.5v13l11-6.5-11-6.5Z"/>')}</button>`;
+  const editBtn = `<button class="sc-btn" onclick="editJob(${attrJson(job.id)},event)" title="Edit name, cadence, prompt, or agent" aria-label="Edit schedule">${SVG('<path d="M17 3.5 20.5 7 8.5 19H5v-3.5z"/>')}</button>`;
   const delBtn = `<button class="sc-btn sc-del" onclick="deleteJob(${attrJson(job.id)},${attrJson(job.name)},event)" title="Delete schedule" aria-label="Delete schedule">${SVG('<path d="M5 7h14M9.5 7V5.4A1.4 1.4 0 0 1 10.9 4h2.2a1.4 1.4 0 0 1 1.4 1.4V7M7 7l.8 11.3A1.6 1.6 0 0 0 9.4 20h5.2a1.6 1.6 0 0 0 1.6-1.5L17 7"/>')}</button>`;
   const pct = Math.round(schedProgress(job) * 100);
   const due = job.next_fire_ms <= Date.now();
@@ -5492,7 +5676,7 @@ function schedCardHtml(job){
     <div class="sc-top">
       <span class="sc-name">${esc(job.name)}</span>
       ${badge}
-      <span class="sc-actions">${runBtn}${delBtn}</span>
+      <span class="sc-actions">${runBtn}${editBtn}${delBtn}</span>
     </div>
     <div class="sc-meter${due?' sc-due':''}" data-start="${job.last_fire_ms||job.created_ms||0}" data-next="${job.next_fire_ms||0}"><i style="width:${pct}%"></i></div>
     <div class="sc-foot"><span class="sc-next" data-next="${job.next_fire_ms||0}">${schedNextLabel(job)}</span>${last}</div>
@@ -5507,14 +5691,18 @@ async function renderScheduleView(){
   // autonomy policy governs the unattended run); re-render when it arrives so the select fills.
   if(!window._agentsLoaded){ window._agentsLoaded=true; J('/v1/agents').then(a=>{ AGENTS=a||[]; if(state.route==='Schedule') renderScheduleView(); }).catch(()=>{}); }
   jobs.sort((a,b)=> (a.next_fire_ms||0) - (b.next_fire_ms||0));   // soonest first
+  window._schedJobs=jobs;
   const n = jobs.length;
   const list = n
-    ? `<div class="sched-list">${jobs.map(schedCardHtml).join('')}</div>`
+    ? `<div class="sched-list" id="schedListBox">${jobs.map(schedCardHtml).join('')}</div>`
     : `<div class="sched-empty">
         <span class="se-glyph">${ICONS.Schedule}</span>
         <div class="se-title">Nothing scheduled yet</div>
         <div class="se-hint">Engram can run a task on a cadence and wake itself to do it - even from sleep. Try <code>every Monday at 9am</code> or <code>every 30 minutes</code>.</div>
       </div>`;
+  // With a long Upcoming list, search + a pinned way back to "create new" keep the view usable.
+  const stick = n>=4 ? `<div class="sched-stick"><input class="act-search" style="flex:1" placeholder="Search schedules…" oninput="schedFilter(this.value)">
+      <button class="sbtn" onclick="document.getElementById('view').scrollTo({top:0,behavior:'smooth'});setTimeout(()=>document.getElementById('sname')?.focus(),380)">+ New</button></div>` : '';
   // A re-render (Run-now, Delete, the async agents load) must NOT destroy an in-progress compose
   // draft - the prompt textarea is the agent's whole instruction set. Snapshot + restore.
   const keep={}; for(const id of ['sname','swhen','sprompt','sagent']){ const x=document.getElementById(id); if(x&&x.value) keep[id]=x.value; }
@@ -5526,20 +5714,36 @@ async function renderScheduleView(){
         <input id="swhen" placeholder="every Monday at 9am" oninput="schedPreviewCadence()" onkeydown="if(event.key==='Enter')document.getElementById('sprompt').focus()">
       </div>
       <textarea id="sprompt" class="sched-prompt" rows="2" placeholder="What should Engram do when this fires? e.g. Summarize my unread email and send me the top 5."></textarea>
-      <div class="row" style="align-items:center;gap:.5rem">
-        <label class="sched-agent-label" for="sagent" style="opacity:.8;font-size:.85em">Run as</label>
-        <select id="sagent" style="flex:1">${['<option value="">Default agent (no autonomy policy — egress stages for review)</option>'].concat((AGENTS||[]).map(a=>`<option value="${escAttr(a.id)}">${a.emoji?esc(a.emoji)+' ':''}${esc(a.name)}</option>`)).join('')}</select>
-        <button onclick="addJobPro()">Add</button>
+      <div class="sched-runas">
+        <div class="sr-field">
+          <label for="sagent">Run as</label>
+          <select id="sagent">${['<option value="">Default agent — egress stages for your review</option>'].concat((AGENTS||[]).map(a=>`<option value="${escAttr(a.id)}">${a.emoji?esc(a.emoji)+' ':''}${esc(a.name)}</option>`)).join('')}</select>
+          <div class="sr-hint">A durable agent runs unattended under its own signed autonomy policy; the default agent stages any outbound action for your approval.</div>
+        </div>
+        <button class="sr-add" onclick="addJobPro()">Add schedule</button>
       </div>
       <div id="swhenprev" class="sched-preview empty"></div>
     </div>
   </div>
+  ${stick}
   <div class="pane">
     <div class="sched-head"><h2>Upcoming</h2></div>
     ${list}
   </div></div>`;
   for(const id in keep){ const x=document.getElementById(id); if(x) x.value=keep[id]; }
   if(keep.swhen && typeof schedPreviewCadence==='function') schedPreviewCadence();   // restore the cadence badge too
+}
+// Client-side schedule search: repaints only the list (the compose draft is untouched).
+function schedFilter(q){
+  const box=document.getElementById('schedListBox'); if(!box) return;
+  q=(q||'').trim().toLowerCase();
+  const jobs=(window._schedJobs||[]).filter(j=>{
+    if(!q) return true;
+    const p=j.payload||{};
+    return (j.name+' '+(p.prompt||p.title||'')).toLowerCase().includes(q);
+  });
+  box.innerHTML = jobs.length ? jobs.map(schedCardHtml).join('')
+    : `<div class="ses-empty" style="padding:18px 4px">No schedules match "${esc(q)}".</div>`;
 }
 
 // Live cadence preview in the composer: renders the parsed badge + glyph, not just a date.
@@ -5608,6 +5812,44 @@ async function runJobNow(id, e){
   finally { SCHED_RUNNING.delete(id); if(state.route === 'Schedule') renderScheduleView(); }
 }
 
+// Edit a scheduled job in place - name, cadence, prompt, and agent - via PATCH /v1/schedule/{id}.
+// Leaving the cadence blank keeps the current one (the stored recurrence is structured, so the
+// original phrase can't always round-trip through the parser).
+async function editJob(id, e){
+  if(e) e.stopPropagation();
+  const job=(_schedJobs||[]).find(j=>j.id===id); if(!job) return;
+  const p=job.payload||{};
+  const cad=cadenceSchedule(job.recurrence);
+  const agents=['<option value="">Default agent — egress stages for review</option>']
+    .concat((AGENTS||[]).map(a=>`<option value="${escAttr(a.id)}"${(p.agent===a.id)?' selected':''}>${a.emoji?esc(a.emoji)+' ':''}${esc(a.name)}</option>`)).join('');
+  const ov=document.createElement('div'); ov.className='overlay ask';
+  ov.innerHTML=`<div class="ask-card" style="width:min(560px,94vw)">
+    <div class="ask-title">Edit schedule</div>
+    <div class="field"><label>Name</label><input class="ask-input" id="ejName" value="${escAttr(job.name)}" autocomplete="off" style="width:100%"></div>
+    <div class="field"><label>Cadence <span class="muted" style="font-weight:400">— now: ${esc(cad.label)}</span></label>
+      <input class="ask-input" id="ejWhen" placeholder="e.g. every weekday at 9am · blank keeps the current cadence" autocomplete="off" style="width:100%" oninput="schedPreview('ejWhen','ejWhenPrev')"></div>
+    <div id="ejWhenPrev" class="sub" style="min-height:16px"></div>
+    <div class="field"><label>What Engram does when it fires</label><textarea class="ask-input" id="ejPrompt" rows="3" style="width:100%;resize:vertical;font:inherit">${esc(p.prompt||p.title||'')}</textarea></div>
+    <div class="field"><label>Run as</label><select class="ask-input" id="ejAgent" style="width:100%">${agents}</select></div>
+    <div class="ask-actions"><button class="ask-ghost" data-act="x">Cancel</button><button class="ask-ok" data-act="ok">Save changes</button></div></div>`;
+  document.body.appendChild(ov);
+  const done=async ok=>{
+    if(!ok){ ov.remove(); return; }
+    const name=(document.getElementById('ejName').value||'').trim()||job.name;
+    const when=(document.getElementById('ejWhen').value||'').trim();
+    const prompt=(document.getElementById('ejPrompt').value||'').trim();
+    const agent=(document.getElementById('ejAgent').value||'').trim();
+    const payload={...p, title:prompt||p.title, prompt:prompt||p.prompt, label:name};
+    if(agent) payload.agent=agent; else delete payload.agent;
+    try{
+      await J('/v1/schedule/'+encodeURIComponent(id),{method:'PATCH',headers:{'content-type':'application/json'},
+        body:JSON.stringify(when?{name,when,payload}:{name,payload})});
+      ov.remove(); notify('Schedule updated · signed','ok'); renderScheduleView();
+    }catch(err){ notify('Couldn\'t update - '+((err&&err.message)||'check the cadence')); }
+  };
+  ov.addEventListener('click',ev=>{ if(ev.target===ov) return done(false); const a=ev.target.closest('[data-act]'); if(a) done(a.dataset.act==='ok'); });
+  setTimeout(()=>document.getElementById('ejName')?.focus(),30);
+}
 // Delete: wired to the existing DELETE /v1/schedule/{id}.
 async function deleteJob(id, name, e){
   if(e) e.stopPropagation();
@@ -5648,7 +5890,11 @@ function voicePickVoice(){
   if(!('speechSynthesis' in window)) return;
   const vs = window.speechSynthesis.getVoices() || [];
   if(!vs.length) return;
-  const pref = vs.find(v=>/en[-_]US/i.test(v.lang) && /(Samantha|Ava|Allison|Google US|Natural)/i.test(v.name))
+  // An explicit choice from Settings -> Voice wins; otherwise pick the best English voice.
+  const want=engramPrefs().voiceName;
+  const chosen = want ? vs.find(v=>v.name===want) : null;
+  const pref = chosen
+            || vs.find(v=>/en[-_]US/i.test(v.lang) && /(Samantha|Ava|Allison|Google US|Natural)/i.test(v.name))
             || vs.find(v=>/en[-_]US/i.test(v.lang))
             || vs.find(v=>/^en/i.test(v.lang)) || vs[0];
   VOICE.voice = pref || null;
@@ -5898,7 +6144,7 @@ function voiceSpeakStreaming(full, flush){
   if(clean){
     const u=new SpeechSynthesisUtterance(clean);
     if(VOICE.voice) u.voice=VOICE.voice;
-    u.rate=1.02; u.pitch=1.0;
+    u.rate=(engramPrefs().voiceRate||1.02); u.pitch=1.0;
     try{ window.speechSynthesis.speak(u); }catch(_){}
   }
   if(flush){ _voiceSpoken=full; voiceWatchSpeechEnd(); }
@@ -6041,6 +6287,12 @@ const ENGRAM_ACCENTS = {
            light:{hex:'#c03a31', ink:'#ffffff', soft:'rgba(192,58,49,.12)', ring:'rgba(192,58,49,.45)', glow:'drop-shadow(0 0 5px rgba(192,58,49,.3))'}},
   blue:   {hex:'#85b7eb', ink:'#08283f', soft:'rgba(133,183,235,.14)', ring:'rgba(133,183,235,.5)', glow:'drop-shadow(0 0 6px rgba(133,183,235,.45))',
            light:{hex:'#2270c0', ink:'#ffffff', soft:'rgba(34,112,192,.12)', ring:'rgba(34,112,192,.45)', glow:'drop-shadow(0 0 5px rgba(34,112,192,.3))'}},
+  violet: {hex:'#b48cf2', ink:'#241048', soft:'rgba(180,140,242,.14)', ring:'rgba(180,140,242,.5)', glow:'drop-shadow(0 0 6px rgba(180,140,242,.45))',
+           light:{hex:'#6d3fd4', ink:'#ffffff', soft:'rgba(109,63,212,.12)', ring:'rgba(109,63,212,.45)', glow:'drop-shadow(0 0 5px rgba(109,63,212,.3))'}},
+  ember:  {hex:'#f0946b', ink:'#40190a', soft:'rgba(240,148,107,.14)', ring:'rgba(240,148,107,.5)', glow:'drop-shadow(0 0 6px rgba(240,148,107,.45))',
+           light:{hex:'#b4501e', ink:'#ffffff', soft:'rgba(180,80,30,.12)', ring:'rgba(180,80,30,.45)', glow:'drop-shadow(0 0 5px rgba(180,80,30,.3))'}},
+  slate:  {hex:'#9fb6c9', ink:'#16232e', soft:'rgba(159,182,201,.14)', ring:'rgba(159,182,201,.5)', glow:'drop-shadow(0 0 6px rgba(159,182,201,.4))',
+           light:{hex:'#47657d', ink:'#ffffff', soft:'rgba(71,101,125,.12)', ring:'rgba(71,101,125,.45)', glow:'drop-shadow(0 0 5px rgba(71,101,125,.3))'}},
 };
 function engramPrefs(){
   try{ return JSON.parse(localStorage.getItem('engram.ui')||'{}'); }catch(_){ return {}; }
@@ -6059,6 +6311,10 @@ function applyEngramAppearance(){
   root.style.setProperty('--accent-soft', a.soft);
   root.style.setProperty('--ring', a.ring);
   root.style.setProperty('--glow', a.glow);
+  // Reading comfort: chat column width, overall text size, and a motion kill-switch.
+  root.style.setProperty('--feed-w', (parseInt(p.feedWidth,10)||720)+'px');
+  root.setAttribute('data-engram-motion', p.reduceMotion ? 'reduced' : 'full');
+  if(document.body) document.body.style.zoom = (p.uiZoom && p.uiZoom!=='100') ? String(parseInt(p.uiZoom,10)/100) : '';
 }
 function setEngramPref(key, val){
   const p = engramPrefs(); p[key] = val; engramSavePrefs(p);
@@ -6086,14 +6342,23 @@ function ccAppearance2(){
     const a = ENGRAM_ACCENTS[k], on = (p.accent||'teal')===k;
     return `<button class="acc-swatch ${on?'on':''}" style="background:${a.hex}" title="${k}" aria-label="${k}" onclick="setEngramPref('accent','${k}')"></button>`;
   }).join('');
-  return ccHead('Appearance','Theme, accent, and density - applied live and remembered on this device.')+`
+  return ccHead('Appearance','Theme, accent, type, and motion - applied live and remembered on this device.')+`
     <div class="scard">
       ${ccSeg('Theme', [{v:'dark',l:'Graphite'},{v:'light',l:'Light'}], p.theme==='light'?'light':'dark', "v=>setEngramPref('theme',v)")}
-      <div style="height:16px"></div>
-      ${ccSeg('Density', [{v:'comfortable',l:'Comfortable'},{v:'compact',l:'Compact'}], p.density==='compact'?'compact':'comfortable', "v=>setEngramPref('density',v)")}
+      <div class="desc" style="margin:9px 0 0">Each accent carries its own light-theme shade, tuned for readable contrast on both.</div>
       <div style="height:16px"></div>
       <span class="seg-lbl">Accent · the trust colour, used only where trust is real</span>
       <div class="acc-rail">${accents}</div>
+    </div>
+    <div class="scard">
+      ${ccSeg('Density', [{v:'comfortable',l:'Comfortable'},{v:'compact',l:'Compact'}], p.density==='compact'?'compact':'comfortable', "v=>setEngramPref('density',v)")}
+      <div style="height:16px"></div>
+      ${ccSeg('Text size', [{v:'90',l:'Small'},{v:'100',l:'Default'},{v:'110',l:'Large'}], String(p.uiZoom||'100'), "v=>setEngramPref('uiZoom',v)")}
+      <div style="height:16px"></div>
+      ${ccSeg('Chat width', [{v:'640',l:'Narrow'},{v:'720',l:'Comfortable'},{v:'860',l:'Wide'}], String(p.feedWidth||'720'), "v=>setEngramPref('feedWidth',v)")}
+      <div class="desc" style="margin:9px 0 0">The reading column for conversations. Narrow reads like a book; wide fits large tables and code.</div>
+      <div style="height:16px"></div>
+      <label class="toggle"><input type="checkbox" ${p.reduceMotion?'checked':''} onchange="setEngramPref('reduceMotion',this.checked)"><span class="track"></span> Reduce motion <span class="muted" style="font-size:11px">— disables spinners, pulses, and slide-ins</span></label>
     </div>`;
 }
 
@@ -6163,7 +6428,9 @@ const ENGRAM_KEYS = [
   ['Send / answer in chat','↵'],['New line in composer','⇧↵'],['Queue a follow-up while busy','↵'],
   ['Turn the draft into a task (create & run in Tasks view)','⌘↵'],['Create & run the draft as a task','⇧⌘↵'],
   ['Model menu (in chat)','⌘M'],['Attach files (in chat)','⌘U'],
-  ['Stop the running chat','Esc'],['Close palette / settings / panel','Esc'],['Focus settings search','/'],
+  ['Stop the running chat','Esc'],['Close palette / settings / panel / drawer','Esc'],['Focus settings search','/'],
+  ['Open a task card (board, when focused)','↵ / Space'],['Cancel a card drag','Esc'],
+  ['Chats drawer (narrow window, in Chat)','☰ in the topbar'],
 ];
 function ccSlashRef(){
   const rows = ENGRAM_SLASH.map(r=>`<tr data-q="${escAttr((r[0]+' '+r[1]).toLowerCase())}"><td class="cmd">${esc(r[0])}</td><td class="dsc">${esc(r[1])}</td></tr>`).join('');
@@ -6190,7 +6457,7 @@ function ccSlashFilter(q){
 
 // ---- MCP per-row live test (sibling-paired rows; no positional-index lookups) ----
 function mcpRowHtmlV2(s){
-  s = s || {name:'',command:'',args:[],env:{},cwd:'',trusted:false};
+  s = s || {name:'',command:'',args:[],env:{},cwd:'',trusted:false,url:'',bearer:''};
   // env values arrive masked ("•••") from the server; show KEY=•••, and the daemon keeps the real
   // value for any line left as the mask (same "blank keeps it" rule as the api key).
   const envText = Object.entries(s.env||{}).map(([k,v])=>`${k}=${v||''}`).join('\n');
@@ -6207,6 +6474,8 @@ function mcpRowHtmlV2(s){
       <summary>secrets, working dir, trust</summary>
       <textarea class="mcp-env" rows="2" placeholder="API_TOKEN=... (one KEY=value per line; passed only to this server)">${esc(envText)}</textarea>
       <input class="mcp-cwd" placeholder="working directory (optional, e.g. a repo path)" value="${escAttr(s.cwd||'')}">
+      <input class="mcp-url" placeholder="remote URL (optional - JSON-RPC over HTTP/SSE instead of spawning the command)" value="${escAttr(s.url||'')}">
+      <input class="mcp-bearer" type="password" placeholder="${s.bearer?'bearer token: •••••• - blank keeps it':'bearer token for the remote URL (optional)'}" autocomplete="off">
       <label class="mcp-trust"><input type="checkbox" class="mcp-trusted"${s.trusted?' checked':''}> First-party server I trust (its reads won't taint a run)</label>
     </details>
   </div><div class="mcptest"></div>`;
@@ -6294,8 +6563,10 @@ function collectMcpV2(){
     args:(r.querySelector('.mcp-args')?.value||'').trim().split(/\s+/).filter(Boolean),
     env: mcpEnvFromRow(r),
     cwd:(r.querySelector('.mcp-cwd')?.value||'').trim(),
+    url:(r.querySelector('.mcp-url')?.value||'').trim()||null,
+    bearer:(r.querySelector('.mcp-bearer')?.value||'').trim()||null,
     trusted: !!r.querySelector('.mcp-trusted')?.checked,
-  })).filter(s=>s.name&&s.command);
+  })).filter(s=>s.name&&(s.command||s.url));
 }
 
 // ---- Integrations gallery (Telegram + webhook channels + MCP, live) ---------

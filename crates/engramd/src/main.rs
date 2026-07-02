@@ -988,7 +988,10 @@ async fn run(mode: RunMode) -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/checkpoints/{id}", axum::routing::delete(checkpoints_delete))
         .route("/v1/schedule", get(schedule_list).post(schedule_add))
         .route("/v1/schedule/preview", get(schedule_preview))
-        .route("/v1/schedule/{id}", axum::routing::delete(schedule_remove))
+        .route(
+            "/v1/schedule/{id}",
+            axum::routing::delete(schedule_remove).patch(schedule_update),
+        )
         .route("/v1/schedule/{id}/run", post(schedule_run))
         .route("/v1/tasks", get(tasks_list).post(tasks_create))
         .route(
@@ -5712,6 +5715,33 @@ async fn schedule_remove(State(app): State<App>, Path(id): Path<String>) -> ApiR
     Ok(Json(json!({ "removed": removed })))
 }
 
+#[derive(Deserialize)]
+struct ScheduleUpdateReq {
+    name: Option<String>,
+    /// Natural-language cadence ("every weekday at 9am"); omitted/blank keeps the current one.
+    when: Option<String>,
+    payload: Option<Value>,
+}
+
+/// Edit a scheduled job in place - rename, retime, or change what it does - without losing its
+/// id, history, or last-run link. The update is signed to the ledger like every other decision.
+async fn schedule_update(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Json(r): Json<ScheduleUpdateReq>,
+) -> ApiResult {
+    let now = chrono::Utc::now();
+    let rec = match r.when.as_deref() {
+        Some(w) if !w.trim().is_empty() => Some(parse_schedule(w, now).map_err(err)?),
+        _ => None,
+    };
+    let job = app
+        .sched
+        .update(&id, r.name, r.payload, rec, now)
+        .map_err(err)?;
+    Ok(Json(serde_json::to_value(job).map_err(err)?))
+}
+
 /// Run a scheduled job on demand: build a task from its payload (the same shape the
 /// in-process tick uses), run it through the agent, record it as the job's `last_task_id`
 /// so the UI can open the per-task receipt, and return the task id + final status.
@@ -5824,6 +5854,17 @@ async fn config_get(State(app): State<App>) -> ApiResult {
     // Honest capability flags the UI badges instead of advertising tools that can only error.
     v["browser_enabled"] = json!(engram_agent::browser_available());
     v["keyring_enabled"] = json!(cfg!(feature = "keyring"));
+    // Which provider kinds have a remembered key (names only, never values) - so the UI can say
+    // "key saved for openrouter" when you switch backends instead of looking amnesiac.
+    let mut kinds: Vec<String> = config::read_secret_map(&app.home).into_keys().collect();
+    if !app.cfg().provider.api_key.is_empty() {
+        let k = app.cfg().provider.kind.clone();
+        if !kinds.contains(&k) {
+            kinds.push(k);
+        }
+    }
+    kinds.sort();
+    v["keys_saved_for"] = json!(kinds);
     v["version"] = json!(VERSION);
     Ok(Json(v))
 }
@@ -5909,6 +5950,28 @@ async fn config_set(State(app): State<App>, Json(patch): Json<Value>) -> ApiResu
     let before = app.cfg().clone();
     let mut cfg = before.clone();
     apply_config_patch(&mut cfg, &patch);
+    // Provider-kind switch with no key typed: restore the key the user already entered for the
+    // NEW kind from the per-provider store (and remember the old kind's key). Without this,
+    // openrouter -> anthropic -> openrouter demanded retyping the OpenRouter key every time -
+    // the single active slot was the only memory.
+    if cfg.provider.kind != before.provider.kind {
+        let mut map = config::read_secret_map(&app.home);
+        if !before.provider.api_key.is_empty() {
+            map.insert(before.provider.kind.clone(), before.provider.api_key.clone());
+        }
+        let typed = patch
+            .get("provider")
+            .and_then(|p| p.get("api_key"))
+            .and_then(|k| k.as_str())
+            .map(|k| !k.is_empty())
+            .unwrap_or(false);
+        if !typed {
+            // The blank-keeps rule left the OLD kind's key in the slot - wrong for the new
+            // backend. Adopt the stored key for the new kind, or clear so the UI asks honestly.
+            cfg.provider.api_key = map.get(&cfg.provider.kind).cloned().unwrap_or_default();
+        }
+        config::write_secret_map(&app.home, &map);
+    }
     // `egress_allowlist` is SERVER-managed — grown by egress_approve, not the settings form. This
     // handler is a read-modify-write on a clone, so an egress approval landing between our read and
     // save would be clobbered (lost update). Unless the patch explicitly set it, re-take the LIVE

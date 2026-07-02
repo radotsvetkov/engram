@@ -169,6 +169,48 @@ impl Scheduler {
         Ok(result)
     }
 
+    /// Update a job in place: rename, retime (new recurrence), or replace its payload. The id
+    /// stays stable so receipts and UI links keep working; the next fire is recomputed when the
+    /// cadence changes. The update is itself signed to the ledger.
+    pub fn update(
+        &self,
+        id: &str,
+        name: Option<String>,
+        payload: Option<serde_json::Value>,
+        recurrence: Option<Recurrence>,
+        now: DateTime<Utc>,
+    ) -> Result<Job> {
+        let job = {
+            let mut jobs = self.jobs.lock().expect("sched mutex poisoned");
+            let j = jobs
+                .iter_mut()
+                .find(|j| j.id == id)
+                .ok_or_else(|| SchedError::NotFound(id.to_string()))?;
+            if let Some(n) = name {
+                j.name = n;
+            }
+            if let Some(p) = payload {
+                j.payload = p;
+            }
+            if let Some(r) = recurrence {
+                let next = r
+                    .next_after(now)
+                    .ok_or_else(|| SchedError::NeverFires(j.name.clone()))?;
+                j.recurrence = r;
+                j.next_fire_ms = next.timestamp_millis();
+            }
+            let out = j.clone();
+            save(&self.path, &jobs)?;
+            out
+        };
+        self.ledger.append(
+            "schedule.update",
+            "user",
+            json!({ "id": job.id, "name": job.name, "next_fire_ms": job.next_fire_ms }),
+        )?;
+        Ok(job)
+    }
+
     /// Record the task most recently spawned for a job, so the UI can link to its receipt.
     /// Persists, but does not touch the ledger (the fire itself is already audited).
     pub fn set_last_task(&self, id: &str, task_id: &str) -> Result<()> {

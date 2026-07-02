@@ -431,6 +431,16 @@ impl Config {
         // Persist (or clear) the API key in the local secret store. Best-effort: a failure here
         // must not lose the user's other settings - the key simply won't survive the next restart.
         write_secret_key(home, &self.provider.api_key);
+        // Also remember the key PER PROVIDER KIND, so switching openrouter -> anthropic -> back
+        // doesn't demand retyping the OpenRouter key (there is one active slot; this is the memory
+        // behind it). Same 0600 posture as secret.key.
+        if !self.provider.api_key.is_empty() && !self.provider.kind.is_empty() {
+            let mut map = read_secret_map(home);
+            if map.get(&self.provider.kind) != Some(&self.provider.api_key) {
+                map.insert(self.provider.kind.clone(), self.provider.api_key.clone());
+                write_secret_map(home, &map);
+            }
+        }
         Ok(())
     }
 
@@ -645,6 +655,28 @@ fn read_mcp_json(home: &str) -> Vec<McpServer> {
 
 fn secret_path(home: &str) -> PathBuf {
     Path::new(home).join("secret.key")
+}
+
+/// Per-provider key memory: `{"openrouter":"sk-..","anthropic":"sk-.."}` in a 0600 file, so
+/// switching backends restores the key you already entered for that backend instead of demanding
+/// it again. `secret.key` remains the single ACTIVE key (restart adoption path).
+fn secrets_map_path(home: &str) -> PathBuf {
+    Path::new(home).join("secret.keys.json")
+}
+pub(crate) fn read_secret_map(home: &str) -> std::collections::HashMap<String, String> {
+    std::fs::read_to_string(secrets_map_path(home))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+pub(crate) fn write_secret_map(home: &str, map: &std::collections::HashMap<String, String>) {
+    if map.is_empty() {
+        let _ = std::fs::remove_file(secrets_map_path(home));
+        return;
+    }
+    if let Ok(t) = serde_json::to_string(map) {
+        let _ = write_owner_only(&secrets_map_path(home), t.as_bytes());
+    }
 }
 
 #[cfg(feature = "keyring")]

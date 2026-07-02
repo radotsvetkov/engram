@@ -578,8 +578,9 @@
   @media (max-width:880px){ .mind-panel { display:none; } }
   .brain-hint { position:absolute; right:18px; bottom:16px; font:11px var(--mono); color:var(--text-muted); opacity:.5; pointer-events:none; letter-spacing:.01em; transition:opacity .7s var(--ease-out,ease); }
   .brain-hint.faded { opacity:0; }
+  /* Offset below center so the message never sits on top of the EPISODIC anchor label. */
   .brain-empty { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; flex-direction:column;
-    gap:6px; color:var(--text-muted); text-align:center; pointer-events:none; }
+    gap:6px; color:var(--text-muted); text-align:center; pointer-events:none; padding-top:34vh; }
   .brain-empty b { color:var(--text-secondary); font-size:15px; }
   /* teach modal */
   .overlay.teach { align-items:center; }
@@ -4441,7 +4442,9 @@ window.addEventListener('keydown', e=>{
   if(k==='escape' && !document.getElementById('cc').hidden){ e.preventDefault(); closeCC(); return; }
   if(k==='escape' && !document.getElementById('receipt').hidden){ e.preventDefault(); closeReceipt(); return; }
   if(k==='escape' && !document.getElementById('projModal').hidden){ e.preventDefault(); closeProjModal(); return; }
-  if(k==='escape' && document.getElementById('panel').classList.contains('open')){ e.preventDefault(); closePanel(); }
+  if(k==='escape' && document.getElementById('panel').classList.contains('open')){ e.preventDefault(); closePanel(); return; }
+  // Escape stops the active chat's run (matching Claude) — only when nothing else claimed the key.
+  if(k==='escape' && state.route==='Chat' && _busySessions.has(WS.activeSession)){ e.preventDefault(); stopChat(WS.activeSession); }
 });
 
 // ---- Terminal - the glass-box shell (your commands signed into the ledger, like the agent's) ----
@@ -4594,7 +4597,11 @@ async function renderArtifacts(force){
   }).join('');
   const body = shown.length
     ? `<div class="af-grid">${cards}</div>${truncated?'<div class="muted" style="text-align:center;padding:14px">Showing the first 400. Narrow with a filter or search.</div>':''}`
-    : `<div class="muted" style="padding:52px;text-align:center">${items.length?'No artifacts match that filter or search.':'No artifacts yet. When a task creates a file - a chart, a report, data - it collects here.'}</div>`;
+    : (items.length
+        ? `<div class="muted" style="padding:52px;text-align:center">No artifacts match that filter or search.</div>`
+        : `<div class="sched-empty"><span class="se-glyph">${ICONS.Artifacts}</span>
+             <div class="se-title">No artifacts yet</div>
+             <div class="se-hint">When a task or chat creates a file — a chart, a report, data — it collects here, linked back to the run that made it. Try asking for one: <code>write a comparison to report.md</code></div></div>`);
   view.innerHTML=`<div class="artifacts-view">
     <div class="act-title">Artifacts</div>
     <div class="act-sub">Everything your tasks and chats have produced, newest first. Click an image to preview, an HTML file to open it in your browser, a doc to read it. Each links back to the task or chat that made it.</div>

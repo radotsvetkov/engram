@@ -678,8 +678,8 @@ mod tests {
             .unwrap();
         let text = String::from_utf8_lossy(&out.output);
         assert!(
-            text.contains("mock"),
-            "skill should receive the model reply, got: {text}"
+            text.contains("offline demo mode"),
+            "skill should receive the (mock) model reply, got: {text}"
         );
         assert_eq!(out.host_calls, 1);
     }

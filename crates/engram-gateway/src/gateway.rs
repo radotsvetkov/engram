@@ -376,7 +376,8 @@ mod tests {
         let (gw, ledger, _d) = gw();
         let req = CompletionRequest::new("claude-haiku", vec![Message::user("hello there")]);
         let c = gw.complete(Call::new(req)).await.unwrap();
-        assert!(c.text.contains("mock"));
+        // The mock's demo reply echoes the ask and names demo mode (it's user-facing copy now).
+        assert!(c.text.contains("offline demo mode") && c.text.contains("hello there"));
         let m = gw.meter();
         assert_eq!(m.calls, 1);
         assert!(m.tokens_in > 0 && m.tokens_out > 0);

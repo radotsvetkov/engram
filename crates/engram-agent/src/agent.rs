@@ -1436,8 +1436,8 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            out.contains("mock"),
-            "vision should reach the model, got: {out}"
+            out.contains("offline demo mode"),
+            "vision should reach the (mock) model, got: {out}"
         );
 
         // image_generate is unsupported on the mock provider - it must fail gracefully.

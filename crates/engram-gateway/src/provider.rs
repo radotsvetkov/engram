@@ -78,7 +78,28 @@ impl Provider for MockProvider {
             .find(|m| m.role == Role::User)
             .map(|m| m.content.as_str())
             .unwrap_or("");
-        let text = format!("[mock:{}] ack: {}", req.model, first_words(last_user, 12));
+        // The demo reply is the FIRST thing a fresh install shows a real person — it must read as a
+        // product, not a debug trace. Echo the ask (so tests and the eye can confirm round-tripping),
+        // say plainly why the answer isn't real, and point at the one action that fixes it.
+        // The user message is often a COMPOSED prompt (directives + context + the actual ask); the
+        // person's own words are the last non-empty line, so echo that — not the directive header.
+        let mut ask = last_user
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or(last_user)
+            .trim();
+        // Composed prompts label the ask ("User's latest message: ..."); drop that scaffold label.
+        if let Some((label, rest)) = ask.split_once(':') {
+            let l = label.trim().to_ascii_lowercase();
+            if l.ends_with("message") || l.ends_with("question") || l.ends_with("ask") {
+                ask = rest.trim();
+            }
+        }
+        let text = format!(
+            "You asked: \u{201c}{}\u{201d}\n\nI'm in **offline demo mode** right now, so I can't actually think about that yet. Connect a real model in **Settings \u{2192} Gateways** \u{2014} or click *connect a model* in the banner above \u{2014} and ask me again.\n\nEverything else is already live: memory, tasks, skills, and the signed ledger.",
+            first_words(ask, 12)
+        );
         let tokens_out = approx_tokens(&text);
         Ok(Completion {
             text,

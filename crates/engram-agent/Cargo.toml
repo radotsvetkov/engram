@@ -8,6 +8,7 @@ license.workspace = true
 description = "Engram agent: the tool-use loop that lets the model take actions"
 
 [dependencies]
+similar = "2"
 engram-core = { path = "../engram-core" }
 engram-memory = { path = "../engram-memory" }
 engram-gateway = { path = "../engram-gateway" }

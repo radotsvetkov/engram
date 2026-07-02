@@ -1185,6 +1185,20 @@
   /* a short summary of what the step actually found/did, inline so the user sees substance not just "✓ searched the web" */
   .cstep .cs-obs { color:var(--text-muted); opacity:.85; margin-left:4px; max-width:min(60vw,340px); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .chat-steps .step-shot { flex-basis:100%; margin:3px 0; }
+  /* inline edit diffs: a quiet collapsed row per write/edit, expanding to the unified diff */
+  .step-diff { flex-basis:100%; margin:2px 0 4px; }
+  .step-diff summary { display:flex; align-items:center; gap:7px; list-style:none; cursor:pointer;
+    padding:5px 9px; border:1px solid var(--border); border-radius:8px; background:var(--surface-1);
+    font-size:11.5px; color:var(--text-secondary); transition:border-color var(--dur-1) var(--ease-out); }
+  .step-diff summary:hover { border-color:var(--border-strong); color:var(--text-primary); }
+  .step-diff summary svg { width:13px; height:13px; flex:none; color:var(--text-muted); }
+  .step-diff .sd-path { font-family:var(--mono); font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .step-diff .sd-counts { flex:none; font:10.5px var(--mono); }
+  .step-diff .sd-counts .a { color:var(--accent); } .step-diff .sd-counts .d { color:var(--danger); }
+  .step-diff .sd-hint { margin-left:auto; flex:none; font-size:10px; color:var(--text-muted); opacity:.8; }
+  .step-diff[open] summary { border-bottom-left-radius:0; border-bottom-right-radius:0; }
+  .step-diff[open] summary .sd-hint { opacity:0; }
+  .step-diff .cb { margin:0; border-top-left-radius:0; border-top-right-radius:0; border-top:none; }
   /* Live narration: the model's "what I'm doing" commentary while it works */
   .chat-notes { display:flex; flex-direction:column; gap:4px; margin:2px 0 8px; }
   .cnote { font-size:12.5px; line-height:1.5; color:var(--text-secondary); font-style:italic; opacity:.92; }
@@ -2482,7 +2496,7 @@ async function openTask(id, fromPoll){
       return `<div class="step ${s.ok?'':'bad'}"><div class="top"><span class="verb">${esc(s.tool)}</span>
         <span class="${s.ok?'check':'xmark'}">${s.ok?'✓':'✕'}</span>
         <span class="stamp" onclick="navigator.clipboard.writeText('${s.ledger_hash||''}')">${stamp}</span></div>
-        ${s.ok?'':`<div class="obs">${esc(s.observation)}</div>`}${stepShotHtml(s)}</div>`;
+        ${s.ok?'':`<div class="obs">${esc(s.observation)}</div>`}${stepDiffHtml(s,(s.args&&(s.args.path||s.args.file))||'')}${stepShotHtml(s)}</div>`;
     }).join('');
     html+=`<div class="muted" style="font-size:11px;margin-bottom:6px">audit trail - signed</div>${stepRows||'<div class="muted">no tools used</div>'}`;
     html+=`<div class="muted" style="font-size:11px;margin-top:12px;font-family:var(--mono)">head ${t.run.ledger_head_hash.slice(0,12)}</div>`;
@@ -2978,8 +2992,20 @@ function turnStepsHtml(m){
     const obsFull=(st.observation||'').replace(/\s+/g,' ').trim();
     const obsText=(!openable && obsFull) ? obsFull.slice(0,110) : '';
     const chip=`<span class="cstep${st.ok?'':' bad'}${clk}" title="${escAttr(openable?('Open '+fpath):obsFull.slice(0,400))}"><span class="cs-ic">${st.ok?'✓':'✕'}</span>${esc(lbl)}${openable?'<span class="cs-open">↗</span>':''}${obsText?`<span class="cs-obs">— ${esc(obsText)}</span>`:''}</span>`;
-    return chip+stepShotHtml(st);
+    return chip+stepDiffHtml(st,fpath)+stepShotHtml(st);
   }).join('')}</div>`;
+}
+// A file-mutating step's inline diff (Claude-Code-style): a collapsed "path +N −M" row that
+// expands to the unified diff, right where the edit happened in the conversation.
+function stepDiffHtml(st, fpath){
+  if(!st || !st.diff) return '';
+  let adds=0, dels=0;
+  for(const l of st.diff.split('\n')){
+    if(l.startsWith('+') && !l.startsWith('+++')) adds++;
+    else if(l.startsWith('-') && !l.startsWith('---')) dels++;
+  }
+  const name=fpath || (st.args&&(st.args.path||st.args.file)) || 'file';
+  return `<details class="step-diff"><summary><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2.8h7.5L19 8.3V21a1.2 1.2 0 0 1-1.2 1.2H6A1.2 1.2 0 0 1 4.8 21V4A1.2 1.2 0 0 1 6 2.8Z"/><path d="M13.5 2.8v5.5H19"/></svg><span class="sd-path">${esc(String(name))}</span><span class="sd-counts"><span class="a">+${adds}</span> <span class="d">−${dels}</span></span><span class="sd-hint">diff</span></summary>${codeBlock(st.diff,'diff')}</details>`;
 }
 // The model's live "what I'm doing" commentary (narration) — shown above the tool chips so a
 // long run reads as activity, not a silent wait.

@@ -60,6 +60,11 @@ pub struct StepRecord {
     pub ledger_seq: u64,
     #[serde(default)]
     pub ledger_hash: String,
+    /// Unified diff of what a file-mutating step (write/edit/append) actually changed - captured
+    /// by the loop around the tool call for the UI's inline "what this edit did" blocks. UI-only:
+    /// it is NEVER placed in the model context (the observation stays the tool's own summary).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -409,10 +414,31 @@ impl Agent {
             // AUTONOMY policy (allowlist + budget, for unattended runs), then the attended/unattended
             // default. Every outcome is ledgered with a reason code, so authority is auditable.
             let trifecta = ctx.taint.is_untrusted() && ctx.sensitive;
+            // Claude-Code-style edit transparency: snapshot each file-mutating call's target
+            // BEFORE the batch runs, so its step record can carry a real unified diff of the
+            // change. (Two calls mutating the same file in one batch attribute the cumulative
+            // change to each - acceptable, and rare.)
+            let edit_befores: Vec<Option<(String, Option<String>)>> = completion
+                .tool_calls
+                .iter()
+                .map(|c| {
+                    edit_target(&c.name, &c.arguments)
+                        .map(|p| (p.clone(), read_small_text(&resolve_edit_path(&ctx.workdir, &p))))
+                })
+                .collect();
             let outcomes = self.run_tools(&completion.tool_calls, &ctx, trifecta).await;
 
             // Record results in call order: deterministic ledger chain and message order.
-            for (call, (observation, ok, _executed)) in completion.tool_calls.iter().zip(outcomes) {
+            for (ci, (call, (observation, ok, _executed))) in
+                completion.tool_calls.iter().zip(outcomes).enumerate()
+            {
+                let diff = edit_befores
+                    .get(ci)
+                    .and_then(|b| b.as_ref())
+                    .and_then(|(rel, before)| {
+                        let after = read_small_text(&resolve_edit_path(&ctx.workdir, rel));
+                        build_edit_diff(rel, before.as_deref(), after.as_deref(), ok)
+                    });
                 let truncated =
                     spill_if_large(&observation, ctx.policy.max_obs_len, &ctx.workdir, &call.id).await;
                 let (ledger_seq, ledger_hash) = ctx
@@ -432,6 +458,7 @@ impl Agent {
                     ok,
                     ledger_seq,
                     ledger_hash,
+                    diff,
                 });
                 if let Some(cb) = &ctx.on_step {
                     cb(steps.len(), steps.last().expect("just pushed"));
@@ -1009,6 +1036,66 @@ fn truncate(s: &str, max: usize) -> String {
 }
 
 /// Truncate an observation to the policy limit, but when it OVERFLOWS, spill the full text to a
+/// Which tools mutate a file, and the path they mutate - the loop diffs these around the call.
+fn edit_target(tool: &str, args: &serde_json::Value) -> Option<String> {
+    if !matches!(tool, "write_file" | "edit_file" | "append_file") {
+        return None;
+    }
+    args.get("path")
+        .or_else(|| args.get("file"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+fn resolve_edit_path(workdir: &std::path::Path, rel: &str) -> std::path::PathBuf {
+    if std::path::Path::new(rel).is_absolute() {
+        std::path::PathBuf::from(rel)
+    } else {
+        workdir.join(rel)
+    }
+}
+
+/// Read a file for diffing: text only (no NUL bytes), capped so a huge target can't balloon the
+/// step record. None = absent, binary, or oversized (the diff is skipped, never wrong).
+fn read_small_text(p: &std::path::Path) -> Option<String> {
+    const MAX: u64 = 256 * 1024;
+    let meta = std::fs::metadata(p).ok()?;
+    if meta.len() > MAX {
+        return None;
+    }
+    let bytes = std::fs::read(p).ok()?;
+    if bytes.contains(&0) {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Unified diff for a completed edit step. New files diff from empty; unchanged/failed/binary
+/// produce None. Capped at 64KB so receipts stay bounded.
+fn build_edit_diff(rel: &str, before: Option<&str>, after: Option<&str>, ok: bool) -> Option<String> {
+    if !ok {
+        return None;
+    }
+    let a = before.unwrap_or("");
+    let b = after?;
+    if a == b {
+        return None;
+    }
+    let text = similar::TextDiff::from_lines(a, b)
+        .unified_diff()
+        .context_radius(3)
+        .header(&format!("a/{rel}"), &format!("b/{rel}"))
+        .to_string();
+    const CAP: usize = 64 * 1024;
+    Some(if text.len() > CAP {
+        let mut t = text[..CAP].to_string();
+        t.push_str("\n… (truncated)");
+        t
+    } else {
+        text
+    })
+}
+
 /// re-readable file in the workdir and point the model at it. A single huge tool output (a long log,
 /// a big file, a verbose API response) otherwise blows the context window or is silently truncated —
 /// a mid-run death mode. Spilling makes it recoverable: the model can `read_file` the rest on demand.
@@ -1278,6 +1365,65 @@ mod tests {
             "recall should see the fact"
         );
         assert!(ledger.verify().unwrap() > 0);
+    }
+
+    #[tokio::test]
+    async fn edit_steps_carry_inline_diffs() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Arc::new(Ledger::open(dir.path()).unwrap());
+        let memory = Arc::new(
+            Memory::open(
+                dir.path().join("b.db"),
+                Arc::new(TrigramHashEmbedder::default()),
+                ledger.clone(),
+            )
+            .unwrap(),
+        );
+        let signer = Arc::new(SkillSigner::load_or_create(dir.path().join("k")).unwrap());
+        let skills = Arc::new(Registry::open(dir.path(), signer, ledger.clone()).unwrap());
+        std::fs::write(dir.path().join("notes.txt"), "alpha\nbeta\n").unwrap();
+
+        // Scripted model: edit an existing file, create a new one, read one - then answer.
+        let provider = ScriptedProvider::new(vec![
+            call("1", "write_file", json!({ "path": "notes.txt", "content": "alpha\nGAMMA\n" })),
+            call("2", "write_file", json!({ "path": "fresh.txt", "content": "hello\n" })),
+            call("3", "read_file", json!({ "path": "fresh.txt" })),
+            final_answer("done"),
+        ]);
+        let gateway = Arc::new(Gateway::new(Box::new(provider), ledger.clone()));
+        let ctx = ToolCtx {
+            memory,
+            skills,
+            gateway: gateway.clone(),
+            ledger: ledger.clone(),
+            taint: Taint::Trusted,
+            sensitive: false,
+            policy: Policy::default(),
+            workdir: dir.path().to_path_buf(),
+            model: "test".into(),
+            depth: 0,
+            browser: Arc::new(crate::tool::NoBrowser),
+            scope: engram_core::ScopeCtx::any(),
+            halt: None,
+            spend_counter: None,
+            token_budget: None,
+            on_step: None,
+            on_narration: None,
+            allowed_tools: None,
+        };
+        let agent = Agent::new(gateway, crate::default_tools(), "test");
+        let run = agent.run("edit the notes", ctx).await.unwrap();
+
+        // The modify: a real unified diff with the removed and added lines, UI-only.
+        let d0 = run.steps[0].diff.as_deref().expect("edit carries a diff");
+        assert!(d0.contains("-beta") && d0.contains("+GAMMA"), "{d0}");
+        // The create: a new-file diff (everything added).
+        let d1 = run.steps[1].diff.as_deref().expect("create carries a diff");
+        assert!(d1.contains("+hello"), "{d1}");
+        // A read-only tool never carries one.
+        assert!(run.steps[2].diff.is_none());
+        // And the diff never leaks into what the model saw (the observation).
+        assert!(!run.steps[0].observation.contains("GAMMA") || !run.steps[0].observation.contains("@@"));
     }
 
     #[tokio::test]

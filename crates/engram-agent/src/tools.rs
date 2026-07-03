@@ -806,7 +806,7 @@ pub fn sandbox_command(
             "-c".into(),
             command.to_string(),
         ]);
-        return ("bwrap".into(), args);
+        ("bwrap".into(), args)
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {

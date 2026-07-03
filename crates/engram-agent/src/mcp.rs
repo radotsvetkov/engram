@@ -84,6 +84,9 @@ struct Io {
 }
 
 /// The transport backing a [`McpClient`].
+// One instance per connection, so the size gap between the stdio and HTTP variants is
+// irrelevant to performance — not worth an extra allocation to equalize.
+#[allow(clippy::large_enum_variant)]
 enum Transport {
     /// A subprocess we own; each request grabs the Mutex, writes a line, and reads until the
     /// matching id. Kept behind a Mutex because stdio is a single duplex stream.

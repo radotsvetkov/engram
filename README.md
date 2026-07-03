@@ -68,8 +68,18 @@ night:
 
 ## Quickstart
 
-**macOS or Linux, one line** (builds from source with your Rust toolchain, installs `engramd`
-and the `engram` CLI):
+**Grab a prebuilt binary** (fastest — no toolchain needed). Every release ships static
+binaries for macOS (Intel + Apple Silicon) and Linux (x86_64 + arm64) on the
+[releases page](https://github.com/radotsvetkov/engram/releases/latest). For example, on
+Apple Silicon:
+
+```sh
+curl -fsSL https://github.com/radotsvetkov/engram/releases/latest/download/engram-v0.2.0-aarch64-apple-darwin.tar.gz | tar xz
+./engram-v0.2.0-aarch64-apple-darwin/engramd    # → http://127.0.0.1:8088
+```
+
+**Build from source, one line** (needs a Rust toolchain; installs `engramd` and the
+`engram` CLI into `~/.cargo/bin`):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/radotsvetkov/engram/main/install.sh | sh

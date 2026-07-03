@@ -8,8 +8,8 @@
 
 Author: Radoslav Tsvetkov.
 
-Companion documents: `VISION.md` (the destination) and `docs/ADR-0001-architecture.md`
-(the decisions). This file is the security ground truth those two defer to.
+Companion document: [`ARCHITECTURE.md`](./ARCHITECTURE.md) (how the system is built). This
+file is the security ground truth that architecture defers to.
 
 ---
 

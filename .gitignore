@@ -49,8 +49,21 @@ tmp/
 # Tauri sidecar binaries (copied build artifacts)
 /desktop/src-tauri/binaries/
 
-# Local preview-server config (points at a session scratchpad path)
-.claude/launch.json
+# Local tooling / editor state
+.claude/
+
+# Planning & internal design notes — kept local, never published.
+# These are working documents (strategy, roadmaps, design explorations); the shipped
+# docs are the README plus docs/THREAT-MODEL.md, docs/CLI.md, and docs/ARCHITECTURE.md.
+/VISION.md
+/docs/STRATEGY.md
+/docs/ROADMAP.md
+/docs/COVERAGE-ROADMAP.md
+/docs/MEMORY-ARCHITECTURE.md
+/docs/AUTONOMY.md
+/docs/DESIGN.md
+/docs/ADR-0001-architecture.md
+/docs/WEB-CAPABILITIES.md
 
 # stray local test binary (not part of the project)
 /test_guard

@@ -1,0 +1,79 @@
+name: Release
+
+# Cut a release by pushing a tag, e.g.:
+#   git tag v0.2.0 && git push origin v0.2.0
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            cross: true
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            cross: true
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            cross: false
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            cross: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install cross (Linux targets)
+        if: matrix.cross
+        run: cargo install cross --locked
+
+      - name: Build (native, macOS)
+        if: ${{ !matrix.cross }}
+        run: |
+          cargo build --release --target ${{ matrix.target }} -p engramd --features http,docs
+          cargo build --release --target ${{ matrix.target }} -p engram-cli
+
+      - name: Build (cross, Linux musl)
+        if: matrix.cross
+        run: |
+          cross build --release --target ${{ matrix.target }} -p engramd --features http,docs
+          cross build --release --target ${{ matrix.target }} -p engram-cli
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          dir="target/${{ matrix.target }}/release"
+          out="engram-${{ github.ref_name }}-${{ matrix.target }}"
+          mkdir -p "dist/$out"
+          cp "$dir/engramd" "$dir/engram" "dist/$out/"
+          cp README.md LICENSE "dist/$out/"
+          strip "dist/$out/engramd" "dist/$out/engram" || true
+          tar -C dist -czf "dist/$out.tar.gz" "$out"
+          ( cd dist && shasum -a 256 "$out.tar.gz" > "$out.tar.gz.sha256" )
+          ls -lh dist
+
+      - name: Upload to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256
+          generate_release_notes: true

@@ -20,6 +20,8 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - name: System deps (libdbus for the keyring secret-service backend)
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy (default features)

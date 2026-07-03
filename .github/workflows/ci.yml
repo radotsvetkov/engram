@@ -20,8 +20,10 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - name: System deps (libdbus for the keyring secret-service backend)
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+      - name: System deps (keyring secret-service + the Linux sandbox)
+        # libdbus-1-dev: the keyring feature's secret-service backend.
+        # bubblewrap: the built-in `sandbox` shell backend on Linux, exercised by the skill tests.
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config bubblewrap
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy (default features)
@@ -77,6 +79,15 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev \
             libayatana-appindicator3-dev libsoup-3.0-dev
+      - name: Stage a placeholder sidecar for the type-check
+        # tauri.conf.json declares `binaries/engramd` as an external binary; the real one is
+        # staged at bundle time by scripts/desktop.sh. A placeholder lets `cargo check` validate
+        # the desktop code without building the daemon in this job.
+        run: |
+          triple="$(rustc -vV | sed -n 's/host: //p')"
+          mkdir -p desktop/src-tauri/binaries
+          touch "desktop/src-tauri/binaries/engramd-${triple}"
+          chmod +x "desktop/src-tauri/binaries/engramd-${triple}"
       - name: Cargo check (desktop/src-tauri)
         working-directory: desktop/src-tauri
         run: cargo check

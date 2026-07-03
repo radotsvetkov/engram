@@ -318,7 +318,7 @@ mod tests {
         let (_d, reg) = registry();
         ensure_seed_skills(&reg).unwrap();
         ensure_seed_skills(&reg).unwrap(); // second call is a no-op (no v2 for any skill)
-        // Every skill in the table is installed, signed, Process/python3, v1, with the right caps.
+                                           // Every skill in the table is installed, signed, Process/python3, v1, with the right caps.
         for s in SEED_SKILLS {
             let (signed, bytes) = reg
                 .load_active(s.id)
@@ -326,7 +326,11 @@ mod tests {
             manifest::verify(&signed, &bytes, reg.verifying())
                 .unwrap_or_else(|_| panic!("'{}' must be a valid signed skill", s.id));
             let m = &signed.manifest;
-            assert_eq!(m.version, 1, "{}: idempotent install must not create a v2", s.id);
+            assert_eq!(
+                m.version, 1,
+                "{}: idempotent install must not create a v2",
+                s.id
+            );
             assert_eq!(m.runtime, Runtime::Process, "{}", s.id);
             assert_eq!(m.interpreter.as_deref(), Some("python3"), "{}", s.id);
             assert_eq!(
@@ -335,12 +339,18 @@ mod tests {
                 "{}: Net capability must match the table",
                 s.id
             );
-            assert!(!bytes.is_empty(), "{}: embedded source must not be empty", s.id);
+            assert!(
+                !bytes.is_empty(),
+                "{}: embedded source must not be empty",
+                s.id
+            );
         }
         // Spot-check: flight_search carries the real script and needs trust (Net + Process).
         let (signed, bytes) = reg.load_active("flight_search").unwrap();
         assert!(signed.manifest.requires_trust());
-        assert!(bytes.windows(b"prices_for_dates".len()).any(|w| w == b"prices_for_dates"));
+        assert!(bytes
+            .windows(b"prices_for_dates".len())
+            .any(|w| w == b"prices_for_dates"));
     }
 
     /// The WASM defaults and the Process-skill library share one registry and must not collide.
@@ -351,7 +361,14 @@ mod tests {
         ensure_seed_skills(&reg).unwrap();
         let ids = reg.skills().unwrap();
         for want in [
-            "shout", "ask", "flight_search", "weather", "email", "wikipedia", "currency", "calc",
+            "shout",
+            "ask",
+            "flight_search",
+            "weather",
+            "email",
+            "wikipedia",
+            "currency",
+            "calc",
             "datetime",
         ] {
             assert!(ids.iter().any(|s| s == want), "missing seeded skill {want}");

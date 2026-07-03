@@ -111,7 +111,11 @@ mod tests {
     fn global_preference_promotes_over_project() {
         let ctx = ScopeCtx::project("P");
         assert_eq!(
-            classify(Region::Semantic, &ctx, "I always use pnpm across all my projects"),
+            classify(
+                Region::Semantic,
+                &ctx,
+                "I always use pnpm across all my projects"
+            ),
             Scope::user()
         );
     }

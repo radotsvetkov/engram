@@ -78,7 +78,9 @@ impl Embedder for GatewayEmbedder {
                     // Short, bounded backoff (25ms, 50ms). embed() is called inline on writes, so we
                     // keep the total stall small rather than hammering or hanging the write path.
                     let backoff = std::time::Duration::from_millis(25u64 << attempt);
-                    tokio::task::block_in_place(|| self.handle.block_on(tokio::time::sleep(backoff)));
+                    tokio::task::block_in_place(|| {
+                        self.handle.block_on(tokio::time::sleep(backoff))
+                    });
                 }
                 Err(_) => break,
             }

@@ -57,7 +57,9 @@ pub async fn run_hooks(hooks: &[HookCfg], event: &str, payload: &Value) -> usize
             Ok(Ok(status)) if !status.success() => {
                 tracing::warn!(event, command = %h.command, code = ?status.code(), "hook exited non-zero")
             }
-            Ok(Err(e)) => tracing::warn!(event, command = %h.command, error = %e, "hook wait failed"),
+            Ok(Err(e)) => {
+                tracing::warn!(event, command = %h.command, error = %e, "hook wait failed")
+            }
             Err(_) => tracing::warn!(event, command = %h.command, "hook timed out (30s), killed"),
             _ => {}
         }
@@ -98,10 +100,18 @@ mod tests {
                 command: format!("echo nope > {}", dir.join("nope").display()),
             },
         ];
-        let n = run_hooks(&hooks, "task.done", &serde_json::json!({"id":"t1","status":"done"})).await;
+        let n = run_hooks(
+            &hooks,
+            "task.done",
+            &serde_json::json!({"id":"t1","status":"done"}),
+        )
+        .await;
         assert_eq!(n, 1, "exactly one hook subscribes to task.done");
         let body = std::fs::read_to_string(&marker).expect("marker written");
-        assert!(body.contains("\"id\":\"t1\""), "payload piped to the hook: {body}");
+        assert!(
+            body.contains("\"id\":\"t1\""),
+            "payload piped to the hook: {body}"
+        );
         assert!(!dir.join("nope").exists(), "non-matching hook must not run");
         let _ = std::fs::remove_dir_all(&dir);
     }

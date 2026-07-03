@@ -436,7 +436,7 @@ impl Memory {
 
     /// Hybrid recall across the WHOLE brain (every scope): BM25 keyword + vector semantic,
     /// fused by RRF. `regions` empty means every region. Includes ALL provenance (even untrusted)
-    /// - for transparency / audit / the Atlas. For model-facing recall use [`Memory::recall_scoped`]
+    /// — for transparency / audit / the Atlas. For model-facing recall use [`Memory::recall_scoped`]
     /// so the user/project/session rings are respected and one project can't read another's work.
     pub fn recall(&self, query: &str, regions: &[Region], k: usize) -> Result<Vec<Hit>> {
         self.recall_inner(query, regions, k, false, &ScopeCtx::any())
@@ -800,9 +800,9 @@ impl Memory {
         if scope_kind == "user" {
             return Ok(true); // already global, nothing to do
         }
-        let entry = self
-            .ledger
-            .append("memory.promote", actor, json!({ "id": id, "to": "user" }))?;
+        let entry =
+            self.ledger
+                .append("memory.promote", actor, json!({ "id": id, "to": "user" }))?;
         let conn = self.conn.lock().expect("memory mutex poisoned");
         conn.execute(
             "UPDATE facts SET scope_kind = 'user', scope_id = '', ledger_seq = ?1 WHERE id = ?2",
@@ -850,12 +850,7 @@ impl Memory {
 
     /// Like [`recent`], but restricted to the rings in `scope`. Consciousness distillation uses
     /// this to build a user-global working-memory block and a separate per-project block.
-    pub fn recent_scoped(
-        &self,
-        region: Region,
-        n: usize,
-        scope: &ScopeCtx,
-    ) -> Result<Vec<Record>> {
+    pub fn recent_scoped(&self, region: Region, n: usize, scope: &ScopeCtx) -> Result<Vec<Record>> {
         let conn = self.conn.lock().expect("memory mutex poisoned");
         let (scope_sql, scope_binds) = scope_clause("", scope);
         // `superseded_by IS NULL` keeps this to CURRENT facts only (mirrors recent_in_ring). Without
@@ -925,8 +920,11 @@ impl Memory {
         if would_demote == 0 {
             return Ok(0);
         }
-        self.ledger
-            .append("memory.consolidate", "core", json!({ "demoted": would_demote }))?;
+        self.ledger.append(
+            "memory.consolidate",
+            "core",
+            json!({ "demoted": would_demote }),
+        )?;
         let demoted = conn.execute(
             &format!("UPDATE facts SET tier = 'cold' WHERE {predicate}"),
             params![now, cutoff],
@@ -1371,7 +1369,8 @@ mod tests {
             .unwrap();
         let p = m
             .remember(
-                WriteReq::new(Region::Semantic, "the api base url is set").scope(Scope::project("P")),
+                WriteReq::new(Region::Semantic, "the api base url is set")
+                    .scope(Scope::project("P")),
             )
             .unwrap();
         let hits = m
@@ -1399,15 +1398,21 @@ mod tests {
         // Bury the target under many higher-importance, unrelated memories.
         for i in 0..60 {
             m.remember(
-                WriteReq::new(Region::Semantic, format!("unrelated note number {i} about invoices"))
-                    .importance(0.95),
+                WriteReq::new(
+                    Region::Semantic,
+                    format!("unrelated note number {i} about invoices"),
+                )
+                .importance(0.95),
             )
             .unwrap();
         }
         let target = m
             .remember(
-                WriteReq::new(Region::Semantic, "the user preferences include a dark theme")
-                    .importance(0.05),
+                WriteReq::new(
+                    Region::Semantic,
+                    "the user preferences include a dark theme",
+                )
+                .importance(0.05),
             )
             .unwrap();
         let hits = m
@@ -1483,8 +1488,11 @@ mod tests {
             m.remember(WriteReq::new(Region::Semantic, format!("fact number {i}")))
                 .unwrap();
         }
-        m.remember(WriteReq::new(Region::Semantic, "the user prefers a dark theme"))
-            .unwrap();
+        m.remember(WriteReq::new(
+            Region::Semantic,
+            "the user prefers a dark theme",
+        ))
+        .unwrap();
         // Wipe the derived binary index entirely.
         {
             let conn = m.conn.lock().unwrap();
@@ -1753,16 +1761,22 @@ mod tests {
     #[test]
     fn forget_scope_cascades_a_project_but_spares_user_global() {
         let (m, _d) = mem();
-        m.remember(WriteReq::new(Region::Semantic, "project A fact one").scope(Scope::project("A")))
-            .unwrap();
-        m.remember(WriteReq::new(Region::Semantic, "project A fact two").scope(Scope::project("A")))
-            .unwrap();
+        m.remember(
+            WriteReq::new(Region::Semantic, "project A fact one").scope(Scope::project("A")),
+        )
+        .unwrap();
+        m.remember(
+            WriteReq::new(Region::Semantic, "project A fact two").scope(Scope::project("A")),
+        )
+        .unwrap();
         m.remember(WriteReq::new(Region::Semantic, "project B fact").scope(Scope::project("B")))
             .unwrap();
         m.remember(WriteReq::new(Region::Semantic, "user global fact"))
             .unwrap();
         // Deleting project A forgets exactly its two facts.
-        let n = m.forget_scope("project", "A", "user", "project deleted").unwrap();
+        let n = m
+            .forget_scope("project", "A", "user", "project deleted")
+            .unwrap();
         assert_eq!(n, 2);
         // Idempotent: a second sweep finds nothing live.
         assert_eq!(m.forget_scope("project", "A", "user", "again").unwrap(), 0);

@@ -4,6 +4,7 @@
 //! whether the solution yields a reusable program. It can reply in two shapes:
 //!   - a NEW skill (a fresh stdin→stdout program worth keeping), or
 //!   - an IMPROVEMENT to an existing skill (`improves: "<id>"` + a better program).
+//!
 //! This runs as a SEPARATE `Trusted` model call (it never streams raw tool output into the authoring
 //! decision), so it is safe to run even after a tainted (web) task — nothing it proposes becomes
 //! active until it earns activation through the verification gate in `engram-agent` (replay against
@@ -248,7 +249,12 @@ fn parse(reply: &str) -> Result<Proposal, (&'static str, String)> {
         }
         // IMPROVEMENT: targets an existing skill; the caller checks the target exists (and may
         // reinterpret a missing target as a NEW skill, so asserted examples are kept).
-        if let Some(target) = raw.improves.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(target) = raw
+            .improves
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             if !valid_id(target) {
                 return Err(("bad_id", head(t)));
             }
@@ -328,7 +334,8 @@ mod tests {
 
     #[test]
     fn valid_json_parses_even_wrapped_in_prose() {
-        let reply = "Sure, here it is:\n```json\n{\"id\":\"csv_to_json\",\"interpreter\":\"python3\",\
+        let reply =
+            "Sure, here it is:\n```json\n{\"id\":\"csv_to_json\",\"interpreter\":\"python3\",\
             \"source\":\"import sys,csv,json\\nprint(json.dumps(list(csv.reader(sys.stdin))))\",\
             \"description\":\"convert CSV on stdin to JSON\",\"when_to_use\":\"csv→json\",\
             \"examples\":[{\"input\":\"a,b\",\"output\":\"[[\\\"a\\\",\\\"b\\\"]]\"}]}\n```";
@@ -351,7 +358,8 @@ mod tests {
 
     #[test]
     fn reasoning_block_before_json_still_parses() {
-        let reply = "<think>A reusable {\"id\":\"draft\"} idea… let me write the real one.</think>\n\
+        let reply =
+            "<think>A reusable {\"id\":\"draft\"} idea… let me write the real one.</think>\n\
             {\"id\":\"line_count\",\"interpreter\":\"python3\",\
             \"source\":\"import sys;print(len(sys.stdin.readlines()))\",\
             \"description\":\"count lines on stdin\"}";
@@ -403,15 +411,19 @@ mod tests {
 
     #[test]
     fn unreadable_reply_reasons() {
-        assert_eq!(parse("I made you a lovely script!").unwrap_err().0, "no_json");
+        assert_eq!(
+            parse("I made you a lovely script!").unwrap_err().0,
+            "no_json"
+        );
         assert_eq!(parse("{\"id\": broken").unwrap_err().0, "no_json"); // unbalanced → no candidate
         assert_eq!(parse("{'id': 'single-quoted'}").unwrap_err().0, "bad_json");
     }
 
     #[test]
     fn new_skill_has_improves_false() {
-        let p = parse("{\"id\":\"csv_to_json\",\"interpreter\":\"python3\",\"source\":\"print(1)\"}")
-            .expect("new skill should parse");
+        let p =
+            parse("{\"id\":\"csv_to_json\",\"interpreter\":\"python3\",\"source\":\"print(1)\"}")
+                .expect("new skill should parse");
         assert!(!p.improves);
         assert_eq!(p.id, "csv_to_json");
     }
@@ -428,7 +440,8 @@ mod tests {
 
     #[test]
     fn new_skill_keeps_only_known_capabilities() {
-        let reply = "{\"id\":\"weather_fetch\",\"interpreter\":\"python3\",\"source\":\"import sys\",\
+        let reply =
+            "{\"id\":\"weather_fetch\",\"interpreter\":\"python3\",\"source\":\"import sys\",\
             \"capabilities\":[\"net\",\"BOGUS\",\"llm\"]}";
         let p = parse(reply).expect("should parse");
         assert!(!p.improves);
@@ -437,7 +450,8 @@ mod tests {
 
     #[test]
     fn pure_skill_has_no_capabilities() {
-        let p = parse("{\"id\":\"rev\",\"interpreter\":\"python3\",\"source\":\"print(1)\"}").unwrap();
+        let p =
+            parse("{\"id\":\"rev\",\"interpreter\":\"python3\",\"source\":\"print(1)\"}").unwrap();
         assert!(p.capabilities.is_empty());
     }
 

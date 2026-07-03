@@ -286,7 +286,8 @@ fn is_blocked_ip_ex(ip: &std::net::IpAddr, allow_local: bool) -> bool {
     match ip {
         IpAddr::V4(v4) => {
             // Never reachable, even for a trusted local URL.
-            if v4.is_unspecified() || v4.is_broadcast() || v4.is_multicast() || v4.octets()[0] == 0 {
+            if v4.is_unspecified() || v4.is_broadcast() || v4.is_multicast() || v4.octets()[0] == 0
+            {
                 return true;
             }
             !allow_local
@@ -424,8 +425,29 @@ const SKIP_TAGS: &[&str] = &[
 /// Block-level tags: emit a newline at their boundary so document structure survives the flatten
 /// (otherwise headings, list items and paragraphs run together into one wall of text).
 const BLOCK_TAGS: &[&str] = &[
-    "p", "div", "br", "li", "ul", "ol", "tr", "table", "section", "article", "main", "h1", "h2",
-    "h3", "h4", "h5", "h6", "blockquote", "pre", "figcaption", "hr", "dd", "dt",
+    "p",
+    "div",
+    "br",
+    "li",
+    "ul",
+    "ol",
+    "tr",
+    "table",
+    "section",
+    "article",
+    "main",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "blockquote",
+    "pre",
+    "figcaption",
+    "hr",
+    "dd",
+    "dt",
 ];
 
 /// Strip HTML to readable text — a dependency-free "readability" pass: prefer the page's main content
@@ -463,7 +485,11 @@ fn strip_tags(html: &str) -> String {
         if c == '<' {
             in_tag = true;
             // Tag names are ASCII; a short lowercase lookahead is enough and never shifts boundaries.
-            let look: String = html[i..].chars().take(12).collect::<String>().to_ascii_lowercase();
+            let look: String = html[i..]
+                .chars()
+                .take(12)
+                .collect::<String>()
+                .to_ascii_lowercase();
             if let Some((close, name)) = parse_tag(&look) {
                 if SKIP_TAGS.contains(&name.as_str()) {
                     if close {
@@ -472,7 +498,11 @@ fn strip_tags(html: &str) -> String {
                         skip_depth += 1;
                     }
                 } else if skip_depth == 0 {
-                    s.push(if BLOCK_TAGS.contains(&name.as_str()) { '\n' } else { ' ' });
+                    s.push(if BLOCK_TAGS.contains(&name.as_str()) {
+                        '\n'
+                    } else {
+                        ' '
+                    });
                 }
             } else if skip_depth == 0 {
                 s.push(' '); // comment / doctype / stray '<' — its body is consumed as in_tag
@@ -494,7 +524,10 @@ fn parse_tag(look: &str) -> Option<(bool, String)> {
         Some(r) => (true, r),
         None => (false, rest),
     };
-    let name: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
+    let name: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric())
+        .collect();
     if name.is_empty() {
         None
     } else {
@@ -591,12 +624,36 @@ fn decode_entities(s: &str) -> String {
 /// numeric forms `&#123;` / `&#xAB;`.
 fn decode_one(ent: &str) -> Option<String> {
     let named = match ent {
-        "amp" => "&", "lt" => "<", "gt" => ">", "quot" => "\"", "apos" => "'", "nbsp" => " ",
-        "mdash" => "—", "ndash" => "–", "hellip" => "…", "copy" => "©", "reg" => "®",
-        "trade" => "™", "rsquo" => "’", "lsquo" => "‘", "ldquo" => "“", "rdquo" => "”",
-        "deg" => "°", "eacute" => "é", "egrave" => "è", "agrave" => "à", "ccedil" => "ç",
-        "uuml" => "ü", "ouml" => "ö", "auml" => "ä", "szlig" => "ß", "euro" => "€",
-        "pound" => "£", "cent" => "¢", "middot" => "·", "bull" => "•",
+        "amp" => "&",
+        "lt" => "<",
+        "gt" => ">",
+        "quot" => "\"",
+        "apos" => "'",
+        "nbsp" => " ",
+        "mdash" => "—",
+        "ndash" => "–",
+        "hellip" => "…",
+        "copy" => "©",
+        "reg" => "®",
+        "trade" => "™",
+        "rsquo" => "’",
+        "lsquo" => "‘",
+        "ldquo" => "“",
+        "rdquo" => "”",
+        "deg" => "°",
+        "eacute" => "é",
+        "egrave" => "è",
+        "agrave" => "à",
+        "ccedil" => "ç",
+        "uuml" => "ü",
+        "ouml" => "ö",
+        "auml" => "ä",
+        "szlig" => "ß",
+        "euro" => "€",
+        "pound" => "£",
+        "cent" => "¢",
+        "middot" => "·",
+        "bull" => "•",
         _ => "",
     };
     if !named.is_empty() {
@@ -713,7 +770,7 @@ pub fn sandbox_command(
         let profile = format!(
             "(version 1)\n(allow default)\n{net}(deny file-write* (subpath \"{home}\"))\n(allow file-write* (subpath \"{wd}\"))\n"
         );
-        return (
+        (
             "sandbox-exec".into(),
             vec![
                 "-p".into(),
@@ -722,7 +779,7 @@ pub fn sandbox_command(
                 "-c".into(),
                 command.to_string(),
             ],
-        );
+        )
     }
     #[cfg(target_os = "linux")]
     {
@@ -822,7 +879,9 @@ mod ssrf_guard_tests {
         }
 
         // A file OUTSIDE the workdir is refused (no file:///etc/passwd).
-        assert!(guard_browse_url("file:///etc/hosts", wd, false).await.is_err());
+        assert!(guard_browse_url("file:///etc/hosts", wd, false)
+            .await
+            .is_err());
         // A workdir-relative traversal that escapes is refused.
         let outside = format!("file://{}/../escape.html", wd.to_string_lossy());
         assert!(guard_browse_url(&outside, wd, false).await.is_err());
@@ -836,7 +895,9 @@ mod ssrf_guard_tests {
             guard_browse_url("http://127.0.0.1:3000/", wd, false).await,
             Ok(LocalTarget::Loopback)
         ));
-        assert!(guard_browse_url("http://localhost:8765/", wd, true).await.is_err());
+        assert!(guard_browse_url("http://localhost:8765/", wd, true)
+            .await
+            .is_err());
 
         // A public URL still classifies as public (and is vetted by guard_url downstream).
         assert!(matches!(
@@ -844,7 +905,11 @@ mod ssrf_guard_tests {
             Ok(LocalTarget::Public)
         ));
         // A public host that resolves to a private IP is still refused on a clean run.
-        assert!(guard_browse_url("http://169.254.169.254/latest/", wd, false).await.is_err());
+        assert!(
+            guard_browse_url("http://169.254.169.254/latest/", wd, false)
+                .await
+                .is_err()
+        );
     }
 
     #[test]
@@ -955,14 +1020,23 @@ mod html_text_tests {
     fn decodes_entities_and_keeps_block_structure() {
         let h = "<h1>Title</h1><p>caf&eacute; &amp; tea &#8364;5 &#x2014; nice</p><p>Second</p>";
         let out = html_to_text(h);
-        assert!(out.contains("café & tea €5 — nice"), "entities decoded: {out:?}");
+        assert!(
+            out.contains("café & tea €5 — nice"),
+            "entities decoded: {out:?}"
+        );
         // Distinct paragraphs are separated by a blank line, not run together into one wall.
-        assert!(out.contains("nice\n\nSecond"), "block structure preserved: {out:?}");
+        assert!(
+            out.contains("nice\n\nSecond"),
+            "block structure preserved: {out:?}"
+        );
     }
 
     #[test]
     fn unknown_entity_and_stray_ampersand_survive() {
-        assert_eq!(html_to_text("<p>AT&T R&D &unknownthing;</p>"), "AT&T R&D &unknownthing;");
+        assert_eq!(
+            html_to_text("<p>AT&T R&D &unknownthing;</p>"),
+            "AT&T R&D &unknownthing;"
+        );
     }
 
     // Regression: a '&' followed by 11+ entity-ish bytes then a multibyte char (no ';') used to slice
@@ -975,7 +1049,10 @@ mod html_text_tests {
         // Real German/Tangier-style text with accents around stray ampersands stays intact.
         assert_eq!(decode_entities("Tangerä & Café"), "Tangerä & Café");
         // Valid entities still decode even when multibyte text surrounds them.
-        assert_eq!(decode_entities("Über caf&eacute; &amp; thé"), "Über café & thé");
+        assert_eq!(
+            decode_entities("Über caf&eacute; &amp; thé"),
+            "Über café & thé"
+        );
         // A numeric entity butting against a multibyte char.
         assert_eq!(decode_entities("5&#8364;ä"), "5€ä");
     }
@@ -1300,9 +1377,9 @@ impl Tool for EditFileTool {
         let old = arg_str(args, "old")?;
         // 'new' is REQUIRED by the schema: defaulting a dropped/mistyped value to "" silently
         // DELETED the matched text. An explicit "" is still a legitimate deletion.
-        let new = args["new"]
-            .as_str()
-            .ok_or("missing string argument 'new' (pass \"\" explicitly to delete the matched text)")?;
+        let new = args["new"].as_str().ok_or(
+            "missing string argument 'new' (pass \"\" explicitly to delete the matched text)",
+        )?;
         if old.is_empty() {
             return Err("'old' must not be empty".into());
         }
@@ -1335,7 +1412,9 @@ impl Tool for EditFileTool {
                 }
                 FuzzyMatch::NotFound(hint) => {
                     return Err(match hint {
-                        Some(h) => format!("'old' text was not found in the file. Did you mean:\n{h}"),
+                        Some(h) => {
+                            format!("'old' text was not found in the file. Did you mean:\n{h}")
+                        }
                         None => "'old' text was not found in the file".into(),
                     })
                 }
@@ -1349,7 +1428,11 @@ impl Tool for EditFileTool {
             "agent",
             json!({ "path": path.to_string_lossy(), "removed": old.len(), "added": new.len(), "match": how }),
         );
-        Ok(format!("edited {rel} ({how} match, −{} +{} bytes)", old.len(), new.len()))
+        Ok(format!(
+            "edited {rel} ({how} match, −{} +{} bytes)",
+            old.len(),
+            new.len()
+        ))
     }
 }
 
@@ -2421,10 +2504,15 @@ async fn chrome_screenshot(
         }
         // Chrome exited on its own (crash or old-headless) — check the result once and stop.
         if let Ok(Some(status)) = child.try_wait() {
-            if std::fs::metadata(out_path).map(|m| m.len() > 0).unwrap_or(false) {
+            if std::fs::metadata(out_path)
+                .map(|m| m.len() > 0)
+                .unwrap_or(false)
+            {
                 return Ok(());
             }
-            return Err(format!("browser exited without a screenshot (status {status})"));
+            return Err(format!(
+                "browser exited without a screenshot (status {status})"
+            ));
         }
         if std::time::Instant::now() >= deadline {
             let _ = child.kill().await;
@@ -2464,10 +2552,13 @@ impl Tool for BrowserReadTool {
         // vetted + exfil-guarded exactly as before.
         let trifecta = ctx.taint.is_untrusted() && ctx.sensitive && !ctx.policy.approved;
         let target = guard_browse_url(url, &ctx.workdir, trifecta).await?;
-        let _ = ctx
-            .ledger
-            .append("agent.browser_read", "agent", json!({ "url": url, "dest": crate::agent::host_of(url) }));
-        let html = chrome_dump_dom(&browse_url(url, &target), ctx.policy.timeout_secs.max(30)).await?;
+        let _ = ctx.ledger.append(
+            "agent.browser_read",
+            "agent",
+            json!({ "url": url, "dest": crate::agent::host_of(url) }),
+        );
+        let html =
+            chrome_dump_dom(&browse_url(url, &target), ctx.policy.timeout_secs.max(30)).await?;
         Ok(html_to_text(&html))
     }
 }
@@ -2511,10 +2602,15 @@ impl Tool for BrowserScreenshotTool {
             // (the interactive CDP session's Fetch interception + post-nav public-origin guard are
             // built for untrusted web browsing, not a local file/dev-server preview).
             if !matches!(target, LocalTarget::Public) {
-                chrome_screenshot(&browse_url(url, &target), &path, ctx.policy.timeout_secs.max(30)).await?;
-                let _ = ctx
-                    .ledger
-                    .append("agent.browser_screenshot", "agent", json!({ "path": rel }));
+                chrome_screenshot(
+                    &browse_url(url, &target),
+                    &path,
+                    ctx.policy.timeout_secs.max(30),
+                )
+                .await?;
+                let _ =
+                    ctx.ledger
+                        .append("agent.browser_screenshot", "agent", json!({ "path": rel }));
                 return screenshot_answer(args, &path, ctx).await;
             }
             ctx.browser.open(url).await?;
@@ -2645,13 +2741,16 @@ impl Tool for BrowserOpenTool {
         let url = arg_str(args, "url")?;
         let trifecta = ctx.taint.is_untrusted() && ctx.sensitive && !ctx.policy.approved;
         let target = guard_browse_url(url, &ctx.workdir, trifecta).await?;
-        let _ = ctx
-            .ledger
-            .append("agent.browser_open", "agent", json!({ "url": url, "dest": crate::agent::host_of(url) }));
+        let _ = ctx.ledger.append(
+            "agent.browser_open",
+            "agent",
+            json!({ "url": url, "dest": crate::agent::host_of(url) }),
+        );
         // A workdir file / loopback preview: one-shot render (the interactive CDP session's Fetch
         // interception + post-nav public-origin guard are for untrusted web browsing, not previews).
         if !matches!(target, LocalTarget::Public) {
-            let html = chrome_dump_dom(&browse_url(url, &target), ctx.policy.timeout_secs.max(30)).await?;
+            let html =
+                chrome_dump_dom(&browse_url(url, &target), ctx.policy.timeout_secs.max(30)).await?;
             return Ok(html_to_text(&html));
         }
         ctx.browser.open(url).await
@@ -2858,8 +2957,8 @@ mod web {
         Ok(out)
     }
 
-    /// Query a SearXNG instance (keyless, free, self-hostable metasearch) at `base` — the same keyless
-    /// option Hermes uses. Point it at your own instance or a public one that allows the JSON API.
+    /// Query a SearXNG instance (keyless, free, self-hostable metasearch) at `base`.
+    /// Point it at your own instance or a public one that allows the JSON API.
     async fn searxng_search(base: &str, query: &str, timeout: u64) -> Result<Vec<String>, String> {
         let url = format!(
             "{}/search?q={}&format=json&safesearch=1",
@@ -2973,9 +3072,11 @@ mod web {
             // SSRF guard doesn't block. Clean research URLs still pass.
             let trifecta = ctx.taint.is_untrusted() && ctx.sensitive && !ctx.policy.approved;
             super::guard_exfil_url(url, trifecta)?;
-            let _ = ctx
-                .ledger
-                .append("agent.web_fetch", "agent", json!({ "url": url, "dest": crate::agent::host_of(url) }));
+            let _ = ctx.ledger.append(
+                "agent.web_fetch",
+                "agent",
+                json!({ "url": url, "dest": crate::agent::host_of(url) }),
+            );
             let to = ctx.policy.timeout_secs;
             // Direct fetch first (fast, no third party). If it errors or yields almost no readable
             // text (a JS-only shell or a bot-block page), fall back to the Jina reader proxy, which
@@ -3014,7 +3115,12 @@ mod web {
     fn jina_fallback_enabled() -> bool {
         std::env::var("ENGRAM_JINA_FALLBACK")
             .ok()
-            .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+            .map(|v| {
+                matches!(
+                    v.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
             .unwrap_or(false)
     }
 
@@ -3090,7 +3196,9 @@ mod web {
                 }
             }
             if queries.is_empty() {
-                return Err("web_search needs a 'query' string or a non-empty 'queries' array".into());
+                return Err(
+                    "web_search needs a 'query' string or a non-empty 'queries' array".into(),
+                );
             }
             let to = ctx.policy.timeout_secs;
             if queries.len() == 1 {
@@ -3184,7 +3292,9 @@ mod web {
         if last_err.is_empty() {
             Ok("(no results)".into())
         } else {
-            Err(format!("web search unavailable (all engines failed): {last_err}"))
+            Err(format!(
+                "web search unavailable (all engines failed): {last_err}"
+            ))
         }
     }
 
@@ -3436,8 +3546,16 @@ mod web {
             let r = extract_results(html);
             assert_eq!(r.len(), 2, "got: {r:?}");
             assert!(r[0].contains("Alpha Title :: https://a.example/p"));
-            assert!(r[0].contains("Alpha is the first described result."), "snippet inline: {:?}", r[0]);
-            assert!(r[1].ends_with("Beta Title :: https://b.example/q"), "no-snippet degrades: {:?}", r[1]);
+            assert!(
+                r[0].contains("Alpha is the first described result."),
+                "snippet inline: {:?}",
+                r[0]
+            );
+            assert!(
+                r[1].ends_with("Beta Title :: https://b.example/q"),
+                "no-snippet degrades: {:?}",
+                r[1]
+            );
         }
 
         #[tokio::test]
@@ -3466,7 +3584,7 @@ mod web {
 // ---------------------------------------------------------------------------
 
 /// Produce a tamper-evident RECEIPT of what the agent actually did, verified against the signed,
-/// hash-chained audit ledger. A capability Hermes structurally cannot offer: its actions are
+/// hash-chained audit ledger. A capability most agents structurally cannot offer: their actions are
 /// unattested, so "prove what you did" has no honest answer. Here every consequential action is a
 /// signed ledger entry, and this tool (a) re-verifies the whole chain — every content hash and
 /// Ed25519 signature — so tampering is detected, then (b) returns the matching entries with their
@@ -3512,9 +3630,13 @@ impl Tool for ProofOfActionTool {
         let matched: Vec<_> = entries
             .into_iter()
             .filter(|e| {
-                kind_f.as_ref().map_or(true, |k| e.kind.to_lowercase().contains(k))
-                    && actor_f.as_ref().map_or(true, |a| e.actor.to_lowercase().contains(a))
-                    && since.map_or(true, |s| e.ts_ms >= s)
+                kind_f
+                    .as_ref()
+                    .is_none_or(|k| e.kind.to_lowercase().contains(k))
+                    && actor_f
+                        .as_ref()
+                        .is_none_or(|a| e.actor.to_lowercase().contains(a))
+                    && since.is_none_or(|s| e.ts_ms >= s)
             })
             .collect();
         let (tip_seq, tip_hash) = ctx.ledger.head();
@@ -3528,8 +3650,14 @@ impl Tool for ProofOfActionTool {
                 "✗ LEDGER INTEGRITY CHECK FAILED ({e}). The record below may have been tampered with — treat with suspicion.\n"
             )),
         }
-        out.push_str(&format!("Public key (verify offline): {}\n", ctx.ledger.pubkey_hex()));
-        out.push_str(&format!("Chain tip: seq {tip_seq}, hash {}…\n\n", short_hash(&tip_hash)));
+        out.push_str(&format!(
+            "Public key (verify offline): {}\n",
+            ctx.ledger.pubkey_hex()
+        ));
+        out.push_str(&format!(
+            "Chain tip: seq {tip_seq}, hash {}…\n\n",
+            short_hash(&tip_hash)
+        ));
 
         let shown: Vec<_> = matched.iter().rev().take(limit).collect();
         out.push_str(&format!(
@@ -3780,9 +3908,17 @@ mod file_tools_tests {
         assert!(out.contains("STOP"), "instructs the model to wait: {out}");
         // Empties dropped, capped at 4 options.
         assert!(out.contains("1. Hamburg (HAM)") && out.contains("2. Weeze (NRN)"));
-        assert!(out.matches("\n  ").count() == 4, "≤4 options rendered: {out}");
+        assert!(
+            out.matches("\n  ").count() == 4,
+            "≤4 options rendered: {out}"
+        );
         // The question is recorded to the audit ledger.
-        let recorded = ctx.ledger.read_all().unwrap().iter().any(|e| e.kind == "agent.clarify");
+        let recorded = ctx
+            .ledger
+            .read_all()
+            .unwrap()
+            .iter()
+            .any(|e| e.kind == "agent.clarify");
         assert!(recorded, "clarify must be auditable");
     }
 
@@ -3812,7 +3948,10 @@ mod file_tools_tests {
     async fn clarify_rejects_empty_question() {
         let dir = tempfile::tempdir().unwrap();
         let ctx = ctx_in(dir.path());
-        assert!(ClarifyTool.run(&json!({"question":"   "}), &ctx).await.is_err());
+        assert!(ClarifyTool
+            .run(&json!({"question":"   "}), &ctx)
+            .await
+            .is_err());
     }
 
     #[tokio::test]
@@ -3828,7 +3967,10 @@ mod file_tools_tests {
             .unwrap();
         assert!(out.contains("STOP") && out.contains("email the report to boss@co.com"));
         // The boundary: the model is told it cannot grant its own approval.
-        assert!(out.contains("cannot approve it yourself"), "states the boundary: {out}");
+        assert!(
+            out.contains("cannot approve it yourself"),
+            "states the boundary: {out}"
+        );
         let logged = ctx
             .ledger
             .read_all()
@@ -3836,7 +3978,10 @@ mod file_tools_tests {
             .iter()
             .any(|e| e.kind == "agent.approval_request");
         assert!(logged, "approval request must be auditable");
-        assert!(RequestApprovalTool.run(&json!({"action":"  "}), &ctx).await.is_err());
+        assert!(RequestApprovalTool
+            .run(&json!({"action":"  "}), &ctx)
+            .await
+            .is_err());
     }
 
     #[tokio::test]
@@ -3859,11 +4004,20 @@ mod file_tools_tests {
                 &ctx,
             )
             .await;
-        assert!(r.is_ok(), "fuzzy edit should match despite indentation: {r:?}");
+        assert!(
+            r.is_ok(),
+            "fuzzy edit should match despite indentation: {r:?}"
+        );
         assert!(r.unwrap().contains("whitespace-insensitive"));
         let out = std::fs::read_to_string(dir.path().join("f.rs")).unwrap();
-        assert!(out.contains("let x = 2;") && out.contains("x * 2"), "got: {out}");
-        assert!(out.starts_with("fn main() {\n") && out.ends_with("}\n"), "surroundings kept: {out}");
+        assert!(
+            out.contains("let x = 2;") && out.contains("x * 2"),
+            "got: {out}"
+        );
+        assert!(
+            out.starts_with("fn main() {\n") && out.ends_with("}\n"),
+            "surroundings kept: {out}"
+        );
     }
 
     #[tokio::test]
@@ -3889,7 +4043,11 @@ mod file_tools_tests {
         let dir = tempfile::tempdir().unwrap();
         let ctx = ctx_in(dir.path());
         ctx.ledger
-            .append("send_message", "agent", json!({"url":"https://hooks.example/x","ok":true}))
+            .append(
+                "send_message",
+                "agent",
+                json!({"url":"https://hooks.example/x","ok":true}),
+            )
             .unwrap();
         ctx.ledger
             .append("memory.write", "core", json!({"fact":"private-ish detail"}))
@@ -3899,13 +4057,25 @@ mod file_tools_tests {
         let out = ProofOfActionTool.run(&json!({}), &ctx).await.unwrap();
         assert!(out.contains("audit chain intact"), "integrity line: {out}");
         assert!(out.contains("Public key"), "pubkey present: {out}");
-        assert!(out.contains("send_message") && out.contains("memory.write"), "actions: {out}");
-        assert!(out.contains("2025") || out.contains("2026"), "human timestamp: {out}");
+        assert!(
+            out.contains("send_message") && out.contains("memory.write"),
+            "actions: {out}"
+        );
+        assert!(
+            out.contains("2025") || out.contains("2026"),
+            "human timestamp: {out}"
+        );
 
         // Filtering by kind narrows to just the matching action.
-        let only = ProofOfActionTool.run(&json!({"kind":"send"}), &ctx).await.unwrap();
+        let only = ProofOfActionTool
+            .run(&json!({"kind":"send"}), &ctx)
+            .await
+            .unwrap();
         assert!(only.contains("send_message"), "kept send: {only}");
-        assert!(!only.contains("memory.write"), "filtered out memory: {only}");
+        assert!(
+            !only.contains("memory.write"),
+            "filtered out memory: {only}"
+        );
     }
 
     #[tokio::test]

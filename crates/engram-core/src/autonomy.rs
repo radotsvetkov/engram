@@ -32,7 +32,7 @@ pub enum ActionClass {
 }
 
 /// One allowlist (or floor) entry, matched against an egress destination (a host or a recipient).
-/// Glob forms mirror Hermes's host matching: `*` = any, `*.example.com` / `.example.com` = that
+/// Glob forms follow familiar host matching: `*` = any, `*.example.com` / `.example.com` = that
 /// domain and its subdomains, otherwise an exact (case-insensitive) match.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EgressRule {
@@ -50,7 +50,11 @@ impl EgressRule {
         // Canonicalize away a trailing FQDN dot on BOTH sides: `paste.evil.com.` resolves to the same
         // host as `paste.evil.com`, so without this a dotted name slips past a suffix floor while
         // still matching a broad `*` allowlist — defeating the "floor governs all egress" invariant.
-        let p = self.pattern.trim().trim_end_matches('.').to_ascii_lowercase();
+        let p = self
+            .pattern
+            .trim()
+            .trim_end_matches('.')
+            .to_ascii_lowercase();
         let d = dest.trim().trim_end_matches('.').to_ascii_lowercase();
         if p == "*" {
             return true;
@@ -204,7 +208,10 @@ mod tests {
     fn policy() -> AutonomyPolicy {
         AutonomyPolicy {
             scope: "agent:assistant".into(),
-            allowed_egress: vec![EgressRule::new("*.example.com"), EgressRule::new("boss@co.com")],
+            allowed_egress: vec![
+                EgressRule::new("*.example.com"),
+                EgressRule::new("boss@co.com"),
+            ],
             allowed_actions: vec![ActionClass::Send],
             budget: EgressBudget {
                 max_actions: 3,
@@ -231,15 +238,30 @@ mod tests {
     fn resolve_tiers() {
         let p = policy();
         // Floor overrides everything.
-        assert_eq!(p.resolve("x.evil.test", ActionClass::Send, 0), EgressDecision::Refuse("egress_refused_floor"));
+        assert_eq!(
+            p.resolve("x.evil.test", ActionClass::Send, 0),
+            EgressDecision::Refuse("egress_refused_floor")
+        );
         // Allowlisted host + allowed class -> Allow.
-        assert_eq!(p.resolve("mail.example.com", ActionClass::Send, 0), EgressDecision::Allow);
+        assert_eq!(
+            p.resolve("mail.example.com", ActionClass::Send, 0),
+            EgressDecision::Allow
+        );
         // Allowlisted recipient -> Allow.
-        assert_eq!(p.resolve("boss@co.com", ActionClass::Send, 0), EgressDecision::Allow);
+        assert_eq!(
+            p.resolve("boss@co.com", ActionClass::Send, 0),
+            EgressDecision::Allow
+        );
         // Not on the allowlist -> Stage (parked, not hard-refused).
-        assert_eq!(p.resolve("random.org", ActionClass::Send, 0), EgressDecision::Stage("destination_not_allowlisted"));
+        assert_eq!(
+            p.resolve("random.org", ActionClass::Send, 0),
+            EgressDecision::Stage("destination_not_allowlisted")
+        );
         // Right destination, wrong action class -> Stage.
-        assert_eq!(p.resolve("mail.example.com", ActionClass::Pay, 0), EgressDecision::Stage("action_not_allowed"));
+        assert_eq!(
+            p.resolve("mail.example.com", ActionClass::Pay, 0),
+            EgressDecision::Stage("action_not_allowed")
+        );
     }
 
     #[test]
@@ -252,7 +274,11 @@ mod tests {
             scope: "agent:1".into(),
             allowed_egress: vec![EgressRule::new("*")],
             allowed_actions: vec![],
-            budget: EgressBudget { max_actions: 10, max_spend_cents: 0, expires_at_ms: 0 },
+            budget: EgressBudget {
+                max_actions: 10,
+                max_spend_cents: 0,
+                expires_at_ms: 0,
+            },
             hardline_floor: vec![EgressRule::new("paste.evil.com")],
         };
         assert_eq!(
@@ -267,8 +293,14 @@ mod tests {
     fn resolve_honors_expiry() {
         let mut p = policy();
         p.budget.expires_at_ms = 1000;
-        assert_eq!(p.resolve("mail.example.com", ActionClass::Send, 999), EgressDecision::Allow);
-        assert_eq!(p.resolve("mail.example.com", ActionClass::Send, 1000), EgressDecision::Stage("grant_expired"));
+        assert_eq!(
+            p.resolve("mail.example.com", ActionClass::Send, 999),
+            EgressDecision::Allow
+        );
+        assert_eq!(
+            p.resolve("mail.example.com", ActionClass::Send, 1000),
+            EgressDecision::Stage("grant_expired")
+        );
     }
 
     #[test]
@@ -276,8 +308,14 @@ mod tests {
         let mut p = policy();
         p.allowed_actions.clear();
         // Empty allowed_actions means the destination allowlist alone suffices for non-pay classes.
-        assert_eq!(p.resolve("mail.example.com", ActionClass::Post, 0), EgressDecision::Allow);
-        assert_eq!(p.resolve("mail.example.com", ActionClass::Other, 0), EgressDecision::Allow);
+        assert_eq!(
+            p.resolve("mail.example.com", ActionClass::Post, 0),
+            EgressDecision::Allow
+        );
+        assert_eq!(
+            p.resolve("mail.example.com", ActionClass::Other, 0),
+            EgressDecision::Allow
+        );
     }
 
     #[test]
@@ -316,7 +354,10 @@ mod tests {
         let mut forged = signed.clone();
         forged.policy.hardline_floor.clear();
         forged.policy.allowed_egress.push(EgressRule::new("*"));
-        assert!(matches!(verify_policy(&forged, &vk), Err(PolicyError::BadSignature)));
+        assert!(matches!(
+            verify_policy(&forged, &vk),
+            Err(PolicyError::BadSignature)
+        ));
         // A different key cannot validate it.
         let other = SigningKey::from_bytes(&[9u8; 32]).verifying_key();
         assert!(verify_policy(&signed, &other).is_err());

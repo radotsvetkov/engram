@@ -271,7 +271,7 @@ fn run_inner(
     if out_len > MAX_SKILL_OUTPUT
         || out_ptr
             .checked_add(out_len)
-            .map_or(true, |end| end > mem_size)
+            .is_none_or(|end| end > mem_size)
     {
         return Err(SkillError::Abi(format!(
             "skill output region out of bounds: ptr={out_ptr} len={out_len} mem={mem_size}"

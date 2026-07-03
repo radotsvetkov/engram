@@ -131,9 +131,7 @@ fn skill_shell_command(
         // Built-in OS sandbox (Seatbelt/bwrap) — network is granted only when the skill declared Net
         // (and we're trusted + not scoring, per `allow_net`); otherwise the sandbox denies it.
         Some("sandbox") => crate::tools::sandbox_command(workdir, command, allow_net),
-        Some(img)
-            if !img.starts_with("ssh:") && !img.starts_with("singularity:") =>
-        {
+        Some(img) if !img.starts_with("ssh:") && !img.starts_with("singularity:") => {
             // docker
             let mount = format!("{}:/work", workdir.display());
             let mut args = vec!["run".to_string(), "--rm".to_string()];
@@ -176,9 +174,7 @@ async fn run_process_skill(
     // Code-execution is refused on any tainted run — not just tainted+sensitive. The central
     // dispatch gate only stops egress tools, so a code-executing skill needs this explicit guard.
     if p.taint.is_untrusted() {
-        return Err(
-            "skill refused: this run read untrusted content (code-execution guard)".into(),
-        );
+        return Err("skill refused: this run read untrusted content (code-execution guard)".into());
     }
     // Untrusted-PROVENANCE guard (distinct from run taint above). When the *bytes* being executed came
     // from an untrusted source — a skill distilled from a tainted run, whose model-proposed source can
@@ -414,7 +410,9 @@ pub async fn improve_skill(
         .iter()
         .map(|(i, o)| (i.as_bytes().to_vec(), o.as_bytes().to_vec()))
         .collect();
-    let candidate_version = registry.install(candidate, bytes).map_err(|e| e.to_string())?;
+    let candidate_version = registry
+        .install(candidate, bytes)
+        .map_err(|e| e.to_string())?;
     let incumbent_score = if runs.is_empty() {
         1.0 // no old gold to regress on
     } else {
@@ -635,9 +633,14 @@ mod tests {
     async fn process_skill_runs_and_returns_stdout() {
         let f = setup();
         f.registry.install(upper_skill(), b"tr a-z A-Z").unwrap();
-        let out = run_active(&f.registry, "upper", b"hello", &params(&f, Taint::Trusted, true))
-            .await
-            .unwrap();
+        let out = run_active(
+            &f.registry,
+            "upper",
+            b"hello",
+            &params(&f, Taint::Trusted, true),
+        )
+        .await
+        .unwrap();
         assert_eq!(String::from_utf8_lossy(&out.output).trim(), "HELLO");
     }
 
@@ -677,16 +680,17 @@ mod tests {
         let v = f.registry.install(upper_skill(), b"tr a-z A-Z").unwrap();
         // Overwrite the on-disk artifact (skills/upper/v{v}.sh) with different bytes — the manifest's
         // module_hash no longer matches, so verification must reject it on the next load.
-        let path = f
-            ._dir
-            .path()
-            .join("skills/upper")
-            .join(format!("v{v}.sh"));
+        let path = f._dir.path().join("skills/upper").join(format!("v{v}.sh"));
         assert!(path.exists(), "artifact should be stored as v{v}.sh");
         std::fs::write(&path, b"echo HACKED").unwrap();
-        let err = run_active(&f.registry, "upper", b"hello", &params(&f, Taint::Trusted, true))
-            .await
-            .unwrap_err();
+        let err = run_active(
+            &f.registry,
+            "upper",
+            b"hello",
+            &params(&f, Taint::Trusted, true),
+        )
+        .await
+        .unwrap_err();
         assert!(
             err.to_lowercase().contains("hash") || err.to_lowercase().contains("signature"),
             "tampered skill should fail verification, got: {err}"
@@ -710,9 +714,7 @@ mod tests {
     async fn improve_promotes_a_better_program() {
         let f = setup();
         // v1: identity (wrong for an uppercasing task).
-        f.registry
-            .install(upper_skill(), b"cat")
-            .unwrap();
+        f.registry.install(upper_skill(), b"cat").unwrap();
         for (inp, gold) in [("abc", "ABC"), ("xy", "XY"), ("hi", "HI")] {
             f.registry
                 .record_run("upper", 1, inp.as_bytes(), gold.as_bytes(), 1.0)
@@ -815,9 +817,7 @@ mod tests {
     async fn verify_and_adopt_rejects_a_skill_that_fails_its_gold() {
         let f = setup();
         // `cat` echoes the input unchanged — it will NOT reproduce the uppercased gold.
-        f.registry
-            .install_inactive(upper_skill(), b"cat")
-            .unwrap();
+        f.registry.install_inactive(upper_skill(), b"cat").unwrap();
         f.registry
             .record_run("upper", 1, b"abc", b"ABC", 1.0)
             .unwrap();
@@ -851,7 +851,9 @@ mod tests {
     #[tokio::test]
     async fn verify_and_adopt_stages_net_skill_for_approval_on_auto_path() {
         let f = setup();
-        f.registry.install_inactive(net_skill(), b"echo hi").unwrap();
+        f.registry
+            .install_inactive(net_skill(), b"echo hi")
+            .unwrap();
         // Autonomous path (require_pure=true) must NEVER auto-activate a network skill.
         let d = verify_and_adopt(
             &f.registry,
@@ -870,7 +872,9 @@ mod tests {
     #[tokio::test]
     async fn verify_and_adopt_activates_net_skill_on_human_approval() {
         let f = setup();
-        f.registry.install_inactive(net_skill(), b"echo hi").unwrap();
+        f.registry
+            .install_inactive(net_skill(), b"echo hi")
+            .unwrap();
         // Human "Adopt" (require_pure=false): the click IS the approval → activate on trust.
         let d = verify_and_adopt(
             &f.registry,
@@ -969,7 +973,9 @@ mod tests {
             let mut p = params(&f, Taint::Trusted, true);
             p.backend = Some("sandbox");
             p.source_tainted = true;
-            let out = run_active(&f.registry, "upper", b"hello", &p).await.unwrap();
+            let out = run_active(&f.registry, "upper", b"hello", &p)
+                .await
+                .unwrap();
             assert_eq!(String::from_utf8_lossy(&out.output).trim(), "HELLO");
         }
     }

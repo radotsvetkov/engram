@@ -239,8 +239,11 @@ impl Registry {
         } else {
             fs::write(&marker, b"1")?;
         }
-        self.ledger
-            .append("skill.toggle", "user", json!({ "id": id, "enabled": enabled }))?;
+        self.ledger.append(
+            "skill.toggle",
+            "user",
+            json!({ "id": id, "enabled": enabled }),
+        )?;
         Ok(())
     }
 

@@ -157,9 +157,7 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
     app.chat.last_total = total;
     app.chat.last_viewport = viewport;
     let max_scroll = total.saturating_sub(viewport);
-    if app.chat.stick {
-        app.chat.scroll = max_scroll;
-    } else if app.chat.scroll > max_scroll {
+    if app.chat.stick || app.chat.scroll > max_scroll {
         app.chat.scroll = max_scroll;
     }
 

@@ -107,6 +107,22 @@ fn restore(term: &mut Tui) -> Result<()> {
     Ok(())
 }
 
+/// Make sure a panic never leaves the user's terminal in raw/alt-screen mode.
+fn install_panic_hook() {
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let mut stdout = io::stdout();
+        let _ = execute!(
+            stdout,
+            terminal::LeaveAlternateScreen,
+            DisableBracketedPaste,
+            DisableMouseCapture
+        );
+        let _ = terminal::disable_raw_mode();
+        hook(info);
+    }));
+}
+
 #[cfg(test)]
 mod smoke {
     //! Renders every view at a range of terminal sizes against a headless
@@ -449,20 +465,4 @@ mod smoke {
             term.draw(|f| super::ui::draw(f, &mut app)).unwrap();
         }
     }
-}
-
-/// Make sure a panic never leaves the user's terminal in raw/alt-screen mode.
-fn install_panic_hook() {
-    let hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        let mut stdout = io::stdout();
-        let _ = execute!(
-            stdout,
-            terminal::LeaveAlternateScreen,
-            DisableBracketedPaste,
-            DisableMouseCapture
-        );
-        let _ = terminal::disable_raw_mode();
-        hook(info);
-    }));
 }

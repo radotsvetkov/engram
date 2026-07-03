@@ -43,16 +43,29 @@ fn store_dir(home: &str) -> PathBuf {
 }
 
 fn skip_dir(name: &str) -> bool {
-    matches!(name, ".git" | "node_modules" | "target" | ".engram_overflow")
+    matches!(
+        name,
+        ".git" | "node_modules" | "target" | ".engram_overflow"
+    )
 }
 
 /// Recursively collect files under `root` (relative paths), skipping heavy/derived dirs, files over
 /// the per-file cap, and `exclude` (the checkpoints store itself, so a workdir that PARENTS the store
 /// — e.g. workdir == home — can't recurse into and re-snapshot every prior checkpoint). Bounded by
 /// MAX_FILES / MAX_TOTAL_BYTES; sets `truncated` when a cap is hit.
-#[allow(clippy::too_many_arguments)]
-fn collect(root: &Path, dir: &Path, rel: &mut PathBuf, out: &mut Vec<(PathBuf, u64)>, total: &mut u64, truncated: &mut bool, exclude: &Path) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+#[allow(clippy::too_many_arguments, clippy::only_used_in_recursion)]
+fn collect(
+    root: &Path,
+    dir: &Path,
+    rel: &mut PathBuf,
+    out: &mut Vec<(PathBuf, u64)>,
+    total: &mut u64,
+    truncated: &mut bool,
+    exclude: &Path,
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
@@ -107,7 +120,15 @@ pub fn collect_tree(workdir: &Path, home: &str) -> Vec<String> {
     let mut total = 0u64;
     let mut truncated = false;
     let store = store_dir(home);
-    collect(workdir, workdir, &mut PathBuf::new(), &mut collected, &mut total, &mut truncated, &store);
+    collect(
+        workdir,
+        workdir,
+        &mut PathBuf::new(),
+        &mut collected,
+        &mut total,
+        &mut truncated,
+        &store,
+    );
     collected
         .into_iter()
         .map(|(rel, _)| rel.to_string_lossy().replace('\\', "/"))
@@ -136,7 +157,15 @@ pub fn snapshot(
     let mut total = 0u64;
     let mut truncated = false;
     let store = store_dir(home);
-    collect(workdir, workdir, &mut PathBuf::new(), &mut collected, &mut total, &mut truncated, &store);
+    collect(
+        workdir,
+        workdir,
+        &mut PathBuf::new(),
+        &mut collected,
+        &mut total,
+        &mut truncated,
+        &store,
+    );
 
     let mut files = Vec::with_capacity(collected.len());
     for (rel, _len) in &collected {
@@ -205,7 +234,7 @@ pub fn list(home: &str) -> Vec<Checkpoint> {
             }
         }
     }
-    out.sort_by(|a, b| b.created_ms.cmp(&a.created_ms));
+    out.sort_by_key(|c| std::cmp::Reverse(c.created_ms));
     out
 }
 
@@ -242,10 +271,12 @@ pub fn restore(home: &str, id: &str) -> Result<RestoreResult, String> {
     let mut restored = 0usize;
     for rel in &cp.files {
         let relp = std::path::Path::new(rel);
-        if relp
-            .components()
-            .any(|c| matches!(c, std::path::Component::ParentDir | std::path::Component::RootDir))
-        {
+        if relp.components().any(|c| {
+            matches!(
+                c,
+                std::path::Component::ParentDir | std::path::Component::RootDir
+            )
+        }) {
             continue;
         }
         let dst = workdir.join(relp);
@@ -273,14 +304,25 @@ pub fn restore(home: &str, id: &str) -> Result<RestoreResult, String> {
     let mut total = 0u64;
     let mut trunc = false;
     let store = store_dir(home);
-    collect(&workdir, &workdir, &mut PathBuf::new(), &mut current, &mut total, &mut trunc, &store);
+    collect(
+        &workdir,
+        &workdir,
+        &mut PathBuf::new(),
+        &mut current,
+        &mut total,
+        &mut trunc,
+        &store,
+    );
     let created_since: Vec<String> = current
         .into_iter()
         .map(|(rel, _)| rel.to_string_lossy().replace('\\', "/"))
         .filter(|p| !captured.contains(p.as_str()))
         .collect();
 
-    Ok(RestoreResult { restored, created_since })
+    Ok(RestoreResult {
+        restored,
+        created_since,
+    })
 }
 
 #[cfg(test)]
@@ -308,8 +350,14 @@ mod tests {
         let res = restore(home.to_str().unwrap(), &cp.id).unwrap();
         assert_eq!(res.restored, 2);
         // Edits reverted, deletion undone.
-        assert_eq!(std::fs::read_to_string(work.join("a.txt")).unwrap(), "original A");
-        assert_eq!(std::fs::read_to_string(work.join("sub/b.txt")).unwrap(), "original B");
+        assert_eq!(
+            std::fs::read_to_string(work.join("a.txt")).unwrap(),
+            "original A"
+        );
+        assert_eq!(
+            std::fs::read_to_string(work.join("sub/b.txt")).unwrap(),
+            "original B"
+        );
         // The new file is reported but NOT deleted (safe rewind).
         assert!(res.created_since.contains(&"c.txt".to_string()));
         assert!(work.join("c.txt").exists());
@@ -349,10 +397,19 @@ mod tests {
         let res = restore(home.to_str().unwrap(), &cp.id).unwrap();
         assert_eq!(res.restored, 1);
         // The outside target must be UNTOUCHED (the copy must not follow the symlink) ...
-        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "DO NOT OVERWRITE");
+        assert_eq!(
+            std::fs::read_to_string(&victim).unwrap(),
+            "DO NOT OVERWRITE"
+        );
         // ... and config.txt is now a fresh REGULAR file with the restored contents.
-        assert!(!std::fs::symlink_metadata(work.join("config.txt")).unwrap().file_type().is_symlink());
-        assert_eq!(std::fs::read_to_string(work.join("config.txt")).unwrap(), "OLD SECRET");
+        assert!(!std::fs::symlink_metadata(work.join("config.txt"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            std::fs::read_to_string(work.join("config.txt")).unwrap(),
+            "OLD SECRET"
+        );
 
         for d in [&home, &work, &outside] {
             let _ = std::fs::remove_dir_all(d);

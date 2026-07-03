@@ -22,8 +22,8 @@ pub mod lifecycle;
 pub mod scope;
 
 pub use autonomy::{
-    sign_policy, verify_policy, ActionClass, AutonomyPolicy, EgressBudget, EgressDecision, EgressRule,
-    PolicyError, SignedAutonomyPolicy,
+    sign_policy, verify_policy, ActionClass, AutonomyPolicy, EgressBudget, EgressDecision,
+    EgressRule, PolicyError, SignedAutonomyPolicy,
 };
 pub use event::{now_ms, Bus, Priority, Spike, Synapse, Taint};
 pub use ledger::{

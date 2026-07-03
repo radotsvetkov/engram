@@ -1,4 +1,4 @@
-//! Durable, named, role-scoped agents - the auditable team (the Hermes model).
+//! Durable, named, role-scoped agents - the auditable team.
 //!
 //! Each agent is a persisted identity: a name, a role (its system prompt / specialization), and
 //! optionally its own model. Assign one to a kanban card and, when the card runs, the agent's role
@@ -239,9 +239,10 @@ impl AgentStore {
             let c = c.trim();
             a.color = if c.is_empty()
                 || (c.len() <= 24
-                    && c.chars()
-                        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '#' | '(' | ')' | ',' | '.' | '%' | ' ')))
-            {
+                    && c.chars().all(|ch| {
+                        ch.is_ascii_alphanumeric()
+                            || matches!(ch, '#' | '(' | ')' | ',' | '.' | '%' | ' ')
+                    })) {
                 c.to_string()
             } else {
                 a.color.clone()

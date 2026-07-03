@@ -49,7 +49,7 @@ pub enum Runtime {
     #[default]
     Wasm,
     /// A source script executed by an interpreter inside the agent's existing shell sandbox
-    /// (local / network-isolated `docker run` / ssh). The Hermes "small program" substrate.
+    /// (local / network-isolated `docker run` / ssh). The "small program" skill substrate.
     Process,
 }
 
@@ -67,7 +67,12 @@ impl Runtime {
 pub fn artifact_ext(runtime: Runtime, interpreter: Option<&str>) -> &'static str {
     match runtime {
         Runtime::Wasm => "wasm",
-        Runtime::Process => match interpreter.unwrap_or("").split_whitespace().next().unwrap_or("") {
+        Runtime::Process => match interpreter
+            .unwrap_or("")
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+        {
             "python3" | "python" => "py",
             "node" | "deno" | "bun" => "js",
             "bash" | "sh" | "zsh" => "sh",

@@ -548,6 +548,17 @@ impl WorkspaceStore {
     }
 }
 
+/// Tighten file permissions to owner-only (chat content lives here).
+fn restrict(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -607,15 +618,4 @@ mod tests {
         ws.update_project(&p2.id, None, None, Some(String::new()));
         assert_eq!(ws.workdir_for_session(&s2.id), None);
     }
-}
-
-/// Tighten file permissions to owner-only (chat content lives here).
-fn restrict(path: &Path) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-    }
-    #[cfg(not(unix))]
-    let _ = path;
 }

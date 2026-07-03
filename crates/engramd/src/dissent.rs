@@ -47,7 +47,9 @@ pub async fn review(
         return None;
     }
     let regions = [Region::Identity, Region::Semantic, Region::Episodic];
-    let hits = memory.recall_trusted_scoped(task, &regions, 8, scope).ok()?;
+    let hits = memory
+        .recall_trusted_scoped(task, &regions, 8, scope)
+        .ok()?;
     if hits.is_empty() {
         return None;
     }

@@ -73,13 +73,7 @@ mod tests {
     fn essentials_survive_a_flood_of_low_priority_context() {
         let essential = "SYSTEM: you are Engram.";
         let flood: String = "recalled noise. ".repeat(5000); // ~large
-        let packed = pack(
-            vec![
-                Part::new(essential, 0),
-                Part::new(flood, 2),
-            ],
-            500,
-        );
+        let packed = pack(vec![Part::new(essential, 0), Part::new(flood, 2)], 500);
         assert!(
             packed.contains("you are Engram"),
             "the tier-0 essential must never be dropped"
@@ -88,13 +82,20 @@ mod tests {
             approx_tokens(&packed) <= 500 + approx_tokens(essential) + 10,
             "the low-priority flood is trimmed to the budget"
         );
-        assert!(packed.contains("trimmed to fit"), "overflow is marked, not silent");
+        assert!(
+            packed.contains("trimmed to fit"),
+            "overflow is marked, not silent"
+        );
     }
 
     #[test]
     fn everything_fits_when_under_budget() {
         let packed = pack(
-            vec![Part::new("alpha", 0), Part::new("beta", 1), Part::new("gamma", 2)],
+            vec![
+                Part::new("alpha", 0),
+                Part::new("beta", 1),
+                Part::new("gamma", 2),
+            ],
             10_000,
         );
         assert!(packed.contains("alpha") && packed.contains("beta") && packed.contains("gamma"));

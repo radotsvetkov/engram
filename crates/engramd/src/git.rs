@@ -79,7 +79,9 @@ pub async fn git_status(State(app): State<App>, Query(q): Query<GitQuery>) -> Ap
     let wd = resolve_workdir(&app, q.session.as_deref());
     if !wd.join(".git").exists() {
         // Walking up to a parent repo is a choice, not an accident — report honestly instead.
-        return Ok(Json(json!({ "repo": false, "workdir": wd.to_string_lossy() })));
+        return Ok(Json(
+            json!({ "repo": false, "workdir": wd.to_string_lossy() }),
+        ));
     }
     let porcelain = run_git(&wd, &["status", "--porcelain=v2", "--branch"])
         .await
@@ -111,7 +113,10 @@ pub async fn git_status(State(app): State<App>, Query(q): Query<GitQuery>) -> Ap
             if path.is_empty() {
                 continue;
             }
-            let (x, y) = (xy.chars().next().unwrap_or('.'), xy.chars().nth(1).unwrap_or('.'));
+            let (x, y) = (
+                xy.chars().next().unwrap_or('.'),
+                xy.chars().nth(1).unwrap_or('.'),
+            );
             let name = |c: char| match c {
                 'M' => "modified",
                 'A' => "added",
@@ -132,7 +137,12 @@ pub async fn git_status(State(app): State<App>, Query(q): Query<GitQuery>) -> Ap
     // spaces survive. An empty repo (no commits yet) is fine — log just errors and we show none.
     let log_raw = run_git(
         &wd,
-        &["log", "-n", "15", "--pretty=format:%h\u{1f}%s\u{1f}%an\u{1f}%ct"],
+        &[
+            "log",
+            "-n",
+            "15",
+            "--pretty=format:%h\u{1f}%s\u{1f}%an\u{1f}%ct",
+        ],
     )
     .await
     .unwrap_or_default();
@@ -166,7 +176,9 @@ pub async fn git_diff(State(app): State<App>, Query(q): Query<GitQuery>) -> ApiR
     let rel = q.path.as_deref().unwrap_or("");
     let abs = contained(&wd, rel).ok_or_else(|| err("path escapes the working directory"))?;
     let mut text = if q.staged == Some(true) {
-        run_git(&wd, &["diff", "--cached", "--", rel]).await.map_err(err)?
+        run_git(&wd, &["diff", "--cached", "--", rel])
+            .await
+            .map_err(err)?
     } else {
         let d = run_git(&wd, &["diff", "--", rel]).await.map_err(err)?;
         if d.is_empty() && abs.is_file() {
@@ -193,7 +205,9 @@ pub async fn git_diff(State(app): State<App>, Query(q): Query<GitQuery>) -> ApiR
         text.truncate(MAX_DIFF_BYTES);
         text.push_str("\n… (truncated)");
     }
-    Ok(Json(json!({ "path": rel, "diff": text, "truncated": truncated })))
+    Ok(Json(
+        json!({ "path": rel, "diff": text, "truncated": truncated }),
+    ))
 }
 
 // ---- per-task changes: checkpoint delta, no git required --------------------------------------
@@ -208,7 +222,10 @@ pub async fn task_changes(State(app): State<App>, AxPath(id): AxPath<String>) ->
         .filter(|c| c.task.as_deref() == Some(id.as_str()))
         .max_by_key(|c| c.created_ms)
         .ok_or_else(|| err("no checkpoint recorded for this task"))?;
-    let cp_root = Path::new(&app.home).join("checkpoints").join(&cp.id).join("files");
+    let cp_root = Path::new(&app.home)
+        .join("checkpoints")
+        .join(&cp.id)
+        .join("files");
     let workdir = PathBuf::from(&cp.workdir);
     if !workdir.is_dir() {
         return Err(err("the task's working directory no longer exists"));
@@ -275,10 +292,7 @@ pub async fn task_changes(State(app): State<App>, AxPath(id): AxPath<String>) ->
 
 fn files_equal(a: &Path, b: &Path) -> bool {
     match (std::fs::metadata(a), std::fs::metadata(b)) {
-        (Ok(ma), Ok(mb)) => {
-            ma.len() == mb.len()
-                && std::fs::read(a).ok() == std::fs::read(b).ok()
-        }
+        (Ok(ma), Ok(mb)) => ma.len() == mb.len() && std::fs::read(a).ok() == std::fs::read(b).ok(),
         _ => false,
     }
 }

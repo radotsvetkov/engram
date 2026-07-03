@@ -116,10 +116,18 @@ mod tests {
     #[test]
     fn chunks_pack_paragraphs_and_split_giants() {
         let small = "Para one.\n\nPara two.\n\nPara three.";
-        assert_eq!(chunk_text(small).len(), 1, "small paras pack into one chunk");
+        assert_eq!(
+            chunk_text(small).len(),
+            1,
+            "small paras pack into one chunk"
+        );
         let giant = "x".repeat(TARGET_CHARS * 3);
         let cs = chunk_text(&giant);
-        assert!(cs.len() >= 3, "a giant paragraph is hard-split: {}", cs.len());
+        assert!(
+            cs.len() >= 3,
+            "a giant paragraph is hard-split: {}",
+            cs.len()
+        );
         assert!(cs.iter().all(|c| c.chars().count() <= TARGET_CHARS));
         assert!(chunk_text("   ").is_empty());
     }
@@ -133,18 +141,33 @@ mod tests {
         assert!(n >= 1);
         // Recalled inside its own project…
         let in_apollo = m
-            .recall_trusted_scoped("budget", &[Region::Semantic], 5, &ScopeCtx::project("APOLLO"))
+            .recall_trusted_scoped(
+                "budget",
+                &[Region::Semantic],
+                5,
+                &ScopeCtx::project("APOLLO"),
+            )
             .unwrap();
         assert!(
-            in_apollo.iter().any(|h| h.record.text.contains("2 million")),
+            in_apollo
+                .iter()
+                .any(|h| h.record.text.contains("2 million")),
             "the document is retrievable in its project"
         );
         // …but never in a different project.
         let in_other = m
-            .recall_trusted_scoped("budget", &[Region::Semantic], 5, &ScopeCtx::project("OTHER"))
+            .recall_trusted_scoped(
+                "budget",
+                &[Region::Semantic],
+                5,
+                &ScopeCtx::project("OTHER"),
+            )
             .unwrap();
         assert!(
-            in_other.is_empty() || in_other.iter().all(|h| !h.record.text.contains("2 million")),
+            in_other.is_empty()
+                || in_other
+                    .iter()
+                    .all(|h| !h.record.text.contains("2 million")),
             "another project must not see this document"
         );
         // Re-ingesting the identical file does not duplicate rows (dedup-on-write).
@@ -153,9 +176,18 @@ mod tests {
             .recall("Apollo", &[Region::Semantic], 50)
             .unwrap()
             .into_iter()
-            .filter(|h| h.record.source.as_deref().map(|s| s.starts_with(DOC_SOURCE_PREFIX)).unwrap_or(false))
+            .filter(|h| {
+                h.record
+                    .source
+                    .as_deref()
+                    .map(|s| s.starts_with(DOC_SOURCE_PREFIX))
+                    .unwrap_or(false)
+            })
             .count();
         assert_eq!(n, n2, "re-ingest chunk count is stable");
-        assert!(all <= n, "re-ingesting the same file did not duplicate chunks (got {all})");
+        assert!(
+            all <= n,
+            "re-ingesting the same file did not duplicate chunks (got {all})"
+        );
     }
 }

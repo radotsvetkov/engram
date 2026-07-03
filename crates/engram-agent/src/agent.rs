@@ -286,9 +286,10 @@ impl Agent {
                          you could not finish. Do not apologize at length."
                             .to_string(),
                     ));
-                    self.maybe_compact(&mut messages, &ctx, &spent_counter).await;
-                    let req = CompletionRequest::new(&self.model, messages.clone()).max_tokens(4096);
-                    let answer = match self.complete_with_retry(req, ctx.taint, &spent_counter).await {
+                    self.maybe_compact(&mut messages, &ctx, spent_counter).await;
+                    let req =
+                        CompletionRequest::new(&self.model, messages.clone()).max_tokens(4096);
+                    let answer = match self.complete_with_retry(req, ctx.taint, spent_counter).await {
                         Ok(c) if !c.text.trim().is_empty() => format!(
                             "{}\n\n---\n_This run reached its work budget ({budget} tokens) and \
                              stopped here. To let big research tasks run longer, raise \
@@ -311,7 +312,7 @@ impl Agent {
 
             // Keep the working context within budget so a long run never overflows the
             // model's window - summarize older turns, keep the freshest verbatim.
-            self.maybe_compact(&mut messages, &ctx, &spent_counter).await;
+            self.maybe_compact(&mut messages, &ctx, spent_counter).await;
 
             let req = CompletionRequest::new(&self.model, messages.clone())
                 .tools(tool_defs.clone())
@@ -320,11 +321,14 @@ impl Agent {
                 .max_tokens(turn_max_tokens);
             // Resilient model call: a transient provider failure retries with backoff instead of
             // aborting the whole run; a terminal failure salvages the work gathered so far (below).
-            let mut completion = match self.complete_with_retry(req, ctx.taint, &spent_counter).await {
+            let mut completion = match self
+                .complete_with_retry(req, ctx.taint, spent_counter)
+                .await
+            {
                 Ok(c) => c,
                 Err(e) => {
                     return Ok(self
-                        .salvage_on_error(&mut messages, &ctx, steps, &spent_counter, e)
+                        .salvage_on_error(&mut messages, &ctx, steps, spent_counter, e)
                         .await)
                 }
             };
@@ -411,7 +415,11 @@ impl Agent {
             // consumes them (echo below + run_tools + StepRecord all see the same fixed ids).
             for (ci, c) in completion.tool_calls.iter_mut().enumerate() {
                 if c.id.is_empty() || !seen_call_ids.insert(c.id.clone()) {
-                    let base = if c.id.is_empty() { "call".to_string() } else { c.id.clone() };
+                    let base = if c.id.is_empty() {
+                        "call".to_string()
+                    } else {
+                        c.id.clone()
+                    };
                     c.id = format!("{base}_{}_{}", steps.len(), ci);
                     seen_call_ids.insert(c.id.clone());
                 }
@@ -435,9 +443,9 @@ impl Agent {
                 .iter()
                 .any(|c| self.tools.get(&c.name).is_some_and(|t| t.taints()));
             let batch_sensitive = completion.tool_calls.iter().any(|c| {
-                self.tools
-                    .get(&c.name)
-                    .is_some_and(|t| t.reads_sensitive() && !reads_overflow_spill(&c.name, &c.arguments))
+                self.tools.get(&c.name).is_some_and(|t| {
+                    t.reads_sensitive() && !reads_overflow_spill(&c.name, &c.arguments)
+                })
             });
             if batch_taint {
                 ctx.taint = Taint::Untrusted;
@@ -459,8 +467,12 @@ impl Agent {
                 .tool_calls
                 .iter()
                 .map(|c| {
-                    edit_target(&c.name, &c.arguments)
-                        .map(|p| (p.clone(), read_small_text(&resolve_edit_path(&ctx.workdir, &p))))
+                    edit_target(&c.name, &c.arguments).map(|p| {
+                        (
+                            p.clone(),
+                            read_small_text(&resolve_edit_path(&ctx.workdir, &p)),
+                        )
+                    })
                 })
                 .collect();
             let outcomes = self.run_tools(&completion.tool_calls, &ctx, trifecta).await;
@@ -469,15 +481,17 @@ impl Agent {
             for (ci, (call, (observation, ok, _executed))) in
                 completion.tool_calls.iter().zip(outcomes).enumerate()
             {
-                let diff = edit_befores
-                    .get(ci)
-                    .and_then(|b| b.as_ref())
-                    .and_then(|(rel, before)| {
-                        let after = read_small_text(&resolve_edit_path(&ctx.workdir, rel));
-                        build_edit_diff(rel, before.as_deref(), after.as_deref(), ok)
-                    });
+                let diff =
+                    edit_befores
+                        .get(ci)
+                        .and_then(|b| b.as_ref())
+                        .and_then(|(rel, before)| {
+                            let after = read_small_text(&resolve_edit_path(&ctx.workdir, rel));
+                            build_edit_diff(rel, before.as_deref(), after.as_deref(), ok)
+                        });
                 let truncated =
-                    spill_if_large(&observation, ctx.policy.max_obs_len, &ctx.workdir, &call.id).await;
+                    spill_if_large(&observation, ctx.policy.max_obs_len, &ctx.workdir, &call.id)
+                        .await;
                 let (ledger_seq, ledger_hash) = ctx
                     .ledger
                     .append(
@@ -547,9 +561,12 @@ impl Agent {
              list exactly what remains unfinished."
                 .to_string(),
         ));
-        self.maybe_compact(&mut messages, &ctx, &spent_counter).await;
+        self.maybe_compact(&mut messages, &ctx, spent_counter).await;
         let req = CompletionRequest::new(&self.model, messages.clone()).max_tokens(2048);
-        let answer = match self.complete_with_retry(req, ctx.taint, &spent_counter).await {
+        let answer = match self
+            .complete_with_retry(req, ctx.taint, spent_counter)
+            .await
+        {
             Ok(c) if !c.text.trim().is_empty() => format!(
                 "{}\n\n---\n_This run hit its step limit ({} steps). Say \"continue\" to pick up \
                  from here._",
@@ -637,7 +654,10 @@ impl Agent {
                 // A provider-level diagnosis (unparseable/truncated arguments) rides in on the
                 // reserved key: don't run the tool - return the diagnosis as the tool result so
                 // the MODEL can re-send a corrected call instead of hearing "missing argument".
-                if let Some(msg) = args.get(engram_gateway::ARGS_ERROR_KEY).and_then(|v| v.as_str()) {
+                if let Some(msg) = args
+                    .get(engram_gateway::ARGS_ERROR_KEY)
+                    .and_then(|v| v.as_str())
+                {
                     return (i, (format!("error: {msg}"), false, false));
                 }
                 // On an argument error, restate the tool's schema - "missing 'path'" alone made
@@ -669,7 +689,11 @@ impl Agent {
                             Ok(()) => match t.run(&args, &ctx).await {
                                 Ok(o) => (o, true, true),
                                 Err(e) => {
-                                    let hint = if e.contains("missing") { schema_hint(&t) } else { String::new() };
+                                    let hint = if e.contains("missing") {
+                                        schema_hint(&t)
+                                    } else {
+                                        String::new()
+                                    };
                                     (format!("error: {e}{hint}"), false, true)
                                 }
                             },
@@ -679,7 +703,11 @@ impl Agent {
                     Some(t) => match t.run(&args, &ctx).await {
                         Ok(o) => (o, true, true),
                         Err(e) => {
-                            let hint = if e.contains("missing") { schema_hint(&t) } else { String::new() };
+                            let hint = if e.contains("missing") {
+                                schema_hint(&t)
+                            } else {
+                                String::new()
+                            };
                             (format!("error: {e}{hint}"), false, true)
                         }
                     },
@@ -731,7 +759,11 @@ impl Agent {
             steps.len()
         );
         if steps.is_empty() {
-            return AgentRun { answer: note, steps, stopped: "error" };
+            return AgentRun {
+                answer: note,
+                steps,
+                stopped: "error",
+            };
         }
         messages.push(Message::user(
             "The model provider has become unavailable, so you can no longer call tools. Using ONLY \
@@ -749,7 +781,11 @@ impl Agent {
             ),
             _ => note,
         };
-        AgentRun { answer, steps, stopped: "error" }
+        AgentRun {
+            answer,
+            steps,
+            stopped: "error",
+        }
     }
 
     /// Compact the transcript when it grows past the token budget: keep the system prompt
@@ -782,7 +818,11 @@ impl Agent {
             .map(|m| m.content.clone())
             .unwrap_or_default();
         let summary = self
-            .summarize(&render_transcript(&messages[2..tail_start]), ctx.taint, spent)
+            .summarize(
+                &render_transcript(&messages[2..tail_start]),
+                ctx.taint,
+                spent,
+            )
             .await;
 
         let mut rebuilt = Vec::with_capacity(messages.len() - (tail_start - 2) + 1);
@@ -908,7 +948,11 @@ fn egress_decision(ctx: &ToolCtx, tool_name: &str, dest: Option<String>) -> Resu
             }
             // A scoped approval cannot authorize an opaque destination (we can't prove it matches).
             (Some(_), None) => {
-                ledger("agent.egress_refused", "approval_dest_unresolved", dest_label);
+                ledger(
+                    "agent.egress_refused",
+                    "approval_dest_unresolved",
+                    dest_label,
+                );
                 return Err(refuse_observation("approval_scoped_elsewhere"));
             }
             _ => {
@@ -1043,9 +1087,7 @@ fn is_transient(e: &GatewayError) -> bool {
     // yielded 0, silently disabling the hard-client-error fast-fail below (bad keys / unknown models
     // then burned all 5 retries). Strip that known prefix first, then read the leading status token so
     // a body that merely mentions "404" can't misclassify.
-    let body = msg
-        .strip_prefix("provider error: ")
-        .unwrap_or(msg.as_str());
+    let body = msg.strip_prefix("provider error: ").unwrap_or(msg.as_str());
     let lead: u32 = body
         .chars()
         .take_while(|c| c.is_ascii_digit())
@@ -1058,7 +1100,9 @@ fn is_transient(e: &GatewayError) -> bool {
         return false;
     }
     let low = msg.to_ascii_lowercase();
-    if low.contains("invalid") && (low.contains("key") || low.contains("model") || low.contains("api")) {
+    if low.contains("invalid")
+        && (low.contains("key") || low.contains("model") || low.contains("api"))
+    {
         return false;
     }
     // Rate limits (429) and 5xx are transient; a bare network/timeout error (no status) is too, so
@@ -1072,7 +1116,9 @@ fn is_transient(e: &GatewayError) -> bool {
 /// falls back to exponential backoff.
 fn retry_after(e: &GatewayError) -> Option<Duration> {
     let msg = e.to_string().to_ascii_lowercase();
-    let idx = msg.find("retry-after").or_else(|| msg.find("retry after"))?;
+    let idx = msg
+        .find("retry-after")
+        .or_else(|| msg.find("retry after"))?;
     let tail = &msg[idx..];
     let secs: u64 = tail
         .chars()
@@ -1092,7 +1138,11 @@ fn action_class(tool_name: &str) -> engram_core::ActionClass {
         Pay
     } else if n.contains("post") || n.contains("tweet") || n.contains("publish") {
         Post
-    } else if n.contains("send") || n.contains("email") || n.contains("message") || n.contains("mail") {
+    } else if n.contains("send")
+        || n.contains("email")
+        || n.contains("message")
+        || n.contains("mail")
+    {
         Send
     } else {
         Other
@@ -1148,7 +1198,12 @@ fn read_small_text(p: &std::path::Path) -> Option<String> {
 
 /// Unified diff for a completed edit step. New files diff from empty; unchanged/failed/binary
 /// produce None. Capped at 64KB so receipts stay bounded.
-fn build_edit_diff(rel: &str, before: Option<&str>, after: Option<&str>, ok: bool) -> Option<String> {
+fn build_edit_diff(
+    rel: &str,
+    before: Option<&str>,
+    after: Option<&str>,
+    ok: bool,
+) -> Option<String> {
     if !ok {
         return None;
     }
@@ -1195,7 +1250,11 @@ async fn spill_if_large(
         .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
         .take(48)
         .collect();
-    let safe = if safe.is_empty() { "obs".to_string() } else { safe };
+    let safe = if safe.is_empty() {
+        "obs".to_string()
+    } else {
+        safe
+    };
     let rel = format!(".engram_overflow/obs-{safe}.txt");
     let abs = workdir.join(&rel);
     let spilled = match abs.parent() {
@@ -1294,15 +1353,33 @@ mod tests {
     #[test]
     fn overflow_exemption_rejects_parent_traversal() {
         // A genuine spill read keeps the sensitive-exemption.
-        assert!(reads_overflow_spill("read_file", &json!({"path": ".engram_overflow/obs-x.txt"})));
-        assert!(reads_overflow_spill("read_file", &json!({"path": "./.engram_overflow/obs-x.txt"})));
+        assert!(reads_overflow_spill(
+            "read_file",
+            &json!({"path": ".engram_overflow/obs-x.txt"})
+        ));
+        assert!(reads_overflow_spill(
+            "read_file",
+            &json!({"path": "./.engram_overflow/obs-x.txt"})
+        ));
         // A `..` traversal OUT of the spill dir must NOT — else a private workdir file is read without
         // arming the trifecta `sensitive` dimension (the exfiltration the flag exists to block).
-        assert!(!reads_overflow_spill("read_file", &json!({"path": ".engram_overflow/../secret.txt"})));
-        assert!(!reads_overflow_spill("read_file", &json!({"path": ".engram_overflow/../../etc/passwd"})));
+        assert!(!reads_overflow_spill(
+            "read_file",
+            &json!({"path": ".engram_overflow/../secret.txt"})
+        ));
+        assert!(!reads_overflow_spill(
+            "read_file",
+            &json!({"path": ".engram_overflow/../../etc/passwd"})
+        ));
         // Unrelated tools / paths are unaffected.
-        assert!(!reads_overflow_spill("write_file", &json!({"path": ".engram_overflow/x"})));
-        assert!(!reads_overflow_spill("read_file", &json!({"path": "notes.txt"})));
+        assert!(!reads_overflow_spill(
+            "write_file",
+            &json!({"path": ".engram_overflow/x"})
+        ));
+        assert!(!reads_overflow_spill(
+            "read_file",
+            &json!({"path": "notes.txt"})
+        ));
     }
 
     #[test]
@@ -1322,7 +1399,10 @@ mod tests {
         let big = "x".repeat(5000);
         let out = spill_if_large(&big, 100, dir.path(), "toolu_abc123").await;
         assert!(out.len() < big.len(), "head is truncated");
-        assert!(out.contains("read_file"), "points the model at the spill: {out}");
+        assert!(
+            out.contains("read_file"),
+            "points the model at the spill: {out}"
+        );
         // The pointed-at file exists in the workdir and holds the COMPLETE observation.
         let rel = dir.path().join(".engram_overflow/obs-toolu_abc123.txt");
         assert_eq!(std::fs::read_to_string(rel).unwrap(), big);
@@ -1333,7 +1413,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let out = spill_if_large("hello", 100, dir.path(), "id").await;
         assert_eq!(out, "hello");
-        assert!(!dir.path().join(".engram_overflow").exists(), "no spill for small output");
+        assert!(
+            !dir.path().join(".engram_overflow").exists(),
+            "no spill for small output"
+        );
     }
 
     fn call(id: &str, name: &str, args: serde_json::Value) -> Completion {
@@ -1475,7 +1558,11 @@ mod tests {
         };
         let provider = ScriptedProvider::new(vec![
             truncated,
-            call("2", "write_file", json!({ "path": "big.txt", "content": "whole file\n" })),
+            call(
+                "2",
+                "write_file",
+                json!({ "path": "big.txt", "content": "whole file\n" }),
+            ),
             final_answer("written"),
         ]);
         let gateway = Arc::new(Gateway::new(Box::new(provider), ledger.clone()));
@@ -1530,8 +1617,16 @@ mod tests {
 
         // Scripted model: edit an existing file, create a new one, read one - then answer.
         let provider = ScriptedProvider::new(vec![
-            call("1", "write_file", json!({ "path": "notes.txt", "content": "alpha\nGAMMA\n" })),
-            call("2", "write_file", json!({ "path": "fresh.txt", "content": "hello\n" })),
+            call(
+                "1",
+                "write_file",
+                json!({ "path": "notes.txt", "content": "alpha\nGAMMA\n" }),
+            ),
+            call(
+                "2",
+                "write_file",
+                json!({ "path": "fresh.txt", "content": "hello\n" }),
+            ),
             call("3", "read_file", json!({ "path": "fresh.txt" })),
             final_answer("done"),
         ]);
@@ -1568,7 +1663,9 @@ mod tests {
         // A read-only tool never carries one.
         assert!(run.steps[2].diff.is_none());
         // And the diff never leaks into what the model saw (the observation).
-        assert!(!run.steps[0].observation.contains("GAMMA") || !run.steps[0].observation.contains("@@"));
+        assert!(
+            !run.steps[0].observation.contains("GAMMA") || !run.steps[0].observation.contains("@@")
+        );
     }
 
     #[tokio::test]
@@ -1993,8 +2090,15 @@ mod tests {
             true, // user approved
         )
         .await;
-        assert!(executed, "approved egress must execute despite the trifecta");
-        assert!(run.steps[1].observation.contains("sent"), "got: {}", run.steps[1].observation);
+        assert!(
+            executed,
+            "approved egress must execute despite the trifecta"
+        );
+        assert!(
+            run.steps[1].observation.contains("sent"),
+            "got: {}",
+            run.steps[1].observation
+        );
     }
 
     // An egress tool that records every URL it actually ran with, so a test can see which calls the
@@ -2023,7 +2127,10 @@ mod tests {
                 .map(crate::agent::host_of)
         }
         async fn run(&self, args: &serde_json::Value, _: &ToolCtx) -> Result<String, String> {
-            self.0.lock().unwrap().push(args["url"].as_str().unwrap_or("").to_string());
+            self.0
+                .lock()
+                .unwrap()
+                .push(args["url"].as_str().unwrap_or("").to_string());
             Ok("sent".into())
         }
     }
@@ -2047,13 +2154,24 @@ mod tests {
         let script = vec![
             multi_call(vec![
                 ("1", "read_inbox", json!({})),
-                ("2", "send_message", json!({"url":"https://mail.example.com/x"})),
+                (
+                    "2",
+                    "send_message",
+                    json!({"url":"https://mail.example.com/x"}),
+                ),
                 ("3", "send_message", json!({"url":"https://other.org/y"})),
-                ("4", "send_message", json!({"url":"https://mail.example.com/z"})),
+                (
+                    "4",
+                    "send_message",
+                    json!({"url":"https://mail.example.com/z"}),
+                ),
             ]),
             final_answer("done"),
         ];
-        let gateway = Arc::new(Gateway::new(Box::new(ScriptedProvider::new(script)), ledger.clone()));
+        let gateway = Arc::new(Gateway::new(
+            Box::new(ScriptedProvider::new(script)),
+            ledger.clone(),
+        ));
         let tools = ToolRegistry::new()
             .with(Arc::new(TaintTool {
                 nm: "read_inbox",
@@ -2086,7 +2204,10 @@ mod tests {
             on_narration: None,
             allowed_tools: None,
         };
-        Agent::new(gateway, tools, "test").run("go", ctx).await.unwrap();
+        Agent::new(gateway, tools, "test")
+            .run("go", ctx)
+            .await
+            .unwrap();
         let v = sent.lock().unwrap().clone();
         v
     }
@@ -2098,14 +2219,27 @@ mod tests {
             scope: "agent:test".into(),
             allowed_egress: vec![EgressRule::new("*.example.com")],
             allowed_actions: vec![ActionClass::Send],
-            budget: EgressBudget { max_actions: 10, max_spend_cents: 0, expires_at_ms: 0 },
+            budget: EgressBudget {
+                max_actions: 10,
+                max_spend_cents: 0,
+                expires_at_ms: 0,
+            },
             hardline_floor: vec![],
         })
         .await;
         // Both allowlisted sends went through autonomously; the non-allowlisted one staged (never ran).
-        assert!(sent.iter().any(|u| u.contains("mail.example.com/x")), "sent: {sent:?}");
-        assert!(sent.iter().any(|u| u.contains("mail.example.com/z")), "sent: {sent:?}");
-        assert!(!sent.iter().any(|u| u.contains("other.org")), "non-allowlisted must stage: {sent:?}");
+        assert!(
+            sent.iter().any(|u| u.contains("mail.example.com/x")),
+            "sent: {sent:?}"
+        );
+        assert!(
+            sent.iter().any(|u| u.contains("mail.example.com/z")),
+            "sent: {sent:?}"
+        );
+        assert!(
+            !sent.iter().any(|u| u.contains("other.org")),
+            "non-allowlisted must stage: {sent:?}"
+        );
         assert_eq!(sent.len(), 2);
     }
 
@@ -2116,7 +2250,11 @@ mod tests {
             scope: "agent:test".into(),
             allowed_egress: vec![EgressRule::new("*.example.com")],
             allowed_actions: vec![ActionClass::Send],
-            budget: EgressBudget { max_actions: 1, max_spend_cents: 0, expires_at_ms: 0 },
+            budget: EgressBudget {
+                max_actions: 1,
+                max_spend_cents: 0,
+                expires_at_ms: 0,
+            },
             hardline_floor: vec![],
         })
         .await;
@@ -2150,9 +2288,16 @@ mod tests {
             ]),
             final_answer("done"),
         ];
-        let gateway = Arc::new(Gateway::new(Box::new(ScriptedProvider::new(script)), ledger.clone()));
+        let gateway = Arc::new(Gateway::new(
+            Box::new(ScriptedProvider::new(script)),
+            ledger.clone(),
+        ));
         let tools = ToolRegistry::new()
-            .with(Arc::new(TaintTool { nm: "read_inbox", taints: true, sensitive: true }))
+            .with(Arc::new(TaintTool {
+                nm: "read_inbox",
+                taints: true,
+                sensitive: true,
+            }))
             .with(Arc::new(RecordEgress(sent.clone())));
         let ctx = ToolCtx {
             memory,
@@ -2166,7 +2311,11 @@ mod tests {
                     scope: "agent:test".into(),
                     allowed_egress: vec![EgressRule::new("*")], // broadest allow
                     allowed_actions: vec![ActionClass::Send],
-                    budget: EgressBudget { max_actions: 10, max_spend_cents: 0, expires_at_ms: 0 },
+                    budget: EgressBudget {
+                        max_actions: 10,
+                        max_spend_cents: 0,
+                        expires_at_ms: 0,
+                    },
                     hardline_floor: vec![],
                 }),
                 attended: false,
@@ -2184,7 +2333,10 @@ mod tests {
             on_narration: None,
             allowed_tools: None,
         };
-        Agent::new(gateway, tools, "test").run("go", ctx).await.unwrap();
+        Agent::new(gateway, tools, "test")
+            .run("go", ctx)
+            .await
+            .unwrap();
         // `*` must NOT "match" an unresolvable destination — the opaque egress stages, never sends.
         assert!(
             sent.lock().unwrap().is_empty(),

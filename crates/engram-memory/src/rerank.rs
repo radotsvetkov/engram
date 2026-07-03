@@ -54,11 +54,7 @@ mod tests {
         let a = vec![1.0, 0.0, 0.0];
         let b = vec![0.99, 0.01, 0.0];
         let c = vec![0.0, 1.0, 0.0];
-        let cands = vec![
-            (1i64, 0.90f32, a),
-            (2i64, 0.89f32, b),
-            (3i64, 0.80f32, c),
-        ];
+        let cands = vec![(1i64, 0.90f32, a), (2i64, 0.89f32, b), (3i64, 0.80f32, c)];
         // Pure relevance (lambda=1) would pick the two near-dups first.
         assert_eq!(mmr(&cands, 1.0, 2), vec![1, 2]);
         // With diversity, the distinct candidate is preferred over the near-duplicate.

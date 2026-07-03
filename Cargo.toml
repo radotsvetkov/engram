@@ -19,7 +19,7 @@ members = [
 [workspace.package]
 version = "0.2.0"
 edition = "2021"
-rust-version = "1.80"
+rust-version = "1.82"
 authors = ["Radoslav Tsvetkov <tsvetkov.rado@gmail.com>"]
 license = "MIT"
 description = "Engram - a brain-inspired, self-improving personal AI agent that costs nothing when idle"

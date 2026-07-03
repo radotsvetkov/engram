@@ -1,4 +1,4 @@
-//! The four tools that let an agent grow and reuse its own skills — the Hermes "write a small
+//! The four tools that let an agent grow and reuse its own skills — the "write a small
 //! program, keep it, get better at it" loop, finally exposed to the model (until now `ctx.skills`
 //! was inert in every run).
 //!
@@ -220,17 +220,22 @@ impl Tool for SkillRunTool {
         // BELOW the accepted-runs replay threshold, so only human/author-asserted gold judges
         // improvements. Deduped by input and capped so it can't grow without bound; network/LLM skills
         // are skipped entirely (their output varies with the live world).
-        if signed.manifest.capabilities.is_empty() && !outcome.output.is_empty() && !input.is_empty() {
+        if signed.manifest.capabilities.is_empty()
+            && !outcome.output.is_empty()
+            && !input.is_empty()
+        {
             if let Ok(accepted) = ctx.skills.accepted_runs(id) {
                 // Don't shadow a real gold example for this input, and cap capture volume by the
                 // accepted-set size so provisional records can't grow without bound. (A provisional
                 // record is below the accepted threshold, so it never enters the replay/gold set.)
-                let already = accepted.iter().any(|(i, _)| i.as_slice() == input.as_bytes());
+                let already = accepted
+                    .iter()
+                    .any(|(i, _)| i.as_slice() == input.as_bytes());
                 if !already && accepted.len() < 30 {
                     if let Ok(Some(v)) = ctx.skills.active_version(id) {
-                        let _ = ctx
-                            .skills
-                            .record_run(id, v, input.as_bytes(), &outcome.output, 0.5);
+                        let _ =
+                            ctx.skills
+                                .record_run(id, v, input.as_bytes(), &outcome.output, 0.5);
                     }
                 }
             }
@@ -270,7 +275,9 @@ impl Tool for SkillSourceTool {
         let id = arg_str(args, "id")?;
         let versions = ctx.skills.versions(id).map_err(|e| e.to_string())?;
         let Some(&latest) = versions.iter().max() else {
-            return Err(format!("no such skill '{id}' (use skill_search to list skills)"));
+            return Err(format!(
+                "no such skill '{id}' (use skill_search to list skills)"
+            ));
         };
         let shown = ctx
             .skills
@@ -361,7 +368,12 @@ impl Tool for SkillAuthorTool {
         if !valid_id(&id) {
             return Err("invalid skill id (use letters, digits, '_' or '-', max 64)".into());
         }
-        if ctx.skills.active_version(&id).map_err(|e| e.to_string())?.is_some() {
+        if ctx
+            .skills
+            .active_version(&id)
+            .map_err(|e| e.to_string())?
+            .is_some()
+        {
             return Err(format!(
                 "skill '{id}' already exists — use skill_improve to offer a better version"
             ));
@@ -371,7 +383,11 @@ impl Tool for SkillAuthorTool {
         if source.trim().is_empty() {
             return Err("source is empty".into());
         }
-        let interpreter = args["interpreter"].as_str().unwrap_or("python3").trim().to_string();
+        let interpreter = args["interpreter"]
+            .as_str()
+            .unwrap_or("python3")
+            .trim()
+            .to_string();
         if !valid_interpreter(&interpreter) {
             return Err("invalid interpreter (letters, digits, space, and /._- only)".into());
         }
@@ -383,7 +399,9 @@ impl Tool for SkillAuthorTool {
         if let Some(arr) = args["capabilities"].as_array() {
             for c in arr {
                 if let Some(cap) = c.as_str().and_then(parse_capability) {
-                    if matches!(cap, Capability::Net | Capability::Llm) && !capabilities.contains(&cap) {
+                    if matches!(cap, Capability::Net | Capability::Llm)
+                        && !capabilities.contains(&cap)
+                    {
                         capabilities.push(cap);
                     }
                 }
@@ -497,7 +515,9 @@ impl Tool for SkillImproveTool {
             ));
         }
         if ctx.policy.dry_run {
-            return Ok(format!("[dry-run] would offer a candidate for skill '{id}'"));
+            return Ok(format!(
+                "[dry-run] would offer a candidate for skill '{id}'"
+            ));
         }
         if let Some(interp) = args["interpreter"].as_str() {
             if !valid_interpreter(interp) {
@@ -562,7 +582,11 @@ mod tests {
     use engram_skills::{Registry, SkillSigner};
     use std::sync::Arc;
 
-    fn ctx(taint: Taint, allow_shell: bool, allow_skill_author: bool) -> (ToolCtx, tempfile::TempDir) {
+    fn ctx(
+        taint: Taint,
+        allow_shell: bool,
+        allow_skill_author: bool,
+    ) -> (ToolCtx, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let ledger = Arc::new(Ledger::open(dir.path()).unwrap());
         let memory = Arc::new(

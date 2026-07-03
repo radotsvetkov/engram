@@ -5,6 +5,10 @@
 //! `mpsc` receiver fed by a background task, so the TUI event loop can simply
 //! select over it.
 
+// This is a complete typed client for the daemon's API surface; not every endpoint
+// is wired into a command yet, so a few methods and stream fields are unused for now.
+#![allow(dead_code)]
+
 pub mod sse;
 pub mod types;
 
@@ -329,7 +333,11 @@ impl Client {
 
     /// Create a real chat session under a project, so its turns persist server-side and its memory
     /// + working directory are scoped to that project. Returns the created session.
-    pub async fn session_create(&self, project_id: &str, title: Option<&str>) -> Result<SessionMeta> {
+    pub async fn session_create(
+        &self,
+        project_id: &str,
+        title: Option<&str>,
+    ) -> Result<SessionMeta> {
         let mut body = serde_json::json!({ "project_id": project_id });
         if let Some(t) = title {
             body["title"] = serde_json::Value::String(t.to_string());

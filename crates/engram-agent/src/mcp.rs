@@ -245,7 +245,9 @@ impl McpClient {
     ) -> Result<Value, String> {
         let mut io = io.lock().await;
         if io.dead {
-            return Err("mcp connection is dead (a prior request timed out or the peer closed)".into());
+            return Err(
+                "mcp connection is dead (a prior request timed out or the peer closed)".into(),
+            );
         }
         let id = io.next_id;
         io.next_id += 1;
@@ -298,7 +300,10 @@ impl McpClient {
             .post(&http.url)
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             // Streamable HTTP servers may reply with either JSON or an SSE stream; advertise both.
-            .header(reqwest::header::ACCEPT, "application/json, text/event-stream")
+            .header(
+                reqwest::header::ACCEPT,
+                "application/json, text/event-stream",
+            )
             .json(&body);
         if let Some(tok) = &http.bearer {
             req = req.bearer_auth(tok);
@@ -369,7 +374,10 @@ impl McpClient {
                     .client
                     .post(&http.url)
                     .header(reqwest::header::CONTENT_TYPE, "application/json")
-                    .header(reqwest::header::ACCEPT, "application/json, text/event-stream")
+                    .header(
+                        reqwest::header::ACCEPT,
+                        "application/json, text/event-stream",
+                    )
                     .json(&body);
                 if let Some(tok) = &http.bearer {
                     req = req.bearer_auth(tok);
@@ -1071,7 +1079,10 @@ for line in sys.stdin:
         .await
         .expect("connect to mock mcp server");
 
-        let prompts = client.list_prompts(CALL_CEILING).await.expect("list prompts");
+        let prompts = client
+            .list_prompts(CALL_CEILING)
+            .await
+            .expect("list prompts");
         assert_eq!(prompts.len(), 1);
         assert_eq!(prompts[0].name, "greet");
         assert_eq!(prompts[0].arguments.len(), 1);
@@ -1158,7 +1169,8 @@ for line in sys.stdin:
     #[cfg(feature = "web")]
     #[test]
     fn sse_body_parses_matching_response_frame() {
-        let body = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{\"ok\":true}}\n\n";
+        let body =
+            "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{\"ok\":true}}\n\n";
         let v = parse_sse_response(body, 7).expect("parse sse");
         assert_eq!(v["result"]["ok"], json!(true));
         // A non-matching id yields nothing.
@@ -1295,7 +1307,10 @@ for line in sys.stdin:
 
         let trusted_res = McpResourceTool::new(client.clone()).trusted(true);
         assert!(!trusted_res.taints(), "trusted server does not taint");
-        assert!(trusted_res.reads_sensitive(), "but its data stays sensitive");
+        assert!(
+            trusted_res.reads_sensitive(),
+            "but its data stays sensitive"
+        );
 
         let untrusted_prompt = McpPromptTool::new(client.clone());
         assert!(untrusted_prompt.taints());
@@ -1323,9 +1338,18 @@ for line in sys.stdin:
         let (tools, servers) = connect_servers_full(std::slice::from_ref(&spec)).await;
         // One call tool (echo) + the two ingress tools.
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
-        assert!(names.contains(&"mcp_mock_echo"), "call tool present: {names:?}");
-        assert!(names.contains(&"mcp_mock_read_resource"), "resource tool present: {names:?}");
-        assert!(names.contains(&"mcp_mock_get_prompt"), "prompt tool present: {names:?}");
+        assert!(
+            names.contains(&"mcp_mock_echo"),
+            "call tool present: {names:?}"
+        );
+        assert!(
+            names.contains(&"mcp_mock_read_resource"),
+            "resource tool present: {names:?}"
+        );
+        assert!(
+            names.contains(&"mcp_mock_get_prompt"),
+            "prompt tool present: {names:?}"
+        );
         // And the client handle is reported so a caller can drive resources/prompts directly.
         assert_eq!(servers.len(), 1);
         assert_eq!(servers[0].server, "mock");

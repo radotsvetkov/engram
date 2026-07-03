@@ -255,8 +255,7 @@ impl CdpBrowser {
         };
         let id = conn.next_id;
         conn.next_id += 1;
-        let payload =
-            json!({ "id": id, "method": cmd_method, "params": params }).to_string();
+        let payload = json!({ "id": id, "method": cmd_method, "params": params }).to_string();
         let _ = conn.ws.send(Message::Text(payload)).await;
     }
 

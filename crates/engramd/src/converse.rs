@@ -132,9 +132,11 @@ pub(crate) fn learn_identity(memory: &Memory, text: &str) -> Vec<String> {
         if l.supersede {
             // Identity is user-global; only supersede prior user-global identity facts, never reach
             // into a project ring.
-            if let Ok(olds) =
-                memory.current_with_prefix_scoped(Region::Identity, &l.prefix, &ScopeCtx::user_only())
-            {
+            if let Ok(olds) = memory.current_with_prefix_scoped(
+                Region::Identity,
+                &l.prefix,
+                &ScopeCtx::user_only(),
+            ) {
                 for old in olds {
                     if old != rec.id {
                         let _ = memory.supersede(old, rec.id);
@@ -180,6 +182,7 @@ pub(crate) fn attachments_context(attachments: &[Attachment]) -> Option<String> 
 /// Streaming conversation: identical recall / identity-learning / persistence, but the
 /// model's reply is streamed fragment-by-fragment to `on_delta` as it generates, and the
 /// assembled [`Turn`] is returned at the end.
+#[allow(clippy::too_many_arguments)]
 pub async fn converse_stream(
     memory: &Memory,
     gateway: &Gateway,
@@ -477,10 +480,7 @@ mod tests {
 
         // A hard-panic reproducer from the dossier: mixed multibyte chars before the match.
         let f = extract_identity("İ ẞ i love Rust");
-        assert!(
-            f.iter().any(|l| l.fact == "User loves Rust"),
-            "got {f:?}"
-        );
+        assert!(f.iter().any(|l| l.fact == "User loves Rust"), "got {f:?}");
 
         // Pattern beginning with a case-length-changing char: no panic, no false match.
         let _ = extract_identity("ẞß İ");

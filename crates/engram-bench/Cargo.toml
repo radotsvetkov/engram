@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Engram benchmarks: paraphrase recall and footprint, the numbers we beat Hermes on"
+description = "Engram benchmarks: paraphrase recall quality and binary/idle footprint"
 
 [[bin]]
 name = "engram-bench"

@@ -456,9 +456,14 @@ mod tests {
         // NOT leave it wedged (which would make try_begin refuse every future run forever).
         let s2 = TaskStore::open(&d);
         let recovered = s2.get(&id).unwrap();
-        assert_eq!(recovered.status, "failed", "stuck 'doing' must be swept to 'failed'");
+        assert_eq!(
+            recovered.status, "failed",
+            "stuck 'doing' must be swept to 'failed'"
+        );
         assert!(recovered.progress.is_none());
-        let run = recovered.run.expect("a synthetic interrupted run is attached");
+        let run = recovered
+            .run
+            .expect("a synthetic interrupted run is attached");
         assert_eq!(run.stopped, "interrupted");
         assert!(run.answer.contains("interrupted"));
         // And it must be runnable again (the whole point): try_begin succeeds now.

@@ -609,7 +609,7 @@ impl App {
                     let (id, name) = (p.id.clone(), p.name.clone());
                     self.project_picker_open = false;
                     self.active_project = Some(id.clone());
-                    self.toast(&format!("· project · {name}"));
+                    self.toast(format!("· project · {name}"));
                     self.start_session_in(id);
                 }
             }
@@ -641,10 +641,7 @@ impl App {
                 // "personal" and project-scoped chats are invisible in the resume picker.
                 let project = self.active_project.clone();
                 self.fetch(move |c| async move {
-                    c.sessions(project.as_deref())
-                        .await
-                        .ok()
-                        .map(Msg::Sessions)
+                    c.sessions(project.as_deref()).await.ok().map(Msg::Sessions)
                 });
             }
             View::Tasks => self.refresh_tasks(),
@@ -809,10 +806,13 @@ impl App {
                 }
             }
             Msg::ProjectCreated(p) => {
-                self.toast(&format!(
+                self.toast(format!(
                     "· project · {}{}",
                     p.name,
-                    p.workdir.as_deref().map(|w| format!(" · {w}")).unwrap_or_default()
+                    p.workdir
+                        .as_deref()
+                        .map(|w| format!(" · {w}"))
+                        .unwrap_or_default()
                 ));
                 self.active_project = Some(p.id.clone());
                 self.refetch_projects();
@@ -1003,9 +1003,9 @@ impl App {
         match me.kind {
             MouseEventKind::ScrollUp => self.scroll_action(-3),
             MouseEventKind::ScrollDown => self.scroll_action(3),
-            MouseEventKind::Down(MouseButton::Left) => {
+            MouseEventKind::Down(MouseButton::Left)
                 // Click a header tab.
-                if me.row == 0 {
+                if me.row == 0 => {
                     let hit = self
                         .tab_hits
                         .iter()
@@ -1015,7 +1015,6 @@ impl App {
                         self.set_view(v);
                     }
                 }
-            }
             _ => {}
         }
     }
@@ -2160,12 +2159,9 @@ impl App {
         // project — the daemon defaults an absent filter to "personal", which would hide every
         // project-scoped chat from the resume picker.
         let project = self.active_project.clone();
-        self.fetch(move |c| async move {
-            c.sessions(project.as_deref())
-                .await
-                .ok()
-                .map(Msg::Sessions)
-        });
+        self.fetch(
+            move |c| async move { c.sessions(project.as_deref()).await.ok().map(Msg::Sessions) },
+        );
     }
 
     fn sessions_key(&mut self, k: KeyEvent) {

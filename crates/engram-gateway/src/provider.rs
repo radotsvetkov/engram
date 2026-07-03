@@ -106,7 +106,9 @@ fn repair_json(s: &str) -> Option<serde_json::Value> {
         if in_str {
             match c {
                 '\\' => match chars.peek() {
-                    Some(&n) if matches!(n, '"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't' | 'u') => {
+                    Some(&n)
+                        if matches!(n, '"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't' | 'u') =>
+                    {
                         out.push('\\');
                         out.push(n);
                         chars.next();
@@ -197,87 +199,6 @@ pub fn extract_tool_args(call: &serde_json::Value) -> serde_json::Value {
         }
     }
     serde_json::json!({})
-}
-
-#[cfg(test)]
-mod arg_norm_tests {
-    use super::{extract_tool_args, normalize_tool_args};
-    use serde_json::json;
-
-    #[test]
-    fn finds_arguments_wherever_the_backend_put_them() {
-        // spec location, string form
-        assert_eq!(
-            extract_tool_args(&json!({"function":{"name":"w","arguments":"{\"path\":\"a\"}"}})),
-            json!({"path":"a"})
-        );
-        // spec location, object form
-        assert_eq!(
-            extract_tool_args(&json!({"function":{"name":"w","arguments":{"path":"a"}}})),
-            json!({"path":"a"})
-        );
-        // call-level arguments (function.arguments missing entirely)
-        assert_eq!(
-            extract_tool_args(&json!({"name":"w","arguments":{"path":"a"}})),
-            json!({"path":"a"})
-        );
-        // alternate keys some backends use
-        assert_eq!(
-            extract_tool_args(&json!({"function":{"name":"w","parameters":{"path":"a"}}})),
-            json!({"path":"a"})
-        );
-        assert_eq!(
-            extract_tool_args(&json!({"function":{"name":"w"},"input":{"path":"a"}})),
-            json!({"path":"a"})
-        );
-        // empty spec slot must NOT shadow a populated alternate slot
-        assert_eq!(
-            extract_tool_args(&json!({"function":{"name":"w","arguments":""},"arguments":{"path":"a"}})),
-            json!({"path":"a"})
-        );
-        // genuinely nothing -> {}
-        assert_eq!(extract_tool_args(&json!({"function":{"name":"w"}})), json!({}));
-    }
-
-    #[test]
-    fn accepts_every_shape_backends_actually_send() {
-        // spec form: JSON-encoded string
-        assert_eq!(normalize_tool_args(&json!("{\"path\":\"a.txt\"}")), json!({"path":"a.txt"}));
-        // object form (MiniMax & friends) - the shape that used to become {}
-        assert_eq!(normalize_tool_args(&json!({"path":"a.txt"})), json!({"path":"a.txt"}));
-        // double-encoded string
-        assert_eq!(
-            normalize_tool_args(&json!("\"{\\\"path\\\":\\\"a\\\"}\"")),
-            json!({"path":"a"})
-        );
-        // empty / null degrade to {} (a legitimate no-arg call)
-        assert_eq!(normalize_tool_args(&json!("")), json!({}));
-        assert_eq!(normalize_tool_args(&serde_json::Value::Null), json!({}));
-        // PRESENT but unparseable (truncated / malformed) is a diagnosis, not an empty call:
-        // it must carry the reserved error key so the loop can tell the model what happened.
-        let garbage = normalize_tool_args(&json!("not json"));
-        assert!(garbage.get(super::ARGS_ERROR_KEY).and_then(|v| v.as_str())
-            .is_some_and(|m| m.contains("not valid JSON")), "{garbage}");
-        let truncated = normalize_tool_args(&json!("{\"path\":\"a.txt\",\"content\":\"abc"));
-        assert!(truncated.get(super::ARGS_ERROR_KEY).is_some(), "{truncated}");
-    }
-
-    #[test]
-    fn repairs_the_almost_json_models_emit_in_code_payloads() {
-        // raw newline + tab inside a string value (invalid JSON, unambiguous intent)
-        let v = normalize_tool_args(&json!("{\"path\":\"a.js\",\"new\":\"// header\nline2\tend\"}"));
-        assert_eq!(v["path"], "a.js");
-        assert_eq!(v["new"], "// header\nline2\tend");
-        // trailing comma
-        let v = normalize_tool_args(&json!("{\"path\":\"a\",}"));
-        assert_eq!(v, json!({"path":"a"}));
-        // invalid escape \' becomes a literal backslash-apostrophe, not a parse failure
-        let v = normalize_tool_args(&json!("{\"new\":\"it\\'s\"}"));
-        assert!(v.get(super::ARGS_ERROR_KEY).is_none(), "{v}");
-        // an unterminated string is TRUNCATION - repair must refuse, diagnosis must fire
-        let v = normalize_tool_args(&json!("{\"new\":\"unfinished"));
-        assert!(v.get(super::ARGS_ERROR_KEY).is_some(), "{v}");
-    }
 }
 
 /// Rough token estimate (~4 chars/token). Real providers return exact counts; this
@@ -398,6 +319,108 @@ fn mock_vec(text: &str) -> Vec<f32> {
         }
     }
     v.to_vec()
+}
+
+#[cfg(test)]
+mod arg_norm_tests {
+    use super::{extract_tool_args, normalize_tool_args};
+    use serde_json::json;
+
+    #[test]
+    fn finds_arguments_wherever_the_backend_put_them() {
+        // spec location, string form
+        assert_eq!(
+            extract_tool_args(&json!({"function":{"name":"w","arguments":"{\"path\":\"a\"}"}})),
+            json!({"path":"a"})
+        );
+        // spec location, object form
+        assert_eq!(
+            extract_tool_args(&json!({"function":{"name":"w","arguments":{"path":"a"}}})),
+            json!({"path":"a"})
+        );
+        // call-level arguments (function.arguments missing entirely)
+        assert_eq!(
+            extract_tool_args(&json!({"name":"w","arguments":{"path":"a"}})),
+            json!({"path":"a"})
+        );
+        // alternate keys some backends use
+        assert_eq!(
+            extract_tool_args(&json!({"function":{"name":"w","parameters":{"path":"a"}}})),
+            json!({"path":"a"})
+        );
+        assert_eq!(
+            extract_tool_args(&json!({"function":{"name":"w"},"input":{"path":"a"}})),
+            json!({"path":"a"})
+        );
+        // empty spec slot must NOT shadow a populated alternate slot
+        assert_eq!(
+            extract_tool_args(
+                &json!({"function":{"name":"w","arguments":""},"arguments":{"path":"a"}})
+            ),
+            json!({"path":"a"})
+        );
+        // genuinely nothing -> {}
+        assert_eq!(
+            extract_tool_args(&json!({"function":{"name":"w"}})),
+            json!({})
+        );
+    }
+
+    #[test]
+    fn accepts_every_shape_backends_actually_send() {
+        // spec form: JSON-encoded string
+        assert_eq!(
+            normalize_tool_args(&json!("{\"path\":\"a.txt\"}")),
+            json!({"path":"a.txt"})
+        );
+        // object form (MiniMax & friends) - the shape that used to become {}
+        assert_eq!(
+            normalize_tool_args(&json!({"path":"a.txt"})),
+            json!({"path":"a.txt"})
+        );
+        // double-encoded string
+        assert_eq!(
+            normalize_tool_args(&json!("\"{\\\"path\\\":\\\"a\\\"}\"")),
+            json!({"path":"a"})
+        );
+        // empty / null degrade to {} (a legitimate no-arg call)
+        assert_eq!(normalize_tool_args(&json!("")), json!({}));
+        assert_eq!(normalize_tool_args(&serde_json::Value::Null), json!({}));
+        // PRESENT but unparseable (truncated / malformed) is a diagnosis, not an empty call:
+        // it must carry the reserved error key so the loop can tell the model what happened.
+        let garbage = normalize_tool_args(&json!("not json"));
+        assert!(
+            garbage
+                .get(super::ARGS_ERROR_KEY)
+                .and_then(|v| v.as_str())
+                .is_some_and(|m| m.contains("not valid JSON")),
+            "{garbage}"
+        );
+        let truncated = normalize_tool_args(&json!("{\"path\":\"a.txt\",\"content\":\"abc"));
+        assert!(
+            truncated.get(super::ARGS_ERROR_KEY).is_some(),
+            "{truncated}"
+        );
+    }
+
+    #[test]
+    fn repairs_the_almost_json_models_emit_in_code_payloads() {
+        // raw newline + tab inside a string value (invalid JSON, unambiguous intent)
+        let v = normalize_tool_args(&json!(
+            "{\"path\":\"a.js\",\"new\":\"// header\nline2\tend\"}"
+        ));
+        assert_eq!(v["path"], "a.js");
+        assert_eq!(v["new"], "// header\nline2\tend");
+        // trailing comma
+        let v = normalize_tool_args(&json!("{\"path\":\"a\",}"));
+        assert_eq!(v, json!({"path":"a"}));
+        // invalid escape \' becomes a literal backslash-apostrophe, not a parse failure
+        let v = normalize_tool_args(&json!("{\"new\":\"it\\'s\"}"));
+        assert!(v.get(super::ARGS_ERROR_KEY).is_none(), "{v}");
+        // an unterminated string is TRUNCATION - repair must refuse, diagnosis must fire
+        let v = normalize_tool_args(&json!("{\"new\":\"unfinished"));
+        assert!(v.get(super::ARGS_ERROR_KEY).is_some(), "{v}");
+    }
 }
 
 #[cfg(feature = "http")]
@@ -703,7 +726,11 @@ mod anthropic {
                             id: b["id"].as_str().unwrap_or("").to_string(),
                             name: b["name"].as_str().unwrap_or("").to_string(),
                             // null input round-trips badly (serializes as input:null) - use {}.
-                            arguments: if b["input"].is_null() { serde_json::json!({}) } else { b["input"].clone() },
+                            arguments: if b["input"].is_null() {
+                                serde_json::json!({})
+                            } else {
+                                b["input"].clone()
+                            },
                         }),
                         _ => {}
                     }
@@ -1174,12 +1201,17 @@ mod http {
             // Some backends return 200 with an error body, or an empty choices array - both used
             // to parse as a silent empty answer. Name the failure instead.
             if let Some(e) = json.get("error").filter(|e| !e.is_null()) {
-                let m = e["message"].as_str().unwrap_or("provider returned an error payload");
+                let m = e["message"]
+                    .as_str()
+                    .unwrap_or("provider returned an error payload");
                 return Err(GatewayError::Provider(m.to_string()));
             }
-            let choices = json["choices"].as_array().filter(|a| !a.is_empty()).ok_or_else(|| {
-                GatewayError::Provider("provider returned no choices".to_string())
-            })?;
+            let choices = json["choices"]
+                .as_array()
+                .filter(|a| !a.is_empty())
+                .ok_or_else(|| {
+                    GatewayError::Provider("provider returned no choices".to_string())
+                })?;
             let finish = choices[0]["finish_reason"].as_str().unwrap_or("");
             let msg = &choices[0]["message"];
             // content may be a plain string OR an array of typed parts ({type:"text",text:...}).
@@ -1221,7 +1253,11 @@ mod http {
                                 .filter(|s| !s.is_empty())
                                 .map(str::to_string)
                                 .unwrap_or_else(|| format!("call_{i}"));
-                            Some(ToolCall { id, name, arguments })
+                            Some(ToolCall {
+                                id,
+                                name,
+                                arguments,
+                            })
                         })
                         .collect()
                 })

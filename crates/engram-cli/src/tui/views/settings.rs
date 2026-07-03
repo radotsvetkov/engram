@@ -455,7 +455,7 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
                 }),
             ),
             Span::styled(
-                crate::ui::format::ellipsize(&format!("{cmd} {args}").trim().to_string(), val_w),
+                crate::ui::format::ellipsize(format!("{cmd} {args}").trim(), val_w),
                 Style::default().fg(t.accent2),
             ),
         ]);
@@ -492,9 +492,7 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
     // Scroll so the selected row stays visible.
     let h = inner.height as usize;
     let total = lines.len();
-    let offset = if total <= h {
-        0
-    } else if sel_line < h / 2 {
+    let offset = if total <= h || sel_line < h / 2 {
         0
     } else if sel_line + h / 2 >= total {
         total.saturating_sub(h)

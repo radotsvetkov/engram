@@ -25,7 +25,6 @@ mod agents;
 mod budget;
 mod channels;
 mod checkpoints;
-mod git;
 mod config;
 mod conscious;
 mod converse;
@@ -33,6 +32,7 @@ mod corpus;
 mod dissent;
 mod distill;
 mod embedder;
+mod git;
 mod hooks;
 mod scope;
 mod seed;
@@ -75,7 +75,9 @@ struct App {
     /// Per-session halt flags so one chat can be stopped WITHOUT killing other concurrent chats.
     /// A chat run registers its flag under its session id; `/v1/halt {session}` flips just that one.
     /// The global `halt` above is the emergency "stop everything".
-    run_halts: Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<std::sync::atomic::AtomicBool>>>>,
+    run_halts: Arc<
+        std::sync::Mutex<std::collections::HashMap<String, Arc<std::sync::atomic::AtomicBool>>>,
+    >,
     /// Live settings (provider, model, security, cost, MCP), editable from the desktop's
     /// Settings panel and persisted to `config.json`.
     config: Arc<std::sync::RwLock<config::Config>>,
@@ -114,7 +116,8 @@ impl RunGuard {
 }
 impl Drop for RunGuard {
     fn drop(&mut self) {
-        self.counter.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        self.counter
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -879,7 +882,7 @@ async fn run(mode: RunMode) -> Result<(), Box<dyn std::error::Error>> {
         std::env::var("ENGRAM_WORKDIR").unwrap_or_else(|_| format!("{home}/work")),
     );
     std::fs::create_dir_all(&workdir)?;
-    // Personality / standing instructions, shaping every agent run (Hermes's SOUL.md).
+    // Personality / standing instructions, shaping every agent run (a SOUL.md persona).
     let persona = std::fs::read_to_string(format!("{home}/SOUL.md")).ok();
     // Connect any MCP servers listed in mcp.json and borrow their tools.
     let mcp_tools = load_mcp(&home).await;
@@ -937,10 +940,7 @@ async fn run(mode: RunMode) -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/memory/reindex", post(memory_reindex))
         .route("/v1/memory/promote", post(memory_promote))
         .route("/v1/screenshot", get(screenshot_get))
-        .route(
-            "/v1/artifact",
-            get(artifact_get).delete(artifact_delete),
-        )
+        .route("/v1/artifact", get(artifact_get).delete(artifact_delete))
         .route("/v1/artifacts", get(artifacts_list))
         .route("/v1/remember", post(remember))
         .route("/v1/recall", get(recall))
@@ -984,9 +984,15 @@ async fn run(mode: RunMode) -> Result<(), Box<dyn std::error::Error>> {
         )
         .route("/v1/ledger/tail", get(ledger_tail))
         .route("/v1/ledger/verify", get(ledger_verify))
-        .route("/v1/checkpoints", get(checkpoints_list).post(checkpoints_create))
+        .route(
+            "/v1/checkpoints",
+            get(checkpoints_list).post(checkpoints_create),
+        )
         .route("/v1/checkpoints/{id}/restore", post(checkpoints_restore))
-        .route("/v1/checkpoints/{id}", axum::routing::delete(checkpoints_delete))
+        .route(
+            "/v1/checkpoints/{id}",
+            axum::routing::delete(checkpoints_delete),
+        )
         .route("/v1/schedule", get(schedule_list).post(schedule_add))
         .route("/v1/schedule/preview", get(schedule_preview))
         .route(
@@ -1126,7 +1132,9 @@ async fn run(mode: RunMode) -> Result<(), Box<dyn std::error::Error>> {
                 app_bg
                     .gateway
                     .set_default_effort(Some(new_cfg.provider.effort.clone()));
-                tracing::info!("provider key loaded from keyring (background); live provider ready");
+                tracing::info!(
+                    "provider key loaded from keyring (background); live provider ready"
+                );
             }
         });
     }
@@ -1553,11 +1561,7 @@ async fn screenshot_get(State(app): State<App>, Query(q): Query<ShotQuery>) -> R
         }
         // Guard the bucket id like /v1/artifact does (single path segment) before joining it.
         if !sid.is_empty() && !sid.contains('/') && !sid.contains('\\') && !sid.contains("..") {
-            roots.push(
-                std::path::Path::new(&app.home)
-                    .join("artifacts")
-                    .join(sid),
-            );
+            roots.push(std::path::Path::new(&app.home).join("artifacts").join(sid));
         }
     }
     roots.push(app.workdir.clone());
@@ -2068,7 +2072,10 @@ async fn agent_set_policy(
         allowed_actions: actions,
         budget: engram_core::EgressBudget {
             max_actions,
-            max_spend_cents: p.get("max_spend_cents").and_then(|v| v.as_u64()).unwrap_or(0),
+            max_spend_cents: p
+                .get("max_spend_cents")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
             expires_at_ms,
         },
         hardline_floor: strs("hardline_floor")
@@ -2145,7 +2152,9 @@ fn extend_allowlist(
         .iter()
         .any(|r| r.pattern.eq_ignore_ascii_case(dest))
     {
-        policy.allowed_egress.push(engram_core::EgressRule::new(dest));
+        policy
+            .allowed_egress
+            .push(engram_core::EgressRule::new(dest));
     }
     policy
 }
@@ -2198,7 +2207,11 @@ async fn egress_approve(State(app): State<App>, Json(r): Json<EgressResolve>) ->
     if dest.is_empty() {
         return Err(err("dest required"));
     }
-    let id = r.scope.strip_prefix("agent:").unwrap_or(&r.scope).to_string();
+    let id = r
+        .scope
+        .strip_prefix("agent:")
+        .unwrap_or(&r.scope)
+        .to_string();
     // A staged action from a run with NO per-agent policy carries an empty scope. It has no agent
     // allowlist to extend, so the approval persists to the daemon-global allowlist instead (the egress
     // gate consults it for policy-less runs) — previously this path hard-errored, so the Approve button
@@ -2227,7 +2240,9 @@ async fn egress_approve(State(app): State<App>, Json(r): Json<EgressResolve>) ->
         );
         // Approve → it proceeds: re-run the task that parked this destination so the action completes.
         requeue_task_for_dest(&app, &dest);
-        return Ok(Json(json!({ "ok": true, "allowlisted": dest, "scope": "daemon" })));
+        return Ok(Json(
+            json!({ "ok": true, "allowlisted": dest, "scope": "daemon" }),
+        ));
     }
     let def = app
         .agents
@@ -2274,7 +2289,10 @@ struct CheckpointCreateReq {
 
 /// Snapshot the working directory as a restorable checkpoint (Claude-Code-style rewind). The
 /// (blocking) file walk runs off the async runtime.
-async fn checkpoints_create(State(app): State<App>, Json(r): Json<CheckpointCreateReq>) -> ApiResult {
+async fn checkpoints_create(
+    State(app): State<App>,
+    Json(r): Json<CheckpointCreateReq>,
+) -> ApiResult {
     let workdir = r
         .session
         .as_ref()
@@ -2288,14 +2306,23 @@ async fn checkpoints_create(State(app): State<App>, Json(r): Json<CheckpointCrea
     let home = app.home.clone();
     let session = r.session.clone();
     let cp = tokio::task::spawn_blocking(move || {
-        checkpoints::snapshot(&home, &workdir, &label, session, None, engram_core::now_ms() as u64)
+        checkpoints::snapshot(
+            &home,
+            &workdir,
+            &label,
+            session,
+            None,
+            engram_core::now_ms() as u64,
+        )
     })
     .await
     .map_err(err)?
     .map_err(err)?;
-    let _ = app
-        .ledger
-        .append("checkpoint.created", "user", json!({ "id": cp.id, "files": cp.file_count }));
+    let _ = app.ledger.append(
+        "checkpoint.created",
+        "user",
+        json!({ "id": cp.id, "files": cp.file_count }),
+    );
     Ok(Json(serde_json::to_value(cp).map_err(err)?))
 }
 
@@ -2335,7 +2362,9 @@ async fn checkpoints_delete(State(app): State<App>, Path(id): Path<String>) -> A
 /// HTTP report endpoint and the `verify-autonomy` CLI.
 fn autonomy_report(entries: &[engram_core::Entry]) -> Value {
     use std::collections::BTreeMap;
-    let pget = |e: &engram_core::Entry| serde_json::from_str::<Value>(e.payload.get()).unwrap_or(json!({}));
+    let pget = |e: &engram_core::Entry| {
+        serde_json::from_str::<Value>(e.payload.get()).unwrap_or(json!({}))
+    };
     #[derive(Default)]
     struct Agg {
         autonomous: u64,
@@ -3112,7 +3141,8 @@ pub(crate) async fn run_agent_task_cb(
                 // Route the capture to the right ring: a run inside a project keeps its outcome in
                 // that project (so it never surfaces in another), while a project-less run stays
                 // user-global. This is the single change that stops the flywheel bleed at its source.
-                let write_scope = crate::scope::classify(engram_memory::Region::Episodic, &scope, &text);
+                let write_scope =
+                    crate::scope::classify(engram_memory::Region::Episodic, &scope, &text);
                 let _ = app.memory.remember(
                     engram_memory::WriteReq::new(engram_memory::Region::Episodic, text)
                         .taint(taint)
@@ -3283,7 +3313,11 @@ async fn reflect_on_skills(
         // skill that never activated can still be improved — its next version re-enters the
         // verify-and-adopt gate below).
         let manifest = match active {
-            Some(_) => app.registry.load_active(&p.id).ok().map(|(s, _)| s.manifest),
+            Some(_) => app
+                .registry
+                .load_active(&p.id)
+                .ok()
+                .map(|(s, _)| s.manifest),
             None => app
                 .registry
                 .versions(&p.id)
@@ -3293,7 +3327,9 @@ async fn reflect_on_skills(
                 .map(|(s, _)| s.manifest),
         };
         let Some(m) = manifest else {
-            reflect_event(json!({ "outcome": "improve_failed", "id": p.id, "error": "no loadable version" }));
+            reflect_event(
+                json!({ "outcome": "improve_failed", "id": p.id, "error": "no loadable version" }),
+            );
             return;
         };
         if m.runtime != engram_skills::Runtime::Process {
@@ -3345,24 +3381,38 @@ async fn reflect_on_skills(
             // NEW VERSION of a PROPOSED (inactive) skill: park it inactive alongside the incumbent
             // and let it try to EARN activation against the skill's recorded gold. This is the exit
             // from the old deadlock where an unadopted skill could never change again.
-            let Ok(version) = app.registry.install_inactive(candidate, p.source.as_bytes()) else {
+            let Ok(version) = app
+                .registry
+                .install_inactive(candidate, p.source.as_bytes())
+            else {
                 reflect_event(json!({ "outcome": "install_failed", "id": p.id }));
                 return;
             };
             for (inp, out) in &p.examples {
-                let _ = app
-                    .registry
-                    .record_run(&p.id, version, inp.as_bytes(), out.as_bytes(), 1.0);
+                let _ =
+                    app.registry
+                        .record_run(&p.id, version, inp.as_bytes(), out.as_bytes(), 1.0);
             }
-            match engram_agent::verify_and_adopt(&app.registry, &p.id, "distiller", true, &params, Some(&app.halt))
-                .await
+            match engram_agent::verify_and_adopt(
+                &app.registry,
+                &p.id,
+                "distiller",
+                true,
+                &params,
+                Some(&app.halt),
+            )
+            .await
             {
                 Ok(d) => {
                     tracing::info!(id = %p.id, version, decision = %d["decision"], "reflection: proposed-skill revision");
-                    reflect_event(json!({ "outcome": "revise_proposed", "id": p.id, "version": version, "decision": d }));
+                    reflect_event(
+                        json!({ "outcome": "revise_proposed", "id": p.id, "version": version, "decision": d }),
+                    );
                 }
                 Err(e) => {
-                    reflect_event(json!({ "outcome": "verify_failed", "id": p.id, "version": version, "error": e }));
+                    reflect_event(
+                        json!({ "outcome": "verify_failed", "id": p.id, "version": version, "error": e }),
+                    );
                 }
             }
         }
@@ -3408,16 +3458,27 @@ async fn reflect_on_skills(
     );
     // EARN ACTIVATION: a pure skill that reproduces all its gold in the sandbox is adopted; otherwise
     // it stays proposed for a human to adopt from the dashboard.
-    match engram_agent::verify_and_adopt(&app.registry, &p.id, "distiller", true, &params, Some(&app.halt))
-        .await
+    match engram_agent::verify_and_adopt(
+        &app.registry,
+        &p.id,
+        "distiller",
+        true,
+        &params,
+        Some(&app.halt),
+    )
+    .await
     {
         Ok(d) => {
             tracing::info!(id = %p.id, version, decision = %d["decision"], "reflection: new skill");
-            reflect_event(json!({ "outcome": "new_skill", "id": p.id, "version": version, "decision": d }));
+            reflect_event(
+                json!({ "outcome": "new_skill", "id": p.id, "version": version, "decision": d }),
+            );
         }
         Err(e) => {
             tracing::warn!(id = %p.id, "reflection: verify/adopt failed: {e}");
-            reflect_event(json!({ "outcome": "verify_failed", "id": p.id, "version": version, "error": e }));
+            reflect_event(
+                json!({ "outcome": "verify_failed", "id": p.id, "version": version, "error": e }),
+            );
         }
     }
 }
@@ -4061,7 +4122,14 @@ pub(crate) async fn run_task_core(
         let label = format!("before task: {}", task.title);
         let tid = task.id.clone();
         let _ = tokio::task::spawn_blocking(move || {
-            let r = checkpoints::snapshot(&home, &wd, &label, None, Some(tid), engram_core::now_ms() as u64);
+            let r = checkpoints::snapshot(
+                &home,
+                &wd,
+                &label,
+                None,
+                Some(tid),
+                engram_core::now_ms() as u64,
+            );
             checkpoints::prune_auto(&home, 20);
             r
         })
@@ -4129,8 +4197,12 @@ pub(crate) async fn run_task_core(
             ));
             let hooks = app.cfg().hooks.clone();
             if !hooks.is_empty() {
-                hooks::run_hooks(&hooks, "task.done", &json!({ "id": id, "status": "failed", "title": task.title }))
-                    .await;
+                hooks::run_hooks(
+                    &hooks,
+                    "task.done",
+                    &json!({ "id": id, "status": "failed", "title": task.title }),
+                )
+                .await;
             }
             return Err(e);
         }
@@ -4150,8 +4222,11 @@ pub(crate) async fn run_task_core(
     // worktree cleanup) while the worktree guard is still alive.
     let output_files = capture_artifacts(&app.home, id, &run_workdir, &artifacts_before);
     // Did THIS unattended run park an egress for approval? (checked before run.steps is moved)
-    let staged_here =
-        !attended && run.steps.iter().any(|s| s.observation.contains("egress staged for review"));
+    let staged_here = !attended
+        && run
+            .steps
+            .iter()
+            .any(|s| s.observation.contains("egress staged for review"));
     // If this ran in an isolated worktree, commit any edits to a durable `engram/task-<id>` branch
     // (the guard's Drop is a backstop) and tell the user how to merge — otherwise the edits to
     // EXISTING files would vanish with `git worktree remove --force`.
@@ -4188,8 +4263,12 @@ pub(crate) async fn run_task_core(
     // event payload is piped to each hook command as JSON. Empty hooks list = no-op.
     let hooks = app.cfg().hooks.clone();
     if !hooks.is_empty() {
-        hooks::run_hooks(&hooks, "task.done", &json!({ "id": id, "status": status, "title": task.title }))
-            .await;
+        hooks::run_hooks(
+            &hooks,
+            "task.done",
+            &json!({ "id": id, "status": status, "title": task.title }),
+        )
+        .await;
     }
     // Link this task to the egress destinations it parked (from the `agent.egress_staged` entries it
     // appended this run), so approving one of those destinations can re-run THIS task and let the
@@ -4235,7 +4314,9 @@ pub(crate) async fn run_task_core(
             if dests.is_empty() { String::new() } else { format!(": {}", dests.join(", ")) }
         );
         let url = app.cfg().channels.webhook_url.clone();
-        tokio::spawn(async move { post_webhook(&url, &msg).await; });
+        tokio::spawn(async move {
+            post_webhook(&url, &msg).await;
+        });
     }
     result
 }
@@ -4370,8 +4451,15 @@ async fn reverify_proposed_skills(app: &App, cap: usize) {
             continue;
         }
         tried += 1;
-        match engram_agent::verify_and_adopt(&app.registry, &id, "reverify-sweep", true, &params, Some(&app.halt))
-            .await
+        match engram_agent::verify_and_adopt(
+            &app.registry,
+            &id,
+            "reverify-sweep",
+            true,
+            &params,
+            Some(&app.halt),
+        )
+        .await
         {
             Ok(d) => {
                 if d["decision"].as_str() == Some("adopted") {
@@ -4774,13 +4862,18 @@ async fn converse_stream_handler(
         let txn = tx.clone();
         let notes_collected = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let notes_cb = notes_collected.clone();
-        let on_narration: engram_agent::NarrationCallback = std::sync::Arc::new(move |note: &str| {
-            let note: String = note.chars().take(600).collect();
-            if let Ok(mut g) = notes_cb.lock() {
-                g.push(note.clone());
-            }
-            let _ = txn.send(Event::default().event("narration").data(json!({ "text": note }).to_string()));
-        });
+        let on_narration: engram_agent::NarrationCallback =
+            std::sync::Arc::new(move |note: &str| {
+                let note: String = note.chars().take(600).collect();
+                if let Ok(mut g) = notes_cb.lock() {
+                    g.push(note.clone());
+                }
+                let _ = txn.send(
+                    Event::default()
+                        .event("narration")
+                        .data(json!({ "text": note }).to_string()),
+                );
+            });
         // Per-session halt: register before the run so `/v1/halt {session}` stops THIS chat only,
         // then deregister after — so concurrent chats run independently and Stop targets just one.
         // Key by a UNIQUE run id (session + counter), not the bare session id: a user can send a
@@ -5120,10 +5213,7 @@ async fn upload_handler(State(app): State<App>, Json(r): Json<UploadReq>) -> Api
     // construction, so one project's documents never surface in another.
     let mut ingested_chunks = 0usize;
     if let (Some(sid), Some(text)) = (r.session.as_ref(), extracted.as_ref()) {
-        let write_scope = app
-            .workspace
-            .scope_for_session(sid)
-            .durable_write_scope();
+        let write_scope = app.workspace.scope_for_session(sid).durable_write_scope();
         ingested_chunks = corpus::ingest_document(&app.memory, &base, text, &write_scope);
     }
     Ok(Json(json!({
@@ -5207,10 +5297,12 @@ async fn skills(State(app): State<App>) -> ApiResult {
                 }
                 None => ("wasm", None, String::new(), None, vec![], String::new()),
             };
-        out.push(json!({ "id": id, "active": active, "versions": versions, "runs": runs,
+        out.push(
+            json!({ "id": id, "active": active, "versions": versions, "runs": runs,
             "runtime": runtime, "interpreter": interpreter, "description": description,
             "when_to_use": when_to_use, "capabilities": capabilities, "category": category,
-            "learn": events, "enabled": enabled, "proposed": proposed }));
+            "learn": events, "enabled": enabled, "proposed": proposed }),
+        );
     }
     Ok(Json(json!({ "skills": out })))
 }
@@ -5218,13 +5310,16 @@ async fn skills(State(app): State<App>) -> ApiResult {
 fn valid_skill_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 64
-        && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 fn valid_skill_interp(s: &str) -> bool {
     let s = s.trim();
     !s.is_empty()
         && s.len() <= 64
-        && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '/' | '.' | '_' | '-'))
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '/' | '.' | '_' | '-'))
 }
 
 #[derive(Deserialize)]
@@ -5250,8 +5345,16 @@ async fn skill_create(State(app): State<App>, Json(r): Json<SkillCreateReq>) -> 
     if !valid_skill_id(&id) {
         return Err(err("invalid id (letters, digits, _ and - only, ≤64 chars)"));
     }
-    if app.registry.skills_all().map_err(err)?.iter().any(|s| s == &id) {
-        return Err(err("a skill with that id already exists — pick another, or Improve the existing one"));
+    if app
+        .registry
+        .skills_all()
+        .map_err(err)?
+        .iter()
+        .any(|s| s == &id)
+    {
+        return Err(err(
+            "a skill with that id already exists — pick another, or Improve the existing one",
+        ));
     }
     if r.source.trim().is_empty() {
         return Err(err("the skill source is empty"));
@@ -5262,7 +5365,9 @@ async fn skill_create(State(app): State<App>, Json(r): Json<SkillCreateReq>) -> 
         r.interpreter.trim().to_string()
     };
     if !valid_skill_interp(&interpreter) {
-        return Err(err("invalid interpreter (letters, digits, space, /._- only)"));
+        return Err(err(
+            "invalid interpreter (letters, digits, space, /._- only)",
+        ));
     }
     let mut capabilities = Vec::new();
     for c in &r.capabilities {
@@ -5288,10 +5393,15 @@ async fn skill_create(State(app): State<App>, Json(r): Json<SkillCreateReq>) -> 
         let c = r.category.trim();
         if c.is_empty() {
             "problem_solving".to_string()
-        } else if c.len() <= 48 && c.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-')) {
+        } else if c.len() <= 48
+            && c.chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+        {
             c.to_string()
         } else {
-            return Err(err("invalid category (letters, digits, _ and - only, max 48 chars)"));
+            return Err(err(
+                "invalid category (letters, digits, _ and - only, max 48 chars)",
+            ));
         }
     };
     let new = engram_skills::NewSkill {
@@ -5304,10 +5414,15 @@ async fn skill_create(State(app): State<App>, Json(r): Json<SkillCreateReq>) -> 
         interpreter: Some(interpreter),
         when_to_use,
     };
-    let version = app.registry.install(new, r.source.as_bytes()).map_err(err)?;
-    let _ = app
-        .ledger
-        .append("skill.upload", "user", json!({ "id": id, "version": version }));
+    let version = app
+        .registry
+        .install(new, r.source.as_bytes())
+        .map_err(err)?;
+    let _ = app.ledger.append(
+        "skill.upload",
+        "user",
+        json!({ "id": id, "version": version }),
+    );
     Ok(Json(json!({ "ok": true, "id": id, "version": version })))
 }
 
@@ -5359,7 +5474,9 @@ def main():
 if __name__ == "__main__":
     sys.exit(main())
 "#;
-    Ok(Json(json!({ "filename": "my_skill.py", "source": TEMPLATE })))
+    Ok(Json(
+        json!({ "filename": "my_skill.py", "source": TEMPLATE }),
+    ))
 }
 
 /// The built-in tools and whether each is currently turned off — drives the Tools curation UI so
@@ -5377,7 +5494,9 @@ async fn tools_list(State(app): State<App>) -> ApiResult {
             })
         })
         .collect();
-    Ok(Json(json!({ "tools": tools, "disable_skill_author": app.cfg().security.disable_skill_author })))
+    Ok(Json(
+        json!({ "tools": tools, "disable_skill_author": app.cfg().security.disable_skill_author }),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -5529,8 +5648,11 @@ async fn skill_improve(
         config::resolve_shell_backend(&c.security.shell_backend, &c.security.shell_target)
     };
     let p = skill_run_params(&app, backend.as_deref(), false);
-    let new_examples: Vec<(String, String)> =
-        r.examples.into_iter().map(|e| (e.input, e.output)).collect();
+    let new_examples: Vec<(String, String)> = r
+        .examples
+        .into_iter()
+        .map(|e| (e.input, e.output))
+        .collect();
     let decision = engram_agent::improve_skill(
         &app.registry,
         &id,
@@ -5574,9 +5696,10 @@ async fn skill_adopt(State(app): State<App>, Path(id): Path<String>) -> ApiResul
         config::resolve_shell_backend(&c.security.shell_backend, &c.security.shell_target)
     };
     let p = skill_run_params(&app, backend.as_deref(), false);
-    let decision = engram_agent::verify_and_adopt(&app.registry, &id, "user", false, &p, Some(&app.halt))
-        .await
-        .map_err(ApiError)?;
+    let decision =
+        engram_agent::verify_and_adopt(&app.registry, &id, "user", false, &p, Some(&app.halt))
+            .await
+            .map_err(ApiError)?;
     // An explicit Adopt click on a disabled skill IS the re-enable: activating while the `retired`
     // marker stands would leave it adopted-but-invisible (skills() hides retired dirs, so it would
     // never be selected or listed as a skill again).
@@ -5852,7 +5975,9 @@ impl engram_agent::Tool for ScheduleTool {
         ctx: &engram_agent::ToolCtx,
     ) -> std::result::Result<String, String> {
         if ctx.taint.is_untrusted() {
-            return Err("scheduling refused: this run read untrusted content (injection guard)".into());
+            return Err(
+                "scheduling refused: this run read untrusted content (injection guard)".into(),
+            );
         }
         let instruction = args["instruction"]
             .as_str()
@@ -6186,7 +6311,10 @@ async fn config_set(State(app): State<App>, Json(patch): Json<Value>) -> ApiResu
     if cfg.provider.kind != before.provider.kind {
         let mut map = config::read_secret_map(&app.home);
         if !before.provider.api_key.is_empty() {
-            map.insert(before.provider.kind.clone(), before.provider.api_key.clone());
+            map.insert(
+                before.provider.kind.clone(),
+                before.provider.api_key.clone(),
+            );
         }
         let typed = patch
             .get("provider")
@@ -6703,7 +6831,9 @@ async fn shutdown_handler(State(app): State<App>) -> ApiResult {
     use std::sync::atomic::{AtomicBool, Ordering};
     static STOPPING: AtomicBool = AtomicBool::new(false);
     if STOPPING.swap(true, Ordering::SeqCst) {
-        return Ok(Json(json!({ "ok": true, "stopping": true, "already": true })));
+        return Ok(Json(
+            json!({ "ok": true, "stopping": true, "already": true }),
+        ));
     }
     app.ledger.append("core.shutdown", "user", json!({})).ok();
     tokio::spawn(async move {
@@ -6811,7 +6941,10 @@ async fn projects_delete(State(app): State<App>, Path(id): Path<String>) -> ApiR
     if ok {
         // Cascade-forget the project's memories and each of its sessions' memories, so a deleted
         // project can't leave scoped facts behind to bleed into other projects' recall.
-        if let Ok(n) = app.memory.forget_scope("project", &id, "user", "project deleted") {
+        if let Ok(n) = app
+            .memory
+            .forget_scope("project", &id, "user", "project deleted")
+        {
             if n > 0 {
                 tracing::info!(project = %id, count = n, "cascade-forgot project-scoped memories");
             }
@@ -6905,10 +7038,17 @@ mod tests {
         stage("a.com");
         stage("b.com");
         stage("b.com"); // duplicate staging of the same destination
-        l.append("egress.allowlisted", "user", json!({"scope":"agent:1","dest":"a.com"}))
-            .unwrap();
+        l.append(
+            "egress.allowlisted",
+            "user",
+            json!({"scope":"agent:1","dest":"a.com"}),
+        )
+        .unwrap();
         let pending = pending_from_entries(&l.read_all().unwrap());
-        let dests: Vec<&str> = pending.iter().map(|p| p["dest"].as_str().unwrap()).collect();
+        let dests: Vec<&str> = pending
+            .iter()
+            .map(|p| p["dest"].as_str().unwrap())
+            .collect();
         // a.com was resolved (allowlisted) and b.com is deduped -> only one pending item.
         assert_eq!(dests, vec!["b.com"], "got: {dests:?}");
     }
@@ -6928,10 +7068,16 @@ mod tests {
                 let mut buf = vec![0u8; 8192];
                 let n = sock.read(&mut buf).await.unwrap_or(0);
                 *g2.lock().await = String::from_utf8_lossy(&buf[..n]).to_string();
-                let _ = sock.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n").await;
+                let _ = sock
+                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")
+                    .await;
             }
         });
-        post_webhook(&format!("http://{addr}/hook"), "2 actions awaiting approval").await;
+        post_webhook(
+            &format!("http://{addr}/hook"),
+            "2 actions awaiting approval",
+        )
+        .await;
         let _ = server.await;
         assert!(
             got.lock().await.contains("2 actions awaiting approval"),
@@ -6943,12 +7089,42 @@ mod tests {
     fn autonomy_report_tallies_per_scope_and_resolutions() {
         let dir = tempfile::tempdir().unwrap();
         let l = engram_core::Ledger::open(dir.path()).unwrap();
-        l.append("autonomy.policy.set", "user", json!({"id":"1","scope":"agent:1","rules":2,"max_actions":50})).unwrap();
-        l.append("agent.egress_autonomous", "agent", json!({"scope":"agent:1","dest":"a.com"})).unwrap();
-        l.append("agent.egress_autonomous", "agent", json!({"scope":"agent:1","dest":"a.com"})).unwrap();
-        l.append("agent.egress_staged", "agent", json!({"scope":"agent:1","dest":"b.com"})).unwrap();
-        l.append("egress.denied", "user", json!({"scope":"agent:1","dest":"b.com"})).unwrap();
-        l.append("agent.egress_approved", "agent", json!({"tool":"send_message"})).unwrap();
+        l.append(
+            "autonomy.policy.set",
+            "user",
+            json!({"id":"1","scope":"agent:1","rules":2,"max_actions":50}),
+        )
+        .unwrap();
+        l.append(
+            "agent.egress_autonomous",
+            "agent",
+            json!({"scope":"agent:1","dest":"a.com"}),
+        )
+        .unwrap();
+        l.append(
+            "agent.egress_autonomous",
+            "agent",
+            json!({"scope":"agent:1","dest":"a.com"}),
+        )
+        .unwrap();
+        l.append(
+            "agent.egress_staged",
+            "agent",
+            json!({"scope":"agent:1","dest":"b.com"}),
+        )
+        .unwrap();
+        l.append(
+            "egress.denied",
+            "user",
+            json!({"scope":"agent:1","dest":"b.com"}),
+        )
+        .unwrap();
+        l.append(
+            "agent.egress_approved",
+            "agent",
+            json!({"tool":"send_message"}),
+        )
+        .unwrap();
         let r = autonomy_report(&l.read_all().unwrap());
         assert_eq!(r["totals"]["autonomous_sends"], 2);
         assert_eq!(r["totals"]["staged"], 1);
@@ -6966,7 +7142,11 @@ mod tests {
             scope: "agent:1".into(),
             allowed_egress: vec![engram_core::EgressRule::new("x.com")],
             allowed_actions: vec![],
-            budget: engram_core::EgressBudget { max_actions: 5, max_spend_cents: 0, expires_at_ms: 0 },
+            budget: engram_core::EgressBudget {
+                max_actions: 5,
+                max_spend_cents: 0,
+                expires_at_ms: 0,
+            },
             hardline_floor: vec![],
         };
         let p = extend_allowlist(p, "y.com");
@@ -7150,7 +7330,7 @@ mod tests {
         assert!(is_loopback_host("127.0.0.1"));
         assert!(is_loopback_host("127.5.5.5")); // 127.0.0.0/8 is all loopback
         assert!(is_loopback_host("tauri.localhost")); // Tauri WKWebView (Win/Linux) app origin
-        // A DNS-rebind attack carries the attacker's own hostname — rejected.
+                                                      // A DNS-rebind attack carries the attacker's own hostname — rejected.
         assert!(!is_loopback_host("evil.example.com"));
         assert!(!is_loopback_host("evil.example.com:8088"));
         assert!(!is_loopback_host("10.0.0.5:8088"));
@@ -7174,7 +7354,7 @@ mod tests {
         assert_eq!(percent_decode("x%26y"), "x&y"); // &
         assert_eq!(percent_decode("a+b"), "a b"); // + → space
         assert_eq!(percent_decode("100%25"), "100%"); // %
-        // A malformed trailing escape is left as-is rather than dropped.
+                                                      // A malformed trailing escape is left as-is rather than dropped.
         assert_eq!(percent_decode("bad%2"), "bad%2");
     }
 

@@ -36,7 +36,7 @@
     -webkit-font-smoothing:antialiased; }
   button,input,textarea { font:inherit; color:inherit; }
   ::placeholder { color:var(--text-muted); }
-  /* Thin, subtle, edge scrollbars (like Claude): transparent track, slim faint thumb that darkens
+  /* Thin, subtle, edge scrollbars: transparent track, slim faint thumb that darkens
      on hover, inset via a transparent border so it reads as a hairline, not a heavy bar. */
   ::-webkit-scrollbar { width:9px; height:9px; }
   ::-webkit-scrollbar-track { background:transparent; }
@@ -387,7 +387,7 @@
   .af-body { display:none; padding:9px 12px 10px; border-top:1px solid var(--border); }
   .act-fold.open .af-body { display:block; }
   .af-body .chat-steps { margin:0; } .af-body .chat-notes { margin:0 0 7px; }
-  /* Message hover actions: quiet, only on hover, never shift layout (like Claude's copy/retry). */
+  /* Message hover actions: quiet, only on hover, never shift layout (copy/retry affordances). */
   .turn { position:relative; }
   .turn.t-user { display:flex; flex-direction:column; align-items:flex-end; }
   .turn-acts { display:flex; align-items:center; gap:2px; margin-top:2px; height:22px;
@@ -2051,7 +2051,7 @@ function renderBoard(){
 }
 
 // ---- composer + intent routing ----
-// The composer adapts to its view: in Chat, Enter SENDS the message (like Claude) and the
+// The composer adapts to its view: in Chat, Enter SENDS the message and the
 // primary control is a send arrow; in the Tasks board, Enter creates a task. Shift+Enter is a
 // newline in both. Task-making is still reachable from chat via Cmd+Enter.
 function composerHtml(ctx){
@@ -2172,7 +2172,7 @@ function stopChat(sid){
   _busySessions.delete(sid); _chatAborts.delete(sid); refreshSendBtn(); renderSidebar();
 }
 // Follow-ups typed while a run is in flight are QUEUED here (per session) and auto-sent when that
-// run finishes — like Claude Code / Hermes. An Enter with an EMPTY composer while busy still means
+// run finishes. An Enter with an EMPTY composer while busy still means
 // Stop (the button's stop affordance); an Enter with text never kills the run.
 const _queued=new Map();   // session_id -> [{text, attachments}] waiting for the current run to end
 async function converseInline(text){
@@ -2983,7 +2983,7 @@ function turnStepsHtml(m){
   if(!(m.steps&&m.steps.length)) return '';
   return `<div class="chat-steps">${m.steps.map(st=>{
     const lbl=CHAT_TOOL_LABEL[st.tool]||st.tool;
-    // A file the agent wrote/edited is clickable: open it in the right-side canvas (like Claude).
+    // A file the agent wrote/edited is clickable: open it in the right-side canvas.
     const fpath=(st.args&&(st.args.path||st.args.file))||'';
     const openable=st.ok && fpath && ['write_file','edit_file','append_file'].includes(st.tool);
     const clk=openable?` clk" data-open="1" onclick="artOpenFile(WS.activeSession, ${escAttr(JSON.stringify(fpath))})`:'';
@@ -2995,7 +2995,7 @@ function turnStepsHtml(m){
     return chip+stepDiffHtml(st,fpath)+stepShotHtml(st);
   }).join('')}</div>`;
 }
-// A file-mutating step's inline diff (Claude-Code-style): a collapsed "path +N −M" row that
+// A file-mutating step's inline diff: a collapsed "path +N −M" row that
 // expands to the unified diff, right where the edit happened in the conversation.
 function stepDiffHtml(st, fpath){
   if(!st || !st.diff) return '';
@@ -4131,7 +4131,7 @@ function ccKeys(c){
     </div>
     <div class="scard">
       <h3>Web search</h3>
-      <div class="desc">Makes <code>web_search</code> reliable. All optional and free — <b>Tavily</b> has a free tier with no credit card; <b>SearXNG</b> is keyless (point it at an instance you trust). With none set, search falls back to scraping DuckDuckGo, which can be rate-limited. (These are the same backends Hermes uses.)</div>
+      <div class="desc">Makes <code>web_search</code> reliable. All optional and free — <b>Tavily</b> has a free tier with no credit card; <b>SearXNG</b> is keyless (point it at an instance you trust). With none set, search falls back to scraping DuckDuckGo, which can be rate-limited.</div>
       <div class="row2">
         <div class="field"><label>Tavily API key ${w.tavily_key_set?'<span class="badge set">saved</span>':''}</label>
           <input type="password" id="wtav" placeholder="${w.tavily_key_set?'•••••••• - blank keeps it':'tvly-...'}" autocomplete="off">
@@ -5705,7 +5705,7 @@ const _FILE_LANG={md:'md',markdown:'md',txt:'',text:'',log:'',csv:'',json:'json'
 function fileLang(ext){ ext=(ext||'').toLowerCase(); return (_FILE_LANG[ext]!=null)?_FILE_LANG[ext]:''; }
 const _IMG_EXT=['png','jpg','jpeg','gif','webp','bmp','svg','ico'];
 
-// Open an artifact/file for reading. In chat we dock it in the right-hand canvas (like Claude);
+// Open an artifact/file for reading. In chat we dock it in the right-hand canvas;
 // elsewhere (gallery, task panel — no canvas) we use a centered viewer modal. Images → lightbox.
 // Content is fetched as text and rendered (markdown as HTML, code highlighted). Replaces the old
 // behaviour where every artifact click forced a download.

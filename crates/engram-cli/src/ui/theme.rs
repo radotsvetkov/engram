@@ -2,6 +2,9 @@
 //! styles every view draws with. Calm, dark, high-signal: the brand indigo for
 //! identity, green for the trust/ledger spine, amber for cost, cyan for tools.
 
+// The palette exposes the full set of semantic styles; a couple aren't drawn yet.
+#![allow(dead_code)]
+
 use ratatui::style::{Color, Modifier, Style};
 
 #[derive(Clone, Copy)]

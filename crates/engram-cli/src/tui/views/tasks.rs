@@ -60,7 +60,11 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
         // Surface the halted state on the Running column so the user knows the kill switch is
         // engaged and that a second `c` releases it now.
         let title = if ci == 1 && app.task_halted {
-            format!(" {} ({}) · halted — c to release ", COLUMNS[ci].0, tasks.len())
+            format!(
+                " {} ({}) · halted — c to release ",
+                COLUMNS[ci].0,
+                tasks.len()
+            )
         } else {
             format!(" {} ({}) ", COLUMNS[ci].0, tasks.len())
         };

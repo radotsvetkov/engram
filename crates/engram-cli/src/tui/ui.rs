@@ -489,7 +489,10 @@ fn footer(f: &mut Frame, app: &App, area: Rect) {
     // (^O switches it). This is the visible half of project isolation in the TUI.
     if app.view == View::Chat && !app.projects.is_empty() {
         right.push(Span::styled(
-            format!("⬡ {} ", crate::ui::format::ellipsize(&app.active_project_name(), 16)),
+            format!(
+                "⬡ {} ",
+                crate::ui::format::ellipsize(&app.active_project_name(), 16)
+            ),
             Style::default().fg(t.accent2).add_modifier(Modifier::BOLD),
         ));
     }

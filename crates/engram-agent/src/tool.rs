@@ -2,7 +2,7 @@
 //!
 //! A tool is a named, JSON-Schema-described action the model can call. The registry
 //! collects their schemas for the model and dispatches calls back to them - the same
-//! shape as Hermes's central tool registry, but with Engram's guarantees bolted in:
+//! shape as any central tool registry, but with Engram's guarantees built in:
 //! every call is auditable, and dangerous tools are **taint-gated** so an action a
 //! skill/agent took *after reading untrusted content* can be refused by construction.
 

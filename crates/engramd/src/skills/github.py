@@ -5,7 +5,7 @@ Repo stats, the latest release, or recent open issues — via the public GitHub
 API (no key; ~60 requests/hour unauthenticated). Set GITHUB_TOKEN in the daemon
 env to raise the rate limit. Stdlib only.
 
-Request (stdin): {"repo": "NousResearch/hermes-agent", "what": "info"}
+Request (stdin): {"repo": "rust-lang/rust", "what": "info"}
   - what: "info" (default) | "release" | "issues"
 Output (stdout): depends on `what`.
 """

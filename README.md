@@ -293,10 +293,14 @@ The macOS `.app` build is verified end to end (it weighs about 8 MB). See
 
 The same control surface, keyboard-first. `engram` is a single small binary that talks to the
 daemon over the very same HTTP API the desktop uses. Run it with no arguments for a
-full-screen [ratatui](https://ratatui.rs) TUI — a streaming chat pane, a three-column kanban
-with glass-box receipt cards, and views for Memory / Skills / Schedule / Autonomy / Ledger —
-or use a subcommand for scripting, with `--json` on every command. Full reference in
-[`docs/CLI.md`](./docs/CLI.md).
+full-screen [ratatui](https://ratatui.rs) TUI — it boots to the Engram neuron logomark in
+half-block pixel art, then gives you a streaming chat pane, a three-column kanban with
+glass-box receipt cards, and views for Memory / Skills (adopt ◆ proposed skills with one key) /
+Schedule / Autonomy / Ledger, plus a Settings browser that edits the entire daemon config —
+provider, keys, security flags, MCP servers, and per-tool on/off switches. Or use a subcommand
+for scripting, with `--json` on every command: everything the TUI can do, the CLI can too
+(`skills adopt`, `tools disable`, `mcp add`, `sessions show`, `stop`/`restart`, …). Full
+reference in [`docs/CLI.md`](./docs/CLI.md).
 
 ## Architecture
 

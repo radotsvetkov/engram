@@ -129,8 +129,24 @@ pub enum Cmd {
         cmd: Option<AgentsCmd>,
     },
 
-    /// Available agent tools.
-    Tools,
+    /// Agent tools: list them, or enable/disable one.
+    Tools {
+        #[command(subcommand)]
+        cmd: Option<ToolsCmd>,
+    },
+
+    /// MCP servers: list / add / remove Model Context Protocol tool servers.
+    Mcp {
+        #[command(subcommand)]
+        cmd: McpCmd,
+    },
+
+    /// Chat sessions: list them, or print a session's transcript.
+    #[command(visible_alias = "sess")]
+    Sessions {
+        #[command(subcommand)]
+        cmd: SessionsCmd,
+    },
 
     /// Tail the live spike/event bus.
     Events,
@@ -141,6 +157,12 @@ pub enum Cmd {
         #[arg(long)]
         detach: bool,
     },
+
+    /// Stop a running daemon (it restarts on the next request or `engram serve`).
+    Stop,
+
+    /// Restart the daemon in place (picks up a new binary / env).
+    Restart,
 
     /// Generate shell completion script (bash, zsh, fish, powershell, elvish).
     Completions {
@@ -230,16 +252,65 @@ pub enum SkillsCmd {
         #[arg(long)]
         filter: Option<String>,
     },
+    /// Show a skill's full detail: manifest, versions, and learning history.
+    Show { id: String },
     /// Run a skill with an input string (JSON or plain text).
     Run {
         id: String,
         #[arg(trailing_var_arg = true)]
         input: Vec<String>,
     },
+    /// Adopt a proposed skill (replays its gold examples; activates on pass).
+    Adopt { id: String },
     /// Enable a skill.
     Enable { id: String },
     /// Disable a skill.
     Disable { id: String },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ToolsCmd {
+    /// List agent tools with their enabled/disabled state (default).
+    List,
+    /// Enable a tool (removes it from security.disabled_tools).
+    Enable { name: String },
+    /// Disable a tool (adds it to security.disabled_tools).
+    Disable { name: String },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum McpCmd {
+    /// List configured MCP servers.
+    List,
+    /// Add a server, or update the one with this name.
+    Add {
+        /// Unique server name.
+        name: String,
+        /// The executable, e.g. npx, uvx, /path/to/bin.
+        command: String,
+        /// Space-separated arguments, e.g. --args "-y @modelcontextprotocol/server-filesystem /tmp".
+        #[arg(long, allow_hyphen_values = true)]
+        args: Option<String>,
+        /// Environment pairs, e.g. --env "TOKEN=abc,REGION=eu".
+        #[arg(long)]
+        env: Option<String>,
+        /// Working directory for the server process.
+        #[arg(long)]
+        cwd: Option<String>,
+    },
+    /// Remove a server by name.
+    Remove { name: String },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SessionsCmd {
+    /// List chat sessions (optionally scoped to a project id).
+    List {
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Print a session's transcript.
+    Show { id: String },
 }
 
 #[derive(Subcommand, Debug)]
@@ -370,6 +441,9 @@ pub async fn run(cli: Cli) -> Result<i32> {
             Ok(0)
         }
         Cmd::Serve { detach } => handlers::serve(&client, detach).await,
+        // Lifecycle commands must not auto-spawn a daemon just to stop it.
+        Cmd::Stop => handlers::stop(&client, json).await,
+        Cmd::Restart => handlers::restart(&client, auto_spawn, json).await,
         Cmd::Tui => {
             daemon::ensure(&client, auto_spawn, false).await?;
             crate::tui::run(client).await?;

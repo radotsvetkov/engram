@@ -304,9 +304,10 @@ pub fn mcp_count(app: &App) -> usize {
         .unwrap_or(0)
 }
 
-/// Total selectable items: config rows + MCP servers + the "add server" row.
+/// Total selectable items: config rows + MCP servers + the "add server" row +
+/// the agent tools (each toggleable via `security.disabled_tools`).
 pub fn total_items(app: &App) -> usize {
-    ROWS.len() + mcp_count(app) + 1
+    ROWS.len() + mcp_count(app) + 1 + app.tools.len()
 }
 
 pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
@@ -489,6 +490,52 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
         lines.push(line);
     }
 
+    // ---- Agent tools (enable/disable via security.disabled_tools) ----
+    let enabled_tools = app.tools.iter().filter(|x| !x.disabled).count();
+    lines.push(Line::default());
+    lines.push(Line::from(Span::styled(
+        format!("  Agent tools ({enabled_tools}/{} on)", app.tools.len()),
+        Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+    )));
+    let tool_base = ROWS.len() + mcp.len() + 1;
+    for (j, tool) in app.tools.iter().enumerate() {
+        let selected = tool_base + j == app.sel;
+        if selected {
+            sel_line = lines.len();
+        }
+        let bar = if selected { "▌ " } else { "  " };
+        let dot = if tool.disabled {
+            Span::styled("○ ", Style::default().fg(t.faint))
+        } else {
+            Span::styled("● ", Style::default().fg(t.good))
+        };
+        let mut line = Line::from(vec![
+            Span::styled(bar, Style::default().fg(t.accent)),
+            dot,
+            Span::styled(
+                format!(
+                    "{:<width$}",
+                    crate::ui::format::ellipsize(&tool.name, label_w - 2),
+                    width = label_w - 2
+                ),
+                Style::default().fg(t.fg).add_modifier(if selected {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                }),
+            ),
+            Span::styled(
+                crate::ui::format::ellipsize(&one_line(&tool.description), val_w),
+                Style::default().fg(t.muted),
+            ),
+        ]);
+        if selected {
+            line.style = Style::default().bg(t.sel_bg);
+            super::fill_row(&mut line, inner.width as usize);
+        }
+        lines.push(line);
+    }
+
     // Scroll so the selected row stays visible.
     let h = inner.height as usize;
     let total = lines.len();
@@ -508,7 +555,7 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
 pub fn handle_key(app: &mut App, k: KeyEvent) -> bool {
     let len = ROWS.len();
     let mcp = mcp_count(app);
-    let total = ROWS.len() + mcp + 1;
+    let total = total_items(app);
     // Which region is the selection in?
     let in_config = app.sel < len;
     let mcp_index = if app.sel >= len && app.sel < len + mcp {
@@ -517,6 +564,8 @@ pub fn handle_key(app: &mut App, k: KeyEvent) -> bool {
         None
     };
     let on_add = app.sel == len + mcp;
+    // Rows past the "+ add server" line are the agent tools.
+    let tool_index = app.sel.checked_sub(len + mcp + 1);
     match k.code {
         KeyCode::Up | KeyCode::Char('k') => {
             app.move_sel(-1, total);
@@ -554,6 +603,11 @@ pub fn handle_key(app: &mut App, k: KeyEvent) -> bool {
         }
         KeyCode::Enter if on_add => {
             app.open_mcp_form(None);
+            true
+        }
+        // Toggle an agent tool on/off (writes security.disabled_tools).
+        KeyCode::Enter | KeyCode::Char(' ') if tool_index.is_some() => {
+            app.toggle_tool(tool_index.unwrap());
             true
         }
         KeyCode::Enter => {

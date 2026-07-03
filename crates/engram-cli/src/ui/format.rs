@@ -143,6 +143,19 @@ pub fn spinner(tick: usize) -> char {
 }
 
 /// Truncate a string to `n` display columns with an ellipsis.
+/// Left-align `s` into a field `n` DISPLAY columns wide. `format!("{:<n$}")`
+/// pads by char count, so a wide-char (CJK) string would come out under-padded
+/// and shift every column after it.
+pub fn pad_display(s: &str, n: usize) -> String {
+    use unicode_width::UnicodeWidthStr;
+    let w = s.width();
+    if w >= n {
+        s.to_string()
+    } else {
+        format!("{s}{}", " ".repeat(n - w))
+    }
+}
+
 pub fn ellipsize(s: &str, n: usize) -> String {
     use unicode_width::UnicodeWidthStr;
     if n == 0 {

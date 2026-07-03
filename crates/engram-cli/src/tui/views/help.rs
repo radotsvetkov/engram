@@ -39,7 +39,7 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
         "/",
         "open the palette (from chat when empty, or any list)",
     ));
-    lines.push(key("Alt-1 … Alt-8", "jump to a tab"));
+    lines.push(key("Alt-1 … Alt-9", "jump to a tab"));
     lines.push(key("F1", "this help"));
     lines.push(key("Ctrl-C / Ctrl-Q", "quit"));
     lines.push(Line::default());
@@ -60,15 +60,23 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
     lines.push(key("Enter", "run / open / approve / edit"));
     lines.push(key("r", "refresh"));
     lines.push(key("f", "forget the selected memory (×2)"));
-    lines.push(key("a / d", "approve / deny a staged egress"));
+    lines.push(key(
+        "Skills: a",
+        "adopt a ◆ proposed skill (replays its gold examples)",
+    ));
+    lines.push(key("Autonomy: a / d", "approve / deny a staged egress"));
     lines.push(Line::default());
 
     lines.push(head("Settings & Agents"));
     lines.push(key(
         "Settings: Enter",
-        "edit a value, toggle a flag, or cycle an option",
+        "edit a value, toggle a flag/tool, or cycle an option",
     ));
     lines.push(key("Settings: t", "test the model provider"));
+    lines.push(key(
+        "Settings: tools",
+        "the Agent tools section toggles each tool on/off",
+    ));
     lines.push(key("Agents: n / d", "create a new agent / delete (×2)"));
     lines.push(Line::default());
 

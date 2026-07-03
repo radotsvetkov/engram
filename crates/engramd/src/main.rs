@@ -6712,7 +6712,11 @@ fn apply_config_patch(cfg: &mut config::Config, p: &Value) {
             let Ok(mut srv) = serde_json::from_value::<config::McpServer>(m.clone()) else {
                 continue;
             };
-            if srv.name.is_empty() || srv.command.is_empty() {
+            // A server needs a name and SOME way to reach it — a spawn command or a remote
+            // URL. Requiring a command here silently deleted every url-only remote server on
+            // any settings round-trip that rewrote the array.
+            let has_url = srv.url.as_deref().map(|u| !u.is_empty()).unwrap_or(false);
+            if srv.name.is_empty() || (srv.command.is_empty() && !has_url) {
                 continue;
             }
             let raw_has_env = m.get("env").map(|e| e.is_object()).unwrap_or(false);
@@ -6728,11 +6732,25 @@ fn apply_config_patch(cfg: &mut config::Config, p: &Value) {
                         }
                     }
                 }
+                // The redacted view reports only `bearer_set`, never the token itself, so a
+                // round-trip arrives with no bearer — inherit the stored one unless the client
+                // sent a real replacement or asked for an explicit clear (same "blank keeps
+                // it" rule as every other secret in this file).
+                let clear_bearer = flag(m, "clear_bearer");
+                let sent_bearer = srv.bearer.as_deref().map(str::trim).unwrap_or("");
+                if clear_bearer {
+                    srv.bearer = None;
+                } else if sent_bearer.is_empty() || sent_bearer == MASK {
+                    srv.bearer = prev.bearer.clone();
+                }
             }
             // Never persist a literal mask as if it were a secret: a value still equal to the mask
             // here had no previous value to restore (a new server, a renamed key, or a server that
             // never had that key), so storing it would write "•••" as the real secret. Drop it.
             srv.env.retain(|_, v| v != MASK);
+            if srv.bearer.as_deref() == Some(MASK) {
+                srv.bearer = None;
+            }
             next.push(srv);
         }
         cfg.mcp = next;

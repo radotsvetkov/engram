@@ -8,6 +8,38 @@ All notable changes to this project are documented here. The format is based on
 
 - First public release preparation: documentation, install script, and release automation.
 
+### Added
+- **TUI boot splash** — the Engram neuron logomark as half-block pixel art (firing synapse
+  in the brand teal), shown while the client connects; any key skips it.
+- **Proposed skills in the terminal** — a distilled-but-inactive skill now shows as
+  `◆ proposed` in the TUI Skills view (`a` adopts it) and in `engram skills list`;
+  new `engram skills show <id>` (manifest, versions, learning history) and
+  `engram skills adopt <id>`.
+- **Agent tools are switchable from both surfaces** — a new "Agent tools" section in the
+  TUI Settings view toggles each tool on/off, and `engram tools enable|disable <name>`
+  does the same from scripts (both write `security.disabled_tools`).
+- **`engram mcp list|add|remove`** — manage MCP servers without hand-editing JSON.
+- **`engram sessions list|show`** — list chat sessions and print a transcript.
+- **`engram stop` / `engram restart`** — daemon lifecycle from the CLI (`stop` never
+  auto-spawns a daemon just to stop it).
+- The TUI's theme and mouse-capture preferences persist across runs (`~/.engram/cli.json`).
+
+### Fixed
+- **The skills list no longer vanishes when a proposal exists.** The daemon sends
+  `"active": null` for a proposed skill; the client's wire type demanded a number, so one
+  proposal made the whole `/v1/skills` payload fail to decode and the TUI/CLI showed no
+  skills at all.
+- **A config round-trip no longer wipes a remote MCP server's bearer token.** The redacted
+  config reports only `bearer_set`, and the daemon never restored the stored token when the
+  array came back — any settings save (desktop, TUI, or the new `engram mcp`) silently broke
+  auth to every remote server. The bearer now follows the same "blank keeps it" rule as
+  every other secret (`clear_bearer` removes it), and url-only remote servers survive
+  round-trips instead of being dropped for having no spawn command.
+- `engram stop`/`restart` judge success by the daemon's actual state (a 401 from a
+  token-protected daemon is no longer reported as "✓ stopped"), `restart` honours
+  `--no-spawn`, and tool toggles preserve `disabled_tools` entries that name MCP or
+  daemon-registered tools instead of silently re-enabling them.
+
 ## [0.2.0]
 
 The agent grows up: a full tool-use loop, a redesigned control center, and a terminal client.

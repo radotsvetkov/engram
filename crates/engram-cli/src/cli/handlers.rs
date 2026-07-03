@@ -2,8 +2,8 @@
 
 use super::output::{self as out, accent, bad, bold, dim, good, kv, table, warn};
 use super::{
-    AgentsCmd, AutonomyCmd, Cmd, ConfigCmd, LedgerCmd, MemoryCmd, ProjectsCmd, ScheduleCmd,
-    SkillsCmd, TasksCmd,
+    AgentsCmd, AutonomyCmd, Cmd, ConfigCmd, LedgerCmd, McpCmd, MemoryCmd, ProjectsCmd, ScheduleCmd,
+    SessionsCmd, SkillsCmd, TasksCmd, ToolsCmd,
 };
 use crate::api::{ChatEvent, Client, TaskEvent};
 use crate::ui::format::{cost, human_count, one_line, rel_time, stamp};
@@ -44,10 +44,12 @@ pub async fn dispatch(client: &Client, cmd: Cmd, json: bool) -> Result<i32> {
         Cmd::Ledger { cmd } => ledger(client, cmd, json).await,
         Cmd::Config { cmd } => config(client, cmd, json).await,
         Cmd::Agents { cmd } => agents(client, cmd, json).await,
-        Cmd::Tools => tools(client, json).await,
+        Cmd::Tools { cmd } => tools(client, cmd, json).await,
+        Cmd::Mcp { cmd } => mcp(client, cmd, json).await,
+        Cmd::Sessions { cmd } => sessions(client, cmd, json).await,
         Cmd::Events => events(client).await,
         // These are handled in `run()` before dispatch.
-        Cmd::Tui | Cmd::Serve { .. } | Cmd::Completions { .. } => Ok(0),
+        Cmd::Tui | Cmd::Serve { .. } | Cmd::Completions { .. } | Cmd::Stop | Cmd::Restart => Ok(0),
     }
 }
 
@@ -730,28 +732,176 @@ async fn skills(client: &Client, cmd: SkillsCmd, json: bool) -> Result<i32> {
             skills.sort_by(|a, b| a.category.cmp(&b.category).then(a.id.cmp(&b.id)));
             if json {
                 print_json(&skills.iter().map(|s| json!({
-                    "id": s.id, "category": s.category, "enabled": s.enabled, "runs": s.runs
+                    "id": s.id, "category": s.category, "enabled": s.enabled,
+                    "proposed": s.proposed, "runs": s.runs, "improvements": s.learn.len(),
                 })).collect::<Vec<_>>());
                 return Ok(0);
             }
-            out::header(&format!("Skills ({})", skills.len()));
+            let proposed = skills.iter().filter(|s| s.proposed).count();
+            let enabled = skills.iter().filter(|s| s.enabled).count();
+            out::header(&format!(
+                "Skills ({} · {enabled} on{})",
+                skills.len(),
+                if proposed > 0 {
+                    format!(" · {proposed} proposed")
+                } else {
+                    String::new()
+                }
+            ));
+            // Plain glyphs only — `table()` pads by char count, so ANSI codes
+            // in cells would wreck the column alignment.
             let rows: Vec<Vec<String>> = skills
                 .iter()
                 .map(|s| {
                     vec![
-                        if s.enabled {
+                        if s.proposed {
+                            "◆".into()
+                        } else if s.enabled {
                             "●".into()
                         } else {
                             "○".into()
                         },
                         s.id.clone(),
                         s.category.clone(),
+                        if s.proposed {
+                            "proposed".into()
+                        } else {
+                            match s.active {
+                                Some(v) => format!("v{v}"),
+                                None => "—".into(),
+                            }
+                        },
+                        s.runs.to_string(),
                         one_line(&s.description),
                     ]
                 })
                 .collect();
-            table(&["", "id", "category", "description"], &rows);
+            table(&["", "id", "category", "ver", "gold", "description"], &rows);
+            if proposed > 0 {
+                println!(
+                    "\n{}",
+                    dim("adopt a proposed skill with: engram skills adopt <id>")
+                );
+            }
             Ok(0)
+        }
+        SkillsCmd::Show { id } => {
+            let resp = client.skills().await?;
+            let Some(s) = resp.skills.into_iter().find(|s| s.id == id) else {
+                eprintln!("{}", bad(&format!("no skill {id}")));
+                return Ok(1);
+            };
+            if json {
+                print_json(&serde_json::to_value(&s).unwrap_or(Value::Null));
+                return Ok(0);
+            }
+            out::header(&s.id);
+            kv("category", &s.category);
+            kv(
+                "state",
+                &if s.proposed {
+                    warn("proposed — not yet active")
+                } else if s.enabled {
+                    good("enabled")
+                } else {
+                    dim("disabled")
+                },
+            );
+            kv(
+                "runtime",
+                &format!(
+                    "{} {}",
+                    s.runtime,
+                    s.interpreter.clone().unwrap_or_default()
+                ),
+            );
+            kv(
+                "version",
+                &match s.active {
+                    Some(v) => format!("v{v} of {}", s.versions.len()),
+                    None => format!("{} version(s), none active", s.versions.len()),
+                },
+            );
+            kv(
+                "capabilities",
+                &if s.capabilities.is_empty() {
+                    "none (pure)".into()
+                } else {
+                    s.capabilities.join(", ")
+                },
+            );
+            kv(
+                "gold runs",
+                &if s.runs == 0 {
+                    warn("0 (unverified)")
+                } else {
+                    s.runs.to_string()
+                },
+            );
+            if !s.description.is_empty() {
+                println!();
+                out::print_markdown(&s.description);
+            }
+            if let Some(w) = &s.when_to_use {
+                println!("\n{}", dim("when to use"));
+                out::print_markdown(w);
+            }
+            if !s.learn.is_empty() {
+                out::header(&format!("Learning history ({})", s.learn.len()));
+                for ev in s.learn.iter().rev().take(10) {
+                    let d = ev.get("decision").and_then(|v| v.as_str()).unwrap_or("?");
+                    let from = ev.get("from").and_then(|v| v.as_u64());
+                    let to = ev.get("to").and_then(|v| v.as_u64());
+                    let seq = ev.get("seq").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let vers = match (from, to) {
+                        (Some(f), Some(t)) => format!("v{f}→v{t}"),
+                        _ => String::new(),
+                    };
+                    let mark = if d == "promoted" || d == "adopted" {
+                        good("✓")
+                    } else {
+                        dim("·")
+                    };
+                    println!(
+                        "  {} {} {} {}",
+                        mark,
+                        bold(d),
+                        vers,
+                        dim(&format!("#{seq}"))
+                    );
+                }
+            }
+            Ok(0)
+        }
+        SkillsCmd::Adopt { id } => {
+            if !json {
+                println!("{}", dim("· replaying gold examples…"));
+            }
+            let r = client.skill_adopt(&id).await?;
+            // Exit code mirrors the decision in BOTH modes, so `--json` scripts
+            // can chain on success exactly like the human-readable path.
+            let adopted = !matches!(
+                r.get("decision").and_then(|v| v.as_str()),
+                Some(d) if d != "adopted" && d != "approved"
+            );
+            if json {
+                print_json(&r);
+                return Ok(if adopted { 0 } else { 1 });
+            }
+            match r.get("decision").and_then(|v| v.as_str()) {
+                Some("adopted") | Some("approved") => {
+                    println!("{} {id} is now active", good("✓ adopted"));
+                    Ok(0)
+                }
+                Some(other) => {
+                    println!("{} {}", warn(other), dim("— the skill was not activated"));
+                    Ok(1)
+                }
+                None => {
+                    println!("{} {id}", good("done"));
+                    Ok(0)
+                }
+            }
         }
         SkillsCmd::Run { id, input } => {
             let input = join(&input);
@@ -1180,27 +1330,271 @@ async fn agents(client: &Client, cmd: Option<AgentsCmd>, json: bool) -> Result<i
     }
 }
 
-async fn tools(client: &Client, json: bool) -> Result<i32> {
+async fn tools(client: &Client, cmd: Option<ToolsCmd>, json: bool) -> Result<i32> {
+    match cmd.unwrap_or(ToolsCmd::List) {
+        ToolsCmd::List => {
+            let t = client.tools().await?;
+            if json {
+                print_json(&serde_json::to_value(&t.tools).unwrap_or(Value::Null));
+                return Ok(0);
+            }
+            let enabled = t.tools.iter().filter(|x| !x.disabled).count();
+            out::header(&format!("Tools ({enabled}/{} on)", t.tools.len()));
+            for tool in &t.tools {
+                let mark = if tool.disabled {
+                    dim("○")
+                } else {
+                    good("●")
+                };
+                println!(
+                    "  {} {}\n    {}",
+                    mark,
+                    bold(&tool.name),
+                    dim(&one_line(&tool.description))
+                );
+            }
+            println!(
+                "\n{}",
+                dim("toggle with: engram tools enable|disable <name>")
+            );
+            Ok(0)
+        }
+        ToolsCmd::Enable { name } => set_tool_enabled(client, &name, true, json).await,
+        ToolsCmd::Disable { name } => set_tool_enabled(client, &name, false, json).await,
+    }
+}
+
+/// Flip one tool by rewriting `security.disabled_tools` from the live list.
+async fn set_tool_enabled(client: &Client, name: &str, enable: bool, json: bool) -> Result<i32> {
     let t = client.tools().await?;
-    if json {
-        print_json(&serde_json::to_value(&t.tools).unwrap_or(Value::Null));
+    let Some(tool) = t.tools.iter().find(|x| x.name == name) else {
+        eprintln!("{}", bad(&format!("no tool named {name}")));
+        let mut names: Vec<&str> = t.tools.iter().map(|x| x.name.as_str()).collect();
+        names.sort_unstable();
+        eprintln!("{}", dim(&format!("available: {}", names.join(", "))));
+        return Ok(1);
+    };
+    if tool.disabled != enable {
+        // Already in the requested state — make the command idempotent.
+        if json {
+            print_json(&json!({ "ok": true, "tool": name, "disabled": !enable }));
+        } else {
+            println!(
+                "{} {name} already {}",
+                good("✓"),
+                if enable { "enabled" } else { "disabled" }
+            );
+        }
         return Ok(0);
     }
-    out::header(&format!("Tools ({})", t.tools.len()));
-    for tool in &t.tools {
-        let mark = if tool.disabled {
-            dim("○")
-        } else {
-            good("●")
-        };
-        println!(
-            "  {} {}\n    {}",
-            mark,
-            bold(&tool.name),
-            dim(&one_line(&tool.description))
-        );
+    // /v1/tools lists only the BUILT-IN tools, but disabled_tools may also name
+    // MCP or daemon-registered tools — carry those entries over verbatim or
+    // this toggle would silently re-enable them.
+    let cfg = client.config_raw().await?;
+    let mut disabled: Vec<String> = cfg
+        .get("security")
+        .and_then(|s| s.get("disabled_tools"))
+        .and_then(|d| d.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .filter(|n| !t.tools.iter().any(|x| &x.name == n))
+                .collect()
+        })
+        .unwrap_or_default();
+    disabled.extend(
+        t.tools
+            .iter()
+            .filter(|x| x.disabled)
+            .map(|x| x.name.clone()),
+    );
+    if enable {
+        disabled.retain(|n| n != name);
+    } else {
+        disabled.push(name.to_string());
+    }
+    let r = client
+        .config_set(json!({ "security": { "disabled_tools": disabled } }))
+        .await?;
+    if json {
+        print_json(&r);
+    } else if enable {
+        println!("{} {name}", good("enabled"));
+    } else {
+        println!("{} {name}", warn("disabled"));
     }
     Ok(0)
+}
+
+// ---- MCP servers ------------------------------------------------------------
+
+async fn mcp(client: &Client, cmd: McpCmd, json: bool) -> Result<i32> {
+    // The MCP list lives inside the daemon config; read-modify-write the array.
+    let cfg = client.config_raw().await?;
+    let mut arr: Vec<Value> = cfg
+        .get("mcp")
+        .and_then(|m| m.as_array())
+        .cloned()
+        .unwrap_or_default();
+    match cmd {
+        McpCmd::List => {
+            if json {
+                print_json(&arr);
+                return Ok(0);
+            }
+            out::header(&format!("MCP servers ({})", arr.len()));
+            let rows: Vec<Vec<String>> = arr
+                .iter()
+                .map(|s| {
+                    let g = |k: &str| s.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let args = s
+                        .get("args")
+                        .and_then(|v| v.as_array())
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|x| x.as_str())
+                                .collect::<Vec<_>>()
+                                .join(" ")
+                        })
+                        .unwrap_or_default();
+                    let env = s
+                        .get("env")
+                        .and_then(|v| v.as_object())
+                        .map(|o| o.keys().cloned().collect::<Vec<_>>().join(","))
+                        .unwrap_or_default();
+                    vec![g("name"), format!("{} {args}", g("command")), env]
+                })
+                .collect();
+            table(&["name", "command", "env keys"], &rows);
+            Ok(0)
+        }
+        McpCmd::Add {
+            name,
+            command,
+            args,
+            env,
+            cwd,
+        } => {
+            // Upsert by name; start from the existing object so fields this
+            // command doesn't set (trusted, url, bearer, …) survive an update,
+            // and only overwrite args/env/cwd when the flag was actually
+            // passed — `mcp add` on an existing server must not wipe them.
+            let existing = arr
+                .iter()
+                .position(|s| s.get("name").and_then(|v| v.as_str()) == Some(name.as_str()));
+            let base = existing
+                .and_then(|i| arr.get(i).cloned())
+                .unwrap_or(json!({}));
+            let mut obj = base.as_object().cloned().unwrap_or_default();
+            obj.insert("name".into(), json!(name));
+            obj.insert("command".into(), json!(command));
+            if let Some(a) = args {
+                let args_v: Vec<String> = a.split_whitespace().map(str::to_string).collect();
+                obj.insert("args".into(), json!(args_v));
+            } else if existing.is_none() {
+                obj.insert("args".into(), json!([] as [String; 0]));
+            }
+            if let Some(e) = env {
+                // An explicit --env replaces the whole map (--env "" clears it);
+                // masked ••• values are restored server-side by name.
+                let mut envmap = serde_json::Map::new();
+                for pair in e.split(',') {
+                    if let Some((k, v)) = pair.split_once('=') {
+                        let k = k.trim();
+                        if !k.is_empty() {
+                            envmap.insert(k.to_string(), json!(v.trim()));
+                        }
+                    }
+                }
+                obj.insert("env".into(), Value::Object(envmap));
+            }
+            if let Some(c) = cwd {
+                obj.insert("cwd".into(), json!(c));
+            }
+            let server = Value::Object(obj);
+            let updated = existing.is_some();
+            match existing {
+                Some(i) => arr[i] = server,
+                None => arr.push(server),
+            }
+            let r = client.config_set(json!({ "mcp": arr })).await?;
+            if json {
+                print_json(&r);
+            } else {
+                println!("{} {name}", good(if updated { "updated" } else { "added" }));
+            }
+            Ok(0)
+        }
+        McpCmd::Remove { name } => {
+            let before = arr.len();
+            arr.retain(|s| s.get("name").and_then(|v| v.as_str()) != Some(name.as_str()));
+            if arr.len() == before {
+                eprintln!("{}", bad(&format!("no MCP server named {name}")));
+                return Ok(1);
+            }
+            let r = client.config_set(json!({ "mcp": arr })).await?;
+            if json {
+                print_json(&r);
+            } else {
+                println!("{} {name}", warn("removed"));
+            }
+            Ok(0)
+        }
+    }
+}
+
+// ---- sessions ---------------------------------------------------------------
+
+async fn sessions(client: &Client, cmd: SessionsCmd, json: bool) -> Result<i32> {
+    match cmd {
+        SessionsCmd::List { project } => {
+            let list = client.sessions(project.as_deref()).await?;
+            if json {
+                print_json(&list);
+                return Ok(0);
+            }
+            out::header(&format!("Sessions ({})", list.len()));
+            let rows: Vec<Vec<String>> = list
+                .iter()
+                .map(|s| {
+                    vec![
+                        s.id.clone(),
+                        if s.title.is_empty() {
+                            "(untitled)".into()
+                        } else {
+                            one_line(&s.title)
+                        },
+                        s.messages.to_string(),
+                        rel_time(s.updated_ms),
+                    ]
+                })
+                .collect();
+            table(&["id", "title", "msgs", "updated"], &rows);
+            Ok(0)
+        }
+        SessionsCmd::Show { id } => {
+            let d = client.session_detail(&id).await?;
+            if json {
+                print_json(&serde_json::to_value(&d).unwrap_or(Value::Null));
+                return Ok(0);
+            }
+            out::header(&if d.title.is_empty() {
+                d.id.clone()
+            } else {
+                d.title.clone()
+            });
+            for m in &d.messages {
+                if m.role == "user" {
+                    println!("\n{} {}", accent("▌ you"), dim(&stamp(m.ts_ms)));
+                    println!("{}", m.text);
+                } else {
+                    println!("\n{} {}", good("▌ engram"), dim(&stamp(m.ts_ms)));
+                    out::print_markdown(&m.text);
+                }
+            }
+            Ok(0)
+        }
+    }
 }
 
 // ---- events ---------------------------------------------------------------
@@ -1235,6 +1629,119 @@ pub async fn serve(client: &Client, detach: bool) -> Result<i32> {
     println!("{}", dim("· attached — Ctrl-C to leave the daemon running"));
     let _ = tokio::signal::ctrl_c().await;
     println!("\n{}", dim("· detached (daemon keeps running until idle)"));
+    Ok(0)
+}
+
+/// `engram stop` — ask a running daemon to shut down. Never auto-spawns.
+///
+/// The POST result alone can't be trusted in either direction: the dying
+/// daemon may drop the connection mid-reply (a success that looks like an
+/// error), and a token-protected daemon answers /health without auth but
+/// rejects /v1/shutdown with 401 (a failure that `let _ =` would hide). So the
+/// verdict comes from polling the daemon's real state afterwards.
+pub async fn stop(client: &Client, json: bool) -> Result<i32> {
+    if !super::daemon::is_up(client).await {
+        if json {
+            print_json(&serde_json::json!({ "ok": true, "was_running": false }));
+        } else {
+            println!("{}", dim("· not running"));
+        }
+        return Ok(0);
+    }
+    let post = client.shutdown().await;
+    for _ in 0..15 {
+        if !super::daemon::is_up(client).await {
+            if json {
+                print_json(&serde_json::json!({ "ok": true, "was_running": true }));
+            } else {
+                println!("{} daemon stopped", good("✓"));
+            }
+            return Ok(0);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    let why = match post {
+        Err(e) if e.to_string().contains("401") => {
+            "unauthorized — pass --token or set ENGRAM_API_TOKEN".to_string()
+        }
+        Err(e) => e.to_string(),
+        Ok(_) => "the daemon is still answering".to_string(),
+    };
+    if json {
+        print_json(&serde_json::json!({ "ok": false, "error": why }));
+    } else {
+        eprintln!("{} {}", bad("✗ daemon still running:"), one_line(&why));
+    }
+    Ok(1)
+}
+
+/// `engram restart` — restart a running daemon in place (or start one, unless
+/// `--no-spawn`). Success is judged by the daemon's health after the re-exec
+/// window, not by the POST reply.
+pub async fn restart(client: &Client, auto_spawn: bool, json: bool) -> Result<i32> {
+    if super::daemon::is_up(client).await {
+        if let Err(e) = client.restart().await {
+            // A dropped connection can race the re-exec; only an explicit HTTP
+            // rejection (401/403/…) is a real refusal.
+            let msg = e.to_string();
+            if msg.contains("→ 4") {
+                let why = if msg.contains("401") {
+                    "unauthorized — pass --token or set ENGRAM_API_TOKEN"
+                } else {
+                    msg.as_str()
+                };
+                if json {
+                    print_json(&serde_json::json!({ "ok": false, "error": why }));
+                } else {
+                    eprintln!("{} {}", bad("✗ restart refused:"), one_line(why));
+                }
+                return Ok(1);
+            }
+        }
+        if !json {
+            println!("{}", dim("· restarting…"));
+        }
+        // The daemon replies first and re-execs ~300ms later — wait out the
+        // swap before probing, then require a live health answer.
+        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+        for _ in 0..40 {
+            if super::daemon::is_up(client).await {
+                if json {
+                    print_json(&serde_json::json!({ "ok": true }));
+                } else {
+                    println!("{} daemon up at {}", good("✓"), client.base_url());
+                }
+                return Ok(0);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+        if json {
+            print_json(&serde_json::json!({ "ok": false, "error": "daemon did not come back" }));
+        } else {
+            eprintln!(
+                "{}",
+                bad("✗ the daemon did not come back after the restart")
+            );
+        }
+        return Ok(1);
+    }
+    if !auto_spawn {
+        if json {
+            print_json(&serde_json::json!({ "ok": false, "error": "not running (--no-spawn)" }));
+        } else {
+            eprintln!(
+                "{}",
+                bad("✗ not running (and --no-spawn forbids starting it)")
+            );
+        }
+        return Ok(1);
+    }
+    super::daemon::ensure(client, true, json).await?;
+    if json {
+        print_json(&serde_json::json!({ "ok": true }));
+    } else {
+        println!("{} daemon up at {}", good("✓"), client.base_url());
+    }
     Ok(0)
 }
 

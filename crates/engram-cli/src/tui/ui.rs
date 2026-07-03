@@ -11,6 +11,11 @@ use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
+    // The boot splash owns the whole frame until dismissed.
+    if app.splash {
+        super::splash::render(f, app);
+        return;
+    }
     let area = f.area();
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -524,13 +529,13 @@ fn footer_hint(app: &App) -> &'static str {
         }
         View::Tasks => " ↑↓ move   ←→ column   ↵ run/open   r refresh   / cmds   ? help",
         View::Memory => " ↑↓ move   f forget (×2)   r refresh   / cmds   ? help",
-        View::Skills => " ↑↓ move   ↵ toggle on/off   r refresh   / cmds   ? help",
+        View::Skills => " ↑↓ move   ↵ toggle on/off   a adopt proposed   r refresh   ? help",
         View::Schedule => " ↑↓ move   a add   ↵ run   d delete   r refresh   ? help",
         View::Autonomy => " ↑↓ move   a approve   d deny   r refresh   ? help",
         View::Ledger => " ↑↓ move   r refresh   / cmds   ? help",
         View::Agents => " ↑↓ move   n new   e edit   p policy   d delete (×2)   r refresh",
         View::Settings => {
-            " ↑↓ move   ↵ edit/toggle   x clear secret   d del MCP   t test   r refresh"
+            " ↑↓ move   ↵ edit/toggle (fields·MCP·tools)   x clear secret   d del MCP   t test"
         }
         View::Help => " esc back   ^C quit",
     }

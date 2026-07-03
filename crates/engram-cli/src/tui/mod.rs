@@ -6,6 +6,7 @@
 //! UI never blocks on the daemon.
 
 mod app;
+mod splash;
 mod ui;
 mod views;
 
@@ -38,7 +39,9 @@ pub async fn run(client: Client) -> Result<()> {
 
     let mut events = EventStream::new();
     let mut ticker = tokio::time::interval(Duration::from_millis(110));
-    let mut mouse_on = app.mouse; // capture was enabled in setup() to match the default
+    // setup() enabled capture unconditionally; track that real state so a
+    // persisted mouse-off preference is applied on the first loop pass.
+    let mut mouse_on = true;
 
     let res = loop {
         if let Err(e) = term.draw(|f| ui::draw(f, &mut app)) {
@@ -141,6 +144,8 @@ mod smoke {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let client = crate::api::Client::new("http://127.0.0.1:1", None);
         let mut app = App::new(client, tx);
+        // The boot splash would otherwise cover every view under test.
+        app.splash = false;
         app.model = "claude-opus-4-8".into();
         app.meter = Meter {
             tokens_in: 623569,
@@ -271,11 +276,21 @@ mod smoke {
                 category: "research".into(),
                 description: "Does a useful thing".into(),
                 enabled: i % 2 == 0,
-                active: 1,
+                // Every third skill is a PROPOSED one (no active version) — the
+                // exact shape whose `active: null` used to poison the decode.
+                active: if i % 3 == 0 { None } else { Some(1) },
+                proposed: i % 3 == 0,
                 versions: vec![1],
                 runtime: "process".into(),
                 interpreter: Some("python3".into()),
                 ..Default::default()
+            })
+            .collect();
+        app.tools = (0..8)
+            .map(|i| crate::api::ToolInfo {
+                name: format!("tool_{i}"),
+                description: "does a tool thing with a fairly long description".into(),
+                disabled: i % 3 == 0,
             })
             .collect();
         app.schedule = vec![ScheduleJob {
@@ -381,6 +396,58 @@ mod smoke {
         app.open_palette();
         let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
         term.draw(|f| super::ui::draw(f, &mut app)).unwrap();
+    }
+
+    /// The boot splash renders at every size — including ones too small for
+    /// the pixel-art mark (it falls back to the plain wordmark), both themes,
+    /// and both connection states (spinner vs connected).
+    #[test]
+    fn splash_renders_at_many_sizes() {
+        for (w, h) in [(20u16, 6u16), (40, 12), (80, 24), (120, 40), (200, 50)] {
+            for light in [false, true] {
+                for connected in [false, true] {
+                    let mut app = sample_app();
+                    app.splash = true;
+                    app.light = light;
+                    if !connected {
+                        app.health = None;
+                    }
+                    let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+                    term.draw(|f| super::ui::draw(f, &mut app)).unwrap();
+                }
+            }
+        }
+    }
+
+    /// A proposed skill (`"active": null` on the wire) must decode — this exact
+    /// shape used to fail typed-decode and blank the whole skills list.
+    #[test]
+    fn skills_payload_with_proposed_null_active_decodes() {
+        let payload = serde_json::json!({
+            "skills": [
+                { "id": "csv2json", "active": 3, "versions": [1,2,3], "runs": 4,
+                  "runtime": "process", "enabled": true, "proposed": false },
+                { "id": "distilled_new", "active": null, "versions": [1], "runs": 0,
+                  "runtime": "process", "enabled": true, "proposed": true },
+            ]
+        });
+        let resp: crate::api::SkillsResp = serde_json::from_value(payload).unwrap();
+        assert_eq!(resp.skills.len(), 2);
+        assert_eq!(resp.skills[0].active, Some(3));
+        assert_eq!(resp.skills[1].active, None);
+        assert!(resp.skills[1].proposed);
+    }
+
+    /// Dump the boot splash as plain text (`cargo test -p engram-cli
+    /// splash_preview -- --ignored --nocapture`) — eyeball the pixel-art mark.
+    #[test]
+    #[ignore]
+    fn splash_preview() {
+        let mut app = sample_app();
+        app.splash = true;
+        let mut term = Terminal::new(TestBackend::new(60, 26)).unwrap();
+        term.draw(|f| super::ui::draw(f, &mut app)).unwrap();
+        println!("{}", term.backend());
     }
 
     /// Dump a few views as plain text (`cargo test -p engram-cli render_preview

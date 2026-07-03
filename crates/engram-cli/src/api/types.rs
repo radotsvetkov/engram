@@ -210,8 +210,12 @@ impl Task {
 pub struct Skill {
     #[serde(default)]
     pub id: String,
+    /// The active version — the daemon sends an explicit `null` for a PROPOSED
+    /// (distilled-but-not-adopted) skill, so this must be an Option: a bare u64
+    /// made the whole `/v1/skills` payload fail to decode the moment one
+    /// proposal existed, which blanked the entire skills list client-side.
     #[serde(default)]
-    pub active: u64,
+    pub active: Option<u64>,
     #[serde(default)]
     pub versions: Vec<u64>,
     #[serde(default)]
@@ -230,6 +234,9 @@ pub struct Skill {
     pub category: String,
     #[serde(default)]
     pub enabled: bool,
+    /// Distilled/authored but not yet activated — adoptable via `/adopt`.
+    #[serde(default)]
+    pub proposed: bool,
     #[serde(default)]
     pub learn: Vec<Value>,
 }

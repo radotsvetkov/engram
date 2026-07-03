@@ -261,6 +261,14 @@ impl Client {
         .await
     }
 
+    /// Adopt a proposed skill: the daemon replays it against its recorded gold
+    /// examples and activates it only if they reproduce — no client timeout,
+    /// since the replay runs the skill for real.
+    pub async fn skill_adopt(&self, id: &str) -> Result<Value> {
+        self.post_value_timeout(&format!("/v1/skills/{id}/adopt"), json!({}), None)
+            .await
+    }
+
     // ---- schedule ---------------------------------------------------------
 
     pub async fn schedule(&self) -> Result<Vec<ScheduleJob>> {

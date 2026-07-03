@@ -21,7 +21,10 @@ and `--no-spawn` makes it fail instead of auto-starting the daemon.
 ## The TUI
 
 A calm, dark, full-screen control surface with everything the desktop control
-center has, in the terminal:
+center has, in the terminal. It opens on a **boot splash** — the Engram neuron
+logomark rendered as half-block pixel art (the firing synapse in the brand
+teal), with the daemon connection state underneath; any key skips it, and it
+dismisses itself once the daemon answers. Then:
 
 - **A trust spine in the header** — the model in use, today's cost and token flow,
   a live **`✓ ledger N`** chip (which flips to a red **`✗ TAMPER`** banner the moment
@@ -39,17 +42,24 @@ center has, in the terminal:
 - **Memory** — the brain's regions and tiers, the distilled self-model, and a
   recent-memories list you can forget from.
 - **Skills** — the self-improving program library, with enable toggles and per-skill
-  detail (capabilities, runtime, version history, learning record).
+  detail (capabilities, runtime, version history, learning record). A skill the
+  agent has distilled but not yet activated shows as **`◆ proposed`** — press `a`
+  to adopt it (the daemon replays its recorded gold examples and only activates
+  it if they reproduce). Improvement counts show as `↗N` next to learned skills.
 - **Schedule**, **Agents** (create with `n`, delete with `d`), and an **Autonomy**
   view where staged egress actions wait for your approval (`a` to allowlist, `d` to
   deny) — the graduated-autonomy gate, in the terminal.
 - **Ledger** — the signed, append-only audit chain with a live verification chip and
   a payload preview for the selected entry.
 - **Settings** — an editable browser over the daemon config: model provider, keys,
-  security flags, web-search providers, media models, browser, channels, and the
+  security flags, web-search providers, media models, browser, channels, the
   **MCP servers** list (Enter to add/edit a server's name·command·args·env, `d` to
-  delete). **Enter** edits/toggles/cycles a field, **`x`** clears a secret, **`t`** runs
-  a live provider test. Secrets show `● set` / `○ unset` and follow the "blank keeps it" rule.
+  delete), and an **Agent tools** section listing every tool the agent can use —
+  Enter toggles a tool on/off (written to `security.disabled_tools`). **Enter**
+  edits/toggles/cycles a field, **`x`** clears a secret, **`t`** runs a live provider
+  test. Secrets show `● set` / `○ unset` and follow the "blank keeps it" rule.
+- **Client preferences persist** — the theme (dark/light) and mouse-capture
+  toggles are remembered across runs in `~/.engram/cli.json`.
 
 Answers render with **syntax-highlighted code blocks** and coloured **diffs** (` ```diff `
 or unified-diff content) — in both the TUI chat pane and `engram ask` output.
@@ -74,10 +84,11 @@ or unified-diff content) — in both the TUI chat pane and `engram ask` output.
 | Lists | `Enter` | run / open / approve / edit |
 | Lists | `r` | refresh |
 | Memory | `f` | forget the selected memory (×2 to confirm) |
+| Skills | `Enter` / `a` | toggle on/off · adopt a ◆ proposed skill |
 | Autonomy | `a` / `d` | approve / deny a staged egress |
 | Agents | `n` / `e` / `p` / `d` | create / edit / set autonomy policy / delete (×2) |
 | Schedule | `a` / `Enter` / `d` | add a job / run now / delete |
-| Settings | `Enter` / `x` / `t` | edit/toggle/cycle · clear secret · test provider |
+| Settings | `Enter` / `x` / `t` | edit/toggle/cycle (fields · MCP · tools) · clear secret · test provider |
 | Mouse | click / wheel | click a tab, wheel-scroll (palette "Toggle mouse" to disable) |
 
 ## CLI subcommands
@@ -91,15 +102,19 @@ engram doctor                   # provider, tools, ledger integrity, config
 engram tasks list|show <id>|new <title> [--run]|run <id>|receipt <id>
 engram projects list|new <name> [--dir <path>]     # (alias: proj) scoped projects
 engram memory stats|recent|recall <q>|remember <text>|forget <id>|identity
-engram skills list [--filter]|run <id> <input>|enable <id>|disable <id>
+engram skills list [--filter]|show <id>|run <id> <input>|adopt <id>|enable <id>|disable <id>
+engram sessions list [--project <id>]|show <id>    # (alias: sess) chat transcripts
 engram schedule list|add <name> <when>|preview <when…>|run <id>|delete <id>
 engram autonomy report|pending|approve <scope> <dest>|deny <scope> <dest>
 engram agents list|create <name> [--role --model --provider --emoji]|edit <id>|delete <id>|policy <id> [--egress --actions --max-actions --max-spend-cents --expires-days]
 engram ledger tail|verify|pubkey
 engram config show|set <key> <value>|test
-engram tools | events
+engram tools [list|enable <name>|disable <name>]   # agent tools on/off
+engram mcp list|add <name> <command> [--args --env --cwd]|remove <name>
+engram events
 
 engram serve [--detach]         # start the daemon
+engram stop | restart           # stop / restart a running daemon
 engram completions <shell>      # bash | zsh | fish | powershell | elvish
 ```
 
@@ -113,6 +128,10 @@ engram ask "what do you know about me?"
 engram memory recall "favorite watch" --k 5     # hybrid keyword+semantic recall
 engram projects new "My App" --dir ~/code/my-app # a scoped project bound to a dir
 engram tasks new "draft a weekly digest" --run  # create and stream the run
+engram skills show csv2json                     # manifest + learning history
+engram skills adopt csv2json                    # activate a ◆ proposed skill
+engram tools disable browser_open               # switch an agent tool off
+engram mcp add fs npx --args "-y @modelcontextprotocol/server-filesystem /tmp"
 engram ledger verify                            # exit 0 = chain intact, 1 = tampered
 engram schedule preview "every weekday at 9am"  # next-fire preview, no model call
 engram status --json | jq .ledger               # scriptable everything

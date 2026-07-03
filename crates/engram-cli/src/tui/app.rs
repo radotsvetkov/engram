@@ -3,7 +3,7 @@
 use crate::api::{
     AutonomyReport, ChatEvent, Client, Consciousness, EgressItem, Health, LedgerEntry,
     LedgerVerify, MemRecord, MemoryStats, Meter, Project, RecalledRef, ScheduleJob, SessionMeta,
-    SessionMsg, Skill, StepRecord, Task,
+    SessionMsg, Skill, StepRecord, Task, ToolInfo,
 };
 use crate::ui::format::now_ms;
 use crate::ui::Theme;
@@ -74,6 +74,8 @@ pub enum Msg {
     Autonomy(AutonomyReport),
     Egress(Vec<EgressItem>),
     Agents(Vec<Value>),
+    /// The agent tool list (for the Settings tools section).
+    Tools(Vec<ToolInfo>),
     Config(Value),
     Sessions(Vec<SessionMeta>),
     /// The workspace project list (for the switcher + status bar).
@@ -295,6 +297,8 @@ pub struct App {
     pub autonomy: Option<AutonomyReport>,
     pub egress: Vec<EgressItem>,
     pub agents: Vec<Value>,
+    /// Agent tools with their enabled/disabled state (Settings tools section).
+    pub tools: Vec<ToolInfo>,
     pub sessions: Vec<SessionMeta>,
     /// The workspace projects, and which one is active. Chats run under the active project, so their
     /// memory and working directory are scoped to it.
@@ -337,6 +341,9 @@ pub struct App {
     pub reconnecting: bool,
     pub was_up: bool,
     pub mouse: bool,
+    /// The boot splash (pixel-art logo). Dismissed by any key, or automatically
+    /// once the daemon has answered and the minimum display time has passed.
+    pub splash: bool,
     /// Clickable tab regions `(view, x_start, x_end)`, recorded during header draw.
     pub tab_hits: Vec<(View, u16, u16)>,
     /// Row count of the active list view (set during render; for wheel scrolling).
@@ -466,13 +473,18 @@ pub const PALETTE: &[PaletteItem] = &[
 
 impl App {
     pub fn new(client: Client, tx: UnboundedSender<Msg>) -> Self {
+        let prefs = Prefs::load();
         App {
             client,
             tx,
             should_quit: false,
             view: View::Chat,
-            theme: Theme::dark(),
-            light: false,
+            theme: if prefs.light {
+                Theme::light()
+            } else {
+                Theme::dark()
+            },
+            light: prefs.light,
             tick: 0,
             health: None,
             meter: Meter::default(),
@@ -492,6 +504,7 @@ impl App {
             autonomy: None,
             egress: vec![],
             agents: vec![],
+            tools: vec![],
             sessions: vec![],
             projects: vec![],
             active_project: None,
@@ -513,7 +526,8 @@ impl App {
             form: None,
             reconnecting: false,
             was_up: false,
-            mouse: true,
+            mouse: prefs.mouse,
+            splash: true,
             tab_hits: Vec::new(),
             list_len: 0,
             toast: None,
@@ -675,6 +689,7 @@ impl App {
             }
             View::Settings => {
                 self.fetch(|c| async move { c.config_raw().await.ok().map(Msg::Config) });
+                self.fetch(|c| async move { c.tools().await.ok().map(|t| Msg::Tools(t.tools)) });
             }
             View::Help => {}
         }
@@ -684,6 +699,11 @@ impl App {
 
     pub fn on_tick(&mut self) {
         self.tick = self.tick.wrapping_add(1);
+        // Auto-dismiss the boot splash once the daemon has answered and it has
+        // been on screen ≥ ~1.4s (hard cap ~6s so a dead daemon never traps it).
+        if self.splash && ((self.tick >= 13 && self.health.is_some()) || self.tick >= 55) {
+            self.splash = false;
+        }
         // Expire toast after ~4s.
         if let Some((_, when)) = &self.toast {
             if when.elapsed().as_secs() >= 4 {
@@ -779,6 +799,7 @@ impl App {
                     self.confirm_agent = None;
                 }
             }
+            Msg::Tools(t) => self.tools = t,
             Msg::Config(c) => self.config_raw = Some(c),
             Msg::Sessions(s) => {
                 self.sessions = s;
@@ -1062,6 +1083,14 @@ impl App {
 
     pub fn on_key(&mut self, k: KeyEvent) {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        // The boot splash: any key dismisses it (Ctrl-C/Ctrl-Q still quit).
+        if self.splash {
+            self.splash = false;
+            if ctrl && matches!(k.code, KeyCode::Char('c') | KeyCode::Char('q')) {
+                self.should_quit = true;
+            }
+            return;
+        }
         // The quit contract is universal — it must win over any open overlay.
         // Ctrl-C first closes an open overlay (a gentle bail-out); a second
         // Ctrl-C with nothing open quits. Ctrl-Q always quits outright.
@@ -1738,6 +1767,89 @@ impl App {
         }
     }
 
+    // ---- skills ------------------------------------------------------------
+
+    /// Adopt the selected PROPOSED skill: the daemon replays it against its gold
+    /// examples and only activates it if they reproduce.
+    pub fn adopt_selected_skill(&mut self) {
+        let Some(s) = self.skills.get(self.sel) else {
+            return;
+        };
+        if !s.proposed {
+            self.toast("· already active — ↵ toggles on/off");
+            return;
+        }
+        let id = s.id.clone();
+        self.toast(format!("· adopting {id} (replaying gold examples)…"));
+        let client = self.client.clone();
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let msg = match client.skill_adopt(&id).await {
+                Ok(v) => match v.get("decision").and_then(Value::as_str) {
+                    Some("adopted") | Some("approved") => format!("✓ {id} adopted"),
+                    Some(other) => format!("· {id}: {other}"),
+                    None => format!("✓ {id}: done"),
+                },
+                Err(e) => format!("· adopt failed: {e}"),
+            };
+            if let Ok(r) = client.skills().await {
+                let _ = tx.send(Msg::Skills(r.skills));
+            }
+            let _ = tx.send(Msg::Toast(msg));
+        });
+    }
+
+    // ---- tools (in Settings) -----------------------------------------------
+
+    /// Toggle an agent tool by rewriting `security.disabled_tools`.
+    pub fn toggle_tool(&mut self, index: usize) {
+        let Some(tool) = self.tools.get(index) else {
+            return;
+        };
+        let (name, disable) = (tool.name.clone(), !tool.disabled);
+        // Optimistic flip so the row reflects the choice immediately (and so a
+        // quick second toggle builds on this one); the refetch confirms.
+        if let Some(t) = self.tools.get_mut(index) {
+            t.disabled = disable;
+        }
+        // /v1/tools lists only the BUILT-IN tools, but disabled_tools may also
+        // name MCP or daemon-registered tools — carry those entries over
+        // verbatim or a toggle here would silently re-enable them.
+        let mut disabled: Vec<String> = self
+            .config_raw
+            .as_ref()
+            .and_then(|c| c.get("security"))
+            .and_then(|s| s.get("disabled_tools"))
+            .and_then(|d| d.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .filter(|n| !self.tools.iter().any(|t| &t.name == n))
+                    .collect()
+            })
+            .unwrap_or_default();
+        disabled.extend(
+            self.tools
+                .iter()
+                .filter(|t| t.disabled)
+                .map(|t| t.name.clone()),
+        );
+        self.fetch(move |c| async move {
+            match c
+                .config_set(json!({ "security": { "disabled_tools": disabled } }))
+                .await
+            {
+                Ok(_) => c.tools().await.ok().map(|t| Msg::Tools(t.tools)),
+                Err(e) => Some(Msg::Toast(format!("· save failed: {e}"))),
+            }
+        });
+        self.toast(if disable {
+            format!("· {name} disabled")
+        } else {
+            format!("· {name} enabled")
+        });
+    }
+
     // ---- MCP servers (in Settings) ---------------------------------------
 
     fn mcp_array(&self) -> Vec<Value> {
@@ -2313,6 +2425,7 @@ impl App {
                 } else {
                     Theme::dark()
                 };
+                self.save_prefs();
             }
             Action::ToggleMouse => {
                 self.mouse = !self.mouse;
@@ -2321,6 +2434,7 @@ impl App {
                 } else {
                     "· mouse off (text selection)"
                 });
+                self.save_prefs();
             }
             Action::CopyAnswer => self.yank_last_answer(),
             Action::Quit => self.should_quit = true,
@@ -2357,6 +2471,69 @@ impl App {
         }
         let cur = self.sel as i32 + delta;
         self.sel = cur.clamp(0, len as i32 - 1) as usize;
+    }
+
+    /// Persist the client-side preferences (theme, mouse). Best-effort — a
+    /// read-only home dir just means the toggle doesn't survive a restart.
+    pub fn save_prefs(&self) {
+        Prefs {
+            light: self.light,
+            mouse: self.mouse,
+        }
+        .save();
+    }
+}
+
+/// Client-side preferences persisted at `$ENGRAM_HOME/cli.json` (default
+/// `~/.engram/cli.json`) — settings that belong to this terminal client, not
+/// the daemon's config.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct Prefs {
+    #[serde(default)]
+    pub light: bool,
+    #[serde(default = "prefs_default_mouse")]
+    pub mouse: bool,
+}
+
+fn prefs_default_mouse() -> bool {
+    true
+}
+
+impl Default for Prefs {
+    fn default() -> Self {
+        Prefs {
+            light: false,
+            mouse: true,
+        }
+    }
+}
+
+impl Prefs {
+    fn path() -> std::path::PathBuf {
+        let home = std::env::var("ENGRAM_HOME").unwrap_or_else(|_| {
+            format!(
+                "{}/.engram",
+                std::env::var("HOME").unwrap_or_else(|_| ".".into())
+            )
+        });
+        std::path::Path::new(&home).join("cli.json")
+    }
+
+    pub fn load() -> Self {
+        std::fs::read_to_string(Self::path())
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn save(&self) {
+        let p = Self::path();
+        if let Some(dir) = p.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Ok(s) = serde_json::to_string_pretty(self) {
+            let _ = std::fs::write(p, s);
+        }
     }
 }
 

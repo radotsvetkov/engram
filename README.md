@@ -68,40 +68,57 @@ night:
 
 ## Quickstart
 
-**Grab a prebuilt binary** (fastest — no toolchain needed). Every release ships static
-binaries for macOS (Intel + Apple Silicon) and Linux (x86_64 + arm64) on the
-[releases page](https://github.com/radotsvetkov/engram/releases/latest). For example, on
-Apple Silicon:
-
-```sh
-curl -fsSL https://github.com/radotsvetkov/engram/releases/latest/download/engram-v0.2.0-aarch64-apple-darwin.tar.gz | tar xz
-./engram-v0.2.0-aarch64-apple-darwin/engramd    # → http://127.0.0.1:8088
-```
-
-**Build from source, one line** (needs a Rust toolchain; installs `engramd` and the
-`engram` CLI into `~/.cargo/bin`):
+One line. No Rust toolchain needed — this fetches the latest prebuilt static binary for
+your platform (macOS Intel/Apple Silicon, Linux x86_64/arm64), verifies its checksum, and
+installs `engramd` + `engram` (the CLI/TUI):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/radotsvetkov/engram/main/install.sh | sh
-```
-
-Prefer to do it yourself? It's a normal Cargo build:
-
-```sh
-git clone https://github.com/radotsvetkov/engram.git
-cd engram
-cargo build --release            # the whole workspace, optimized
-./target/release/engramd         # → open http://127.0.0.1:8088
+engram          # opens the TUI and starts the daemon for you, or:
+engramd         # → open http://127.0.0.1:8088
 ```
 
 That's the entire setup. With **no API key**, Engram runs in an honest offline demo mode —
 memory, tasks, skills, scheduling, and the signed ledger are all live; only the model's
-"thinking" waits for you to connect a provider in **Settings**. When you're ready:
+"thinking" waits for you to connect a provider in **Settings**. The installed binaries
+already ship with the real model/embedding provider (`http,docs` features) — just add a key:
 
 ```sh
-cargo build --release --features http     # the real model/embedding provider
-ENGRAM_ANTHROPIC_API_KEY=sk-... ./target/release/engramd
+ENGRAM_ANTHROPIC_API_KEY=sk-... engramd
 ```
+
+<details>
+<summary><b>Other ways to install</b> — grab the tarball yourself, build from source, or run on a server</summary>
+
+**Grab the tarball yourself**, always the latest, no hardcoded version:
+
+```sh
+curl -fsSL https://api.github.com/repos/radotsvetkov/engram/releases/latest \
+  | grep '"tag_name"' | head -1 | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/' \
+  | xargs -I{} curl -fsSL "https://github.com/radotsvetkov/engram/releases/download/{}/engram-{}-aarch64-apple-darwin.tar.gz" \
+  | tar xz
+```
+
+Swap `aarch64-apple-darwin` for `x86_64-apple-darwin`, `aarch64-unknown-linux-musl`, or
+`x86_64-unknown-linux-musl` as needed — see the [releases page](https://github.com/radotsvetkov/engram/releases/latest)
+for every asset and its checksum.
+
+**Build from source**, either via the installer (`--source`, or automatically when there's
+no prebuilt binary for your architecture) or by hand:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/radotsvetkov/engram/main/install.sh | sh -s -- --source
+
+# or a plain Cargo build:
+git clone https://github.com/radotsvetkov/engram.git && cd engram
+cargo build --release --features http     # omit --features for the offline/mock provider only
+./target/release/engramd                  # → open http://127.0.0.1:8088
+```
+
+**Run it on a server or VPS** — the same static binary, socket-activated so it costs
+nothing while idle. See [Run on a server](#run-on-a-server).
+
+</details>
 
 There's also a native desktop app and a terminal client — see [Desktop](#desktop) and
 [Terminal](#terminal-cli--tui).
@@ -301,6 +318,22 @@ provider, keys, security flags, MCP servers, and per-tool on/off switches. Or us
 for scripting, with `--json` on every command: everything the TUI can do, the CLI can too
 (`skills adopt`, `tools disable`, `mcp add`, `sessions show`, `stop`/`restart`, …). Full
 reference in [`docs/CLI.md`](./docs/CLI.md).
+
+## Run on a server
+
+The same static binary runs headless on a $5 VPS, socket-activated so systemd holds the
+port and `engramd` only exists in memory while it's handling a request — genuinely
+pay-for-what-you-use, not an always-on process billing you at 3am. Grab the Linux binary
+with the installer, point it at a systemd socket unit, and put a reverse proxy in front if
+you want it reachable off the box:
+
+```sh
+ssh you@vps 'curl -fsSL https://raw.githubusercontent.com/radotsvetkov/engram/main/install.sh | sh'
+```
+
+Full walkthrough — the systemd socket/service units (hardened with `DynamicUser`,
+`ProtectSystem=strict`, `NoNewPrivileges`), the Docker image, fronting it with Caddy/TLS,
+and scheduled wake timers for recurring jobs — in [`deploy/README.md`](./deploy/README.md).
 
 ## Architecture
 

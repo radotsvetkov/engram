@@ -4,6 +4,26 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **The README's prebuilt-binary link no longer goes stale.** It hardcoded a specific
+  release tag in the download filename, so it always fetched v0.2.0 no matter how many
+  versions had shipped since.
+
+### Changed
+- **`install.sh` fetches a prebuilt binary by default** (resolves the latest GitHub
+  release, verifies its checksum, no Rust toolchain needed) instead of always building
+  from source — the same one-line experience as most modern CLI tools. Building from
+  source is now an opt-in `--source` flag, and the automatic fallback when there's no
+  prebuilt binary for your architecture.
+- **README quickstart is one command** instead of three competing options, with a
+  collapsed "other ways to install" section for the tarball-by-hand / build-from-source /
+  VPS paths.
+- New **"Run on a server"** README section, and `deploy/README.md` now leads with the
+  prebuilt Linux binary (installed straight into `/usr/local/bin`) instead of requiring
+  Docker or a manual musl cross-compile toolchain just to get `engramd` onto a VPS.
+
 ## [0.2.1] - 2026-07-03
 
 The terminal client grows up, and a config-save secret-loss bug dies.

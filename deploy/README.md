@@ -5,34 +5,46 @@ activation: systemd holds the port, and `engramd` is spawned only when a request
 arrives, then exits after `ENGRAM_IDLE_SECS`. On a $5 VPS this is genuinely
 pay-for-what-you-use.
 
-## 1. Build the static binary
+## 1. Get the binary onto the VPS
 
-**With Docker (any host):**
+**Prebuilt (fastest — no toolchain, and it's the exact binary the release CI produces,
+already built with the `http,docs` features for a real model provider)**:
+
+```sh
+ssh root@VPS 'curl -fsSL https://raw.githubusercontent.com/radotsvetkov/engram/main/install.sh \
+  | ENGRAM_INSTALL_DIR=/usr/local/bin sh'
+```
+
+The installer resolves the latest release, verifies its published checksum, and drops
+`engramd` straight into `/usr/local/bin` (where the systemd unit below expects it).
+
+**Or build it yourself** — with Docker (any host):
 
 ```sh
 docker build -f deploy/Dockerfile -t engramd .
 docker create --name engram-extract engramd
 docker cp engram-extract:/usr/local/bin/engramd ./engramd
 docker rm engram-extract
+scp engramd root@VPS:/usr/local/bin/engramd
 ```
 
-**Native on a Linux box:**
+or natively on a Linux box:
 
 ```sh
 rustup target add x86_64-unknown-linux-musl
 sudo apt-get install -y musl-tools
 CC_x86_64_unknown_linux_musl=musl-gcc \
-  cargo build --release --target x86_64-unknown-linux-musl -p engramd
+  cargo build --release --target x86_64-unknown-linux-musl -p engramd --features http,docs
 strip target/x86_64-unknown-linux-musl/release/engramd
+scp target/x86_64-unknown-linux-musl/release/engramd root@VPS:/usr/local/bin/engramd
 ```
 
-The default build is offline-only. For a real LLM provider add `--features http`
-(this pulls in rustls).
+(the default build with no `--features` is offline-only — fine for kicking the tires,
+not for a real deployment).
 
-## 2. Install on the VPS
+## 2. Install the systemd units
 
 ```sh
-scp engramd root@VPS:/usr/local/bin/engramd
 scp deploy/engram.socket deploy/engram.service root@VPS:/etc/systemd/system/
 ssh root@VPS '
   install -d -o root -g root /var/lib/engram

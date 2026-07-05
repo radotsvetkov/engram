@@ -166,30 +166,56 @@ specifics that must be one answer, not two parallel code paths:
    flip doesn't stall every existing installed brain synchronously with zero progress feedback —
    chunked transactions + a resumable cursor + a `/v1/status` progress field. **This ships in the
    same release as item 1, not after it.**
-4. **Mark `GatewayEmbedder` fallback rows** (`embedder.rs:88-98`, already flagged
-   `NEEDS-INTEGRATION` in its own comment) with a `needs_reembed` column, and re-embed them on a
-   background pass once the provider is confirmed healthy.
-5. **Fail loud, not silent**, when `ENGRAM_EMBED=gateway` is configured against a provider with no
-   embeddings endpoint (Anthropic) — surface it at `/v1/status` and in Settings, not just a
-   `tracing::warn!`.
-6. **Close both confirmed persist-time taint holes**, reusing the existing `Taint::join` primitive
-   — no new mechanism:
-   - `corpus.rs:80-95` (`ingest_document`) stops hardcoding `Taint::Trusted` for every uploaded
-     chunk. Default to `Untrusted` for anything not a direct local file-picker upload; add an
-     explicit per-upload "I trust this document" toggle that upgrades it (mirrors the existing
-     `memory.trust` ledger-event pattern).
-   - `converse.rs:293-301` (legacy `/v1/converse` path) currently persists the assistant's own reply
-     as `Trusted` with **no taint tracking at all**, unlike the agentic loop. Thread the same
-     run-level taint the agentic loop already computes.
-7. **Move the document-source filter from the two curated blocks to the source**: `conscious.rs`'s
-   `is_doc` filter (lines 140-151, 358-376) only protects the 9-line and 4-line always-loaded blocks;
-   `recall_trusted_scoped()` itself has no such filter, so the same content still reaches the
-   `memory_recall` tool, the flywheel's per-turn context, and the converse recall ribbon unfiltered.
-   Fix it once, at the source.
+4. **DONE (2026-07-05, `26559d3`):** `Embedder` grew a default `embed_checked()` method that
+   reports when a call silently degraded (default: never); `GatewayEmbedder` overrides it to flag
+   exactly the fallback its own `NEEDS-INTEGRATION` comment named. `remember()` stores this as a new
+   `needs_reembed` column, and `Memory::reembed_flagged()` repairs flagged rows once the embedder is
+   healthy again — wired into the existing hourly consolidation tick. Verified with two deterministic
+   `engramd` unit tests (a dimension-mismatching `MockProvider`, no network flakiness) and one
+   `engram-memory` test proving the flag sets, survives a still-degraded repair attempt, and clears
+   once healthy.
+5. **DONE (2026-07-05, `26559d3`):** `GET /v1/memory/stats` now returns `embedder_configured` /
+   `embedder_active` / `embedder_degraded`, turning the silent `tracing::warn!` into a fact every
+   surface can read. (No dedicated `/v1/status` route exists — `memory_stats` is the natural home
+   since this is specifically about the embedder, and it's what the desktop's "Memory & context"
+   pane already polls.) The desktop/TUI/CLI badges *displaying* this are still open — see the
+   parity section below.
+6. **Persist-time taint holes — `converse.rs` DONE, `corpus.rs` deliberately NOT changed as
+   originally scoped:**
+   - **DONE (2026-07-05, `<pending commit>`):** `converse.rs`'s legacy conversational path
+     (`converse`/`converse_stream`) hardcoded `Taint::Trusted` on both the completion call and the
+     stored reply regardless of attachment content, even though `Attachment`'s own doc comment
+     already called attachments "otherwise untrusted input." Fixed: any attachment other than an
+     already-vetted pinned memory now taints the turn `Untrusted`, matching the agentic loop's
+     belt-and-suspenders pattern. Verified with two new tests (an untrusted-attachment turn stores
+     an `untrusted`-tainted reply; a plain turn keeps the existing `trusted` default).
+   - **`corpus.rs:9-13`'s hardcoded `Taint::Trusted` on every uploaded-document chunk turned out to
+     be a documented, reasoned design choice, not an oversight** — its own comment explicitly weighs
+     the single-user-local trade-off ("the user deliberately brought this file into their own
+     project... a shared/multi-tenant deployment would default these untrusted"). Overriding a
+     considered prior decision under a blanket "default to Untrusted" rule (as originally scoped
+     here) would be a real product-UX change — STRATEGY.md's P5/gap-#6 language wants this category
+     closed, but the *right* mechanism (an explicit consent toggle vs. always-Untrusted vs. leaving
+     it as-is) is a product call, not something to decide unilaterally mid-implementation. Left
+     un-touched; flagged for an explicit decision before changing it.
+7. **Recall-surface document filter — narrower than originally scoped, needs a framing fix, not a
+   blanket exclusion.** `conscious.rs`'s `is_doc` filter (lines 140-151, 358-376) excludes document
+   chunks from the two *always-loaded, framed-as-authoritative* consciousness blocks specifically
+   because that framing is what makes injected content dangerous ("attacker text inside a
+   merely-uploaded document would become trusted instruction" — the code's own comment). The three
+   broader surfaces (`memory_recall` tool, the flywheel's per-turn context, the recall ribbon) are
+   *retrieved reference material*, not always-loaded authoritative fact — which is corpus.rs's whole
+   documented purpose for ingesting documents at all (`ingest_document`'s doc comment: "usable
+   reference material"). Blanket-excluding document chunks from these three surfaces would defeat
+   that purpose, not fix a bug. The real remaining gap is narrower: when a document chunk IS
+   surfaced there, it should be clearly labeled as "content from an uploaded document" (the way
+   `attachments_context` already explicitly primes the model to treat attachment content as
+   untrusted reference, not instructions) rather than blended in as an unqualified fact — a prompt/
+   labeling fix at the three call sites, not a filter. Not yet implemented.
 8. **Ledger the two remaining I1-invariant bypasses**: batch `recall_inner`'s per-hit access-count
    bump into one `memory.access_batch` entry per minute (this field is the sole input to
    consolidation's demotion decision — it shouldn't sit outside the signed history); document
-   `backfill_binary()`'s exemption as intentional (pure derived index state).
+   `backfill_binary()`'s exemption as intentional (pure derived index state). Not yet implemented.
 
 **Desktop / TUI / CLI (parity work — pure client plumbing against routes that already exist; no backend design needed, land any time, ideally first since it's the cheapest win in the whole plan)**
 - **DONE (2026-07-05, `055e648`):** wired the four already-shipped skill routes

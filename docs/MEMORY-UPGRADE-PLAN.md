@@ -259,15 +259,22 @@ memory search/filter parity are not yet implemented.**
    citation-and-strip-hallucination discipline, generalized into a small shared helper so both
    `dissent.rs` and this feature use one proven verification implementation instead of two ad hoc
    ones.
-3. **Add an `agent` scope-kind ring** (a new `scope_kind` value alongside `user`/`project`/`session`)
-   so that once multiple durable named `AgentDef`s (Phase 2's already-shipped primitive) work a
-   project concurrently, their memory writes are attributable and filterable per agent — without
-   this, "verifiable expertise per named agent" has no way to actually attribute a memory to the
-   agent that produced it. This is the one gap all three design candidates and every judge pass
-   missed entirely; mem0's own scope model names `agent_id` as a standard dimension for exactly this
-   reason.
-4. Add `scope_kind`/`scope_id` grouping to `Stats` (`store.rs:965-977`, currently global-only) so a
-   per-project (and now per-agent) memory breakdown becomes queryable on every surface.
+3. **DONE (2026-07-05, `801d694`) — implemented as attribution, not a new ring.** Re-examined during
+   implementation: a genuinely separate `ScopeKind::Agent` ring (unioned into recall like project/
+   session) would mean an agent's memories are invisible to the rest of the team unless explicitly
+   unioned in — the wrong behavior for "durable agents collaborating on one mission," which wants
+   *shared* growing expertise with per-agent attribution, not per-agent isolation. Shipped instead:
+   a plain `actor` column on `facts` (populated from the `WriteReq.actor` field that already existed
+   but was previously discarded after the ledger append), so a memory stays in its normal project/
+   user ring — still visible to the whole team — while "which agent said this" becomes a queryable
+   fact instead of a ledger cross-reference. Threading the specific named-agent identity through
+   `ToolCtx` for the generic `memory_remember` tool (vs. just the skill-promotion bridge, which
+   already works today) is separable follow-up — it touches ~25 `ToolCtx` construction sites.
+4. **DONE (2026-07-05, `801d694`):** `Memory::stats_for_scope(kind, id)` gives the same region/tier/
+   actor breakdown restricted to one ring; `GET /v1/memory/stats` accepts `scope_kind`/`scope_id`
+   query params. Verified live: a project-scoped query correctly isolated 1 of 2 total facts to just
+   that project's ring. Surfacing this in the desktop/TUI/CLI UI (vs. just the API existing) is still
+   open.
 5. **DONE (2026-07-05, `fa51f30`):** bridged the two disconnected "procedural memory" stores.
    `improve_skill()` already threaded `memory`/`scope` through every one of its 3 call sites (no new
    plumbing), so a genuine promotion now writes a `Region::Procedural` memory (`skill:<id>#<version>`

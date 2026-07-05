@@ -8,13 +8,11 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 - **`engram model fetch`** — one command downloads a real, offline-capable-once-fetched
-  (model2vec) embedding model and switches memory recall to it, closing the recall-quality gap
-  a real external comparison found in v0.3.0 (see `crates/engram-bench/BENCHMARKS.md`): Engram's
-  zero-dependency trigram-hash default trails mem0/LangChain's real embedding models (88% vs
-  100% recall@10), but matches them exactly once a real local model is in place. User-initiated
-  only (no automatic/silent network access — offline-by-default is preserved); a corrupt or
-  partial download can never become "the active model" (verified before committing); requires a
-  daemon restart, same as any other embedder-affecting setting.
+  (model2vec) embedding model and switches memory recall to it, taking hybrid recall from 88% to
+  100% on the labeled benchmark (see `crates/engram-bench/BENCHMARKS.md`). User-initiated only (no
+  automatic/silent network access — offline-by-default is preserved); a corrupt or partial download
+  can never become "the active model" (verified before committing); requires a daemon restart, same
+  as any other embedder-affecting setting.
 
 ## [0.3.0] - 2026-07-05
 

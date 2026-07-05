@@ -225,10 +225,8 @@ step up over keyword matching, which scores nothing on the zero-overlap subset. 
 synonym-level recall (*"purchasing a car"* → *"she bought a new automobile"*), run
 `engram model fetch` once — a real, pure-Rust static model2vec embedder (no ONNX runtime, no
 heavy ML crate, just a distilled matrix read from `model.safetensors`), downloaded and switched
-to with one command. It closes the gap completely: a real external comparison against mem0 and
-LangChain's own embedding models found Engram's zero-dependency default trailing them (88% vs
-100% recall@10) — with this model in place, Engram matches them exactly while keeping hybrid's
-keyword-fallback robustness neither of them has (see `crates/engram-bench/BENCHMARKS.md`).
+to with one command: **100%** recall@10 on the same benchmark, hybrid included (see
+`crates/engram-bench/BENCHMARKS.md`).
 
 **Footprint** (from the same run): **8.5 MB** full-agent binary · **0 MB** resident memory at
 idle (socket-activated).

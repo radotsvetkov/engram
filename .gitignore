@@ -52,18 +52,11 @@ tmp/
 # Local tooling / editor state
 .claude/
 
-# Planning & internal design notes — kept local, never published.
-# These are working documents (strategy, roadmaps, design explorations); the shipped
-# docs are the README plus docs/THREAT-MODEL.md, docs/CLI.md, and docs/ARCHITECTURE.md.
-/VISION.md
-/docs/STRATEGY.md
-/docs/ROADMAP.md
-/docs/COVERAGE-ROADMAP.md
-/docs/MEMORY-ARCHITECTURE.md
-/docs/AUTONOMY.md
-/docs/DESIGN.md
-/docs/ADR-0001-architecture.md
-/docs/WEB-CAPABILITIES.md
+# Planning & internal notes — kept local, never published: strategy, roadmaps, design
+# explorations, upgrade/implementation plans, external-tool comparisons, internal verification
+# reports. The shipped docs are the README plus docs/{THREAT-MODEL,CLI,ARCHITECTURE}.md and the
+# public crates/engram-bench/BENCHMARKS.md (Engram's own numbers only, no named competitors).
+/internal/
 
 # stray local test binary (not part of the project)
 /test_guard

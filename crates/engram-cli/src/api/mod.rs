@@ -200,6 +200,32 @@ impl Client {
             .await
     }
 
+    /// Edit an existing consciousness line's text in place (pins it — it survives re-distillation).
+    pub async fn consciousness_edit(&self, id: &str, text: &str) -> Result<Value> {
+        self.post_value(
+            "/v1/consciousness/edit",
+            json!({ "id": id, "text": text }),
+        )
+        .await
+    }
+
+    /// Add a new, permanently-pinned consciousness line (capped at the working-memory ceiling).
+    pub async fn consciousness_add(&self, text: &str) -> Result<Value> {
+        self.post_value("/v1/consciousness/add", json!({ "text": text }))
+            .await
+    }
+
+    /// Remove a consciousness line by id.
+    pub async fn consciousness_remove(&self, id: &str) -> Result<Value> {
+        self.post_value("/v1/consciousness/remove", json!({ "id": id }))
+            .await
+    }
+
+    /// Revert consciousness to its previous version.
+    pub async fn consciousness_revert(&self) -> Result<Value> {
+        self.post_value("/v1/consciousness/revert", json!({})).await
+    }
+
     // ---- tasks ------------------------------------------------------------
 
     pub async fn tasks(&self) -> Result<Vec<Task>> {
@@ -267,6 +293,67 @@ impl Client {
     pub async fn skill_adopt(&self, id: &str) -> Result<Value> {
         self.post_value_timeout(&format!("/v1/skills/{id}/adopt"), json!({}), None)
             .await
+    }
+
+    /// Author + A/B-gate a candidate skill version. `wat` for a WASM skill, `source` for a
+    /// process skill — the daemon dispatches on the active version's runtime, matching the
+    /// desktop UI's improve modal. No client timeout: the replay runs the skill for real.
+    pub async fn skill_improve(
+        &self,
+        id: &str,
+        wat: Option<&str>,
+        source: Option<&str>,
+        interpreter: Option<&str>,
+        description: Option<&str>,
+    ) -> Result<Value> {
+        let mut body = json!({});
+        if let Some(w) = wat {
+            body["wat"] = json!(w);
+        }
+        if let Some(s) = source {
+            body["source"] = json!(s);
+        }
+        if let Some(i) = interpreter {
+            body["interpreter"] = json!(i);
+        }
+        if let Some(d) = description {
+            body["description"] = json!(d);
+        }
+        self.post_value_timeout(&format!("/v1/skills/{id}/improve"), body, None)
+            .await
+    }
+
+    /// Set the active version of a skill — the explicit one-click promote/rollback control.
+    pub async fn skill_activate(&self, id: &str, version: u32) -> Result<Value> {
+        self.post_value(
+            &format!("/v1/skills/{id}/activate"),
+            json!({ "version": version }),
+        )
+        .await
+    }
+
+    /// Revert a skill to its previous version, or an explicit one.
+    pub async fn skill_revert(&self, id: &str, version: Option<u32>) -> Result<Value> {
+        let body = match version {
+            Some(v) => json!({ "version": v }),
+            None => json!({}),
+        };
+        self.post_value(&format!("/v1/skills/{id}/revert"), body).await
+    }
+
+    /// Record a runtime example as a gold `(input, accepted-output)` pair on the active version.
+    pub async fn skill_teach(
+        &self,
+        id: &str,
+        input: &str,
+        gold: &str,
+        reward: Option<f32>,
+    ) -> Result<Value> {
+        let mut body = json!({ "input": input, "gold": gold });
+        if let Some(r) = reward {
+            body["reward"] = json!(r);
+        }
+        self.post_value(&format!("/v1/skills/{id}/teach"), body).await
     }
 
     // ---- schedule ---------------------------------------------------------

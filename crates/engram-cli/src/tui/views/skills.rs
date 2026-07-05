@@ -143,7 +143,24 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
                 s.runs.to_string()
             },
         );
-        kv(&mut dl, &t, "improvements", &s.learn.len().to_string());
+        // The real before/after replay score, not just an event count — the same
+        // incumbent_score/candidate_score/replays fields the desktop UI's version-ladder reads
+        // from this identical payload. A bare count answers "did something happen"; a terminal
+        // user asking "did this skill actually get better" needs the numbers.
+        let last_scored = s.learn.iter().rev().find(|ev| {
+            ev.get("incumbent_score").is_some() && ev.get("candidate_score").is_some()
+        });
+        let improvements = match last_scored {
+            Some(ev) => {
+                let i = ev.get("incumbent_score").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let c = ev.get("candidate_score").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let r = ev.get("replays").and_then(|v| v.as_u64()).unwrap_or(0);
+                let d = ev.get("decision").and_then(|v| v.as_str()).unwrap_or("?");
+                format!("{} ({d}: {i:.2}→{c:.2} on {r} replays)", s.learn.len())
+            }
+            None => s.learn.len().to_string(),
+        };
+        kv(&mut dl, &t, "improvements", &improvements);
         dl.push(Line::default());
         if s.proposed {
             dl.push(Line::from(Span::styled(

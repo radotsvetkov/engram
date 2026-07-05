@@ -7,7 +7,7 @@ use super::{
 };
 use crate::api::{ChatEvent, Client, TaskEvent};
 use crate::ui::format::{cost, human_count, one_line, rel_time, stamp};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use std::io::Read;
 
@@ -709,6 +709,42 @@ async fn memory(client: &Client, cmd: MemoryCmd, json: bool) -> Result<i32> {
             }
             Ok(0)
         }
+        MemoryCmd::IdentityEdit { id, text } => {
+            let r = client.consciousness_edit(&id, &join(&text)).await?;
+            if json {
+                print_json(&r);
+            } else {
+                println!("{} {id} · pinned · signed", good("✓ updated"));
+            }
+            Ok(0)
+        }
+        MemoryCmd::IdentityAdd { text } => {
+            let r = client.consciousness_add(&join(&text)).await?;
+            if json {
+                print_json(&r);
+            } else {
+                println!("{} · pinned · signed", good("✓ added"));
+            }
+            Ok(0)
+        }
+        MemoryCmd::IdentityRemove { id } => {
+            let r = client.consciousness_remove(&id).await?;
+            if json {
+                print_json(&r);
+            } else {
+                println!("{} {id}", good("✓ removed"));
+            }
+            Ok(0)
+        }
+        MemoryCmd::IdentityRevert => {
+            let r = client.consciousness_revert().await?;
+            if json {
+                print_json(&r);
+            } else {
+                println!("{}", good("✓ reverted to the previous version"));
+            }
+            Ok(0)
+        }
     }
 }
 
@@ -862,12 +898,29 @@ async fn skills(client: &Client, cmd: SkillsCmd, json: bool) -> Result<i32> {
                     } else {
                         dim("·")
                     };
+                    // The score numbers, not just a bare decision label — the same
+                    // incumbent_score/candidate_score/replays fields the desktop UI reads
+                    // from this identical payload (index.html's skill version-ladder render).
+                    // Without these a terminal user can see THAT a learning event happened but
+                    // never whether the skill actually got better, which is the one number the
+                    // "verifiable expertise" pitch rests on.
+                    let inc = ev.get("incumbent_score").and_then(|v| v.as_f64());
+                    let cand = ev.get("candidate_score").and_then(|v| v.as_f64());
+                    let replays = ev.get("replays").and_then(|v| v.as_u64());
+                    let score = match (inc, cand, replays) {
+                        (Some(i), Some(c), Some(r)) => {
+                            format!(" {:.2}→{:.2} on {r} replays", i, c)
+                        }
+                        (Some(i), Some(c), None) => format!(" {:.2}→{:.2}", i, c),
+                        _ => String::new(),
+                    };
                     println!(
-                        "  {} {} {} {}",
+                        "  {} {} {} {}{}",
                         mark,
                         bold(d),
                         vers,
-                        dim(&format!("#{seq}"))
+                        dim(&format!("#{seq}")),
+                        dim(&score)
                     );
                 }
             }
@@ -924,6 +977,91 @@ async fn skills(client: &Client, cmd: SkillsCmd, json: bool) -> Result<i32> {
         SkillsCmd::Disable { id } => {
             client.skill_set_enabled(&id, false).await?;
             println!("{} {id}", warn("disabled"));
+            Ok(0)
+        }
+        SkillsCmd::Improve {
+            id,
+            file,
+            interpreter,
+            description,
+        } => {
+            // Dispatch on the active version's runtime, matching the desktop UI's improve modal:
+            // a WASM skill takes `wat`, a process skill takes `source`.
+            let resp = client.skills().await?;
+            let Some(s) = resp.skills.iter().find(|s| s.id == id) else {
+                eprintln!("{}", bad(&format!("no skill {id}")));
+                return Ok(1);
+            };
+            let body = std::fs::read_to_string(&file)
+                .with_context(|| format!("reading {file}"))?;
+            let is_wasm = s.runtime == "wasm";
+            if !json {
+                println!("{}", dim("· replaying candidate against recorded gold…"));
+            }
+            let r = client
+                .skill_improve(
+                    &id,
+                    is_wasm.then_some(body.as_str()),
+                    (!is_wasm).then_some(body.as_str()),
+                    interpreter.as_deref(),
+                    description.as_deref(),
+                )
+                .await?;
+            let promoted = r.get("decision").and_then(|v| v.as_str()) == Some("promoted");
+            if json {
+                print_json(&r);
+                return Ok(if promoted { 0 } else { 1 });
+            }
+            let inc = r.get("incumbent_score").and_then(|v| v.as_f64());
+            let cand = r.get("candidate_score").and_then(|v| v.as_f64());
+            let replays = r.get("replays").and_then(|v| v.as_u64()).unwrap_or(0);
+            let to = r.get("to").and_then(|v| v.as_u64());
+            match (promoted, inc, cand) {
+                (true, Some(i), Some(c)) => {
+                    println!(
+                        "{} v{} beat the incumbent · {i:.2}→{c:.2} on {replays} replays",
+                        good("✓ promoted"),
+                        to.map(|v| v.to_string()).unwrap_or_default(),
+                    );
+                }
+                (false, Some(i), Some(c)) => {
+                    println!(
+                        "{} · {i:.2} vs {c:.2} on {replays} replays — active version kept",
+                        warn("did not beat the incumbent"),
+                    );
+                }
+                _ => println!("{}", dim(&format!("decision: {r}"))),
+            }
+            Ok(if promoted { 0 } else { 1 })
+        }
+        SkillsCmd::Revert { id, version } => {
+            let r = client.skill_revert(&id, version).await?;
+            if json {
+                print_json(&r);
+                return Ok(0);
+            }
+            let active = r.get("active").and_then(|v| v.as_u64()).unwrap_or(0);
+            println!("{} {id} → v{active}", good("✓ reverted"));
+            Ok(0)
+        }
+        SkillsCmd::Activate { id, version } => {
+            client.skill_activate(&id, version).await?;
+            println!("{} {id} → v{version}", good("✓ activated"));
+            Ok(0)
+        }
+        SkillsCmd::Teach {
+            id,
+            input,
+            gold,
+            reward,
+        } => {
+            let r = client.skill_teach(&id, &input, &gold, reward).await?;
+            if json {
+                print_json(&r);
+                return Ok(0);
+            }
+            let n = r.get("recorded_runs").and_then(|v| v.as_u64()).unwrap_or(0);
+            println!("{} {id} ({n} recorded runs)", good("✓ example recorded"));
             Ok(0)
         }
     }

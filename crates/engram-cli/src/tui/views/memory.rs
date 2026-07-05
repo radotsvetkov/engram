@@ -94,6 +94,32 @@ fn self_model(app: &App, f: &mut Frame, area: Rect) {
                 Span::raw(" "),
                 Span::styled(one_line(&l.text), Style::default().fg(t.fg)),
             ]));
+            // Provenance: `l.source` was already deserialized but never rendered here — every
+            // line traces to a real memory id or to the user directly, which is the whole point
+            // of consciousness being "verifiable" rather than an opaque summary.
+            let prov = match l.source.get("kind").and_then(|v| v.as_str()) {
+                Some("memory") => l
+                    .source
+                    .get("id")
+                    .and_then(|v| v.as_i64())
+                    .map(|id| format!("from memory #{id}"))
+                    .unwrap_or_else(|| "from memory".to_string()),
+                Some("user") => "user-authored".to_string(),
+                _ => String::new(),
+            };
+            if !prov.is_empty() || l.pinned {
+                let mut spans = vec![Span::raw("    ")];
+                if !prov.is_empty() {
+                    spans.push(Span::styled(prov, Style::default().fg(t.faint)));
+                }
+                if l.pinned {
+                    if !spans.is_empty() && spans.len() > 1 {
+                        spans.push(Span::styled(" · ", Style::default().fg(t.faint)));
+                    }
+                    spans.push(Span::styled("pinned", Style::default().fg(t.accent)));
+                }
+                lines.push(Line::from(spans));
+            }
         }
     } else {
         lines.push(Line::from(Span::styled(

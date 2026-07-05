@@ -243,6 +243,21 @@ pub enum MemoryCmd {
         #[arg(long)]
         distill: bool,
     },
+    /// Edit an existing consciousness line's text in place (pins it).
+    IdentityEdit {
+        id: String,
+        #[arg(trailing_var_arg = true)]
+        text: Vec<String>,
+    },
+    /// Add a new, permanently-pinned consciousness line.
+    IdentityAdd {
+        #[arg(trailing_var_arg = true)]
+        text: Vec<String>,
+    },
+    /// Remove a consciousness line by id.
+    IdentityRemove { id: String },
+    /// Revert consciousness to its previous version.
+    IdentityRevert,
 }
 
 #[derive(Subcommand, Debug)]
@@ -266,6 +281,37 @@ pub enum SkillsCmd {
     Enable { id: String },
     /// Disable a skill.
     Disable { id: String },
+    /// Author a candidate version from a file and A/B-gate it against the active one — replayed
+    /// and promoted only if it measurably wins, signed to the ledger either way.
+    Improve {
+        id: String,
+        /// Path to the new version's source: process-skill source, or WAT for a WASM skill.
+        #[arg(long)]
+        file: String,
+        /// Override the interpreter for a process candidate (defaults to the active version's).
+        #[arg(long)]
+        interpreter: Option<String>,
+        #[arg(long)]
+        description: Option<String>,
+    },
+    /// Revert a skill to its previous version, or an explicit one.
+    Revert {
+        id: String,
+        #[arg(long)]
+        version: Option<u32>,
+    },
+    /// Set the active version of a skill (one-click promote/rollback).
+    Activate { id: String, version: u32 },
+    /// Record a runtime example as a gold (input, accepted-output) pair on the active version.
+    Teach {
+        id: String,
+        #[arg(long)]
+        input: String,
+        #[arg(long)]
+        gold: String,
+        #[arg(long)]
+        reward: Option<f32>,
+    },
 }
 
 #[derive(Subcommand, Debug)]

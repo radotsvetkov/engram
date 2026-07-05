@@ -2,8 +2,8 @@
 
 use super::output::{self as out, accent, bad, bold, dim, good, kv, table, warn};
 use super::{
-    AgentsCmd, AutonomyCmd, Cmd, ConfigCmd, LedgerCmd, McpCmd, MemoryCmd, ProjectsCmd, ScheduleCmd,
-    SessionsCmd, SkillsCmd, TasksCmd, ToolsCmd,
+    AgentsCmd, AutonomyCmd, Cmd, ConfigCmd, LedgerCmd, McpCmd, MemoryCmd, ModelCmd, ProjectsCmd,
+    ScheduleCmd, SessionsCmd, SkillsCmd, TasksCmd, ToolsCmd,
 };
 use crate::api::{ChatEvent, Client, TaskEvent};
 use crate::ui::format::{cost, human_count, one_line, rel_time, stamp};
@@ -43,6 +43,7 @@ pub async fn dispatch(client: &Client, cmd: Cmd, json: bool) -> Result<i32> {
         Cmd::Autonomy { cmd } => autonomy(client, cmd, json).await,
         Cmd::Ledger { cmd } => ledger(client, cmd, json).await,
         Cmd::Config { cmd } => config(client, cmd, json).await,
+        Cmd::Model { cmd } => model(client, cmd, json).await,
         Cmd::Agents { cmd } => agents(client, cmd, json).await,
         Cmd::Tools { cmd } => tools(client, cmd, json).await,
         Cmd::Mcp { cmd } => mcp(client, cmd, json).await,
@@ -1428,6 +1429,45 @@ async fn config(client: &Client, cmd: ConfigCmd, json: bool) -> Result<i32> {
                 println!("{} {}", bad("✗ provider error:"), err);
                 Ok(1)
             }
+        }
+    }
+}
+
+async fn model(client: &Client, cmd: ModelCmd, json: bool) -> Result<i32> {
+    match cmd {
+        ModelCmd::Fetch => {
+            if !json {
+                println!(
+                    "{}",
+                    dim("downloading the static embedding model (~30MB, one time)…")
+                );
+            }
+            let fetched = client.fetch_static_model().await?;
+            let model_dir = fetched
+                .get("model_dir")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            // Apply it: same PATCH the existing `engram config set embed.kind static` path uses,
+            // so `restart_needed` and every other config-change invariant already holds.
+            let r = client
+                .config_set(json!({ "embed": { "kind": "static", "model_dir": model_dir } }))
+                .await?;
+            if json {
+                print_json(&json!({ "fetched": fetched, "config": r }));
+                return Ok(0);
+            }
+            println!("{} {model_dir}", good("✓ downloaded and switched to"));
+            if r.get("restart_needed")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                println!(
+                    "{}",
+                    warn("· restart the daemon (`engram restart`) to start using it")
+                );
+            }
+            Ok(0)
         }
     }
 }

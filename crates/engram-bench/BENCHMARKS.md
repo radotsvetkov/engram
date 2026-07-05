@@ -158,13 +158,18 @@ showed no measurable benefit on this small corpus, but a keyword fallback catchi
 queries a semantic-only system misses is the well-established general case, not something this
 25-fact corpus is large enough to stress).
 
-**Actionable, not just observed:** the concrete gap is that no model2vec model ships with, or is
-fetched by, a fresh Engram install — so every real install today runs on the trigram-hash floor
-(confirmed separately by `embedder_degraded` firing on every daemon in this session with no model
-present). Bundling or one-click-fetching a small model2vec model would let Engram ship this
-already-built, already-verified recall-quality ceiling by default instead of requiring a manual
-`ENGRAM_STATIC_MODEL` env var and a manual download - the single highest-leverage recall-quality
-improvement available, and it needs zero new engineering, only packaging.
+**Shipped, not just identified: `engram model fetch`.** This gap is now closed - one command
+downloads this exact pinned model (`minishlab/potion-base-8M`, ~30MB, no API key) into
+`<ENGRAM_HOME>/models/static-v1/`, verifies it actually loads as a real embedder BEFORE
+committing it (a corrupt/partial download can never become "the active model"), and switches
+`embed.kind`/`embed.model_dir` via the same config-patch path every other embedder-affecting
+setting uses (`restart_needed`, honored identically). User-initiated only - offline-by-default
+means Engram never reaches for the network unless asked; a fresh install still boots on the
+zero-dependency trigram-hash floor until you run it. Verified live end to end: fetched, config
+persisted to `config.json`, and after a real daemon restart `GET /v1/memory/stats` reported
+`embedder_configured: "static"`, `embedder_active: "static-model2vec-v1"`,
+`embedder_degraded: false` - the exact gap this section identified, closed and proven, not just
+designed.
 
 **What this comparison does NOT claim:** a benchmark on a 25-fact corpus with unambiguous labels is
 a floor/ceiling check, not a claim that Engram or mem0 or LangChain is "the best" at memory in

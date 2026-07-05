@@ -123,6 +123,12 @@ pub enum Cmd {
         cmd: ConfigCmd,
     },
 
+    /// The embedding model behind memory recall.
+    Model {
+        #[command(subcommand)]
+        cmd: ModelCmd,
+    },
+
     /// Named agents: list / create / edit / delete / set autonomy policy.
     Agents {
         #[command(subcommand)]
@@ -481,6 +487,15 @@ pub enum ConfigCmd {
     Set { key: String, value: String },
     /// Test the configured model provider with a tiny completion.
     Test,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ModelCmd {
+    /// Download the real, offline-capable-once-fetched (model2vec) embedding model and switch
+    /// memory recall to it - a one-time network fetch (~30MB, no API key) that upgrades recall
+    /// quality from the zero-dependency trigram-hash default. See BENCHMARKS.md for the numbers.
+    /// Requires a daemon restart to take effect (same as any other embedder-affecting setting).
+    Fetch,
 }
 
 /// Build a client from global flags + environment.

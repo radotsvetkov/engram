@@ -942,6 +942,7 @@ async fn run(mode: RunMode) -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/memory/graph", get(memory_graph))
         .route("/v1/memory/reindex", post(memory_reindex))
         .route("/v1/memory/promote", post(memory_promote))
+        .route("/v1/embedder/fetch-model", post(embedder_fetch_model))
         .route("/v1/screenshot", get(screenshot_get))
         .route("/v1/artifact", get(artifact_get).delete(artifact_delete))
         .route("/v1/artifacts", get(artifacts_list))
@@ -1518,6 +1519,31 @@ async fn memory_stats(State(app): State<App>, Query(q): Query<StatsQuery>) -> Ap
 async fn memory_reindex(State(app): State<App>) -> ApiResult {
     let n = app.memory.reindex_binary().map_err(err)?;
     Ok(Json(json!({ "reindexed": n })))
+}
+
+/// Download the pinned static (model2vec) embedding model - the one-click recall-quality upgrade
+/// from Engram's zero-dependency trigram-hash default to a real semantic embedder (see
+/// `embedder::fetch_static_model`; the recall-quality case is in `crates/engram-bench/
+/// BENCHMARKS.md` §3 - it closes the exact gap found there). **User-initiated only**, never
+/// called automatically - offline-by-default means Engram never reaches for the network unless
+/// asked. Only downloads and validates the model; the caller still PATCHes `/v1/config`
+/// (`{"embed": {"kind": "static", "model_dir": "<returned path>"}}`) and restarts the daemon to
+/// actually switch to it - the same `restart_needed` pattern every other embedder-affecting
+/// setting already uses (the CLI's `engram model fetch` does both steps in one command).
+async fn embedder_fetch_model(State(app): State<App>) -> ApiResult {
+    let dir = embedder::fetch_static_model(std::path::Path::new(&app.home))
+        .await
+        .map_err(err)?;
+    app.ledger
+        .append(
+            "embedder.fetch_model",
+            "user",
+            json!({ "model_dir": dir.display().to_string() }),
+        )
+        .ok();
+    Ok(Json(
+        json!({ "ok": true, "model_dir": dir.display().to_string() }),
+    ))
 }
 
 #[derive(Deserialize)]

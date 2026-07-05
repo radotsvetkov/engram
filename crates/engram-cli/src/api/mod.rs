@@ -487,6 +487,17 @@ impl Client {
         self.post_value("/v1/config", patch).await
     }
 
+    /// Download the pinned static (model2vec) embedding model - a real, one-time network fetch
+    /// (~30MB), so a longer client-side timeout than the usual 180s default.
+    pub async fn fetch_static_model(&self) -> Result<Value> {
+        self.post_value_timeout(
+            "/v1/embedder/fetch-model",
+            json!({}),
+            Some(std::time::Duration::from_secs(300)),
+        )
+        .await
+    }
+
     pub async fn projects(&self) -> Result<Vec<Project>> {
         self.get("/v1/projects").await
     }

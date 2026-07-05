@@ -446,6 +446,28 @@ pub async fn improve_skill(
         for (i, o) in &fresh {
             let _ = registry.record_run(id, candidate_version, i, o, 1.0);
         }
+        // Bridge the two disconnected "procedural memory" stores: this is the ONE place a skill's
+        // replay-verified improvement becomes a real fact instead of living only in the skill
+        // Registry, invisible to recall/consciousness/dissent-grounding. `p.memory`/`p.scope` are
+        // already threaded through every improve_skill call site (the HTTP endpoint, the autonomous
+        // reflection pass, and this agent tool), so this needs no new plumbing - just using what's
+        // already there. Append-only by design (never edited/deleted on a later revert - see the
+        // companion note main.rs's skill_revert handler writes) so the history stays a truthful,
+        // ledgered record of what actually happened, not a profile document that silently forgets.
+        let _ = p.memory.remember(
+            engram_memory::WriteReq::new(
+                Region::Procedural,
+                format!(
+                    "Skill '{id}' improved to v{candidate_version}: {incumbent_score:.2} → {candidate_score:.2} on {} replays",
+                    runs.len()
+                ),
+            )
+            .source(format!("skill:{id}#{candidate_version}"))
+            .importance(0.6)
+            .taint(Taint::Trusted)
+            .actor(actor)
+            .scope(p.scope.durable_write_scope()),
+        );
     }
     let _ = registry.ledger().append(
         "skill.learn",
@@ -736,6 +758,17 @@ mod tests {
         .unwrap();
         assert_eq!(decision["decision"], "promoted", "decision was {decision}");
         assert_eq!(f.registry.active_version("upper").unwrap(), Some(2));
+
+        // The procedural-memory bridge: a promotion must leave a real, recallable fact behind, not
+        // just a Registry-internal event invisible to memory/recall/consciousness.
+        let hits = f
+            .memory
+            .recall("skill upper improved", &[Region::Procedural], 5)
+            .unwrap();
+        assert_eq!(hits.len(), 1, "the promotion must write exactly one Region::Procedural memory");
+        assert!(hits[0].record.text.contains("'upper' improved to v2"));
+        assert_eq!(hits[0].record.source.as_deref(), Some("skill:upper#2"));
+        assert_eq!(hits[0].record.taint, "trusted");
     }
 
     #[tokio::test]

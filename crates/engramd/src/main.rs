@@ -5836,14 +5836,14 @@ async fn skill_revert(
     Json(r): Json<Value>,
 ) -> ApiResult {
     let versions = app.registry.versions(&id).map_err(err)?;
+    let from = app.registry.active_version(&id).ok().flatten().unwrap_or(0);
     let target = r
         .get("version")
         .and_then(|v| v.as_u64())
         .map(|v| v as u32)
         .or_else(|| {
             // Default: the version just below the current active one.
-            let active = app.registry.active_version(&id).ok().flatten().unwrap_or(0);
-            versions.iter().copied().filter(|&v| v < active).max()
+            versions.iter().copied().filter(|&v| v < from).max()
         });
     let Some(v) = target else {
         return Err(ApiError("no earlier version to revert to".into()));
@@ -5851,6 +5851,20 @@ async fn skill_revert(
     app.registry
         .set_active(&id, v, "user", "skill.revert")
         .map_err(err)?;
+    // Companion to the promotion memory improve_skill bridges into Region::Procedural: append-only,
+    // never edit/delete the old promotion fact - a later reader sees the full history (promoted to
+    // vX, then reverted) rather than a silently-vanished record. Best-effort: a memory-write failure
+    // here must not fail the revert itself, which already succeeded and is what the user asked for.
+    let _ = app.memory.remember(
+        engram_memory::WriteReq::new(
+            Region::Procedural,
+            format!("Skill '{id}' reverted from v{from} to v{v}: the v{from} promotion is no longer in effect"),
+        )
+        .source(format!("skill:{id}#{v}"))
+        .importance(0.6)
+        .taint(engram_core::Taint::Trusted)
+        .actor("user"),
+    );
     Ok(Json(json!({ "ok": true, "id": id, "active": v })))
 }
 

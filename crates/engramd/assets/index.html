@@ -650,6 +650,15 @@
      so a synthesis can never be mistaken for a directly-witnessed fact at a glance. */
   .recent-panel .rp-refl-mark { width:14px; text-align:center; flex:none; color:var(--accent); font-weight:700; }
   .recent-panel .rp-src-tag { font:11px var(--mono); color:var(--accent); background:var(--accent-soft); border-radius:6px; padding:1px 6px; flex:none; }
+  /* Pending-supersessions inbox: an accept/reject decision, not a memory - distinct row layout
+     with explicit action buttons rather than a click-through, since resolving one is the whole
+     point of the row (unlike an ordinary memory, where clicking just focuses it on the graph). */
+  .recent-panel .rp-i.rp-pend { cursor:default; }
+  .recent-panel .rp-accept, .recent-panel .rp-reject { flex:none; width:22px; height:22px; border-radius:6px; border:1px solid var(--border); background:var(--surface-2); cursor:pointer; font-size:12px; line-height:1; }
+  .recent-panel .rp-accept { color:var(--accent); }
+  .recent-panel .rp-accept:hover { border-color:var(--accent); background:var(--accent-soft); }
+  .recent-panel .rp-reject { color:var(--danger); }
+  .recent-panel .rp-reject:hover { border-color:var(--danger); background:rgba(226,103,95,.1); }
   /* consciousness panel - the always-loaded working memory, docked as a glass card over the brain */
   .mind-panel { position:absolute; left:20px; top:62px; bottom:84px; width:332px; z-index:24; display:flex; flex-direction:column;
     background:var(--surface-1); border:1px solid var(--border-strong); border-radius:14px; box-shadow:var(--e4); overflow:hidden; }
@@ -3286,7 +3295,7 @@ async function renderMemory(){
     <div class="brain-overlay">
       <div class="brain-head">
         <div class="brain-title"><span class="brain-count" style="margin-left:0">${total} ${total===1?'memory':'memories'} · ${(stats.by_tier?.warm||0)} warm · ${(stats.by_tier?.cold||0)} cold</span></div>
-        <div class="brain-legend">${legend}<button class="brain-teach ghost" onclick="brainRecentToggle()" title="Browse recent memories as a list, filter by region">Recent</button><button class="brain-teach ghost" onclick="brainReflectionsToggle()" title="Grounded reflections - synthesized facts, each citing exactly what it was built from">∴ Reflections</button><button class="brain-teach" onclick="openTeach()">+ Teach</button></div>
+        <div class="brain-legend">${legend}<button class="brain-teach ghost" onclick="brainRecentToggle()" title="Browse recent memories as a list, filter by region">Recent</button><button class="brain-teach ghost" onclick="brainReflectionsToggle()" title="Grounded reflections - synthesized facts, each citing exactly what it was built from">∴ Reflections</button><button class="brain-teach ghost" onclick="brainPendingToggle()" title="Possible contradictions awaiting your accept/reject decision">⇄ Pending</button><button class="brain-teach" onclick="openTeach()">+ Teach</button></div>
       </div>
       <div class="brain-foot"><div class="brain-recall">
         <input id="brainQ" placeholder="Recall a memory - try a paraphrase..." onkeydown="if(event.key==='Enter')brainRecall(); else if(event.key==='Escape')brainClearRecall()" oninput="if(!this.value&&BRAIN&&BRAIN.matched){BRAIN.matched=null;const n=document.getElementById('brainNote');if(n)n.textContent='';}">
@@ -3566,6 +3575,40 @@ async function brainReflectionsLoad(){
     }).join('')
       : '<div class="rp-empty">no reflections yet - opt in via Settings → auto_reflect</div>';
   }catch(e){ const list=document.getElementById('rpReflList'); if(list) list.innerHTML='<div class="rp-empty">could not load</div>'; }
+}
+// Pending-supersessions inbox: detected-but-unconfirmed contradictions (Phase B), previously only
+// reachable via `engram memory supersessions` on the CLI - a whole review workflow was invisible
+// on desktop. Never auto-applies anything; accept/reject here is the only place a proposal can
+// ever take effect (same POST /v1/supersessions/{id}/resolve route the CLI uses).
+function brainPendingToggle(){
+  const p=document.getElementById('brainPending'); if(p){ p.remove(); return; }
+  const d=document.createElement('div'); d.id='brainPending'; d.className='recent-panel'; document.querySelector('.brain-wrap')?.appendChild(d);
+  brainPendingLoad();
+}
+async function brainPendingLoad(){
+  const p=document.getElementById('brainPending'); if(!p) return;
+  p.innerHTML=`<div class="rp-head"><span>⇄ Pending supersessions</span><button class="rp-x" onclick="document.getElementById('brainPending').remove()">×</button></div><div class="rp-list" id="rpPendList"><div class="rp-empty">loading...</div></div>`;
+  try{
+    const items=await J('/v1/supersessions');
+    const list=document.getElementById('rpPendList'); if(!list) return;
+    list.innerHTML = (items&&items.length) ? items.map(p=>
+      `<div class="rp-i rp-pend" title="${escAttr(p.reason||'')}">
+         <span class="rp-refl-mark" style="color:var(--warning)">⇄</span>
+         <span class="rp-t">${esc((p.candidate_text||'').replace(/\s+/g,' '))}</span>
+         <button class="rp-accept" title="Accept - supersede fact #${p.old_id|0}" onclick="event.stopPropagation();pendingResolve(${p.id|0},true)">✓</button>
+         <button class="rp-reject" title="Reject - leave the current fact unchanged" onclick="event.stopPropagation();pendingResolve(${p.id|0},false)">✕</button>
+       </div>`
+    ).join('')
+      : '<div class="rp-empty">nothing pending - possible conflicts show up here for you to accept or reject</div>';
+  }catch(e){ const list=document.getElementById('rpPendList'); if(list) list.innerHTML='<div class="rp-empty">could not load</div>'; }
+}
+async function pendingResolve(id,accept){
+  try{
+    await J(`/v1/supersessions/${id}/resolve`,{method:'POST',headers:MIND_JSON,body:JSON.stringify({accept})});
+    notify(accept?'✓ accepted - signed to the ledger':'✓ rejected','ok');
+    brainPendingLoad();
+    if(typeof brainPoll==='function') brainPoll();
+  }catch(e){ notify('Couldn\'t resolve - '+((e&&e.message)||'error')); }
 }
 // Promote a project/session memory to a global fact about the user - it will then follow into every
 // project. Trusted-only (the backend refuses to globalize untrusted-provenance memory).

@@ -103,6 +103,10 @@ pub fn handle_key(app: &mut App, k: KeyEvent) -> bool {
             app.add_schedule_form();
             true
         }
+        KeyCode::Char('e') => {
+            app.edit_schedule_form(app.sel);
+            true
+        }
         KeyCode::Char('d') => {
             app.delete_selected_schedule();
             true

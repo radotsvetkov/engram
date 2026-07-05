@@ -250,7 +250,10 @@ pub enum FormKind {
     SetPolicy {
         id: String,
     },
-    AddSchedule,
+    /// Add (None) or edit (Some(id)) a scheduled job.
+    AddSchedule {
+        id: Option<String>,
+    },
     /// Add (None) or edit (Some(index)) an MCP server.
     Mcp {
         index: Option<usize>,
@@ -1752,7 +1755,41 @@ impl App {
             ],
             sel: 0,
             cursor: 0,
-            kind: FormKind::AddSchedule,
+            kind: FormKind::AddSchedule { id: None },
+        });
+    }
+
+    /// Open the edit form for a scheduled job, pre-filled from its current name/task title. The
+    /// "When" field is left BLANK — the stored `Recurrence` is structured JSON that doesn't always
+    /// round-trip losslessly back through the natural-language parser, so a blank field (which the
+    /// backend treats as "keep current cadence") is the only safe default. The current cadence is
+    /// surfaced in the modal title instead of pre-filling a value that might not parse back to it.
+    pub fn edit_schedule_form(&mut self, index: usize) {
+        let Some(j) = self.schedule.get(index) else {
+            return;
+        };
+        let title = j
+            .payload
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        self.form = Some(FormModal {
+            title: format!(
+                "Edit scheduled job · {} — now: {}",
+                j.name,
+                describe_recurrence(&j.recurrence)
+            ),
+            fields: vec![
+                FormField::new("Name", j.name.clone(), "required"),
+                FormField::new("When", "", "blank keeps the current cadence"),
+                FormField::new("Task title", title, "what to run on each fire"),
+            ],
+            sel: 0,
+            cursor: 0,
+            kind: FormKind::AddSchedule {
+                id: Some(j.id.clone()),
+            },
         });
     }
 
@@ -2149,12 +2186,17 @@ impl App {
                 });
                 self.toast("· setting policy…");
             }
-            FormKind::AddSchedule => {
+            FormKind::AddSchedule { id } => {
                 let name = get(0);
                 let when = get(1);
                 let title = get(2);
-                if name.is_empty() || when.is_empty() {
-                    self.toast("· name and when are required");
+                let editing = id.is_some();
+                if name.is_empty() || (!editing && when.is_empty()) {
+                    self.toast(if editing {
+                        "· name is required"
+                    } else {
+                        "· name and when are required"
+                    });
                     return;
                 }
                 let payload = if title.is_empty() {
@@ -2162,13 +2204,26 @@ impl App {
                 } else {
                     json!({ "title": title })
                 };
-                self.fetch(move |c| async move {
-                    match c.schedule_add(&name, &when, payload).await {
-                        Ok(_) => c.schedule().await.ok().map(Msg::Schedule),
-                        Err(e) => Some(Msg::Toast(format!("· couldn't schedule: {e}"))),
+                match id {
+                    Some(id) => {
+                        self.fetch(move |c| async move {
+                            match c.schedule_update(&id, &name, &when, payload).await {
+                                Ok(_) => c.schedule().await.ok().map(Msg::Schedule),
+                                Err(e) => Some(Msg::Toast(format!("· couldn't update job: {e}"))),
+                            }
+                        });
+                        self.toast("· updating job…");
                     }
-                });
-                self.toast("· scheduling…");
+                    None => {
+                        self.fetch(move |c| async move {
+                            match c.schedule_add(&name, &when, payload).await {
+                                Ok(_) => c.schedule().await.ok().map(Msg::Schedule),
+                                Err(e) => Some(Msg::Toast(format!("· couldn't schedule: {e}"))),
+                            }
+                        });
+                        self.toast("· scheduling…");
+                    }
+                }
             }
             FormKind::Mcp { index } => {
                 let name = get(0);
@@ -2555,6 +2610,24 @@ pub fn parse_plan(args: &Value) -> Vec<PlanStep> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Render a scheduled job's recurrence as a short label (e.g. "daily at 17:00"), for display in
+/// the edit form's title — kept separate from `views::schedule`'s list-row rendering since app
+/// state must not depend on view code.
+fn describe_recurrence(v: &Value) -> String {
+    let kind = v.get("kind").and_then(|k| k.as_str()).unwrap_or("");
+    match kind {
+        "daily" => {
+            let h = v.get("hour").and_then(|x| x.as_i64()).unwrap_or(0);
+            let m = v.get("min").and_then(|x| x.as_i64()).unwrap_or(0);
+            format!("daily at {h:02}:{m:02}")
+        }
+        "weekly" => "weekly".into(),
+        "hourly" => "hourly".into(),
+        "" => "—".into(),
+        other => other.to_string(),
+    }
 }
 
 /// Split a command line into args with shell-like quoting (`'…'`, `"…"`, `\`),

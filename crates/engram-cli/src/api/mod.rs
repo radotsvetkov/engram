@@ -283,6 +283,26 @@ impl Client {
         .await
     }
 
+    /// Rename, retime, or repoint an existing job. `when` blank keeps the current cadence — the
+    /// stored `Recurrence` is structured JSON that doesn't always round-trip losslessly back
+    /// through the natural-language parser, so the daemon treats an omitted `when` as "unchanged".
+    pub async fn schedule_update(
+        &self,
+        id: &str,
+        name: &str,
+        when: &str,
+        payload: Value,
+    ) -> Result<Value> {
+        let mut body = serde_json::Map::new();
+        body.insert("name".into(), json!(name));
+        if !when.is_empty() {
+            body.insert("when".into(), json!(when));
+        }
+        body.insert("payload".into(), payload);
+        self.patch_value(&format!("/v1/schedule/{id}"), Value::Object(body))
+            .await
+    }
+
     pub async fn schedule_preview(&self, when: &str) -> Result<SchedulePreview> {
         // The daemon serves this as GET with a `when` query param (not a POST body).
         self.get(&format!("/v1/schedule/preview?when={}", urlencode(when)))
@@ -393,6 +413,26 @@ impl Client {
             ));
         }
         Ok(serde_json::from_str(&text).unwrap_or(Value::Null))
+    }
+
+    async fn patch_value(&self, path: &str, body: Value) -> Result<Value> {
+        let rb = self
+            .auth(self.http.patch(self.url(path)))
+            .json(&body)
+            .timeout(std::time::Duration::from_secs(20));
+        let resp = rb.send().await.with_context(|| format!("PATCH {path}"))?;
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(anyhow!(
+                "PATCH {path} → {status}: {}",
+                truncate(&text, 300)
+            ));
+        }
+        if text.trim().is_empty() {
+            return Ok(Value::Null);
+        }
+        serde_json::from_str(&text).with_context(|| format!("decode {path}"))
     }
 
     pub async fn agents_create(&self, body: Value) -> Result<Value> {

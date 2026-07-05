@@ -362,34 +362,51 @@ a load-bearing gap independent of everything else in this plan, and it doesn't g
 built explicitly — carry it forward regardless of how the rest of the plan gets prioritized.
 
 **Backend**
-1. **Give compaction a durable exhaust**: before `maybe_compact` (`agent.rs:795-887`) discards the
-   pre-tail slice, write it as one or more `Region::Episodic` rows tagged with the task/mission id and
-   a monotonic `page_seq`, taint inherited from the run. This is the MemGPT-style "page out" half —
-   nothing is lost, it's evicted to a place that can be paged back in.
-2. **Add a page-in tool**: `memory_recall_page(task_id, page_seq)` — fetch a specific evicted page
-   verbatim by id, alongside the existing similarity-based `memory_recall`. Update the `agent.compact`
-   ledger entry to include the new memory ids it just wrote, closing the forensic gap where today only
-   token *counts* are logged, not what was elided or where it went.
-3. **Granular mission breadcrumbs**: replace the single ~440-character post-run episodic sentence
-   with additional per-plan-milestone episodic writes, triggered off plan-step completions — a long
-   mission leaves a chain of timestamped breadcrumbs instead of one lossy final line.
-4. **Extend cross-run mission relay** beyond today's single-hop, 4000-character truncated prior
-   answer: also inject a scoped recall of the mission's breadcrumbs, so hop N+2 can see hop N's detail
-   again, not just hop N+1's truncated answer.
+1. **DONE (2026-07-05, `7afe03e`):** compaction now has a durable exhaust — `maybe_compact`
+   (`agent.rs`) writes the pre-tail slice it would otherwise discard to one or more `Region::Episodic`
+   rows, chunked at 6000 chars, sourced `"compaction:{run_tag}"` (a stable tag captured from the run's
+   own `agent.start` ledger seq), taint inherited from the run. The `agent.compact` ledger entry now
+   carries `run_tag` and `paged_memory_ids`, closing the forensic gap where only token counts used to
+   be logged. This is the MemGPT-style "page out" half — nothing is lost, it's evicted to a place that
+   can be paged back in.
+2. **DONE (2026-07-05, `7afe03e`):** added the page-in tool — `memory_recall_page(run_tag)`
+   (`engram-agent/src/tools.rs`'s `MemoryRecallPageTool`) fetches every page written under that run's
+   tag verbatim via `Memory::by_source_scoped`, alongside the existing similarity-based `memory_recall`.
+   The rewritten post-compaction task message tells the model to call it by name. Refuses under
+   Untrusted taint, matching every other memory-write tool's policy. 3 dedicated tests plus a live
+   compaction test (`compaction_pages_the_elided_transcript_to_memory_before_discarding_it`).
+3. **DONE (2026-07-05, `5c2989d`):** granular mission breadcrumbs — `UpdatePlanTool::run` now writes
+   one `Region::Episodic` row per plan step the moment it flips to `"done"` (sourced `"plan_milestone"`,
+   skipped under Untrusted taint), instead of relying solely on the single ~440-character post-run
+   summary sentence. A long mission now leaves a chain of timestamped breadcrumbs, not one lossy final
+   line.
+4. **DONE (2026-07-05, `7ade8e6`):** extended cross-run mission relay beyond the single-hop,
+   4000-character truncated prior answer — `run_task_core` now also runs a `Region::Episodic` recall
+   scoped to the task's own (stable-across-hops) title, dedupes against the already-injected
+   `prev.answer`, and appends up to 5 extra breadcrumbs as "Earlier progress on this mission" context.
+   Verified live: re-running one task across 6 hops showed `tokens_in` climbing 582 → 962 → 1203 → 1432
+   then holding flat at 1432 for hops 4-6 — the added context is real and bounded by the `take(5)` cap,
+   not an unbounded accumulation.
 5. **Do not extend `run_mission`'s concurrent ephemeral fan-out.** It's the one place in the codebase
    that already looks like the rejected ephemeral-swarm pattern (ungoverned `tokio::spawn` fan-out with
    a generic "mission" actor, no durable per-subtask identity). This plan does not add capability to
    it; long-task continuity is built on the durable task-card/kanban primitive instead, consistent
-   with Phase 2's named-agent model.
+   with Phase 2's named-agent model. Left alone — no change made.
 
 **Desktop / TUI / CLI**
-- A visible "earlier steps paged to memory — click to view" marker in the chat surface when
-  compaction fires, on desktop and TUI, so what was previously invisible context loss becomes a
-  visible, recallable event.
+- **Still open:** a visible "earlier steps paged to memory — click to view" marker in the chat surface
+  when compaction fires, on desktop and TUI, so what was previously invisible context loss becomes a
+  visible, recallable event. The backend now makes this data available (`agent.compact`'s
+  `paged_memory_ids` + `memory_recall_page`); no surface currently renders it. Tracked in the
+  cross-surface parity sweep (§6 Phase C+D follow-up work item).
 
 **Sequencing note:** land this *before or alongside* Phase 2's kanban/named-agent work, not after —
 durable agents doing multi-day work are exactly what needs paged, evictable-and-recallable context,
 and Phase 2 will need it immediately.
+
+**Phase C backend: DONE.** All four backend items landed and are verified (unit tests + live daemon
+smoke tests). The desktop/TUI "paged to memory" marker is the one deferred surface item, folded into
+the broader cross-surface parity sweep rather than blocking Phase C's completion.
 
 ---
 
@@ -439,9 +456,10 @@ Phase B (truth over time)
   tier-scoring fix + opt-in conservative auto-prune
   fix the inert per-project-persona bug (owned task, before any CLI/UI control for it)
 
-Phase C (long-task continuity) — build alongside/before Phase 2's kanban work, not after
-  paged working set (page-out on compact, page-in tool)
-  granular mission breadcrumbs + extended cross-run relay
+Phase C (DONE, backend) — long-task continuity, landed alongside Phase B per the sequencing note
+  paged working set (page-out on compact, page-in tool)         — 7afe03e
+  granular mission breadcrumbs + extended cross-run relay        — 5c2989d, 7ade8e6
+  desktop/TUI "paged to memory" marker still open → cross-surface parity sweep
 
 Phase D (grounded reflection) — last, opt-in, depends on Phase B's shared citation-verification helper
   hourly bounded reflection synthesis, permanently-distinguished in every UI

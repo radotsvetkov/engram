@@ -991,6 +991,40 @@ impl Memory {
         Ok(demoted)
     }
 
+    /// The third of the sleep-cycle triad (move/strengthen/prune) - conservative, reversible,
+    /// automatic forgetting. Prunes only rows that are ALREADY superseded (a newer fact replaced
+    /// them, so `superseded_by IS NOT NULL` already makes them invisible to every recall path
+    /// unconditionally - pruning removes pure clutter, not information anyone could still see) and
+    /// old enough (`min_age`) that nobody would plausibly need them for a not-yet-built time-travel
+    /// view. Calls the existing `forget()` (ledgered, restorable) rather than a new deletion path.
+    /// Opt-in by design (see `security.auto_prune_memories` in engramd) - intentionally NOT invoked
+    /// unless the caller enables it, matching the `auto_distill_skills` pattern for automatic,
+    /// content-destructive-looking-but-reversible actions.
+    pub fn auto_prune(&self, min_age: Duration, actor: &str) -> Result<usize> {
+        let now = now_ms() as i64;
+        let cutoff = min_age.as_millis() as i64;
+        let ids: Vec<i64> = {
+            let conn = self.conn.lock().expect("memory mutex poisoned");
+            let mut stmt = conn.prepare(
+                "SELECT id FROM facts \
+                 WHERE deleted = 0 AND superseded_by IS NOT NULL AND (?1 - created_ms) > ?2",
+            )?;
+            let rows = stmt.query_map(params![now, cutoff], |r| r.get::<_, i64>(0))?;
+            let mut v = Vec::new();
+            for row in rows {
+                v.push(row?);
+            }
+            v
+        };
+        let mut pruned = 0usize;
+        for id in ids {
+            if self.forget(id, actor, "auto_prune: superseded and past the retention window")? {
+                pruned += 1;
+            }
+        }
+        Ok(pruned)
+    }
+
     /// Rebuild the derived binary coarse index (`embedding_bin`) for EVERY row from its stored
     /// embedding. The binary codes are derived state, not the source of truth, so this fully repairs
     /// a corrupt or partially-populated index without touching content or the ledger. Returns the
@@ -2091,6 +2125,57 @@ mod tests {
         let demoted = m.consolidate(Duration::from_secs(60)).unwrap();
         assert_eq!(demoted, 1);
         assert_eq!(m.get(rec.id).unwrap().unwrap().tier, "cold");
+    }
+
+    #[test]
+    fn auto_prune_only_removes_old_already_superseded_rows() {
+        let (m, _d) = mem();
+        // Old + superseded: eligible.
+        let old_super = m
+            .remember(WriteReq::new(Region::Identity, "User lives Berlin"))
+            .unwrap();
+        let replacement = m
+            .remember(WriteReq::new(Region::Identity, "User lives Munich"))
+            .unwrap();
+        m.supersede(old_super.id, replacement.id).unwrap();
+        // Old but NOT superseded (still the current fact): must survive regardless of age.
+        let old_current = m
+            .remember(WriteReq::new(Region::Semantic, "still true old fact"))
+            .unwrap();
+        // Recently superseded: too young to prune even though it's stale.
+        let young_super = m
+            .remember(WriteReq::new(Region::Identity, "User works at Acme"))
+            .unwrap();
+        let young_replacement = m
+            .remember(WriteReq::new(Region::Identity, "User works at Globex"))
+            .unwrap();
+        m.supersede(young_super.id, young_replacement.id).unwrap();
+
+        // Rewind created_ms for the two rows meant to look old (200 days back); leave young_super
+        // at its real (just-created) timestamp so it's correctly too recent to prune.
+        {
+            let conn = m.conn.lock().unwrap();
+            let ancient = now_ms() as i64 - 200 * 24 * 3600 * 1000;
+            for id in [old_super.id, old_current.id] {
+                conn.execute(
+                    "UPDATE facts SET created_ms = ?1 WHERE id = ?2",
+                    params![ancient, id],
+                )
+                .unwrap();
+            }
+        }
+
+        let pruned = m.auto_prune(Duration::from_secs(180 * 24 * 3600), "core").unwrap();
+        assert_eq!(pruned, 1, "only the old, already-superseded row is eligible");
+        assert!(m.get(old_super.id).unwrap().is_none(), "the eligible row is gone");
+        assert!(
+            m.get(old_current.id).unwrap().is_some(),
+            "an old but still-current fact must never be pruned just for being old"
+        );
+        assert!(
+            m.get(young_super.id).unwrap().is_some(),
+            "a superseded row younger than the retention window must survive"
+        );
     }
 
     #[test]

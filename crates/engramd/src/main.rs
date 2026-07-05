@@ -4561,6 +4561,17 @@ fn spawn_consolidation_tick(app: App) {
                 Ok(_) => {}
                 Err(e) => tracing::warn!(error = %e, "reembed_flagged failed"),
             }
+            // The third of the sleep-cycle triad: opt-in, conservative, reversible pruning of
+            // memories that are ALREADY superseded (invisible to every recall path regardless) and
+            // old enough nobody would plausibly need them. 180 days - deliberately longer than the
+            // 14-day warm->cold window, since forgetting is a much bigger step than demoting.
+            if app.cfg().security.auto_prune_memories {
+                match app.memory.auto_prune(Duration::from_secs(180 * 24 * 3600), "core") {
+                    Ok(n) if n > 0 => tracing::info!(pruned = n, "auto-pruned old superseded memories"),
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!(error = %e, "auto_prune failed"),
+                }
+            }
             // Skill-sleep: retire proposed-but-never-adopted skills (opt-in, same window as memory).
             if app.cfg().security.auto_distill_skills {
                 let pruned = prune_proposed_skills(&app, 14 * 24 * 3600 * 1000);
@@ -6720,6 +6731,9 @@ fn apply_config_patch(cfg: &mut config::Config, p: &Value) {
         }
         if let Some(b) = sec.get("auto_distill_skills").and_then(|v| v.as_bool()) {
             cfg.security.auto_distill_skills = b;
+        }
+        if let Some(b) = sec.get("auto_prune_memories").and_then(|v| v.as_bool()) {
+            cfg.security.auto_prune_memories = b;
         }
         if flag(sec, "clear_api_token") {
             cfg.security.api_token.clear();

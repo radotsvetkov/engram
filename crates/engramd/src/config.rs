@@ -199,6 +199,13 @@ pub struct SecurityCfg {
     /// Enabling it also turns on the skill-sleep prune that retires proposed-but-never-adopted skills.
     #[serde(default)]
     pub auto_distill_skills: bool,
+    /// AUTOMATIC memory pruning: opt-in permanent forgetting (well, ledgered and restorable via
+    /// `restore()`, same as a manual /v1/forget) of memories that are ALREADY superseded by a newer
+    /// fact and old enough that nobody would plausibly need them. OFF by default: forgetting
+    /// anything automatically, even reversibly, should be something the user turns on deliberately,
+    /// not a default behavior of a "verifiable memory" product.
+    #[serde(default)]
+    pub auto_prune_memories: bool,
     /// Daemon-global egress allowlist: destination hosts the user has approved for runs that carry NO
     /// per-agent autonomy policy (the "default agent"). The egress gate consults this before staging a
     /// novel destination, so approving a staged action from a policy-less run actually persists (it is
@@ -504,6 +511,7 @@ impl Config {
                 "disabled_tools": self.security.disabled_tools,
                 "disable_skill_author": self.security.disable_skill_author,
                 "auto_distill_skills": self.security.auto_distill_skills,
+                "auto_prune_memories": self.security.auto_prune_memories,
                 // Destination hosts (not secret) the user approved for policy-less runs; UI-visible.
                 "egress_allowlist": self.security.egress_allowlist,
             },

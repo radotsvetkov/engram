@@ -424,10 +424,7 @@ impl Client {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
         if !status.is_success() {
-            return Err(anyhow!(
-                "PATCH {path} → {status}: {}",
-                truncate(&text, 300)
-            ));
+            return Err(anyhow!("PATCH {path} → {status}: {}", truncate(&text, 300)));
         }
         if text.trim().is_empty() {
             return Ok(Value::Null);

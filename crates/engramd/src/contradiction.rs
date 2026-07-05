@@ -41,8 +41,9 @@ pub async fn check(
     if gateway.provider_id() == "mock" {
         return None;
     }
-    let candidates =
-        memory.find_similar_not_identical(region, scope, new_text, MIN_SIMILARITY, MAX_CANDIDATES).ok()?;
+    let candidates = memory
+        .find_similar_not_identical(region, scope, new_text, MIN_SIMILARITY, MAX_CANDIDATES)
+        .ok()?;
     if candidates.is_empty() {
         return None;
     }
@@ -57,7 +58,11 @@ pub async fn check(
     );
     let req = CompletionRequest::new(model.to_string(), vec![Message::user(prompt)]);
     let out = gateway
-        .complete(Call::new(req).actor("contradiction_detector").tainted(Taint::Trusted))
+        .complete(
+            Call::new(req)
+                .actor("contradiction_detector")
+                .tainted(Taint::Trusted),
+        )
         .await
         .ok()?;
     let (idxs, reason) =
@@ -106,7 +111,10 @@ mod tests {
     async fn a_cited_conflict_proposes_a_pending_supersession() {
         let (memory, gateway, _dir) = setup(vec![completion("SUPERSEDES: 1 | the domain moved")]);
         memory
-            .remember(WriteReq::new(Region::Semantic, "the API base url is api.old.example"))
+            .remember(WriteReq::new(
+                Region::Semantic,
+                "the API base url is api.old.example",
+            ))
             .unwrap();
 
         let result = check(
@@ -119,7 +127,10 @@ mod tests {
             "core",
         )
         .await;
-        assert!(result.is_some(), "a genuinely similar, model-confirmed conflict must propose");
+        assert!(
+            result.is_some(),
+            "a genuinely similar, model-confirmed conflict must propose"
+        );
 
         // Nothing was silently applied - the original fact is untouched, only a pending row exists.
         let hits = memory
@@ -130,16 +141,24 @@ mod tests {
                 &ScopeCtx::user_only(),
             )
             .unwrap();
-        assert_eq!(hits.len(), 1, "the candidate fact must not be written until confirmed");
+        assert_eq!(
+            hits.len(),
+            1,
+            "the candidate fact must not be written until confirmed"
+        );
         assert!(hits[0].record.text.contains("old.example"));
         assert_eq!(memory.pending_supersessions().unwrap().len(), 1);
     }
 
     #[tokio::test]
     async fn no_similar_candidate_never_calls_the_model_or_proposes() {
-        let (memory, gateway, _dir) = setup(vec![completion("SUPERSEDES: 1 | should never be read")]);
+        let (memory, gateway, _dir) =
+            setup(vec![completion("SUPERSEDES: 1 | should never be read")]);
         memory
-            .remember(WriteReq::new(Region::Semantic, "the cafeteria menu changes on Tuesdays"))
+            .remember(WriteReq::new(
+                Region::Semantic,
+                "the cafeteria menu changes on Tuesdays",
+            ))
             .unwrap();
 
         let result = check(
@@ -152,7 +171,10 @@ mod tests {
             "core",
         )
         .await;
-        assert!(result.is_none(), "an unrelated fact must never reach the model at all");
+        assert!(
+            result.is_none(),
+            "an unrelated fact must never reach the model at all"
+        );
         assert!(memory.pending_supersessions().unwrap().is_empty());
     }
 
@@ -160,7 +182,10 @@ mod tests {
     async fn a_none_reply_proposes_nothing() {
         let (memory, gateway, _dir) = setup(vec![completion("NONE")]);
         memory
-            .remember(WriteReq::new(Region::Semantic, "the API base url is api.old.example"))
+            .remember(WriteReq::new(
+                Region::Semantic,
+                "the API base url is api.old.example",
+            ))
             .unwrap();
 
         let result = check(
@@ -173,7 +198,10 @@ mod tests {
             "core",
         )
         .await;
-        assert!(result.is_none(), "the model saying NONE must propose nothing");
+        assert!(
+            result.is_none(),
+            "the model saying NONE must propose nothing"
+        );
         assert!(memory.pending_supersessions().unwrap().is_empty());
     }
 
@@ -182,7 +210,10 @@ mod tests {
         // Only 1 candidate exists, but the model cites index 7 - entirely fabricated.
         let (memory, gateway, _dir) = setup(vec![completion("SUPERSEDES: 7 | trust me")]);
         memory
-            .remember(WriteReq::new(Region::Semantic, "the API base url is api.old.example"))
+            .remember(WriteReq::new(
+                Region::Semantic,
+                "the API base url is api.old.example",
+            ))
             .unwrap();
 
         let result = check(
@@ -195,7 +226,10 @@ mod tests {
             "core",
         )
         .await;
-        assert!(result.is_none(), "a citation to a candidate that was never offered must be dropped");
+        assert!(
+            result.is_none(),
+            "a citation to a candidate that was never offered must be dropped"
+        );
         assert!(memory.pending_supersessions().unwrap().is_empty());
     }
 
@@ -211,7 +245,10 @@ mod tests {
         .unwrap();
         let gateway = Gateway::new(Box::new(MockProvider), ledger);
         memory
-            .remember(WriteReq::new(Region::Semantic, "the API base url is api.old.example"))
+            .remember(WriteReq::new(
+                Region::Semantic,
+                "the API base url is api.old.example",
+            ))
             .unwrap();
 
         let result = check(
@@ -224,6 +261,9 @@ mod tests {
             "core",
         )
         .await;
-        assert!(result.is_none(), "the offline mock cannot assess conflict, so it must stay silent");
+        assert!(
+            result.is_none(),
+            "the offline mock cannot assess conflict, so it must stay silent"
+        );
     }
 }

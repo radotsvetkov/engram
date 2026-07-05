@@ -30,9 +30,7 @@ const REGIONS: [&str; 3] = ["semantic", "episodic", "identity"];
 
 fn explain(conn: &Connection, sql: &str, binds: &[&dyn rusqlite::ToSql]) -> Vec<String> {
     let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
-    let rows = stmt
-        .query_map(binds, |r| r.get::<_, String>(3))
-        .unwrap();
+    let rows = stmt.query_map(binds, |r| r.get::<_, String>(3)).unwrap();
     rows.map(|r| r.unwrap()).collect()
 }
 
@@ -49,7 +47,8 @@ fn main() {
     //    space and creates every table/index `init_schema` defines, with zero rows to migrate.
     {
         let ledger = Arc::new(Ledger::open(dir.path()).unwrap());
-        let _mem = Memory::open(&db_path, Arc::new(TrigramHashEmbedder::default()), ledger).unwrap();
+        let _mem =
+            Memory::open(&db_path, Arc::new(TrigramHashEmbedder::default()), ledger).unwrap();
     }
 
     // 2. Bulk-insert PROJECTS * ROWS_PER_PROJECT synthetic rows directly, bypassing remember()'s
@@ -121,7 +120,8 @@ fn main() {
     // around the whole OR-of-rings clause (`format!("({})", parts.join(" OR "))`) - omitting
     // that outer paren changes AND/OR precedence and would silently test a different, wrong
     // query than the one the real code executes.
-    let scope_sql = "((scope_kind = 'user' AND scope_id = ?) OR (scope_kind = 'project' AND scope_id = ?))";
+    let scope_sql =
+        "((scope_kind = 'user' AND scope_id = ?) OR (scope_kind = 'project' AND scope_id = ?))";
     let coarse_sql = format!(
         "SELECT id, embedding_bin FROM facts WHERE deleted = 0 AND superseded_by IS NULL \
          AND region IN ('semantic','episodic','identity','procedural') AND {scope_sql}"
@@ -131,7 +131,10 @@ fn main() {
          AND text LIKE ? AND {scope_sql}"
     );
 
-    println!("## Query-plan check: scope_clause() union-of-rings, {} project rings active\n", target_scope.rings().len());
+    println!(
+        "## Query-plan check: scope_clause() union-of-rings, {} project rings active\n",
+        target_scope.rings().len()
+    );
     for analyzed in [false, true] {
         let conn = Connection::open(&db_path).unwrap();
         if analyzed {

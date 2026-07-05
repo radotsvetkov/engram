@@ -2201,7 +2201,9 @@ impl Tool for MemoryRecallPageTool {
             .by_source_scoped(&format!("compaction:{run_tag}"), &ctx.scope)
             .map_err(|e| e.to_string())?;
         if pages.is_empty() {
-            return Ok(format!("(no paged-out content found for run_tag {run_tag})"));
+            return Ok(format!(
+                "(no paged-out content found for run_tag {run_tag})"
+            ));
         }
         Ok(pages
             .iter()
@@ -4140,7 +4142,8 @@ mod file_tools_tests {
             .recall("scout the terrain", &[Region::Episodic], 5)
             .unwrap();
         assert!(
-            hits.iter().any(|h| h.record.text.contains("scout the terrain")),
+            hits.iter()
+                .any(|h| h.record.text.contains("scout the terrain")),
             "a 'done' step must leave a durable episodic breadcrumb"
         );
         let not_done = ctx
@@ -4148,7 +4151,9 @@ mod file_tools_tests {
             .recall("build the thing", &[Region::Episodic], 5)
             .unwrap();
         assert!(
-            not_done.iter().all(|h| !h.record.text.contains("build the thing")),
+            not_done
+                .iter()
+                .all(|h| !h.record.text.contains("build the thing")),
             "a 'doing'/'todo' step must NOT leave a breadcrumb yet"
         );
 
@@ -4171,7 +4176,9 @@ mod file_tools_tests {
             .recall("scout the terrain", &[Region::Episodic], 5)
             .unwrap();
         assert_eq!(
-            hits.iter().filter(|h| h.record.text.contains("scout the terrain")).count(),
+            hits.iter()
+                .filter(|h| h.record.text.contains("scout the terrain"))
+                .count(),
             1,
             "re-sending an already-done step must not duplicate its breadcrumb"
         );
@@ -4180,7 +4187,9 @@ mod file_tools_tests {
             .recall("build the thing", &[Region::Episodic], 5)
             .unwrap();
         assert!(
-            now_done.iter().any(|h| h.record.text.contains("build the thing")),
+            now_done
+                .iter()
+                .any(|h| h.record.text.contains("build the thing")),
             "a step that JUST transitioned to done must get its breadcrumb on this call"
         );
     }

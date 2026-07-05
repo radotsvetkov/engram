@@ -42,18 +42,23 @@ const MAX_GROUPS_PER_TICK: usize = 3;
 /// reuses the exact same "not touched in N days" candidate pool, not a separate one, so it is a
 /// parameter here rather than a private constant (the call site owns the sleep-cycle windows, same
 /// as `consolidate`/`auto_prune` already do).
-pub async fn run_tick(memory: &Memory, gateway: &Gateway, model: &str, warm_age: Duration) -> usize {
+pub async fn run_tick(
+    memory: &Memory,
+    gateway: &Gateway,
+    model: &str,
+    warm_age: Duration,
+) -> usize {
     if gateway.provider_id() == "mock" {
         return 0;
     }
-    let groups = match memory.reflection_candidates(warm_age, CLUSTER_SIMILARITY, MAX_GROUPS_PER_TICK)
-    {
-        Ok(g) => g,
-        Err(e) => {
-            tracing::warn!(error = %e, "reflection_candidates failed");
-            return 0;
-        }
-    };
+    let groups =
+        match memory.reflection_candidates(warm_age, CLUSTER_SIMILARITY, MAX_GROUPS_PER_TICK) {
+            Ok(g) => g,
+            Err(e) => {
+                tracing::warn!(error = %e, "reflection_candidates failed");
+                return 0;
+            }
+        };
     let mut written = 0;
     for group in groups {
         match reflect_one(memory, gateway, model, &group).await {
@@ -87,7 +92,8 @@ async fn reflect_one(
     else {
         return Ok(false);
     };
-    let Some((idxs, insight)) = crate::citation::parse_cited_claim(&out.text, "REFLECT:", group.len())
+    let Some((idxs, insight)) =
+        crate::citation::parse_cited_claim(&out.text, "REFLECT:", group.len())
     else {
         return Ok(false);
     };
@@ -186,7 +192,11 @@ mod tests {
         assert_eq!(reflection.record.taint, "trusted");
         assert_eq!(reflection.record.source.as_deref(), Some("reflection"));
         let source_ids = reflection.record.metadata["source_ids"].as_array().unwrap();
-        assert_eq!(source_ids.len(), 3, "all three cited sources must be recorded");
+        assert_eq!(
+            source_ids.len(),
+            3,
+            "all three cited sources must be recorded"
+        );
     }
 
     #[tokio::test]
@@ -214,7 +224,10 @@ mod tests {
         seed_related_facts(&memory).await;
 
         let n = run_tick(&memory, &gateway, "test-model", TEST_WARM_AGE).await;
-        assert_eq!(n, 0, "citations with no stated synthesis are not grounded enough to write");
+        assert_eq!(
+            n, 0,
+            "citations with no stated synthesis are not grounded enough to write"
+        );
     }
 
     #[tokio::test]
@@ -222,7 +235,10 @@ mod tests {
         let (memory, gateway, _dir) = setup(vec![completion("REFLECT: 1 | should never be read")]);
         // A single, unrelated fact never forms a cluster of 2+, so nothing should even be asked.
         memory
-            .remember(WriteReq::new(Region::Semantic, "the cafeteria menu changes on Tuesdays").importance(0.2))
+            .remember(
+                WriteReq::new(Region::Semantic, "the cafeteria menu changes on Tuesdays")
+                    .importance(0.2),
+            )
             .unwrap();
 
         let n = run_tick(&memory, &gateway, "test-model", TEST_WARM_AGE).await;
@@ -243,6 +259,9 @@ mod tests {
         seed_related_facts(&memory).await;
 
         let n = run_tick(&memory, &gateway, "test-model", TEST_WARM_AGE).await;
-        assert_eq!(n, 0, "the offline mock cannot judge a synthesis, so it must stay silent");
+        assert_eq!(
+            n, 0,
+            "the offline mock cannot judge a synthesis, so it must stay silent"
+        );
     }
 }

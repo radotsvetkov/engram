@@ -217,11 +217,8 @@ impl Client {
 
     /// Edit an existing consciousness line's text in place (pins it — it survives re-distillation).
     pub async fn consciousness_edit(&self, id: &str, text: &str) -> Result<Value> {
-        self.post_value(
-            "/v1/consciousness/edit",
-            json!({ "id": id, "text": text }),
-        )
-        .await
+        self.post_value("/v1/consciousness/edit", json!({ "id": id, "text": text }))
+            .await
     }
 
     /// Add a new, permanently-pinned consciousness line (capped at the working-memory ceiling).
@@ -384,7 +381,8 @@ impl Client {
             Some(v) => json!({ "version": v }),
             None => json!({}),
         };
-        self.post_value(&format!("/v1/skills/{id}/revert"), body).await
+        self.post_value(&format!("/v1/skills/{id}/revert"), body)
+            .await
     }
 
     /// Record a runtime example as a gold `(input, accepted-output)` pair on the active version.
@@ -399,7 +397,8 @@ impl Client {
         if let Some(r) = reward {
             body["reward"] = json!(r);
         }
-        self.post_value(&format!("/v1/skills/{id}/teach"), body).await
+        self.post_value(&format!("/v1/skills/{id}/teach"), body)
+            .await
     }
 
     // ---- schedule ---------------------------------------------------------

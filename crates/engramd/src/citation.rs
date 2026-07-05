@@ -59,7 +59,11 @@ mod tests {
     fn keeps_only_in_range_citations() {
         let (idxs, why) = parse_cited_claim("CONFLICT: 1, 2, 9 | because reasons", "CONFLICT:", 3)
             .expect("should parse");
-        assert_eq!(idxs, vec![1, 2], "9 is out of range for n=3 and must be dropped");
+        assert_eq!(
+            idxs,
+            vec![1, 2],
+            "9 is out of range for n=3 and must be dropped"
+        );
         assert_eq!(why, "because reasons");
     }
 

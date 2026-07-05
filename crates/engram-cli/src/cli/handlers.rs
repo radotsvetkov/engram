@@ -642,10 +642,11 @@ async fn memory(client: &Client, cmd: MemoryCmd, json: bool) -> Result<i32> {
         MemoryCmd::Recall { query, k, as_of } => {
             let q = join(&query);
             let as_of_ms = match as_of.as_deref() {
-                Some(s) => Some(
-                    crate::ui::format::parse_date_to_ms(s)
-                        .ok_or_else(|| anyhow::anyhow!("invalid --as-of date: {s} (want YYYY-MM-DD or an epoch-ms integer)"))?,
-                ),
+                Some(s) => Some(crate::ui::format::parse_date_to_ms(s).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "invalid --as-of date: {s} (want YYYY-MM-DD or an epoch-ms integer)"
+                    )
+                })?),
                 None => None,
             };
             let hits = client.recall_as_of(&q, k, None, as_of_ms).await?;
@@ -770,7 +771,11 @@ async fn memory(client: &Client, cmd: MemoryCmd, json: bool) -> Result<i32> {
                 }
                 println!(
                     "{} {id}",
-                    if accepting { good("✓ accepted") } else { warn("✓ rejected") }
+                    if accepting {
+                        good("✓ accepted")
+                    } else {
+                        warn("✓ rejected")
+                    }
                 );
                 return Ok(0);
             }
@@ -788,7 +793,10 @@ async fn memory(client: &Client, cmd: MemoryCmd, json: bool) -> Result<i32> {
             for p in &items {
                 let id = p.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
                 let old_id = p.get("old_id").and_then(|v| v.as_i64()).unwrap_or(0);
-                let text = p.get("candidate_text").and_then(|v| v.as_str()).unwrap_or("");
+                let text = p
+                    .get("candidate_text")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 let reason = p.get("reason").and_then(|v| v.as_str()).unwrap_or("");
                 println!(
                     "  {} #{id} (replaces #{old_id})\n    {}\n    {}",
@@ -1080,8 +1088,7 @@ async fn skills(client: &Client, cmd: SkillsCmd, json: bool) -> Result<i32> {
                 eprintln!("{}", bad(&format!("no skill {id}")));
                 return Ok(1);
             };
-            let body = std::fs::read_to_string(&file)
-                .with_context(|| format!("reading {file}"))?;
+            let body = std::fs::read_to_string(&file).with_context(|| format!("reading {file}"))?;
             let is_wasm = s.runtime == "wasm";
             if !json {
                 println!("{}", dim("· replaying candidate against recorded gold…"));

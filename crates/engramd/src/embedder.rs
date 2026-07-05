@@ -121,7 +121,10 @@ mod tests {
         // MockProvider's embeddings are 8-dim; matching that dimension is the "healthy" path.
         let e = GatewayEmbedder::new(gateway, 8, "mock-model");
         let (v, degraded) = e.embed_checked("hello world");
-        assert!(!degraded, "a dimension-matching mock reply must not be reported as degraded");
+        assert!(
+            !degraded,
+            "a dimension-matching mock reply must not be reported as degraded"
+        );
         assert_eq!(v.len(), 8);
     }
 
@@ -137,8 +140,15 @@ mod tests {
         // gap the embedder.rs NEEDS-INTEGRATION comment used to just warn about and forget.
         let e = GatewayEmbedder::new(gateway, 256, "mock-model");
         let (v, degraded) = e.embed_checked("hello world");
-        assert!(degraded, "a wrong-dimension reply must be reported as degraded");
-        assert_eq!(v.len(), 256, "the fallback vector must still match the configured dimension");
+        assert!(
+            degraded,
+            "a wrong-dimension reply must be reported as degraded"
+        );
+        assert_eq!(
+            v.len(),
+            256,
+            "the fallback vector must still match the configured dimension"
+        );
         // embed() (the plain trait method every other call site uses) must expose the same fallback
         // behavior, just without the degraded flag - it should never panic or return a mismatched
         // dimension either.

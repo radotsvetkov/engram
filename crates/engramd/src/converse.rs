@@ -122,7 +122,12 @@ pub(crate) fn recall_ribbon(
 /// (`converse_stream_handler` -> `run_agent_task_cb`); it must stay behaviorally identical to
 /// `converse_stream`'s inline copy so a feature wired into one path doesn't silently miss the other
 /// - exactly the trap the per-project-persona bug (fixed earlier) fell into.
-pub(crate) async fn learn_identity(memory: &Memory, gateway: &Gateway, model: &str, text: &str) -> Vec<String> {
+pub(crate) async fn learn_identity(
+    memory: &Memory,
+    gateway: &Gateway,
+    model: &str,
+    text: &str,
+) -> Vec<String> {
     let learned = extract_identity(text);
     for l in &learned {
         if !l.supersede

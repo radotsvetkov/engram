@@ -235,7 +235,13 @@ mod tests {
 
     #[test]
     fn parse_date_to_ms_round_trips_through_civil_from_ms() {
-        for (y, m, d) in [(2024, 1, 1), (2026, 7, 5), (2000, 2, 29), (1970, 1, 1), (2099, 12, 31)] {
+        for (y, m, d) in [
+            (2024, 1, 1),
+            (2026, 7, 5),
+            (2000, 2, 29),
+            (1970, 1, 1),
+            (2099, 12, 31),
+        ] {
             let ms = parse_date_to_ms(&format!("{y:04}-{m:02}-{d:02}")).unwrap();
             assert_eq!(
                 civil_from_ms(ms),

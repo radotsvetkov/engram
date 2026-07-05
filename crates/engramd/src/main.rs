@@ -2576,7 +2576,13 @@ async fn recall(State(app): State<App>, Query(q): Query<RecallQuery>) -> ApiResu
     let hits = match q.as_of {
         Some(as_of_ms) => app
             .memory
-            .recall_as_of(&q.q, &regions, k, &engram_core::ScopeCtx::user_only(), as_of_ms)
+            .recall_as_of(
+                &q.q,
+                &regions,
+                k,
+                &engram_core::ScopeCtx::user_only(),
+                as_of_ms,
+            )
             .map_err(err)?,
         None => app.memory.recall(&q.q, &regions, k).map_err(err)?,
     };
@@ -4243,7 +4249,8 @@ pub(crate) async fn run_task_core(
             .take(5)
             .collect();
         if !extra.is_empty() {
-            prompt.push_str("\n\n--- Earlier progress on this mission (recalled from memory) ---\n");
+            prompt
+                .push_str("\n\n--- Earlier progress on this mission (recalled from memory) ---\n");
             for e in extra {
                 prompt.push_str("- ");
                 prompt.push_str(e);
@@ -4681,7 +4688,10 @@ fn spawn_consolidation_tick(app: App) {
             // that fell back to trigram): re-embed them now that the daemon's had time to
             // recover, so a transient blip doesn't leave a memory mis-ranked forever.
             match app.memory.reembed_flagged() {
-                Ok(n) if n > 0 => tracing::info!(fixed = n, "re-embedded rows flagged during a degraded write"),
+                Ok(n) if n > 0 => tracing::info!(
+                    fixed = n,
+                    "re-embedded rows flagged during a degraded write"
+                ),
                 Ok(_) => {}
                 Err(e) => tracing::warn!(error = %e, "reembed_flagged failed"),
             }
@@ -4690,8 +4700,13 @@ fn spawn_consolidation_tick(app: App) {
             // old enough nobody would plausibly need them. 180 days - deliberately longer than the
             // 14-day warm->cold window, since forgetting is a much bigger step than demoting.
             if app.cfg().security.auto_prune_memories {
-                match app.memory.auto_prune(Duration::from_secs(180 * 24 * 3600), "core") {
-                    Ok(n) if n > 0 => tracing::info!(pruned = n, "auto-pruned old superseded memories"),
+                match app
+                    .memory
+                    .auto_prune(Duration::from_secs(180 * 24 * 3600), "core")
+                {
+                    Ok(n) if n > 0 => {
+                        tracing::info!(pruned = n, "auto-pruned old superseded memories")
+                    }
                     Ok(_) => {}
                     Err(e) => tracing::warn!(error = %e, "auto_prune failed"),
                 }

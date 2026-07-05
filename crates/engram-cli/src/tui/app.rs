@@ -716,7 +716,10 @@ impl App {
                         .map(Msg::MemoryReflections)
                 });
                 self.fetch(|c| async move {
-                    c.supersessions_typed().await.ok().map(Msg::MemorySupersessions)
+                    c.supersessions_typed()
+                        .await
+                        .ok()
+                        .map(Msg::MemorySupersessions)
                 });
             }
             View::Skills => {

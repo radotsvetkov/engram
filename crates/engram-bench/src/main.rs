@@ -24,7 +24,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use engram_core::Ledger;
-use engram_memory::{cosine, embed::from_bytes, Embedder, Memory, Region, StaticEmbedder, TrigramHashEmbedder, WriteReq};
+use engram_memory::{
+    cosine, embed::from_bytes, Embedder, Memory, Region, StaticEmbedder, TrigramHashEmbedder,
+    WriteReq,
+};
 
 struct Case {
     fact: &'static str,
@@ -156,7 +159,12 @@ struct Score {
 /// `label` is only used for `ENGRAM_BENCH_VERBOSE=1` per-case tracing (which arm missed which
 /// query, and at what rank a hit landed) - set it to see exactly where an arm's numbers come from
 /// instead of trusting the aggregate percentage.
-fn score(label: &str, cases: &[Case], want: &HashMap<&str, i64>, ranked: impl Fn(&Case) -> Vec<i64>) -> Score {
+fn score(
+    label: &str,
+    cases: &[Case],
+    want: &HashMap<&str, i64>,
+    ranked: impl Fn(&Case) -> Vec<i64>,
+) -> Score {
     let verbose = std::env::var("ENGRAM_BENCH_VERBOSE").is_ok();
     let (mut hits, mut mrr, mut hard_total, mut hard_hits) = (0usize, 0.0f32, 0usize, 0usize);
     for c in cases {
@@ -274,7 +282,9 @@ fn evaluate(embedder: Arc<dyn Embedder>) -> Scores {
     // the real stored FTS index and embeddings, not a separately-built index.
     let raw = rusqlite::Connection::open(&db_path).unwrap();
 
-    let keyword = score("keyword", &cases, &want, |c| recall_keyword_only(&raw, c.query, k));
+    let keyword = score("keyword", &cases, &want, |c| {
+        recall_keyword_only(&raw, c.query, k)
+    });
     let semantic = score("semantic", &cases, &want, |c| {
         recall_semantic_only(&raw, embedder.as_ref(), c.query, k)
     });
@@ -285,7 +295,11 @@ fn evaluate(embedder: Arc<dyn Embedder>) -> Scores {
             .map(|h| h.record.id)
             .collect()
     });
-    Scores { keyword, semantic, hybrid }
+    Scores {
+        keyword,
+        semantic,
+        hybrid,
+    }
 }
 
 fn main() {
@@ -332,7 +346,10 @@ fn main() {
     println!("|---|---|---|---|");
     row("keyword-only (FTS5/BM25, isolated)", &trig.keyword);
     row("semantic-only (exact cosine, isolated)", &trig.semantic);
-    row("hybrid (BM25 + semantic, RRF-fused - what Engram ships)", &trig.hybrid);
+    row(
+        "hybrid (BM25 + semantic, RRF-fused - what Engram ships)",
+        &trig.hybrid,
+    );
     if let Some(s) = &stat {
         println!("\n## With the static model2vec embedder (synonym-level, pure-Rust)\n");
         println!("| Arm | Recall@10 | MRR | Recall@10 on zero-overlap paraphrases |");

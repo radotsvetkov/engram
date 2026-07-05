@@ -765,7 +765,11 @@ mod tests {
             .memory
             .recall("skill upper improved", &[Region::Procedural], 5)
             .unwrap();
-        assert_eq!(hits.len(), 1, "the promotion must write exactly one Region::Procedural memory");
+        assert_eq!(
+            hits.len(),
+            1,
+            "the promotion must write exactly one Region::Procedural memory"
+        );
         assert!(hits[0].record.text.contains("'upper' improved to v2"));
         assert_eq!(hits[0].record.source.as_deref(), Some("skill:upper#2"));
         assert_eq!(hits[0].record.taint, "trusted");

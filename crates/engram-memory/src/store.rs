@@ -270,7 +270,10 @@ impl Memory {
     /// salience signal feeding only the reversible warm/cold demotion, not content, so losing at
     /// most a minute of it on an ungraceful shutdown is an accepted, deliberately small gap).
     fn record_access(&self, id: i64) {
-        let mut batch = self.access_batch.lock().expect("access-batch mutex poisoned");
+        let mut batch = self
+            .access_batch
+            .lock()
+            .expect("access-batch mutex poisoned");
         let now = now_ms() as i64;
         if batch.ids.is_empty() {
             batch.window_start_ms = now;
@@ -624,11 +627,13 @@ impl Memory {
         // feature existed (`superseded_by IS NULL`) - recall_as_of is the only caller that ever
         // passes Some. `t` is an i64 timestamp (never user-controlled text), safe to interpolate
         // the same way `region_clause` already inlines its fixed enum strings.
-        let validity_clause = |prefix: &str| match as_of_ms {
+        let validity_clause = |prefix: &str| {
+            match as_of_ms {
             None => format!("{prefix}superseded_by IS NULL"),
             Some(t) => format!(
                 "{prefix}valid_from_ms <= {t} AND ({prefix}valid_until_ms IS NULL OR {prefix}valid_until_ms > {t})"
             ),
+        }
         };
         let q_emb = self.embedder.embed(query);
         let conn = self.conn.lock().expect("memory mutex poisoned");
@@ -928,11 +933,10 @@ impl Memory {
         for row in rows {
             let rec = row?;
             let emb = {
-                let blob: Vec<u8> = conn.query_row(
-                    "SELECT embedding FROM facts WHERE id = ?1",
-                    [rec.id],
-                    |r| r.get(0),
-                )?;
+                let blob: Vec<u8> =
+                    conn.query_row("SELECT embedding FROM facts WHERE id = ?1", [rec.id], |r| {
+                        r.get(0)
+                    })?;
                 from_bytes(&blob)
             };
             let sim = cosine(&q_emb, &emb);
@@ -1343,7 +1347,11 @@ impl Memory {
         let mut by_ring: HashMap<(String, String, String), Vec<Record>> = HashMap::new();
         for rec in candidates {
             by_ring
-                .entry((rec.region.clone(), rec.scope_kind.clone(), rec.scope_id.clone()))
+                .entry((
+                    rec.region.clone(),
+                    rec.scope_kind.clone(),
+                    rec.scope_id.clone(),
+                ))
                 .or_default()
                 .push(rec);
         }
@@ -1405,7 +1413,11 @@ impl Memory {
         };
         let mut pruned = 0usize;
         for id in ids {
-            if self.forget(id, actor, "auto_prune: superseded and past the retention window")? {
+            if self.forget(
+                id,
+                actor,
+                "auto_prune: superseded and past the retention window",
+            )? {
                 pruned += 1;
             }
         }
@@ -1615,7 +1627,10 @@ fn init_schema(conn: &Connection) -> Result<()> {
     // agent's own writes. Attribution, not a new scope ring: an agent's memory stays in the
     // ordinary project/user ring (so the rest of the team still sees it), this just makes "which
     // agent said this" a queryable column instead of a ledger cross-reference.
-    let _ = conn.execute("ALTER TABLE facts ADD COLUMN actor TEXT NOT NULL DEFAULT ''", []);
+    let _ = conn.execute(
+        "ALTER TABLE facts ADD COLUMN actor TEXT NOT NULL DEFAULT ''",
+        [],
+    );
     // Bi-temporal fact versioning, additive alongside the existing `superseded_by` "current truth"
     // pointer (unchanged, still what every default recall filters on): `valid_from_ms` is when a
     // fact became true, `valid_until_ms` (NULL = still current) is when `supersede()` replaced it.
@@ -1889,11 +1904,7 @@ mod tests {
             .iter()
             .rfind(|e| e.kind == "memory.access_batch")
             .expect("crossing the window must append exactly one batched ledger entry");
-        let count = flushed
-            .payload
-            .get()
-            .parse::<serde_json::Value>()
-            .unwrap()["count"]
+        let count = flushed.payload.get().parse::<serde_json::Value>().unwrap()["count"]
             .as_u64()
             .unwrap();
         // The access that crosses the threshold is included in the SAME flush (no access is ever
@@ -1963,7 +1974,9 @@ mod tests {
         assert_eq!(m.stats().unwrap().needs_reembed, 0);
 
         // The row itself is untouched otherwise and still recallable.
-        let after = get_record(&m.conn.lock().unwrap(), rec.id).unwrap().unwrap();
+        let after = get_record(&m.conn.lock().unwrap(), rec.id)
+            .unwrap()
+            .unwrap();
         assert_eq!(after.text, "written while degraded");
 
         // A normal (non-degraded) write on the same brain is never flagged.
@@ -2626,10 +2639,16 @@ mod tests {
     fn find_similar_not_identical_excludes_exact_duplicates_and_low_similarity() {
         let (m, _d) = mem();
         let scope = Scope::user();
-        m.remember(WriteReq::new(Region::Semantic, "the deploy pipeline runs on port 9090"))
-            .unwrap();
-        m.remember(WriteReq::new(Region::Semantic, "the cafeteria menu changes on Tuesdays"))
-            .unwrap();
+        m.remember(WriteReq::new(
+            Region::Semantic,
+            "the deploy pipeline runs on port 9090",
+        ))
+        .unwrap();
+        m.remember(WriteReq::new(
+            Region::Semantic,
+            "the cafeteria menu changes on Tuesdays",
+        ))
+        .unwrap();
 
         // An exact duplicate must never show up as a "candidate contradiction" - that's dedup's job.
         let exact = m
@@ -2695,7 +2714,10 @@ mod tests {
             .unwrap();
         // An unrelated fact must not be pulled into the same cluster.
         let unrelated = m
-            .remember(WriteReq::new(Region::Semantic, "the cafeteria menu changes on Tuesdays").importance(0.2))
+            .remember(
+                WriteReq::new(Region::Semantic, "the cafeteria menu changes on Tuesdays")
+                    .importance(0.2),
+            )
             .unwrap();
         // A high-importance fact is never a demotion/reflection candidate at all, related or not.
         let important = m
@@ -2711,7 +2733,8 @@ mod tests {
         // Age every row past the warm window (reflection reuses consolidate's exact predicate).
         {
             let conn = m.conn.lock().unwrap();
-            conn.execute("UPDATE facts SET last_access_ms = 0", []).unwrap();
+            conn.execute("UPDATE facts SET last_access_ms = 0", [])
+                .unwrap();
         }
 
         let groups = m
@@ -2720,7 +2743,10 @@ mod tests {
         assert_eq!(groups.len(), 1, "exactly one related cluster should form");
         let ids: Vec<i64> = groups[0].iter().map(|r| r.id).collect();
         for id in &related_ids {
-            assert!(ids.contains(id), "every related fact must be in the cluster");
+            assert!(
+                ids.contains(id),
+                "every related fact must be in the cluster"
+            );
         }
         assert!(
             !ids.contains(&untrusted.id),
@@ -2740,7 +2766,10 @@ mod tests {
     fn pending_supersession_is_never_applied_until_resolved() {
         let (m, _d) = mem();
         let old = m
-            .remember(WriteReq::new(Region::Semantic, "the API base url is api.old.example"))
+            .remember(WriteReq::new(
+                Region::Semantic,
+                "the API base url is api.old.example",
+            ))
             .unwrap();
         let pid = m
             .propose_supersession(
@@ -2755,8 +2784,16 @@ mod tests {
 
         // Proposing must NOT touch the original fact or write anything new - mandatory
         // confirmation, no silent auto-apply (the locked decision in the plan's §5).
-        assert_eq!(m.recall("api base url", &[Region::Semantic], 5).unwrap().len(), 1);
-        assert_eq!(m.get(old.id).unwrap().unwrap().text, "the API base url is api.old.example");
+        assert_eq!(
+            m.recall("api base url", &[Region::Semantic], 5)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            m.get(old.id).unwrap().unwrap().text,
+            "the API base url is api.old.example"
+        );
         let pending = m.pending_supersessions().unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].id, pid);
@@ -2765,8 +2802,16 @@ mod tests {
         // Rejecting resolves it with no effect at all.
         assert!(m.resolve_supersession(pid, false, "user").unwrap());
         assert!(m.pending_supersessions().unwrap().is_empty());
-        assert_eq!(m.get(old.id).unwrap().unwrap().text, "the API base url is api.old.example");
-        assert_eq!(m.recall("api base url", &[Region::Semantic], 5).unwrap().len(), 1);
+        assert_eq!(
+            m.get(old.id).unwrap().unwrap().text,
+            "the API base url is api.old.example"
+        );
+        assert_eq!(
+            m.recall("api base url", &[Region::Semantic], 5)
+                .unwrap()
+                .len(),
+            1
+        );
 
         // A second proposal, accepted THIS time, writes the new fact and supersedes the old one -
         // through the same remember()/supersede() every other write path already uses.
@@ -2782,7 +2827,11 @@ mod tests {
             .unwrap();
         assert!(m.resolve_supersession(pid2, true, "user").unwrap());
         let hits = m.recall("api base url", &[Region::Semantic], 5).unwrap();
-        assert_eq!(hits.len(), 1, "the old fact must no longer surface once accepted");
+        assert_eq!(
+            hits.len(),
+            1,
+            "the old fact must no longer surface once accepted"
+        );
         assert!(hits[0].record.text.contains("new.example"));
         assert!(m.pending_supersessions().unwrap().is_empty());
 
@@ -2866,7 +2915,9 @@ mod tests {
         assert_eq!(pages.len(), 2, "only this exact source, in the user ring");
         assert_eq!(pages[0].id, a.id, "oldest first");
         assert_eq!(pages[1].id, b.id);
-        assert!(pages.iter().all(|p| p.source.as_deref() == Some("compaction:7")));
+        assert!(pages
+            .iter()
+            .all(|p| p.source.as_deref() == Some("compaction:7")));
     }
 
     #[test]
@@ -2904,7 +2955,10 @@ mod tests {
 
         // Per-project stats break down by actor, scoped to just that ring.
         let stats = m.stats_for_scope("project", "P").unwrap();
-        assert_eq!(stats.total, 2, "only P's own two facts, not the unrelated global one");
+        assert_eq!(
+            stats.total, 2,
+            "only P's own two facts, not the unrelated global one"
+        );
         assert_eq!(stats.by_actor.get("agent:Atlas"), Some(&1));
         assert_eq!(stats.by_actor.get("user"), Some(&1));
 
@@ -2952,9 +3006,17 @@ mod tests {
             }
         }
 
-        let pruned = m.auto_prune(Duration::from_secs(180 * 24 * 3600), "core").unwrap();
-        assert_eq!(pruned, 1, "only the old, already-superseded row is eligible");
-        assert!(m.get(old_super.id).unwrap().is_none(), "the eligible row is gone");
+        let pruned = m
+            .auto_prune(Duration::from_secs(180 * 24 * 3600), "core")
+            .unwrap();
+        assert_eq!(
+            pruned, 1,
+            "only the old, already-superseded row is eligible"
+        );
+        assert!(
+            m.get(old_super.id).unwrap().is_none(),
+            "the eligible row is gone"
+        );
         assert!(
             m.get(old_current.id).unwrap().is_some(),
             "an old but still-current fact must never be pruned just for being old"
@@ -2971,7 +3033,10 @@ mod tests {
         // Identical text in two different scopes (so dedup-on-write, which is scope-aware, doesn't
         // merge them into one row) - on a tie everywhere else, only tier should decide the order.
         let warm = m
-            .remember(WriteReq::new(Region::Semantic, "the deploy runbook lives in docs"))
+            .remember(WriteReq::new(
+                Region::Semantic,
+                "the deploy runbook lives in docs",
+            ))
             .unwrap();
         let cold = m
             .remember(
@@ -2989,7 +3054,11 @@ mod tests {
         let hits = m
             .recall("deploy runbook docs", &[Region::Semantic], 5)
             .unwrap();
-        assert_eq!(hits.len(), 2, "the cold row must still be recallable, not excluded");
+        assert_eq!(
+            hits.len(),
+            2,
+            "the cold row must still be recallable, not excluded"
+        );
         assert_eq!(
             hits[0].record.id, warm.id,
             "a cold-tier hit must rank below an otherwise-tied warm one"

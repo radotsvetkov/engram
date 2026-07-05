@@ -143,7 +143,11 @@ fn is_reflection(r: &crate::api::types::MemRecord) -> bool {
 
 fn recent(app: &App, f: &mut Frame, area: Rect) {
     let t = &app.theme;
-    let block = super::panel(t, "Recent memories · Tab: cycle panel", app.memory_recent.len());
+    let block = super::panel(
+        t,
+        "Recent memories · Tab: cycle panel",
+        app.memory_recent.len(),
+    );
     let inner = block.inner(area);
     f.render_widget(block, area);
     let h = inner.height as usize;
@@ -153,7 +157,10 @@ fn recent(app: &App, f: &mut Frame, area: Rect) {
         let selected = i == app.sel;
         let bar = if selected { "▌" } else { " " };
         let badge = if is_reflection(r) {
-            Span::styled("∴ ", Style::default().fg(t.accent).add_modifier(Modifier::BOLD))
+            Span::styled(
+                "∴ ",
+                Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+            )
         } else {
             Span::styled(
                 format!(
@@ -190,13 +197,23 @@ fn recent(app: &App, f: &mut Frame, area: Rect) {
 /// directly-witnessed memory even at a glance.
 fn reflections(app: &App, f: &mut Frame, area: Rect) {
     let t = &app.theme;
-    let block = super::panel(t, "Reflections (synthesized) · Tab: cycle panel", app.memory_reflections.len());
+    let block = super::panel(
+        t,
+        "Reflections (synthesized) · Tab: cycle panel",
+        app.memory_reflections.len(),
+    );
     let inner = block.inner(area);
     f.render_widget(block, area);
     let h = inner.height as usize;
     let start = window_start(app.memory_reflections.len(), h, app.sel);
     let mut lines: Vec<Line> = Vec::new();
-    for (i, r) in app.memory_reflections.iter().enumerate().skip(start).take(h) {
+    for (i, r) in app
+        .memory_reflections
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(h)
+    {
         let selected = i == app.sel;
         let bar = if selected { "▌" } else { " " };
         let n_sources = r
@@ -208,7 +225,10 @@ fn reflections(app: &App, f: &mut Frame, area: Rect) {
         let spans = vec![
             Span::styled(format!("{bar} "), Style::default().fg(t.accent)),
             Span::styled(format!("{:>4} ", r.id), Style::default().fg(t.faint)),
-            Span::styled("∴ ", Style::default().fg(t.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "∴ ",
+                Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(
                 crate::ui::format::ellipsize(
                     &one_line(&r.text),
@@ -216,7 +236,10 @@ fn reflections(app: &App, f: &mut Frame, area: Rect) {
                 ),
                 Style::default().fg(if selected { t.fg } else { t.muted }),
             ),
-            Span::styled(format!(" ({n_sources} sources)"), Style::default().fg(t.faint)),
+            Span::styled(
+                format!(" ({n_sources} sources)"),
+                Style::default().fg(t.faint),
+            ),
         ];
         let mut line = Line::from(spans);
         if selected {
@@ -260,7 +283,10 @@ fn supersessions(app: &App, f: &mut Frame, area: Rect) {
         let spans = vec![
             Span::styled(format!("{bar} "), Style::default().fg(t.accent)),
             Span::styled(format!("{:>4} ", p.id), Style::default().fg(t.faint)),
-            Span::styled("⇄ ", Style::default().fg(t.warn).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "⇄ ",
+                Style::default().fg(t.warn).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(
                 crate::ui::format::ellipsize(
                     &one_line(&p.candidate_text),
@@ -268,7 +294,10 @@ fn supersessions(app: &App, f: &mut Frame, area: Rect) {
                 ),
                 Style::default().fg(if selected { t.fg } else { t.muted }),
             ),
-            Span::styled(format!(" (replaces #{})", p.old_id), Style::default().fg(t.faint)),
+            Span::styled(
+                format!(" (replaces #{})", p.old_id),
+                Style::default().fg(t.faint),
+            ),
         ];
         let mut line = Line::from(spans);
         if selected {
@@ -375,7 +404,11 @@ pub fn handle_key(app: &mut App, k: KeyEvent) -> bool {
                 });
                 app.toast(format!(
                     "{} supersession #{id}",
-                    if accept { "✓ accepted" } else { "✓ rejected" }
+                    if accept {
+                        "✓ accepted"
+                    } else {
+                        "✓ rejected"
+                    }
                 ));
                 app.sel = app.sel.saturating_sub(1);
             }

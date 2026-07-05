@@ -292,7 +292,8 @@ impl Agent {
                          you could not finish. Do not apologize at length."
                             .to_string(),
                     ));
-                    self.maybe_compact(&mut messages, &ctx, spent_counter, run_tag).await;
+                    self.maybe_compact(&mut messages, &ctx, spent_counter, run_tag)
+                        .await;
                     let req =
                         CompletionRequest::new(&self.model, messages.clone()).max_tokens(4096);
                     let answer = match self.complete_with_retry(req, ctx.taint, spent_counter).await {
@@ -318,7 +319,8 @@ impl Agent {
 
             // Keep the working context within budget so a long run never overflows the
             // model's window - summarize older turns, keep the freshest verbatim.
-            self.maybe_compact(&mut messages, &ctx, spent_counter, run_tag).await;
+            self.maybe_compact(&mut messages, &ctx, spent_counter, run_tag)
+                .await;
 
             let req = CompletionRequest::new(&self.model, messages.clone())
                 .tools(tool_defs.clone())
@@ -567,7 +569,8 @@ impl Agent {
              list exactly what remains unfinished."
                 .to_string(),
         ));
-        self.maybe_compact(&mut messages, &ctx, spent_counter, run_tag).await;
+        self.maybe_compact(&mut messages, &ctx, spent_counter, run_tag)
+            .await;
         let req = CompletionRequest::new(&self.model, messages.clone()).max_tokens(2048);
         let answer = match self
             .complete_with_retry(req, ctx.taint, spent_counter)
@@ -2859,18 +2862,28 @@ mod tests {
         // permanent loss. Both filler messages' content must be findable, not just summarized away.
         let hits = ctx
             .memory
-            .recall("alpha-marker-content", &[engram_memory::Region::Episodic], 20)
+            .recall(
+                "alpha-marker-content",
+                &[engram_memory::Region::Episodic],
+                20,
+            )
             .unwrap();
         assert!(
-            hits.iter().any(|h| h.record.text.contains("alpha-marker-content")),
+            hits.iter()
+                .any(|h| h.record.text.contains("alpha-marker-content")),
             "the first elided message's content must be recallable from a paged memory"
         );
         let hits = ctx
             .memory
-            .recall("beta-marker-content", &[engram_memory::Region::Episodic], 20)
+            .recall(
+                "beta-marker-content",
+                &[engram_memory::Region::Episodic],
+                20,
+            )
             .unwrap();
         assert!(
-            hits.iter().any(|h| h.record.text.contains("beta-marker-content")),
+            hits.iter()
+                .any(|h| h.record.text.contains("beta-marker-content")),
             "the second elided message's content must be recallable from a paged memory"
         );
         // Every paged memory is tagged with this run's stable tag, so a page-in tool (or a future
@@ -2896,7 +2909,10 @@ mod tests {
         let payload: serde_json::Value = compact_entry.payload.get().parse().unwrap();
         assert_eq!(payload["run_tag"], 42);
         let paged_ids = payload["paged_memory_ids"].as_array().unwrap();
-        assert!(!paged_ids.is_empty(), "the ledger entry must name the pages it wrote");
+        assert!(
+            !paged_ids.is_empty(),
+            "the ledger entry must name the pages it wrote"
+        );
     }
 
     #[tokio::test]

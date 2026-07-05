@@ -3957,18 +3957,58 @@ fn snapshot_files(root: &std::path::Path) -> std::collections::HashSet<std::path
     out
 }
 
-/// After a run, copy the files that newly appeared in `workdir` (since the `before` snapshot) into a
-/// persistent per-task artifacts dir (`<home>/artifacts/<task-id>/`), returning their relative paths.
-/// Copying out decouples artifacts from the (possibly ephemeral git-worktree) workdir so they survive
-/// cleanup, and capturing only NEW files keeps edits to existing project files out of the list.
+/// Relative paths that `write_file`/`append_file` tool calls touched during this run, read back from
+/// the signed ledger (kinds `agent.write` / `agent.append`, seq > `start_seq`). Used by
+/// `capture_artifacts` to force-capture an output file even when it OVERWRITES a same-named file left
+/// by a previous run — e.g. a recurring digest task that writes `evening_digest.html` every time. The
+/// plain new-vs-preexisting diff only ever catches that file on the very first run.
+fn written_paths_since(
+    ledger: &engram_core::Ledger,
+    workdir: &std::path::Path,
+    start_seq: u64,
+) -> std::collections::HashSet<std::path::PathBuf> {
+    let mut out = std::collections::HashSet::new();
+    let Ok(tail) = ledger.tail(400) else {
+        return out;
+    };
+    for e in tail
+        .iter()
+        .filter(|e| e.seq > start_seq && (e.kind == "agent.write" || e.kind == "agent.append"))
+    {
+        let Ok(p) = serde_json::from_str::<Value>(e.payload.get()) else {
+            continue;
+        };
+        let Some(path) = p.get("path").and_then(Value::as_str) else {
+            continue;
+        };
+        if let Ok(rel) = std::path::Path::new(path).strip_prefix(workdir) {
+            out.insert(rel.to_path_buf());
+        }
+    }
+    out
+}
+
+/// After a run, copy the files that newly appeared in `workdir` (since the `before` snapshot) — union
+/// `written` (paths this run's write_file/append_file calls touched, see `written_paths_since`, so a
+/// rewritten same-named output still counts) — into a persistent per-task artifacts dir
+/// (`<home>/artifacts/<task-id>/`), returning their relative paths. Copying out decouples artifacts
+/// from the (possibly ephemeral git-worktree) workdir so they survive cleanup, and capturing only
+/// new-or-explicitly-written files keeps incidental edits to existing project files out of the list.
 fn capture_artifacts(
     home: &str,
     task_id: &str,
     workdir: &std::path::Path,
     before: &std::collections::HashSet<std::path::PathBuf>,
+    written: &std::collections::HashSet<std::path::PathBuf>,
 ) -> Vec<String> {
     let after = snapshot_files(workdir);
-    let mut new_files: Vec<_> = after.difference(before).cloned().collect();
+    let mut new_files: std::collections::HashSet<_> = after.difference(before).cloned().collect();
+    for p in written {
+        if after.contains(p) {
+            new_files.insert(p.clone());
+        }
+    }
+    let mut new_files: Vec<_> = new_files.into_iter().collect();
     new_files.sort();
     new_files.truncate(200); // a sane cap so a runaway run can't flood the artifacts dir
     let dest_root = std::path::Path::new(home).join("artifacts").join(task_id);
@@ -4176,7 +4216,9 @@ pub(crate) async fn run_task_core(
             // Capture any files the run wrote before it errored — otherwise a run that produced files
             // and then failed leaves them unreachable from the UI (the worktree copy is force-removed
             // on the guard's drop). Best-effort; the worktree guard is still alive here.
-            let output_files = capture_artifacts(&app.home, id, &run_workdir, &artifacts_before);
+            let written = written_paths_since(&app.ledger, &run_workdir, start_seq);
+            let output_files =
+                capture_artifacts(&app.home, id, &run_workdir, &artifacts_before, &written);
             let receipt = tasks::TaskRun {
                 answer: format!("(run failed: {e})"),
                 steps: Vec::new(),
@@ -4220,7 +4262,8 @@ pub(crate) async fn run_task_core(
     };
     // Capture the files this run created (copied out to <home>/artifacts/<id>/ so they survive
     // worktree cleanup) while the worktree guard is still alive.
-    let output_files = capture_artifacts(&app.home, id, &run_workdir, &artifacts_before);
+    let written = written_paths_since(&app.ledger, &run_workdir, start_seq);
+    let output_files = capture_artifacts(&app.home, id, &run_workdir, &artifacts_before, &written);
     // Did THIS unattended run park an egress for approval? (checked before run.steps is moved)
     let staged_here = !attended
         && run
@@ -4525,22 +4568,39 @@ fn spawn_run_keepalive(app: App) {
 /// agent whose SIGNED autonomy policy governs this UNATTENDED run). Without an agent the run has no
 /// policy, so every egress stages for review — which is why the flagship "runs for days" path needs
 /// a job to carry an agent. Returns the created (and agent-assigned) task.
-fn task_from_schedule(app: &App, payload: &Value, fallback_name: &str) -> tasks::Task {
-    // The UI puts the instructions in `payload.title` (falling back to `prompt`, then the job name),
-    // so THAT is the run prompt. `detail` is an OPTIONAL extra — never the prompt itself, or it would
-    // be duplicated for the jobs the UI already saved with title==instructions.
-    let title = payload
+/// Derive a scheduled task run's (title, detail) from the job's payload + its short `name`. Factored
+/// out of `task_from_schedule` so this — the actual title/detail split — is unit-testable without a
+/// full `App`.
+///
+/// The task board's card headline IS `title` — show the job's short NAME there (`fallback_name`, the
+/// same string as `Job.name`), not the full instructions, or every card from a recurring job (e.g. a
+/// daily digest) reads as a wall of prompt text instead of a scannable label. The actual instructions
+/// (what the UI puts in `payload.title`, falling back to `payload.prompt`) move into `detail` instead —
+/// `run_task_core` already concatenates title+detail into the run prompt, so the agent still receives
+/// the full instructions unchanged; only the DISPLAYED title shortens.
+fn schedule_task_fields(payload: &Value, fallback_name: &str) -> (String, String) {
+    let instructions = payload
         .get("title")
         .or_else(|| payload.get("prompt"))
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .unwrap_or(fallback_name)
         .to_string();
-    let detail = payload
-        .get("detail")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+    let extra_detail = payload.get("detail").and_then(|v| v.as_str()).unwrap_or("");
+    let detail = if instructions == fallback_name {
+        // No separate instructions were ever set — nothing to move into detail beyond what the UI
+        // may have stored there directly (matches the pre-fix behavior for this edge case).
+        extra_detail.to_string()
+    } else if extra_detail.is_empty() {
+        instructions.clone()
+    } else {
+        format!("{instructions}\n\n{extra_detail}")
+    };
+    (fallback_name.to_string(), detail)
+}
+
+fn task_from_schedule(app: &App, payload: &Value, fallback_name: &str) -> tasks::Task {
+    let (title, detail) = schedule_task_fields(payload, fallback_name);
     let task = app.tasks.create(title, detail, "schedule".into());
     if let Some(agent) = payload
         .get("agent")
@@ -4842,6 +4902,9 @@ async fn converse_stream_handler(
             .and_then(|sid| app.workspace.workdir_for_session(sid))
             .unwrap_or_else(|| app.workdir.clone());
         let artifacts_before = snapshot_files(&run_workdir);
+        // So capture_artifacts can force-include a file this turn OVERWRITES (e.g. the same session
+        // asks the agent to update the same report twice) — see written_paths_since.
+        let chat_start_seq = app.ledger.head().0;
         // Stream each tool step live as it lands - the glass box, in chat.
         let txs = tx.clone();
         let on_step: engram_agent::StepCallback = std::sync::Arc::new(
@@ -4968,7 +5031,14 @@ async fn converse_stream_handler(
                     ));
                 }
                 // Capture any files this turn produced into the gallery (under the session bucket).
-                let _ = capture_artifacts(&app.home, &art_bucket, &run_workdir, &artifacts_before);
+                let written = written_paths_since(&app.ledger, &run_workdir, chat_start_seq);
+                let _ = capture_artifacts(
+                    &app.home,
+                    &art_bucket,
+                    &run_workdir,
+                    &artifacts_before,
+                    &written,
+                );
                 let _ = tx.send(Event::default().event("done").data(
                     json!({ "reply": run.answer, "recalled": recalled, "recalled_refs": recalled_refs, "learned": learned, "steps": run.steps })
                         .to_string(),
@@ -5000,7 +5070,14 @@ async fn converse_stream_handler(
                 }
                 // Capture any files the (errored) run wrote before it failed — otherwise a run that
                 // produced files but then errored leaves those files unreachable from the UI forever.
-                let _ = capture_artifacts(&app.home, &art_bucket, &run_workdir, &artifacts_before);
+                let written = written_paths_since(&app.ledger, &run_workdir, chat_start_seq);
+                let _ = capture_artifacts(
+                    &app.home,
+                    &art_bucket,
+                    &run_workdir,
+                    &artifacts_before,
+                    &written,
+                );
                 let _ = tx.send(Event::default().event("error").data(e));
             }
         }
@@ -7253,7 +7330,13 @@ mod tests {
         std::fs::write(workdir.join("out").join("data.csv"), "a,b").unwrap();
         std::fs::write(workdir.join("existing.txt"), "changed").unwrap();
 
-        let mut arts = capture_artifacts(home.to_str().unwrap(), "task1", &workdir, &before);
+        let mut arts = capture_artifacts(
+            home.to_str().unwrap(),
+            "task1",
+            &workdir,
+            &before,
+            &std::collections::HashSet::new(),
+        );
         arts.sort();
         // Only the NEW files are captured (the edit and the .git/ dir are not).
         assert_eq!(
@@ -7264,6 +7347,112 @@ mod tests {
         assert!(home.join("artifacts/task1/chart.png").exists());
         assert!(home.join("artifacts/task1/out/data.csv").exists());
         assert!(!home.join("artifacts/task1/existing.txt").exists());
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    // Regression for a real UX bug: a recurring job's task-board card showed the ENTIRE prompt as its
+    // title (e.g. a multi-paragraph "evening digest" instruction), because task_from_schedule put the
+    // full instructions in `title` and only fell back to the job's short name when no instructions were
+    // set. The short name should always be the title; instructions belong in `detail`.
+    #[test]
+    fn schedule_task_fields_uses_short_name_as_title_not_the_full_prompt() {
+        let (title, detail) = schedule_task_fields(
+            &json!({ "title": "Create today's evening digest for Hamburg...\n\n(long instructions)" }),
+            "Evening digest",
+        );
+        assert_eq!(title, "Evening digest");
+        assert_eq!(
+            detail,
+            "Create today's evening digest for Hamburg...\n\n(long instructions)"
+        );
+
+        // payload.prompt is the same kind of field under a different key — same treatment.
+        let (title2, detail2) =
+            schedule_task_fields(&json!({ "prompt": "do the thing" }), "My job");
+        assert_eq!(title2, "My job");
+        assert_eq!(detail2, "do the thing");
+
+        // A separate payload.detail is appended after the instructions, not lost.
+        let (_, detail3) = schedule_task_fields(
+            &json!({ "title": "do the thing", "detail": "extra context" }),
+            "My job",
+        );
+        assert_eq!(detail3, "do the thing\n\nextra context");
+
+        // No instructions at all (edge case): title falls back to the name, detail is whatever
+        // payload.detail carries (unchanged from the pre-fix behavior) — nothing duplicated.
+        let (title4, detail4) = schedule_task_fields(&json!({}), "Bare job");
+        assert_eq!(title4, "Bare job");
+        assert_eq!(detail4, "");
+    }
+
+    #[test]
+    fn written_paths_since_extracts_write_and_append_but_not_edit() {
+        let dir = tempfile::tempdir().unwrap();
+        let l = engram_core::Ledger::open(dir.path()).unwrap();
+        let workdir = std::path::Path::new("/work");
+        let start_seq = l.head().0;
+        l.append(
+            "agent.write",
+            "agent",
+            json!({"path": "/work/evening_digest.html", "bytes": 42}),
+        )
+        .unwrap();
+        l.append(
+            "agent.append",
+            "agent",
+            json!({"path": "/work/out/report.csv", "bytes": 10}),
+        )
+        .unwrap();
+        // An edit to an existing file must NOT be treated as a force-captured artifact.
+        l.append("agent.edit", "agent", json!({"path": "/work/existing.txt"}))
+            .unwrap();
+
+        let written = written_paths_since(&l, workdir, start_seq);
+        assert_eq!(written.len(), 2);
+        assert!(written.contains(&std::path::PathBuf::from("evening_digest.html")));
+        assert!(written.contains(&std::path::PathBuf::from("out/report.csv")));
+        assert!(!written.contains(&std::path::PathBuf::from("existing.txt")));
+    }
+
+    // Regression for a real bug: a recurring task (e.g. a daily "evening digest") writes to the same
+    // filename every run via write_file. Run 2+ overwrite a file that already existed BEFORE that run
+    // started, so the plain new-vs-preexisting diff drops it — the digest is generated and even
+    // rendered (e.g. a screenshot of it) but never shows up in the task's persisted artifacts. The fix:
+    // capture_artifacts must also capture files write_file/append_file explicitly touched this run.
+    #[test]
+    fn capture_artifacts_recaptures_a_write_file_target_that_already_existed() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let n = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("engram-artifacts-rewrite-test-{n}"));
+        let workdir = base.join("work");
+        let home = base.join("home");
+        std::fs::create_dir_all(&workdir).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        // A previous run's digest is already sitting in the workdir.
+        std::fs::write(
+            workdir.join("evening_digest.html"),
+            "<html>yesterday</html>",
+        )
+        .unwrap();
+        let before = snapshot_files(&workdir);
+
+        // This run's write_file call overwrites the same filename with today's digest.
+        std::fs::write(workdir.join("evening_digest.html"), "<html>today</html>").unwrap();
+        let written: std::collections::HashSet<_> =
+            [std::path::PathBuf::from("evening_digest.html")]
+                .into_iter()
+                .collect();
+
+        let arts = capture_artifacts(home.to_str().unwrap(), "task1", &workdir, &before, &written);
+        assert_eq!(arts, vec!["evening_digest.html".to_string()]);
+        assert_eq!(
+            std::fs::read_to_string(home.join("artifacts/task1/evening_digest.html")).unwrap(),
+            "<html>today</html>"
+        );
         std::fs::remove_dir_all(&base).ok();
     }
 

@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-06
+
 ### Added
 - **`engram model fetch`** — one command downloads a real, offline-capable-once-fetched
   (model2vec) embedding model and switches memory recall to it, taking hybrid recall from 88% to
@@ -13,6 +15,13 @@ All notable changes to this project are documented here. The format is based on
   automatic/silent network access — offline-by-default is preserved); a corrupt or partial download
   can never become "the active model" (verified before committing); requires a daemon restart, same
   as any other embedder-affecting setting.
+- **Per-project terminal, always-on git status, and worktree management** in the desktop app.
+  The terminal is no longer one shared shell falling back to a daemon-wide folder — it's a
+  multi-tab drawer, opened from the topbar, scoped to whichever project is active (each project
+  keeps its own tabs and file tree; one with no folder set is prompted to pick one instead of
+  silently sharing another project's workspace). A topbar chip shows the active project's branch,
+  ahead/behind, and dirty-file count on every view, with a panel to create, switch to, and remove
+  per-project git worktrees.
 
 ## [0.3.0] - 2026-07-05
 
@@ -173,6 +182,8 @@ The foundation: a reactive core, a signed ledger, and hybrid memory.
   learning loop with an A/B promotion gate.
 - **Benchmark harness** (`engram-bench`) for paraphrase recall and footprint.
 
-[Unreleased]: https://github.com/radotsvetkov/engram/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/radotsvetkov/engram/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/radotsvetkov/engram/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/radotsvetkov/engram/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/radotsvetkov/engram/releases/tag/v0.2.0
 [0.1.0]: https://github.com/radotsvetkov/engram/releases/tag/v0.1.0

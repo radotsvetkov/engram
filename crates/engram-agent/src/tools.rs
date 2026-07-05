@@ -2014,6 +2014,30 @@ impl Tool for UpdatePlanTool {
             "agent",
             json!({ "steps": steps, "total": total, "done": done }),
         );
+        // Granular mission breadcrumbs: a "done" step becomes a durable Region::Episodic fact, not
+        // just a live-context checklist line - so a long mission leaves a chain of timestamped
+        // milestones instead of the flywheel's single ~440-char final-answer sentence being the
+        // ONLY trace of everything that happened. No explicit dedup logic needed: remember()'s
+        // existing content-hash dedup already collapses a re-sent identical "done" step (the model
+        // re-echoes the full checklist on every call) into a bump instead of a duplicate row - this
+        // is naturally idempotent, not accidentally so.
+        for s in steps {
+            // Matches the flywheel auto-capture's own choice (main.rs): only capture from a
+            // TRUSTED run, not just tag-and-hope - fewer, cleaner breadcrumbs rather than a
+            // memory full of milestones from runs that read untrusted content.
+            if s["status"] == "done" && !ctx.taint.is_untrusted() {
+                let title = s["title"].as_str().unwrap_or("").trim();
+                if !title.is_empty() {
+                    let _ = ctx.memory.remember(
+                        WriteReq::new(Region::Episodic, format!("Plan step done: {title}"))
+                            .source("plan_milestone")
+                            .taint(ctx.taint)
+                            .actor("agent")
+                            .scope(ctx.scope.durable_write_scope()),
+                    );
+                }
+            }
+        }
         // Render the FULL checklist as the observation (not just a count): on every update the plan
         // is re-stated into the live context, so it survives transcript compaction on long tasks.
         let mut out = format!("plan ({done}/{total} done):");
@@ -4092,6 +4116,72 @@ mod file_tools_tests {
         assert!(
             out.contains("[x] scout") && out.contains("[~] build") && out.contains("[ ] verify"),
             "full checklist rendered: {out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_plan_leaves_a_durable_breadcrumb_per_done_step_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ctx_in(dir.path());
+        UpdatePlanTool
+            .run(
+                &json!({"steps":[
+                    {"title":"scout the terrain","status":"done"},
+                    {"title":"build the thing","status":"doing"},
+                    {"title":"verify it works","status":"todo"}
+                ]}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let hits = ctx
+            .memory
+            .recall("scout the terrain", &[Region::Episodic], 5)
+            .unwrap();
+        assert!(
+            hits.iter().any(|h| h.record.text.contains("scout the terrain")),
+            "a 'done' step must leave a durable episodic breadcrumb"
+        );
+        let not_done = ctx
+            .memory
+            .recall("build the thing", &[Region::Episodic], 5)
+            .unwrap();
+        assert!(
+            not_done.iter().all(|h| !h.record.text.contains("build the thing")),
+            "a 'doing'/'todo' step must NOT leave a breadcrumb yet"
+        );
+
+        // Re-sending the SAME checklist (the model echoes the full plan on every call) must not
+        // pile up a second breadcrumb - remember()'s own content-hash dedup already makes this
+        // naturally idempotent, no explicit diffing logic needed.
+        UpdatePlanTool
+            .run(
+                &json!({"steps":[
+                    {"title":"scout the terrain","status":"done"},
+                    {"title":"build the thing","status":"done"},
+                    {"title":"verify it works","status":"todo"}
+                ]}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let hits = ctx
+            .memory
+            .recall("scout the terrain", &[Region::Episodic], 5)
+            .unwrap();
+        assert_eq!(
+            hits.iter().filter(|h| h.record.text.contains("scout the terrain")).count(),
+            1,
+            "re-sending an already-done step must not duplicate its breadcrumb"
+        );
+        let now_done = ctx
+            .memory
+            .recall("build the thing", &[Region::Episodic], 5)
+            .unwrap();
+        assert!(
+            now_done.iter().any(|h| h.record.text.contains("build the thing")),
+            "a step that JUST transitioned to done must get its breadcrumb on this call"
         );
     }
 

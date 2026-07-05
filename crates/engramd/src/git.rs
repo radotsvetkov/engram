@@ -483,7 +483,10 @@ fn default_bind() -> bool {
 }
 
 /// POST /v1/git/worktrees — create a new linked worktree for a project's repo.
-pub async fn git_worktree_create(State(app): State<App>, Json(r): Json<WorktreeCreateReq>) -> ApiResult {
+pub async fn git_worktree_create(
+    State(app): State<App>,
+    Json(r): Json<WorktreeCreateReq>,
+) -> ApiResult {
     let wd = app
         .workspace
         .workdir_for_project(&r.project)
@@ -492,7 +495,11 @@ pub async fn git_worktree_create(State(app): State<App>, Json(r): Json<WorktreeC
         return Err(err("not a git repository"));
     }
     let branch = r.branch.trim();
-    if branch.is_empty() || !branch.chars().all(|c| c.is_alphanumeric() || "-_./".contains(c)) {
+    if branch.is_empty()
+        || !branch
+            .chars()
+            .all(|c| c.is_alphanumeric() || "-_./".contains(c))
+    {
         return Err(err("invalid branch name"));
     }
     let base = managed_worktree_base(&app, &r.project);

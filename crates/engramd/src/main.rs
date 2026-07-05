@@ -7289,7 +7289,13 @@ fn default_project_dir(home: &str, project_id: &str, project_name: &str) -> Resu
     let mut slug: String = project_name
         .trim()
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
         .collect();
     while slug.contains("--") {
         slug = slug.replace("--", "-");
@@ -7306,7 +7312,8 @@ fn default_project_dir(home: &str, project_id: &str, project_name: &str) -> Resu
         let suffix = &project_id[project_id.len().saturating_sub(6)..];
         dir = base.join(format!("{stem}-{suffix}"));
     }
-    std::fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
     Ok(dir
         .canonicalize()
         .map(|p| p.to_string_lossy().into_owned())

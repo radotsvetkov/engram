@@ -212,10 +212,17 @@ specifics that must be one answer, not two parallel code paths:
    `attachments_context` already explicitly primes the model to treat attachment content as
    untrusted reference, not instructions) rather than blended in as an unqualified fact — a prompt/
    labeling fix at the three call sites, not a filter. Not yet implemented.
-8. **Ledger the two remaining I1-invariant bypasses**: batch `recall_inner`'s per-hit access-count
-   bump into one `memory.access_batch` entry per minute (this field is the sole input to
-   consolidation's demotion decision — it shouldn't sit outside the signed history); document
-   `backfill_binary()`'s exemption as intentional (pure derived index state). Not yet implemented.
+8. **DONE (2026-07-05, `9a72174`):** `recall_inner`'s per-hit access-count bump is now batched into
+   one signed `memory.access_batch` ledger entry per minute of activity (lazy flush, no background
+   timer) instead of sitting outside the ledger entirely. `backfill_binary()`'s existing exemption
+   is now documented as intentional (pure derived-index state, same class as `reindex_binary`).
+   Verified with a deterministic test (rewinds the in-memory window rather than sleeping a real
+   minute).
+
+**Phase A status: all backend items done except the corpus.rs taint question (deferred to an
+explicit product decision, not implemented) and the recall-surface document-labeling fix (rescoped,
+not yet implemented). CLI/TUI parity for skills+consciousness is done; embedder-health badges and
+memory search/filter parity are not yet implemented.**
 
 **Desktop / TUI / CLI (parity work — pure client plumbing against routes that already exist; no backend design needed, land any time, ideally first since it's the cheapest win in the whole plan)**
 - **DONE (2026-07-05, `055e648`):** wired the four already-shipped skill routes

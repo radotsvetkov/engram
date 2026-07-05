@@ -3102,6 +3102,13 @@ pub(crate) async fn run_agent_task_cb(
         if let Some(pb) = conscious::project_block(&app.memory, pid) {
             parts.push(budget::Part::new(pb, 1));
         }
+        // The active project's own standing instructions (Project.persona, editable in the desktop
+        // UI's project settings) - previously only consulted by the legacy /v1/converse path, so
+        // editing it had ZERO effect on the live agentic chat every user actually exercises, with
+        // no warning that the control was inert. Wiring it in here is the fix.
+        if let Some(pp) = app.workspace.project_persona(pid) {
+            parts.push(budget::Part::new(pp, 1));
+        }
     }
     if let Some(mb) = &memory_block {
         parts.push(budget::Part::new(mb.clone(), 2)); // recalled memories: droppable under pressure

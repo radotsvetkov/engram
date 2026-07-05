@@ -273,9 +273,20 @@ impl WorkspaceStore {
             .iter()
             .find(|s| s.id == session_id)
             .map(|s| s.project_id.clone())?;
+        drop(d);
+        self.project_persona(&pid)
+    }
+
+    /// The standing-instructions persona for a project, by project id directly - the form the
+    /// agentic run path needs, since it carries a `ScopeCtx::project` id rather than a session id.
+    /// Was previously only reachable via `persona_for_session`, which the live agentic chat path
+    /// (unlike the legacy simple `/v1/converse` path) never called - a project's persona editor in
+    /// the desktop UI had zero effect on real chats, with no warning that it was inert.
+    pub fn project_persona(&self, project_id: &str) -> Option<String> {
+        let d = self.data.lock().expect("ws");
         d.projects
             .iter()
-            .find(|p| p.id == pid)
+            .find(|p| p.id == project_id)
             .map(|p| p.persona.clone())
             .filter(|p| !p.trim().is_empty())
     }
@@ -562,6 +573,34 @@ fn restrict(path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn project_persona_resolves_by_project_id_directly() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = WorkspaceStore::open(dir.path());
+        let p = ws.create_project("Apollo".into(), None);
+
+        // No persona set yet: both accessors agree on None.
+        assert_eq!(ws.project_persona(&p.id), None);
+        let s = ws.create_session(p.id.clone(), None);
+        assert_eq!(ws.persona_for_session(&s.id), None);
+
+        ws.update_project(&p.id, None, Some("Always answer in haiku.".into()), None);
+
+        // project_persona() - the form the agentic run path (run_agent_task_cb, keyed by
+        // ScopeCtx::project rather than a session id) actually needs - now resolves it directly.
+        assert_eq!(
+            ws.project_persona(&p.id).as_deref(),
+            Some("Always answer in haiku.")
+        );
+        // persona_for_session() must still agree (it now delegates to project_persona()).
+        assert_eq!(
+            ws.persona_for_session(&s.id).as_deref(),
+            Some("Always answer in haiku.")
+        );
+        // An unknown project id resolves to None, not a panic.
+        assert_eq!(ws.project_persona("does-not-exist"), None);
+    }
 
     #[test]
     fn scope_for_session_resolves_the_project_ring() {

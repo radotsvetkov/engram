@@ -658,6 +658,12 @@ impl Memory {
         if scope.project.is_some() || scope.session.is_some() {
             apply_scope_boost(&conn, &mut score)?;
         }
+        // Cold-tier deprioritization: consolidate() demotes stale, low-importance rows to 'cold' as
+        // its "sleep cycle" step, but until this nothing ever read `tier` at recall time - a demoted
+        // row ranked identically to a warm one, making the demotion pure bookkeeping with no
+        // observable effect (the decorative-theater failure mode). A small penalty, not a hard
+        // exclusion, so a cold memory is still fully recallable when it's genuinely the best match.
+        apply_tier_penalty(&conn, &mut score)?;
         let mut fused: Vec<(i64, f32)> = score.into_iter().collect();
         fused.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         fused.truncate(k);
@@ -1242,6 +1248,10 @@ fn scope_clause(prefix: &str, scope: &ScopeCtx) -> (String, Vec<String>) {
 /// without overpowering genuine relevance. Applied only to the bounded fused candidate set.
 const SCOPE_BOOST_PROJECT: f32 = 0.010;
 const SCOPE_BOOST_SESSION: f32 = 0.018;
+/// A cold-tier memory is deprioritized, not excluded - smaller than either scope boost, so a
+/// genuinely relevant cold memory still outranks an unrelated warm one; it only settles a
+/// near-tie in the warm row's favor.
+const TIER_PENALTY_COLD: f32 = 0.005;
 
 /// Add a small specificity boost to project/session-ringed hits among the fused candidates. Looks
 /// up the scope of only those candidate ids (a bounded set, <= 2*ARM_LIMIT) in a single query.
@@ -1267,6 +1277,32 @@ fn apply_scope_boost(conn: &Connection, score: &mut HashMap<i64, f32>) -> Result
         if boost != 0.0 {
             if let Some(s) = score.get_mut(&id) {
                 *s += boost;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Deprioritize (never exclude) cold-tier hits among the fused candidates, so `consolidate()`'s
+/// warm->cold demotion has an actual, observable effect on ranking instead of being a label nobody
+/// reads. Same bounded-lookup shape as `apply_scope_boost`.
+fn apply_tier_penalty(conn: &Connection, score: &mut HashMap<i64, f32>) -> Result<()> {
+    if score.is_empty() {
+        return Ok(());
+    }
+    let ids: Vec<i64> = score.keys().copied().collect();
+    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let sql = format!("SELECT id, tier FROM facts WHERE id IN ({placeholders})");
+    let mut stmt = conn.prepare(&sql)?;
+    let binds: Vec<Value> = ids.iter().map(|i| Value::Integer(*i)).collect();
+    let rows = stmt.query_map(params_from_iter(binds), |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+    })?;
+    for row in rows {
+        let (id, tier) = row?;
+        if tier == "cold" {
+            if let Some(s) = score.get_mut(&id) {
+                *s -= TIER_PENALTY_COLD;
             }
         }
     }
@@ -2055,5 +2091,40 @@ mod tests {
         let demoted = m.consolidate(Duration::from_secs(60)).unwrap();
         assert_eq!(demoted, 1);
         assert_eq!(m.get(rec.id).unwrap().unwrap().tier, "cold");
+    }
+
+    #[test]
+    fn cold_tier_is_deprioritized_but_still_recallable() {
+        let (m, _d) = mem();
+        // Identical text in two different scopes (so dedup-on-write, which is scope-aware, doesn't
+        // merge them into one row) - on a tie everywhere else, only tier should decide the order.
+        let warm = m
+            .remember(WriteReq::new(Region::Semantic, "the deploy runbook lives in docs"))
+            .unwrap();
+        let cold = m
+            .remember(
+                WriteReq::new(Region::Semantic, "the deploy runbook lives in docs")
+                    .scope(Scope::project("P")),
+            )
+            .unwrap();
+        {
+            let conn = m.conn.lock().unwrap();
+            conn.execute("UPDATE facts SET tier = 'cold' WHERE id = ?1", [cold.id])
+                .unwrap();
+        }
+        // Whole-brain recall (ScopeCtx::any()) so the scope-specificity boost never fires - tier is
+        // the only thing left that can break the tie.
+        let hits = m
+            .recall("deploy runbook docs", &[Region::Semantic], 5)
+            .unwrap();
+        assert_eq!(hits.len(), 2, "the cold row must still be recallable, not excluded");
+        assert_eq!(
+            hits[0].record.id, warm.id,
+            "a cold-tier hit must rank below an otherwise-tied warm one"
+        );
+        assert!(
+            hits.iter().any(|h| h.record.id == cold.id),
+            "the cold row must still appear in the results"
+        );
     }
 }

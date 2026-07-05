@@ -247,11 +247,17 @@ memory search/filter parity are not yet implemented.**
 ### Phase B — Truth over time (extends Phase 1.5's "searchable/filterable memories" with real temporal semantics)
 
 **Backend**
-1. **Bi-temporal fact versioning**: add `valid_from_ms`, `valid_until_ms` to `facts`, extending
-   `supersede()` in place (§5's locked decision). Add `Memory::recall_as_of(query, regions, k, scope,
-   as_of_ms)` as an additive filter alongside today's default (current-only) recall path — verify
-   explicitly that the default path still sees exactly one current version per fact across all three
-   recall arms once historical rows persist instead of disappearing.
+1. **DONE (2026-07-05, `70e7b53` backend + `99a5116` CLI):** bi-temporal fact versioning.
+   `valid_from_ms`/`valid_until_ms` added to `facts`, extending `supersede()` in place (§5's locked
+   decision - one migration path, not two); `Memory::recall_as_of(query, regions, k, scope, as_of_ms)`
+   is additive - every other recall variant passes `as_of_ms: None`, which is byte-identical SQL to
+   the pre-existing `superseded_by IS NULL` behavior (proven by all 33 pre-existing tests passing
+   unchanged, not just asserted). Exposed as `GET /v1/recall?as_of=<ms>` and the CLI's
+   `engram memory recall --as-of <date>` (§5's locked single verb; accepts YYYY-MM-DD or epoch-ms).
+   Verified live to the millisecond: changed identity from "Radoslav" to "Rado" via real chat turns,
+   confirmed `--as-of` one millisecond before the switch shows the old name and after shows the new
+   one, matching `supersede()`'s stamped timestamps exactly. TUI exposure (a "History" keybinding)
+   and desktop UI exposure (a History expander) are still open - the backend + CLI half is done.
 2. **Replace the 3-rule literal-prefix supersession whitelist** (`converse.rs`'s `RULES` table,
    Identity-only) with embedding-similarity-gated contradiction detection: on every Identity/Semantic
    write, check for a high-cosine-but-not-identical prior row in the same region+ring; if found,

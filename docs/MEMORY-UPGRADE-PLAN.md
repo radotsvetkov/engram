@@ -268,13 +268,18 @@ memory search/filter parity are not yet implemented.**
    reason.
 4. Add `scope_kind`/`scope_id` grouping to `Stats` (`store.rs:965-977`, currently global-only) so a
    per-project (and now per-agent) memory breakdown becomes queryable on every surface.
-5. **Bridge the two disconnected "procedural memory" stores**: on a `skill.promote` ledger event,
-   write a `Region::Procedural` memory record referencing the skill id/version/replay-score (scoped
-   `user`, or the new `agent` ring if promoted by a specific named agent). On `skill.revert`,
-   invalidate that record via the same `valid_until_ms` mechanism rather than leaving it stale. This
-   is the direct, low-cost fix for "procedural memory is dead in practice" — it doesn't invent a new
-   verification signal, it surfaces the one that already exists (the skill registry's replay/promote
-   loop) through the same API consciousness, recall, and future dissent-grounding already use.
+5. **DONE (2026-07-05, `fa51f30`):** bridged the two disconnected "procedural memory" stores.
+   `improve_skill()` already threaded `memory`/`scope` through every one of its 3 call sites (no new
+   plumbing), so a genuine promotion now writes a `Region::Procedural` memory (`skill:<id>#<version>`
+   sourced, scoped to the run's durable write scope); `skill_revert` writes a companion note instead
+   of editing/deleting the original (append-only, truthful history). Verified with a Rust test AND
+   live against a real daemon (a genuine calc.py fix — added `cbrt` support — got a real "promoted"
+   decision, confirmed via `/v1/recall`, then reverted and confirmed the companion note). This is the
+   direct fix for the complaint that opened this whole investigation ("not getting any procedural
+   memory points"). Scoped to the `user`/`project` rings only — the `agent` ring (item 3 below) isn't
+   built yet, so a promotion by a specific named agent isn't yet separately attributable; revisit once
+   item 3 lands. `valid_until_ms`-based invalidation on revert (vs. this append-only note) is likewise
+   deferred to when bi-temporal versioning (item 1) exists.
 6. **DONE (2026-07-05, `d0e9d01`):** `apply_tier_penalty()` (mirrors `apply_scope_boost()`) now
    subtracts a small fixed penalty from cold-tier hits in the fused ranking — deprioritized, never
    excluded. Verified with a test: two scope-distinct copies of an identical fact tie on every other

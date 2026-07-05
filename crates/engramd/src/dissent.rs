@@ -79,36 +79,26 @@ pub async fn review(
 }
 
 /// Parse the specialist's reply, keeping only citations that map to a really-recalled memory.
-/// `cites` is the recalled set as `(id, region, text)`, in the order they were numbered.
+/// `cites` is the recalled set as `(id, region, text)`, in the order they were numbered. Anything
+/// that isn't an explicit CONFLICT line (incl. "NONE", or a mock echo) yields no dissent - shared
+/// anti-hallucination parsing lives in `crate::citation`, reused by memory contradiction-detection.
 fn parse(reply: &str, cites: &[(i64, String, String)]) -> Option<Dissent> {
-    let line = reply.trim().lines().next()?.trim();
-    // Anything that isn't an explicit CONFLICT line (incl. "NONE", or a mock echo) yields no dissent.
-    let rest = line.strip_prefix("CONFLICT:")?;
-    let (nums, why) = rest.split_once('|').unwrap_or((rest, ""));
-    let mut grounds = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    for tok in nums.split(',') {
-        if let Ok(n) = tok.trim().parse::<usize>() {
-            // Verify: a 1-based index into the set we actually recalled. Drop anything else.
-            if n >= 1 && n <= cites.len() && seen.insert(n) {
-                let (id, region, text) = &cites[n - 1];
-                grounds.push(Ground {
-                    id: *id,
-                    region: region.clone(),
-                    text: text.clone(),
-                });
+    let (idxs, why) = crate::citation::parse_cited_claim(reply, "CONFLICT:", cites.len())?;
+    let grounds = idxs
+        .into_iter()
+        .map(|n| {
+            let (id, region, text) = &cites[n - 1];
+            Ground {
+                id: *id,
+                region: region.clone(),
+                text: text.clone(),
             }
-        }
-    }
-    if grounds.is_empty() {
-        // The model claimed a conflict but cited nothing real - treat as no grounded dissent.
-        return None;
-    }
-    let why = why.trim();
+        })
+        .collect();
     let objection = if why.is_empty() {
         "This may conflict with what I know about you.".to_string()
     } else {
-        why.to_string()
+        why
     };
     Some(Dissent { objection, grounds })
 }

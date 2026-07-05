@@ -755,6 +755,54 @@ async fn memory(client: &Client, cmd: MemoryCmd, json: bool) -> Result<i32> {
             }
             Ok(0)
         }
+        MemoryCmd::Supersessions { accept, reject } => {
+            if let Some(id) = accept.or(reject) {
+                let accepting = accept.is_some();
+                let r = client.supersession_resolve(id, accepting).await?;
+                if json {
+                    print_json(&r);
+                    return Ok(0);
+                }
+                let ok = r.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+                if !ok {
+                    eprintln!("{}", bad(&format!("no pending supersession {id}")));
+                    return Ok(1);
+                }
+                println!(
+                    "{} {id}",
+                    if accepting { good("✓ accepted") } else { warn("✓ rejected") }
+                );
+                return Ok(0);
+            }
+            let pending = client.supersessions().await?;
+            if json {
+                print_json(&pending);
+                return Ok(0);
+            }
+            let items = pending.as_array().cloned().unwrap_or_default();
+            if items.is_empty() {
+                println!("{}", dim("no pending contradictions"));
+                return Ok(0);
+            }
+            out::header(&format!("Pending supersessions ({})", items.len()));
+            for p in &items {
+                let id = p.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+                let old_id = p.get("old_id").and_then(|v| v.as_i64()).unwrap_or(0);
+                let text = p.get("candidate_text").and_then(|v| v.as_str()).unwrap_or("");
+                let reason = p.get("reason").and_then(|v| v.as_str()).unwrap_or("");
+                println!(
+                    "  {} #{id} (replaces #{old_id})\n    {}\n    {}",
+                    out::tool("→"),
+                    one_line(text),
+                    dim(reason)
+                );
+            }
+            println!(
+                "\n{}",
+                dim("engram memory supersessions --accept <id> | --reject <id>")
+            );
+            Ok(0)
+        }
     }
 }
 

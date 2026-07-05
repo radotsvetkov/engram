@@ -8,7 +8,7 @@
 //! and the reply is written back to episodic memory. All of it persists in the SQLite
 //! brain, so it survives the core sleeping to zero and carries across sessions.
 
-use engram_core::Taint;
+use engram_core::{Scope, Taint};
 use engram_gateway::{Call, CompletionRequest, Gateway, Message};
 use engram_memory::{Memory, Region, ScopeCtx, WriteReq};
 
@@ -116,11 +116,30 @@ pub(crate) fn recall_ribbon(
 }
 
 /// Deepen the model of the user from what they just said - extract + store identity facts the same
-/// way the conversational path does (singular attributes supersede; preferences accumulate). Returns
-/// the learned facts for the UI. Best-effort.
-pub(crate) fn learn_identity(memory: &Memory, text: &str) -> Vec<String> {
+/// way the conversational path does (singular attributes supersede; preferences accumulate,
+/// checked for a genuine conflict first - see `converse_stream`'s identical logic for why). Returns
+/// the learned facts for the UI. Best-effort. This is the version the LIVE agentic chat path calls
+/// (`converse_stream_handler` -> `run_agent_task_cb`); it must stay behaviorally identical to
+/// `converse_stream`'s inline copy so a feature wired into one path doesn't silently miss the other
+/// - exactly the trap the per-project-persona bug (fixed earlier) fell into.
+pub(crate) async fn learn_identity(memory: &Memory, gateway: &Gateway, model: &str, text: &str) -> Vec<String> {
     let learned = extract_identity(text);
     for l in &learned {
+        if !l.supersede
+            && crate::contradiction::check(
+                memory,
+                gateway,
+                model,
+                Region::Identity,
+                &Scope::user(),
+                &l.fact,
+                "core",
+            )
+            .await
+            .is_some()
+        {
+            continue; // left pending for a human to confirm, not written immediately
+        }
         let Ok(rec) = memory.remember(
             WriteReq::new(Region::Identity, l.fact.clone())
                 .source("inferred")
@@ -232,9 +251,31 @@ pub async fn converse_stream(
     // 3. Deepen the model of the user from what they just said. A changed *singular*
     //    attribute (name, where they live/work) supersedes the prior value - the old fact
     //    becomes history (kept, ledgered) and stops surfacing, so recall isn't confidently
-    //    wrong. Additive facts (likes, uses) accumulate.
+    //    wrong. Additive facts (likes, uses) accumulate - or did, until now: they never had ANY
+    //    contradiction check (extract_identity's own doc comment names this as a deliberate
+    //    gap - a generic-prefix fact would let a passing mood bury a durable one). For those,
+    //    check for a genuine conflict with an existing preference before accumulating forever.
+    //    Never applies silently: a detected conflict is left PENDING (crate::contradiction never
+    //    writes it, only proposes it) for a human to confirm; anything else - no similar fact, no
+    //    real model connected, or the model finds no conflict - falls through to the existing
+    //    immediate-write behavior, unchanged from before this feature existed.
     let learned = extract_identity(text);
     for l in &learned {
+        if !l.supersede
+            && crate::contradiction::check(
+                memory,
+                gateway,
+                model,
+                Region::Identity,
+                &Scope::user(),
+                &l.fact,
+                "core",
+            )
+            .await
+            .is_some()
+        {
+            continue; // left pending for a human to confirm, not written immediately
+        }
         let rec = memory
             .remember(
                 WriteReq::new(Region::Identity, l.fact.clone())

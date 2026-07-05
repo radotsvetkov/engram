@@ -241,6 +241,20 @@ impl Client {
         self.post_value("/v1/consciousness/revert", json!({})).await
     }
 
+    /// Not-yet-resolved proposed contradictions (crate::contradiction never applies one on its
+    /// own - this is the inbox of things a human still needs to accept or reject).
+    pub async fn supersessions(&self) -> Result<Value> {
+        self.get_value("/v1/supersessions").await
+    }
+
+    pub async fn supersession_resolve(&self, id: i64, accept: bool) -> Result<Value> {
+        self.post_value(
+            &format!("/v1/supersessions/{id}/resolve"),
+            json!({ "accept": accept }),
+        )
+        .await
+    }
+
     // ---- tasks ------------------------------------------------------------
 
     pub async fn tasks(&self) -> Result<Vec<Task>> {

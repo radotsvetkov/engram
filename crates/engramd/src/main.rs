@@ -25,8 +25,10 @@ mod agents;
 mod budget;
 mod channels;
 mod checkpoints;
+mod citation;
 mod config;
 mod conscious;
+mod contradiction;
 mod converse;
 mod corpus;
 mod dissent;
@@ -945,6 +947,11 @@ async fn run(mode: RunMode) -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/remember", post(remember))
         .route("/v1/recall", get(recall))
         .route("/v1/forget", post(forget))
+        .route("/v1/supersessions", get(supersessions_list))
+        .route(
+            "/v1/supersessions/{id}/resolve",
+            post(supersessions_resolve),
+        )
         .route("/v1/consciousness", get(consciousness_get))
         .route("/v1/consciousness/distill", post(consciousness_distill))
         .route("/v1/consciousness/edit", post(consciousness_edit))
@@ -2582,6 +2589,32 @@ struct ForgetReq {
 async fn forget(State(app): State<App>, Json(r): Json<ForgetReq>) -> ApiResult {
     let ok = app.memory.forget(r.id, "user", "via api").map_err(err)?;
     Ok(Json(json!({ "forgotten": ok })))
+}
+
+/// List not-yet-resolved proposed contradictions - the visible half of turning silent
+/// auto-supersede into a confirmable event (crate::contradiction never applies one on its own).
+async fn supersessions_list(State(app): State<App>) -> ApiResult {
+    let pending = app.memory.pending_supersessions().map_err(err)?;
+    Ok(Json(serde_json::to_value(pending).map_err(err)?))
+}
+
+#[derive(Deserialize)]
+struct ResolveSupersessionReq {
+    accept: bool,
+}
+
+/// Accept (write the candidate + supersede the old fact) or reject (no-op) a proposed
+/// contradiction. This is the ONLY place a proposal can ever take effect.
+async fn supersessions_resolve(
+    State(app): State<App>,
+    Path(id): Path<i64>,
+    Json(r): Json<ResolveSupersessionReq>,
+) -> ApiResult {
+    let ok = app
+        .memory
+        .resolve_supersession(id, r.accept, "user")
+        .map_err(err)?;
+    Ok(Json(json!({ "ok": ok, "id": id, "accepted": r.accept })))
 }
 
 #[derive(Deserialize)]
@@ -4889,7 +4922,8 @@ async fn converse_stream_handler(
             .unwrap_or_else(engram_core::ScopeCtx::user_only);
         let (recalled, recalled_refs) =
             converse::recall_ribbon(&app.memory, &r.text, &ribbon_scope);
-        let learned = converse::learn_identity(&app.memory, &r.text);
+        let learned =
+            converse::learn_identity(&app.memory, &app.gateway, &app.model(), &r.text).await;
         // Conversation continuity: hand the agent the recent turns so a follow-up ("let's try again")
         // resolves against what was already said, instead of re-asking for context it already has.
         let history = r

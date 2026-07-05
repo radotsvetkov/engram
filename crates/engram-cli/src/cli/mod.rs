@@ -262,6 +262,13 @@ pub enum MemoryCmd {
     IdentityRemove { id: String },
     /// Revert consciousness to its previous version.
     IdentityRevert,
+    /// List proposed contradictions awaiting a decision, or accept/reject one by id.
+    Supersessions {
+        #[arg(long)]
+        accept: Option<i64>,
+        #[arg(long)]
+        reject: Option<i64>,
+    },
 }
 
 #[derive(Subcommand, Debug)]

@@ -152,6 +152,22 @@ pub struct Record {
     pub valid_until_ms: Option<i64>,
 }
 
+/// A detected-but-unconfirmed contradiction: `candidate_text` MAY supersede the current fact
+/// `old_id`, per the model's cited `reason` - never applied silently (the mandatory-confirmation
+/// design: see docs/MEMORY-UPGRADE-PLAN.md §5). Resolved by a human via [`Memory::resolve_supersession`].
+#[derive(Debug, Clone, Serialize)]
+pub struct PendingSupersession {
+    pub id: i64,
+    pub old_id: i64,
+    pub candidate_text: String,
+    pub reason: String,
+    pub region: String,
+    pub scope_kind: String,
+    pub scope_id: String,
+    pub actor: String,
+    pub created_ms: i64,
+}
+
 /// A recall result with its fused score and the rank each arm gave it (so the UI can
 /// show *why* a memory surfaced - keyword, semantic, or both).
 #[derive(Debug, Clone, Serialize)]
@@ -851,6 +867,179 @@ impl Memory {
         Ok(n > 0)
     }
 
+    /// Find live, current (non-deleted, non-superseded) facts in `region`+`scope` whose meaning is
+    /// close to `text` but whose content is NOT identical (exact duplicates are `remember()`'s
+    /// dedup-on-write's job, not this one) - the candidate set a contradiction-detector should ask
+    /// a model to judge. Reuses the same exact-cosine machinery `recall_inner`'s semantic arm uses;
+    /// `min_similarity` is the caller's threshold (this function does no ranking-quality judgment
+    /// of its own beyond cosine distance). Bounded to a small `limit` (a candidate LISTING a model
+    /// reads, not a recall result set).
+    pub fn find_similar_not_identical(
+        &self,
+        region: Region,
+        scope: &Scope,
+        text: &str,
+        min_similarity: f32,
+        limit: usize,
+    ) -> Result<Vec<Record>> {
+        let q_emb = self.embedder.embed(text);
+        let content_hash = blake3::hash(text.as_bytes()).to_hex().to_string();
+        let conn = self.conn.lock().expect("memory mutex poisoned");
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {COLS} FROM facts WHERE region = ?1 AND scope_kind = ?2 AND scope_id = ?3 \
+             AND deleted = 0 AND superseded_by IS NULL AND content_hash != ?4"
+        ))?;
+        let rows = stmt.query_map(
+            params![region.as_str(), scope.kind.as_str(), scope.id, content_hash],
+            map_record,
+        )?;
+        let mut scored: Vec<(f32, Record)> = Vec::new();
+        for row in rows {
+            let rec = row?;
+            let emb = {
+                let blob: Vec<u8> = conn.query_row(
+                    "SELECT embedding FROM facts WHERE id = ?1",
+                    [rec.id],
+                    |r| r.get(0),
+                )?;
+                from_bytes(&blob)
+            };
+            let sim = cosine(&q_emb, &emb);
+            if sim >= min_similarity {
+                scored.push((sim, rec));
+            }
+        }
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(limit);
+        Ok(scored.into_iter().map(|(_, r)| r).collect())
+    }
+
+    /// Record a detected-but-unconfirmed contradiction. Never applies it - the caller (a
+    /// contradiction-detector) has already run its own citation-verified judgment; this only
+    /// persists the proposal for a human to accept or reject via [`Memory::resolve_supersession`].
+    /// Ledger-first, like every other mutation.
+    pub fn propose_supersession(
+        &self,
+        old_id: i64,
+        candidate_text: &str,
+        reason: &str,
+        region: Region,
+        scope: &Scope,
+        actor: &str,
+    ) -> Result<i64> {
+        let now = now_ms() as i64;
+        let entry = self.ledger.append(
+            "memory.propose_supersession",
+            actor,
+            json!({ "old_id": old_id, "candidate_text": candidate_text, "reason": reason }),
+        )?;
+        let conn = self.conn.lock().expect("memory mutex poisoned");
+        conn.execute(
+            "INSERT INTO pending_supersessions \
+             (old_id, candidate_text, reason, region, scope_kind, scope_id, actor, created_ms) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                old_id,
+                candidate_text,
+                reason,
+                region.as_str(),
+                scope.kind.as_str(),
+                scope.id,
+                actor,
+                now,
+            ],
+        )?;
+        let _ = entry;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// All not-yet-resolved proposed contradictions, oldest first.
+    pub fn pending_supersessions(&self) -> Result<Vec<PendingSupersession>> {
+        let conn = self.conn.lock().expect("memory mutex poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT id, old_id, candidate_text, reason, region, scope_kind, scope_id, actor, created_ms \
+             FROM pending_supersessions WHERE resolved = 0 ORDER BY created_ms ASC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(PendingSupersession {
+                id: r.get(0)?,
+                old_id: r.get(1)?,
+                candidate_text: r.get(2)?,
+                reason: r.get(3)?,
+                region: r.get(4)?,
+                scope_kind: r.get(5)?,
+                scope_id: r.get(6)?,
+                actor: r.get(7)?,
+                created_ms: r.get(8)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// Resolve a pending contradiction: `accept` writes the candidate as a new fact and supersedes
+    /// the old one (through the existing, ledgered `remember`/`supersede` - no separate mutation
+    /// path); rejecting just marks it resolved, writing and superseding nothing. Either way this is
+    /// the ONLY place a proposed contradiction can ever take effect - never automatically.
+    pub fn resolve_supersession(&self, id: i64, accept: bool, actor: &str) -> Result<bool> {
+        let row: Option<(i64, String, String, String, String, String)> = {
+            let conn = self.conn.lock().expect("memory mutex poisoned");
+            conn.query_row(
+                "SELECT old_id, candidate_text, region, scope_kind, scope_id, reason \
+                 FROM pending_supersessions WHERE id = ?1 AND resolved = 0",
+                [id],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                    ))
+                },
+            )
+            .optional()?
+        };
+        let Some((old_id, candidate_text, region, scope_kind, scope_id, reason)) = row else {
+            return Ok(false);
+        };
+        let new_id = if accept {
+            let region = match region.as_str() {
+                "episodic" => Region::Episodic,
+                "identity" => Region::Identity,
+                "procedural" => Region::Procedural,
+                _ => Region::Semantic,
+            };
+            let scope = Scope::from_parts(&scope_kind, &scope_id);
+            let rec = self.remember(
+                WriteReq::new(region, candidate_text)
+                    .source("contradiction_detector")
+                    .actor(actor)
+                    .scope(scope),
+            )?;
+            self.supersede(old_id, rec.id)?;
+            Some(rec.id)
+        } else {
+            None
+        };
+        let now = now_ms() as i64;
+        self.ledger.append(
+            "memory.resolve_supersession",
+            actor,
+            json!({ "id": id, "accepted": accept, "old_id": old_id, "new_id": new_id, "reason": reason }),
+        )?;
+        let conn = self.conn.lock().expect("memory mutex poisoned");
+        conn.execute(
+            "UPDATE pending_supersessions SET resolved = ?1, resolved_ms = ?2, new_id = ?3 WHERE id = ?4",
+            params![if accept { 1 } else { 2 }, now, new_id, id],
+        )?;
+        Ok(true)
+    }
+
     /// IDs of current (live, non-superseded) memories in `region` whose text starts with
     /// `prefix`, across ALL scopes - used to find the prior singular fact a new one replaces.
     pub fn current_with_prefix(&self, region: Region, prefix: &str) -> Result<Vec<i64>> {
@@ -1238,7 +1427,22 @@ fn init_schema(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_facts_salience ON facts(importance DESC, last_access_ms DESC);
         CREATE INDEX IF NOT EXISTS idx_facts_dedup ON facts(region, content_hash);
         CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(text, tokenize = 'unicode61');
-        CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);",
+        CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+        CREATE TABLE IF NOT EXISTS pending_supersessions (
+            id             INTEGER PRIMARY KEY,
+            old_id         INTEGER NOT NULL,
+            candidate_text TEXT NOT NULL,
+            reason         TEXT NOT NULL,
+            region         TEXT NOT NULL,
+            scope_kind     TEXT NOT NULL,
+            scope_id       TEXT NOT NULL,
+            actor          TEXT NOT NULL,
+            created_ms     INTEGER NOT NULL,
+            resolved       INTEGER NOT NULL DEFAULT 0,
+            resolved_ms    INTEGER,
+            new_id         INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_pending_supersessions_resolved ON pending_supersessions(resolved);",
     )?;
     // Idempotent column adds for brains created before a feature existed (each is a no-op,
     // and errors "duplicate column", when the column is already present - hence `let _`).
@@ -2262,6 +2466,105 @@ mod tests {
         let demoted = m.consolidate(Duration::from_secs(60)).unwrap();
         assert_eq!(demoted, 1);
         assert_eq!(m.get(rec.id).unwrap().unwrap().tier, "cold");
+    }
+
+    #[test]
+    fn find_similar_not_identical_excludes_exact_duplicates_and_low_similarity() {
+        let (m, _d) = mem();
+        let scope = Scope::user();
+        m.remember(WriteReq::new(Region::Semantic, "the deploy pipeline runs on port 9090"))
+            .unwrap();
+        m.remember(WriteReq::new(Region::Semantic, "the cafeteria menu changes on Tuesdays"))
+            .unwrap();
+
+        // An exact duplicate must never show up as a "candidate contradiction" - that's dedup's job.
+        let exact = m
+            .find_similar_not_identical(
+                Region::Semantic,
+                &scope,
+                "the deploy pipeline runs on port 9090",
+                0.0,
+                5,
+            )
+            .unwrap();
+        assert!(
+            exact.iter().all(|r| r.text != "the deploy pipeline runs on port 9090"),
+            "an exact-text match must be excluded (it's a dedup case, not a contradiction candidate)"
+        );
+
+        // A near-paraphrase above threshold IS a candidate; an unrelated fact below threshold isn't.
+        let near = m
+            .find_similar_not_identical(
+                Region::Semantic,
+                &scope,
+                "the deploy pipeline actually runs on port 8080 now",
+                0.3,
+                5,
+            )
+            .unwrap();
+        assert!(
+            near.iter().any(|r| r.text.contains("9090")),
+            "a genuine near-duplicate must be found as a candidate"
+        );
+        assert!(
+            near.iter().all(|r| !r.text.contains("cafeteria")),
+            "an unrelated fact must not pass the similarity threshold"
+        );
+    }
+
+    #[test]
+    fn pending_supersession_is_never_applied_until_resolved() {
+        let (m, _d) = mem();
+        let old = m
+            .remember(WriteReq::new(Region::Semantic, "the API base url is api.old.example"))
+            .unwrap();
+        let pid = m
+            .propose_supersession(
+                old.id,
+                "the API base url is api.new.example",
+                "the user said the domain moved",
+                Region::Semantic,
+                &Scope::user(),
+                "core",
+            )
+            .unwrap();
+
+        // Proposing must NOT touch the original fact or write anything new - mandatory
+        // confirmation, no silent auto-apply (the locked decision in the plan's §5).
+        assert_eq!(m.recall("api base url", &[Region::Semantic], 5).unwrap().len(), 1);
+        assert_eq!(m.get(old.id).unwrap().unwrap().text, "the API base url is api.old.example");
+        let pending = m.pending_supersessions().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, pid);
+        assert_eq!(pending[0].old_id, old.id);
+
+        // Rejecting resolves it with no effect at all.
+        assert!(m.resolve_supersession(pid, false, "user").unwrap());
+        assert!(m.pending_supersessions().unwrap().is_empty());
+        assert_eq!(m.get(old.id).unwrap().unwrap().text, "the API base url is api.old.example");
+        assert_eq!(m.recall("api base url", &[Region::Semantic], 5).unwrap().len(), 1);
+
+        // A second proposal, accepted THIS time, writes the new fact and supersedes the old one -
+        // through the same remember()/supersede() every other write path already uses.
+        let pid2 = m
+            .propose_supersession(
+                old.id,
+                "the API base url is api.new.example",
+                "the user said the domain moved",
+                Region::Semantic,
+                &Scope::user(),
+                "core",
+            )
+            .unwrap();
+        assert!(m.resolve_supersession(pid2, true, "user").unwrap());
+        let hits = m.recall("api base url", &[Region::Semantic], 5).unwrap();
+        assert_eq!(hits.len(), 1, "the old fact must no longer surface once accepted");
+        assert!(hits[0].record.text.contains("new.example"));
+        assert!(m.pending_supersessions().unwrap().is_empty());
+
+        // Resolving an already-resolved (or unknown) id is a no-op, not an error or a double-apply.
+        assert!(!m.resolve_supersession(pid2, true, "user").unwrap());
+        assert!(!m.resolve_supersession(999_999, true, "user").unwrap());
     }
 
     #[test]

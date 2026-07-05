@@ -1,15 +1,15 @@
 # Engram memory benchmarks
 
 Real, committed, re-runnable numbers for the memory-upgrade plan's headline claims
-(`docs/MEMORY-UPGRADE-PLAN.md`). Every number below comes from running the code in this repo — no
-number is asserted or hand-picked; the methodology and the diagnostic to reproduce it are both
-described. Where a result was surprising, it's reported as found, not smoothed over.
+(`docs/MEMORY-UPGRADE-PLAN.md`). Every number below comes from running real code in this repo (or,
+for §3, real code from mem0/LangChain installed locally) — no number is asserted or hand-picked;
+the methodology and the diagnostic to reproduce it are both described. Where a result was
+surprising or uncomfortable, it's reported as found, not smoothed over.
 
 This started as an *internal* benchmark suite (Engram's own hybrid retrieval against isolated
 single-signal baselines built from the exact same stored index) and now also includes a **real,
-executed** external comparison against mem0 and LangChain (§4) — installed and run locally, not
-assumed. Every number below comes from running real code; where a result was surprising or
-uncomfortable, it's reported as found, not smoothed over.
+executed** external comparison against mem0 and LangChain (§3) — installed and run locally, not
+assumed.
 
 ## 1. Recall quality: keyword-only vs semantic-only vs hybrid RRF
 
@@ -81,7 +81,7 @@ trigram-hash numbers above only) — but the path is real and was verified end-t
 With a real trained embedding model in place of the zero-dependency trigram-hash fallback, **hybrid
 reaches the same perfect recall as semantic-only** — the earlier trigram-hash "hybrid loses one
 case to fusion-window competition" finding (§1 above) doesn't reproduce once the semantic signal
-itself is strong enough that no result is ever marginal. See §4 for what this means next to mem0
+itself is strong enough that no result is ever marginal. See §3 for what this means next to mem0
 and LangChain using their own real embedding models.
 
 ## 2. Scale: does scoping actually confine a query, at 40 projects × 10k rows?

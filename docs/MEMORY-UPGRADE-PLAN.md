@@ -278,8 +278,12 @@ memory search/filter parity are not yet implemented.**
    suite; `contradiction.rs`'s 5 tests using `ScriptedProvider` for fully deterministic LLM-response
    testing (no real API key needed) covering a genuine conflict, no-candidate (never calls the
    model), a NONE reply, a hallucinated citation, and the offline-mock-silence case; 2 new
-   `engram-memory` tests; and a full live end-to-end accept flow against a real daemon. Desktop/TUI
-   inbox UI is still open - the backend + CLI half is done.
+   `engram-memory` tests; and a full live end-to-end accept flow against a real daemon.
+   **DONE (2026-07-05, `aeace86` TUI, `ef07cb8` desktop):** the inbox UI on all three surfaces -
+   TUI's Memory view gained a `MemPanel::Supersessions` panel (`Tab` cycles Recent → Reflections →
+   Supersessions; `a`/`x` accept/reject), desktop got a "⇄ Pending" panel with accept/reject
+   buttons, both calling the same `POST /v1/supersessions/{id}/resolve` route the CLI already used
+   - the only place a proposal can ever take effect, on any surface.
 3. **DONE (2026-07-05, `801d694`) — implemented as attribution, not a new ring.** Re-examined during
    implementation: a genuinely separate `ScopeKind::Agent` ring (unioned into recall like project/
    session) would mean an agent's memories are invisible to the rest of the team unless explicitly
@@ -479,11 +483,19 @@ Phase D (DONE) — grounded reflection, opt-in, built on Phase B's shared citati
   permanently-distinguished on CLI, TUI, and desktop                       — 99d5840, a9d9448, e2f1a32
 ```
 
-All four phases (A/B/C backend/D) are now DONE. What remains under the standing improvement effort:
-a committed benchmark suite with real numbers, the cross-surface parity items explicitly flagged as
-still open above (embedder-health badges, memory search/filter parity, supersessions inbox UI,
-per-project/agent stats display, the "paged to memory" compaction marker, TUI interactive
-improve/teach modals), an end-to-end multi-project real-use test, and doc/release updates.
+All four phases (A/B/C backend/D) are now DONE. **DONE (2026-07-05):** the benchmark suite
+(`crates/engram-bench/BENCHMARKS.md` - a real three-arm keyword/semantic/hybrid recall-quality
+comparison plus the re-verified scale benchmark) and the highest-value cross-surface parity item,
+the pending-supersessions inbox (previously CLI-only, now on TUI and desktop too - see above).
+
+**Still genuinely open** (lower-priority parity items, explicitly tracked rather than silently
+dropped): embedder-health badges, memory search/filter parity, per-project/agent stats display, the
+"paged to memory" compaction marker, TUI interactive improve/teach modals. None of these block core
+functionality the way the supersessions inbox did (a whole review workflow being unreachable) -
+they're informational/convenience gaps, reasonable to pick up in a follow-on pass.
+
+What remains under the standing improvement effort: an end-to-end multi-project real-use test, and
+doc/release updates.
 
 ## 8. Explicit non-goals (reaffirming the existing cut list — nothing here proposes any of these)
 

@@ -1028,6 +1028,10 @@ async fn run(mode: RunMode) -> Result<(), Box<dyn std::error::Error>> {
             "/v1/projects/{id}",
             axum::routing::patch(projects_update).delete(projects_delete),
         )
+        .route(
+            "/v1/projects/{id}/ensure-workdir",
+            post(projects_ensure_workdir),
+        )
         .route("/v1/sessions", get(sessions_list).post(sessions_create))
         .route(
             "/v1/sessions/{id}",
@@ -7274,6 +7278,59 @@ async fn projects_update(
         .update_project(&id, name, persona, workdir)
         .ok_or_else(|| ApiError("project not found".into()))?;
     Ok(Json(serde_json::to_value(p).map_err(err)?))
+}
+/// Auto-provision a per-project folder the first time something needs one and the project
+/// doesn't already have one - `<home>/projects/<slug>`, created if missing. Keeps every project
+/// isolated by default without making the user pick a folder before they can open its terminal;
+/// a project created before this feature existed gets backfilled the same way, lazily, on first
+/// use. A name collision (two projects called the same thing) disambiguates with a suffix from
+/// the project id.
+fn default_project_dir(home: &str, project_id: &str, project_name: &str) -> Result<String, String> {
+    let mut slug: String = project_name
+        .trim()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .collect();
+    while slug.contains("--") {
+        slug = slug.replace("--", "-");
+    }
+    let slug = slug.trim_matches('-').to_string();
+    let base = std::path::Path::new(home).join("projects");
+    let stem = if slug.is_empty() {
+        project_id.to_string()
+    } else {
+        slug
+    };
+    let mut dir = base.join(&stem);
+    if dir.exists() {
+        let suffix = &project_id[project_id.len().saturating_sub(6)..];
+        dir = base.join(format!("{stem}-{suffix}"));
+    }
+    std::fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+    Ok(dir
+        .canonicalize()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| dir.to_string_lossy().into_owned()))
+}
+/// POST /v1/projects/{id}/ensure-workdir — give this project a folder if it doesn't have one yet,
+/// so opening its terminal never has to ask first. Idempotent: a project that already has a
+/// workdir is returned unchanged.
+async fn projects_ensure_workdir(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
+    let p = app
+        .workspace
+        .projects()
+        .into_iter()
+        .find(|p| p.id == id)
+        .ok_or_else(|| err("project not found"))?;
+    if p.workdir.as_deref().is_some_and(|w| !w.trim().is_empty()) {
+        return Ok(Json(serde_json::to_value(p).map_err(err)?));
+    }
+    let dir = default_project_dir(&app.home, &p.id, &p.name).map_err(ApiError)?;
+    let updated = app
+        .workspace
+        .update_project(&id, None, None, Some(dir))
+        .ok_or_else(|| ApiError("project not found".into()))?;
+    Ok(Json(serde_json::to_value(updated).map_err(err)?))
 }
 async fn projects_delete(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
     // Gather the project's session ids BEFORE deleting so their session-scoped memories can be

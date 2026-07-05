@@ -5148,13 +5148,34 @@ async function loadTree(path){
 }
 function termTabs(){ const pid=WS.activeProject; return TERMS.byProject[pid]||(TERMS.byProject[pid]=[]); }
 function activeTab(){ const tabs=termTabs(); const id=TERMS.activeByProject[WS.activeProject]; return tabs.find(t=>t.id===id)||tabs[0]||null; }
+// A project's workdir, auto-provisioning one server-side the first time it's needed so opening
+// a terminal never blocks on the user picking a folder first - the daemon allocates a dedicated
+// `<home>/projects/<slug>` folder (never the shared daemon workdir the old singleton terminal fell
+// back to) and persists it on the project, so this only happens once per project, ever.
+let _wdInFlight={};
+async function resolveProjectWorkdir(){
+  const proj=curProject();
+  if(proj.workdir && proj.workdir.trim()) return proj.workdir;
+  const pid=proj.id;
+  if(_wdInFlight[pid]) return _wdInFlight[pid];
+  const req=(async()=>{
+    try{
+      const p=await J('/v1/projects/'+encodeURIComponent(pid)+'/ensure-workdir',{method:'POST'});
+      const i=WS.projects.findIndex(x=>x.id===p.id); if(i>=0) WS.projects[i]=p;
+      if(p.workdir) notify('"'+p.name+'" now has its own folder: '+p.workdir,'ok');
+      return p.workdir||null;
+    }catch(e){ notify('Couldn\'t set up a folder for this project - '+((e&&e.message)||'error')); return null; }
+    finally{ delete _wdInFlight[pid]; }
+  })();
+  _wdInFlight[pid]=req;
+  return req;
+}
 // Guarantees a tab exists for the ACTIVE project, lazily creating the project's first one seeded
-// from its own workdir (or gated on "no folder" if it doesn't have one) - never the shared daemon
-// workdir the old singleton terminal fell back to.
-function ensureActiveTab(){
+// from its (auto-provisioned, if needed) workdir.
+async function ensureActiveTab(){
   if(!termTabs().length){
-    const proj=curProject();
-    const tab={ id:'t'+(_termTabSeq++), cwd:proj.workdir||null, parent:null, tree:[], log:[], hist:[], hi:-1, busy:false, noFolder:!proj.workdir };
+    const cwd=await resolveProjectWorkdir();
+    const tab={ id:'t'+(_termTabSeq++), cwd, parent:null, tree:[], log:[], hist:[], hi:-1, busy:false, noFolder:!cwd };
     termTabs().push(tab); TERMS.activeByProject[WS.activeProject]=tab.id;
   }
   return activeTab();
@@ -5165,15 +5186,15 @@ function termBtnSync(){
   b.textContent = n>1 ? String(n) : ''; b.style.display = n>1 ? 'inline-flex' : 'none';
 }
 async function openTerminalDrawer(){
-  TERMS.open=true; ensureActiveTab();
+  TERMS.open=true; await ensureActiveTab();
   const dr=document.getElementById('termDrawer'); if(dr) dr.classList.add('open');
   await renderTermDrawer();
 }
 function closeTerminalDrawer(){ TERMS.open=false; const dr=document.getElementById('termDrawer'); if(dr) dr.classList.remove('open'); }
 function toggleTerminalDrawer(){ TERMS.open ? closeTerminalDrawer() : openTerminalDrawer(); }
 async function termNewTab(){
-  const proj=curProject();
-  const tab={ id:'t'+(_termTabSeq++), cwd:proj.workdir||null, parent:null, tree:[], log:[], hist:[], hi:-1, busy:false, noFolder:!proj.workdir };
+  const cwd=await resolveProjectWorkdir();
+  const tab={ id:'t'+(_termTabSeq++), cwd, parent:null, tree:[], log:[], hist:[], hi:-1, busy:false, noFolder:!cwd };
   termTabs().push(tab); TERMS.activeByProject[WS.activeProject]=tab.id;
   await renderTermDrawer();
 }
@@ -5204,13 +5225,15 @@ async function renderTermDrawer(){
   let dr=document.getElementById('termDrawer');
   if(!dr){ dr=document.createElement('div'); dr.id='termDrawer'; dr.className='term-drawer'; document.body.appendChild(dr); }
   if(TERMS.open) dr.classList.add('open');
-  const proj=curProject(), tab=ensureActiveTab();
+  const proj=curProject(), tab=await ensureActiveTab();
   const head=`<div class="td-head"><b>${esc(proj.name)}</b><span class="grow"></span><button class="x" onclick="closeTerminalDrawer()" aria-label="Close">✕</button></div>`;
   if(tab.noFolder){
+    // Only reachable if auto-provisioning a folder for this project actually FAILED (resolveProjectWorkdir
+    // already toasted why) - the normal "no folder yet" case never gets here, it's provisioned silently.
     dr.innerHTML=`${head}<div class="term-gate"><div class="tg-card">
       <div class="tg-ic">${ICONS.Terminal}</div>
-      <h2>No folder set for "${esc(proj.name)}"</h2>
-      <p>Pick a folder for this project to browse its files and run commands scoped to it - never the shared daemon workspace.</p>
+      <h2>Couldn't set up a folder for "${esc(proj.name)}"</h2>
+      <p>Engram normally creates a dedicated folder for a project automatically. Pick one yourself instead.</p>
       <button class="primary" onclick="termPickProjectFolder()">Choose folder…</button>
     </div></div>`;
     return;

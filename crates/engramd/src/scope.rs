@@ -11,13 +11,20 @@ use engram_memory::Region;
 
 /// Phrases that mark a fact as a *durable, cross-project* preference about how the user wants to
 /// work - so it is promoted to the user-global ring even when a project is active.
+///
+/// Deliberately excludes "by default" (removed 2026-07-05): a live multi-project test caught it
+/// misfiring on a purely project-local, descriptive sentence ("the deploy service runs on port
+/// 5000 by default for this project") - "by default" is extremely common technical phrasing for
+/// describing THIS project's own default configuration, not a signal that the user has a durable
+/// cross-project preference. The remaining markers are either strongly first-person ("i always",
+/// "i never", "my preference is") or explicitly cross-project ("across all my projects", "in
+/// every project"), which don't share this false-positive shape.
 const GLOBAL_PREF_MARKERS: &[&str] = &[
     "i always ",
     "i never ",
     "in general ",
     "generally ",
     "as a rule",
-    "by default",
     "my preference is",
     "i prefer to always",
     "across all my projects",
@@ -117,6 +124,23 @@ mod tests {
                 "I always use pnpm across all my projects"
             ),
             Scope::user()
+        );
+    }
+
+    #[test]
+    fn a_project_local_default_is_not_mistaken_for_a_global_preference() {
+        // Regression: "by default" used to be a GLOBAL_PREF_MARKER, so a purely descriptive,
+        // project-local sentence about a system's own default configuration got promoted to
+        // user-global - discovered via a live multi-project test, not a hypothetical.
+        let ctx = ScopeCtx::project("P");
+        assert_eq!(
+            classify(
+                Region::Semantic,
+                &ctx,
+                "The deploy service runs on port 5000 by default for this project."
+            ),
+            Scope::project("P"),
+            "a project-local default must stay in the project ring, not be promoted to user-global"
         );
     }
 

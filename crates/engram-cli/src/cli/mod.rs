@@ -269,6 +269,13 @@ pub enum MemoryCmd {
         #[arg(long)]
         reject: Option<i64>,
     },
+    /// List grounded-reflection facts (Phase D) - synthesized memories the reflection pass wrote,
+    /// each citing exactly which facts it drew on. Permanently distinct from ordinary recall.
+    Reflections {
+        /// Restrict to one project's ring. Omitted = the user-global ring only.
+        #[arg(long)]
+        project: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]

@@ -81,6 +81,10 @@ pub struct MemRecord {
     pub access_count: u64,
     #[serde(default)]
     pub ledger_seq: u64,
+    /// Present on a grounded-reflection fact: `{"reflection": true, "source_ids": [...],
+    /// "source_seqs": [...]}`. Null/absent for an ordinary, directly-witnessed fact.
+    #[serde(default)]
+    pub metadata: Value,
 }
 
 /// One recall hit from `GET /v1/recall`.

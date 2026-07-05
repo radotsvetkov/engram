@@ -255,6 +255,17 @@ impl Client {
         .await
     }
 
+    /// Grounded-reflection facts (Phase D) - synthesized memories the reflection pass wrote, each
+    /// citing exactly which facts it drew on via `metadata.source_ids`. `project`: restrict to that
+    /// project's ring; omitted = the user-global ring only.
+    pub async fn reflections(&self, project: Option<&str>) -> Result<Vec<MemRecord>> {
+        let mut path = "/v1/memory/reflections".to_string();
+        if let Some(p) = project {
+            path.push_str(&format!("?scope_kind=project&scope_id={}", urlencode(p)));
+        }
+        self.get(&path).await
+    }
+
     // ---- tasks ------------------------------------------------------------
 
     pub async fn tasks(&self) -> Result<Vec<Task>> {

@@ -803,6 +803,36 @@ async fn memory(client: &Client, cmd: MemoryCmd, json: bool) -> Result<i32> {
             );
             Ok(0)
         }
+        MemoryCmd::Reflections { project } => {
+            let items = client.reflections(project.as_deref()).await?;
+            if json {
+                print_json(&serde_json::to_value(&items)?);
+                return Ok(0);
+            }
+            if items.is_empty() {
+                println!("{}", dim("no reflections yet"));
+                return Ok(0);
+            }
+            out::header(&format!("Reflections ({})", items.len()));
+            for r in &items {
+                let n_sources = r
+                    .metadata
+                    .get("source_ids")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                println!(
+                    "  {} #{} [{}] importance={:.2}\n    {}\n    {}",
+                    out::tool("∴ reflection"),
+                    r.id,
+                    r.region,
+                    r.importance,
+                    one_line(&r.text),
+                    dim(&format!("synthesized from {n_sources} source fact(s)"))
+                );
+            }
+            Ok(0)
+        }
     }
 }
 

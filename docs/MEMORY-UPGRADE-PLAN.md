@@ -417,24 +417,37 @@ and only after the citation-verification helper (§6 Phase B, item 2) is extract
 lower-stakes contradiction-detection feature first.
 
 **Backend**
-- Extend the existing hourly consolidation tick: when it finds a small, bounded, co-scoped candidate
-  set of Trusted-only facts (the pairwise-cosine greedy grouping described in §5 — no new clustering
-  infrastructure), make exactly one bounded LLM call using `dissent.rs`'s exact pattern: list
-  candidates numbered, require the model to state what each cited fact specifically contributes, drop
-  the output entirely if any claim isn't grounded. Write the result as a new `Region::Semantic` row
-  whose metadata stores the source fact ids + their ledger sequences, plus the `parent_id`/`tree_level`
-  groundwork noted in §4 for a possible future RAPTOR-style layer.
-- Never fires on Untrusted-tainted inputs. Config-flag gated, matching the existing
-  `auto_distill_skills` opt-in pattern.
+- **DONE (2026-07-05, `f514059`):** extended the hourly consolidation tick — `reflection.rs::run_tick`
+  finds candidate groups via `Memory::reflection_candidates` (a small, bounded, co-scoped set of
+  Trusted-only facts, greedy pairwise-cosine grouped per §5 — no new clustering infrastructure, reuses
+  the exact candidate pool `consolidate()` already scans) and makes exactly one bounded LLM call per
+  group using `dissent.rs`'s exact citation pattern (`crate::citation`): list candidates numbered,
+  require the model to cite which ones it drew on and state what they combine into, drop the output
+  entirely if the reply doesn't parse or offers no real synthesis. Writes a new `Region::Semantic` row
+  whose metadata stores `source_ids`/`source_seqs`, plus `tree_level = 1` (the `parent_id`/`tree_level`
+  groundwork from §4, for a possible future RAPTOR-style layer — `parent_id` itself has no writer yet).
+  6 tests with a `ScriptedProvider` cover grounded/NONE/hallucinated-citation/no-synthesis/
+  no-candidates/offline-mock.
+- **DONE:** never fires on Untrusted-tainted inputs (`reflection_candidates` only ever returns
+  Trusted-provenance rows) or under the offline mock provider. Config-flag gated —
+  `security.auto_reflect`, default off, matching the existing `auto_distill_skills` opt-in pattern.
+  `GET /v1/memory/reflections` lists them, scoped to user-global or a project.
 
-**Desktop / TUI / CLI**
-- A "Reflections" view distinct from ordinary memories, permanently — not just at creation time —
-  showing each synthesized fact with its cited sources as clickable chips. A reflection fact must
-  never be visually indistinguishable from a directly-witnessed one, at recall time or in the UI, on
-  any surface, for as long as it exists. This is the one feature in the whole plan closest to the
-  product's own named biggest risk (decorative intelligence eroding the trust pitch) — the permanent
-  visual/data distinction is not optional polish, it's the thing that keeps this feature off the cut
-  list.
+**Desktop / TUI / CLI — DONE, all three surfaces.** A reflection fact is never visually
+indistinguishable from a directly-witnessed one, on any surface:
+- **CLI:** `engram memory reflections [--project <id>]` lists each with its cited-source count.
+- **TUI:** the Memory view's right-hand panel toggles (`Shift-R`) between ordinary "Recent memories"
+  and a dedicated "Reflections (synthesized)" panel; a reflection that surfaces in the plain Recent
+  list also gets a distinct `∴` badge instead of its region-letter badge.
+- **Desktop:** a "∴ Reflections" button next to the brain view's existing "Recent" button opens a
+  panel (same structure as `brainRecentToggle`) where each row shows a fixed accent glyph and an
+  "N sources" chip instead of a region-colored dot and importance score.
+
+Source citations are shown as a count rather than individual clickable chips (the plan's original
+"clickable chips" idea) — a proportionate first cut; clicking through to each individual source
+memory is a natural follow-up once a reflection's detail view exists on every surface, not a
+requirement for the permanent-distinction rule itself, which is what actually keeps this feature off
+the cut list and is fully satisfied.
 
 ---
 
@@ -461,9 +474,16 @@ Phase C (DONE, backend) — long-task continuity, landed alongside Phase B per t
   granular mission breadcrumbs + extended cross-run relay        — 5c2989d, 7ade8e6
   desktop/TUI "paged to memory" marker still open → cross-surface parity sweep
 
-Phase D (grounded reflection) — last, opt-in, depends on Phase B's shared citation-verification helper
-  hourly bounded reflection synthesis, permanently-distinguished in every UI
+Phase D (DONE) — grounded reflection, opt-in, built on Phase B's shared citation-verification helper
+  hourly bounded reflection synthesis, security.auto_reflect (default off) — f514059
+  permanently-distinguished on CLI, TUI, and desktop                       — 99d5840, a9d9448, e2f1a32
 ```
+
+All four phases (A/B/C backend/D) are now DONE. What remains under the standing improvement effort:
+a committed benchmark suite with real numbers, the cross-surface parity items explicitly flagged as
+still open above (embedder-health badges, memory search/filter parity, supersessions inbox UI,
+per-project/agent stats display, the "paged to memory" compaction marker, TUI interactive
+improve/teach modals), an end-to-end multi-project real-use test, and doc/release updates.
 
 ## 8. Explicit non-goals (reaffirming the existing cut list — nothing here proposes any of these)
 

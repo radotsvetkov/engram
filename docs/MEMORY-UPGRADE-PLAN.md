@@ -192,21 +192,22 @@ specifics that must be one answer, not two parallel code paths:
    `backfill_binary()`'s exemption as intentional (pure derived index state).
 
 **Desktop / TUI / CLI (parity work — pure client plumbing against routes that already exist; no backend design needed, land any time, ideally first since it's the cheapest win in the whole plan)**
-- Wire the four already-shipped skill routes (`skill_improve`/`teach`/`revert`/`activate`) into the
-  TUI and CLI. **This is the single highest-leverage item in this entire plan**: the backend contract
-  has existed for a while, the desktop UI already proves it out, and today a terminal-first user
-  cannot drive or inspect Engram's one named differentiator at all.
-- Fix `SkillsCmd::Show` and the TUI skill pane to print `incumbent_score`/`candidate_score`/`replays`
-  from data they already have in hand but currently discard, instead of a bare version-transition
-  count.
-- Add `engram memory identity edit/add/remove/revert` (CLI) and matching TUI keybindings against the
-  existing `/v1/consciousness/*` routes — currently view-only on both surfaces despite full backend
-  support.
+- **DONE (2026-07-05, `055e648`):** wired the four already-shipped skill routes
+  (`skill_improve`/`teach`/`revert`/`activate`) into the CLI (`engram skills improve/teach/revert/
+  activate`) and fixed both the CLI's `skills show` and the TUI's skill detail pane to print the real
+  `incumbent_score`/`candidate_score`/`replays` numbers instead of a bare event count. Added
+  `engram memory identity-edit/identity-add/identity-remove/identity-revert` against the existing
+  `/v1/consciousness/*` routes, and TUI provenance display (`from memory #<id>` / `user-authored` /
+  `pinned`) on consciousness lines. Verified end-to-end against a live daemon, not just `cargo test`.
+  TUI keybindings for triggering improve/teach interactively (vs. CLI's argument-based flow) are
+  still open — the TUI can now *display* real scores and provenance but not yet *drive* improve/teach
+  through an interactive modal; that's a small follow-on, not a design gap.
 - Add a text search/filter box to the desktop Recent-memories panel (skills got one; memory didn't —
   an oversight, not a deliberate cut) and to the TUI (which has neither today).
 - Add an embedder-health badge ("Configured: X — Active: Y") to Settings (desktop), the TUI, and
   `engram status --json` (CLI) — turns a silent daemon-log-only degradation into a visible fact on
-  every surface.
+  every surface. (Depends on the embedder default-flip work below, which introduces the fallback
+  state this badge needs to surface.)
 
 ---
 

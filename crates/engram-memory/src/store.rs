@@ -46,7 +46,7 @@ const MMR_LAMBDA: f32 = 0.7;
 const RRF_K: f32 = 60.0;
 
 const COLS: &str =
-    "id,region,text,importance,taint,tier,source,metadata,content_hash,ledger_seq,created_ms,last_access_ms,access_count,scope_kind,scope_id";
+    "id,region,text,importance,taint,tier,source,metadata,content_hash,ledger_seq,created_ms,last_access_ms,access_count,scope_kind,scope_id,actor";
 
 #[derive(Debug, thiserror::Error)]
 pub enum MemoryError {
@@ -137,6 +137,12 @@ pub struct Record {
     pub scope_kind: String,
     /// The project/session id for a scoped memory; empty for user-global.
     pub scope_id: String,
+    /// Who wrote this memory - `user`, `core`, a skill id, or (per the durable-named-agent model)
+    /// the agent's own name, e.g. `agent:Atlas`. Attribution, not isolation: an agent's memory
+    /// still lives in and is recalled from the normal project/user ring like anyone else's -
+    /// this only makes "which agent said this" a filterable fact instead of requiring a ledger
+    /// cross-reference for something the fact itself should just say.
+    pub actor: String,
 }
 
 /// A recall result with its fused score and the rank each arm gave it (so the UI can
@@ -155,6 +161,10 @@ pub struct Stats {
     pub total: i64,
     pub by_region: HashMap<String, i64>,
     pub by_tier: HashMap<String, i64>,
+    /// Who wrote each live memory - `user`/`core`/a skill id/`agent:<name>`. Lets a durable named
+    /// agent's own contribution to a brain (or, via `stats_for_scope`, to one project) be seen
+    /// directly instead of cross-referencing the ledger for every fact one at a time.
+    pub by_actor: HashMap<String, i64>,
     /// Live rows embedded via a degraded fallback (see `needs_reembed` on `facts`) - not yet
     /// re-embedded in the configured model's real space, so mis-ranked until the repair pass runs.
     pub needs_reembed: i64,
@@ -438,8 +448,8 @@ impl Memory {
         // can never leave the fact searchable-but-missing or present-but-unsearchable.
         let tx = conn.transaction()?;
         tx.execute(
-            "INSERT INTO facts(region,text,importance,taint,tier,source,metadata,embedding,content_hash,ledger_seq,created_ms,last_access_ms,scope_kind,scope_id,embedding_bin,needs_reembed) \
-             VALUES(?1,?2,?3,?4,'warm',?5,?6,?7,?8,?9,?10,?10,?11,?12,?13,?14)",
+            "INSERT INTO facts(region,text,importance,taint,tier,source,metadata,embedding,content_hash,ledger_seq,created_ms,last_access_ms,scope_kind,scope_id,embedding_bin,needs_reembed,actor) \
+             VALUES(?1,?2,?3,?4,'warm',?5,?6,?7,?8,?9,?10,?10,?11,?12,?13,?14,?15)",
             params![
                 req.region.as_str(),
                 req.text,
@@ -455,6 +465,7 @@ impl Memory {
                 req.scope.id,
                 bin,
                 needs_reembed as i64,
+                req.actor,
             ],
         )?;
         let id = tx.last_insert_rowid();
@@ -480,6 +491,7 @@ impl Memory {
             access_count: 0,
             scope_kind: req.scope.kind.as_str().to_string(),
             scope_id: req.scope.id,
+            actor: req.actor,
         })
     }
 
@@ -1062,6 +1074,7 @@ impl Memory {
         })?;
         let by_region = group_count(&conn, "region")?;
         let by_tier = group_count(&conn, "tier")?;
+        let by_actor = group_count(&conn, "actor")?;
         let needs_reembed = conn.query_row(
             "SELECT COUNT(*) FROM facts WHERE deleted = 0 AND needs_reembed = 1",
             [],
@@ -1071,6 +1084,35 @@ impl Memory {
             total,
             by_region,
             by_tier,
+            by_actor,
+            needs_reembed,
+        })
+    }
+
+    /// The same breakdown as [`Memory::stats`], scoped to ONE ring (a specific project or session,
+    /// or the user-global ring) - so "this project has N memories, 12% procedural, 3 from agent
+    /// Atlas" becomes queryable, which nothing in the stats surface could answer before (`stats()`
+    /// is global-only). Pass `("user", "")` for the user-global ring.
+    pub fn stats_for_scope(&self, scope_kind: &str, scope_id: &str) -> Result<Stats> {
+        let conn = self.conn.lock().expect("memory mutex poisoned");
+        let total = conn.query_row(
+            "SELECT COUNT(*) FROM facts WHERE deleted = 0 AND scope_kind = ?1 AND scope_id = ?2",
+            params![scope_kind, scope_id],
+            |r| r.get(0),
+        )?;
+        let by_region = group_count_scoped(&conn, "region", scope_kind, scope_id)?;
+        let by_tier = group_count_scoped(&conn, "tier", scope_kind, scope_id)?;
+        let by_actor = group_count_scoped(&conn, "actor", scope_kind, scope_id)?;
+        let needs_reembed = conn.query_row(
+            "SELECT COUNT(*) FROM facts WHERE deleted = 0 AND needs_reembed = 1 AND scope_kind = ?1 AND scope_id = ?2",
+            params![scope_kind, scope_id],
+            |r| r.get(0),
+        )?;
+        Ok(Stats {
+            total,
+            by_region,
+            by_tier,
+            by_actor,
             needs_reembed,
         })
     }
@@ -1179,9 +1221,18 @@ fn init_schema(conn: &Connection) -> Result<()> {
         "ALTER TABLE facts ADD COLUMN needs_reembed INTEGER NOT NULL DEFAULT 0",
         [],
     );
+    // Who wrote this fact - `user`, `core`, a skill id, or `agent:<name>` for a durable named
+    // agent's own writes. Attribution, not a new scope ring: an agent's memory stays in the
+    // ordinary project/user ring (so the rest of the team still sees it), this just makes "which
+    // agent said this" a queryable column instead of a ledger cross-reference.
+    let _ = conn.execute("ALTER TABLE facts ADD COLUMN actor TEXT NOT NULL DEFAULT ''", []);
     // Created AFTER the ALTERs so the referenced columns exist on a migrated legacy brain too.
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_facts_scope ON facts(scope_kind, scope_id, deleted)",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_facts_actor ON facts(actor, deleted)",
         [],
     )?;
     Ok(())
@@ -1193,6 +1244,28 @@ fn group_count(conn: &Connection, column: &str) -> Result<HashMap<String, i64>> 
     let mut stmt = conn.prepare(&sql)?;
     let mut out = HashMap::new();
     for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
+        let (k, v) = row?;
+        out.insert(k, v);
+    }
+    Ok(out)
+}
+
+/// Like [`group_count`], restricted to one scope ring. `column` is always a fixed internal name
+/// (`"region"`/`"tier"`/`"actor"`), never user input, so interpolating it is injection-free.
+fn group_count_scoped(
+    conn: &Connection,
+    column: &str,
+    scope_kind: &str,
+    scope_id: &str,
+) -> Result<HashMap<String, i64>> {
+    let sql = format!(
+        "SELECT {column}, COUNT(*) FROM facts WHERE deleted = 0 AND scope_kind = ?1 AND scope_id = ?2 GROUP BY {column}"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let mut out = HashMap::new();
+    for row in stmt.query_map(params![scope_kind, scope_id], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+    })? {
         let (k, v) = row?;
         out.insert(k, v);
     }
@@ -1224,6 +1297,7 @@ fn map_record(r: &Row) -> rusqlite::Result<Record> {
         access_count: r.get(12)?,
         scope_kind: r.get(13)?,
         scope_id: r.get(14)?,
+        actor: r.get(15)?,
     })
 }
 
@@ -2125,6 +2199,51 @@ mod tests {
         let demoted = m.consolidate(Duration::from_secs(60)).unwrap();
         assert_eq!(demoted, 1);
         assert_eq!(m.get(rec.id).unwrap().unwrap().tier, "cold");
+    }
+
+    #[test]
+    fn actor_is_persisted_and_queryable_per_scope() {
+        let (m, _d) = mem();
+        m.remember(
+            WriteReq::new(Region::Semantic, "Atlas's note about the deploy pipeline")
+                .actor("agent:Atlas")
+                .scope(Scope::project("P")),
+        )
+        .unwrap();
+        m.remember(
+            WriteReq::new(Region::Semantic, "a user fact")
+                .actor("user")
+                .scope(Scope::project("P")),
+        )
+        .unwrap();
+        m.remember(WriteReq::new(Region::Semantic, "unrelated global fact").actor("user"))
+            .unwrap();
+
+        // Attribution round-trips on the record itself - no ledger cross-reference needed.
+        let hits = m
+            .recall_scoped(
+                "Atlas deploy",
+                &[Region::Semantic],
+                5,
+                &ScopeCtx::project("P"),
+            )
+            .unwrap();
+        let atlas_hit = hits
+            .iter()
+            .find(|h| h.record.text.contains("Atlas's note"))
+            .expect("Atlas's memory must be recallable from the shared project ring");
+        assert_eq!(atlas_hit.record.actor, "agent:Atlas");
+
+        // Per-project stats break down by actor, scoped to just that ring.
+        let stats = m.stats_for_scope("project", "P").unwrap();
+        assert_eq!(stats.total, 2, "only P's own two facts, not the unrelated global one");
+        assert_eq!(stats.by_actor.get("agent:Atlas"), Some(&1));
+        assert_eq!(stats.by_actor.get("user"), Some(&1));
+
+        // The global brain-wide stats still see all three, and the user-only ring sees just one.
+        assert_eq!(m.stats().unwrap().total, 3);
+        let user_ring = m.stats_for_scope("user", "").unwrap();
+        assert_eq!(user_ring.total, 1);
     }
 
     #[test]

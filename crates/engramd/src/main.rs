@@ -1466,8 +1466,24 @@ async fn meter(State(app): State<App>) -> ApiResult {
     ))
 }
 
-async fn memory_stats(State(app): State<App>) -> ApiResult {
-    let mut v = serde_json::to_value(app.memory.stats().map_err(err)?).map_err(err)?;
+#[derive(Deserialize, Default)]
+struct StatsQuery {
+    /// Restrict the breakdown to one ring: "project"/"session"/"user". Omitted = whole brain.
+    #[serde(default)]
+    scope_kind: Option<String>,
+    #[serde(default)]
+    scope_id: Option<String>,
+}
+
+async fn memory_stats(State(app): State<App>, Query(q): Query<StatsQuery>) -> ApiResult {
+    let stats = match &q.scope_kind {
+        Some(kind) => app
+            .memory
+            .stats_for_scope(kind, q.scope_id.as_deref().unwrap_or(""))
+            .map_err(err)?,
+        None => app.memory.stats().map_err(err)?,
+    };
+    let mut v = serde_json::to_value(stats).map_err(err)?;
     // Embedder health: what the user configured vs. what's actually embedding vectors right now.
     // The selection at boot (see `run()`) silently falls back to trigram on any failure (a gateway
     // provider with no embeddings endpoint, a missing/unreadable static model dir) and previously

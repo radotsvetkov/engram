@@ -275,15 +275,21 @@ memory search/filter parity are not yet implemented.**
    is the direct, low-cost fix for "procedural memory is dead in practice" — it doesn't invent a new
    verification signal, it surfaces the one that already exists (the skill registry's replay/promote
    loop) through the same API consciousness, recall, and future dissent-grounding already use.
-6. **Make `consolidate()`'s `tier` field do something**: today `tier='cold'` is written every hour and
-   read nowhere — a label with zero retrieval effect, exactly the decorative-theater pattern the
-   product's own biggest named risk warns against. Add a small RRF deprioritization (not exclusion)
-   for cold-tier rows.
-7. **Add the missing third of the "sleep cycle" triad — automatic, conservative, reversible
-   forgetting** (opt-in, off by default, same pattern as `auto_distill_skills`): memories that are
-   simultaneously already-superseded (per the new `valid_until_ms`), older than a long window, and
-   never once recalled, get soft-forgotten via the existing `forget()` — no new deletion mechanism,
-   just a new automatic trigger for one that's already reversible and ledgered.
+6. **DONE (2026-07-05, `d0e9d01`):** `apply_tier_penalty()` (mirrors `apply_scope_boost()`) now
+   subtracts a small fixed penalty from cold-tier hits in the fused ranking — deprioritized, never
+   excluded. Verified with a test: two scope-distinct copies of an identical fact tie on every other
+   signal; marking one cold makes it rank second while both remain in the results.
+7. **DONE (2026-07-05, `89bb553`):** `Memory::auto_prune()` completes the sleep-cycle triad —
+   conservative and narrow by design: only rows that are ALREADY superseded (invisible to every
+   recall path regardless, so pruning removes pure clutter, not live information) and older than a
+   180-day retention window. Calls the existing `forget()` (ledgered, restorable). Wired into the
+   hourly consolidation tick behind a new opt-in flag, `security.auto_prune_memories` (off by
+   default, same pattern as `auto_distill_skills`). Verified with a test covering all three cases:
+   old+superseded gets pruned; old-but-still-current survives regardless of age; recently-superseded
+   survives until the window clears. (Uses `superseded_by IS NOT NULL` rather than the originally
+   planned `valid_until_ms`, since bi-temporal versioning — item 1 below — isn't built yet; revisit
+   once it lands, since `valid_until_ms` would let this also catch time-bounded-but-not-yet-superseded
+   facts.)
 
 **Desktop / TUI / CLI**
 - Fact-history view: a "History" expander on a memory's detail view (all three surfaces) showing its
@@ -297,12 +303,14 @@ memory search/filter parity are not yet implemented.**
 - Make the recall ribbon's ledger link real everywhere: today `recallOpen()` only re-focuses a graph
   node — add a modal/pane showing the actual signed ledger entry (hash/sig/seq), on desktop, TUI, and
   as `engram ledger show <seq>` on CLI.
-- **Fix the per-project persona correctness bug as its own owned task, not a caveat**: `agent_handler`
-  (the live desktop chat path) never reads `persona_for_session` — only the legacy `/v1/converse`
-  path does. A user editing "project persona" in Settings today gets zero effect on real chats with
-  no warning. Either wire `persona_for_session` into the live path, or retire the field in favor of
-  consciousness's per-project block (which *is* wired in) — do this **before** adding any CLI/TUI
-  control for it, so no surface ships a working editor for a dead setting.
+- **DONE (2026-07-05, `8f4a449`):** the per-project persona correctness bug is fixed —
+  `run_agent_task_cb` (the actual live agentic chat path behind `converse_stream_handler`, not just
+  `agent_handler`) now reads the active project's persona via a new `WorkspaceStore::project_persona`
+  and injects it alongside the per-project consciousness block. Verified two ways: a unit test, and
+  live against a real daemon — a chat in a project with a persona logged an `llm.call` ledger entry
+  with `tokens_in` ~17 tokens higher than an identical chat in a persona-less project, matching the
+  injected text's length. A CLI/TUI control for editing project persona is still open (correctly
+  sequenced after this fix, per the original note).
 
 ---
 

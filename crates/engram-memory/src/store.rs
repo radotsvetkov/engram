@@ -160,11 +160,23 @@ pub struct Stats {
     pub needs_reembed: i64,
 }
 
+/// Accumulates recall-hit access-count bumps between ledger flushes (see `Memory::record_access`).
+#[derive(Default)]
+struct AccessBatch {
+    ids: Vec<i64>,
+    window_start_ms: i64,
+}
+
 /// The brain on disk.
 pub struct Memory {
     conn: Mutex<Connection>,
     embedder: Arc<dyn Embedder>,
     ledger: Arc<Ledger>,
+    /// Batches recall-hit access-count bumps into one signed `memory.access_batch` ledger entry
+    /// per minute of activity, so the field driving `consolidate()`'s demotion decision is part of
+    /// the signed history without ledgering every single recall touch individually (a single
+    /// recall call can touch dozens of rows - one entry per hit would be pure noise).
+    access_batch: Mutex<AccessBatch>,
 }
 
 impl Memory {
@@ -183,15 +195,48 @@ impl Memory {
             conn: Mutex::new(conn),
             embedder,
             ledger,
+            access_batch: Mutex::new(AccessBatch::default()),
         };
         mem.migrate_embedding_space()?;
         mem.backfill_binary()?;
         Ok(mem)
     }
 
+    /// Record that a recall hit touched `id`, batching into one ledger entry per minute of
+    /// activity (flushed lazily on the next access once the window elapses - there is no
+    /// background timer, so a batch open when the process exits is lost; access-count is a soft
+    /// salience signal feeding only the reversible warm/cold demotion, not content, so losing at
+    /// most a minute of it on an ungraceful shutdown is an accepted, deliberately small gap).
+    fn record_access(&self, id: i64) {
+        let mut batch = self.access_batch.lock().expect("access-batch mutex poisoned");
+        let now = now_ms() as i64;
+        if batch.ids.is_empty() {
+            batch.window_start_ms = now;
+        }
+        batch.ids.push(id);
+        if now - batch.window_start_ms >= 60_000 {
+            let count = batch.ids.len();
+            let ids = std::mem::take(&mut batch.ids);
+            let window_start_ms = batch.window_start_ms;
+            batch.window_start_ms = now;
+            drop(batch);
+            let _ = self.ledger.append(
+                "memory.access_batch",
+                "core",
+                json!({ "ids": ids, "count": count, "window_start_ms": window_start_ms, "window_end_ms": now }),
+            );
+        }
+    }
+
     /// Populate `embedding_bin` for rows written before the binary index existed, computing each
     /// code from the stored `embedding` (no re-embedding needed). Bounded and idempotent: once every
     /// row has a code this is a cheap no-op. (P5 makes this resumable/off-boot for very large brains.)
+    ///
+    /// Deliberately unledgered, unlike every content mutation in this file (the I1 invariant):
+    /// `embedding_bin` is purely DERIVED state, recomputable at any time from `embedding` (the
+    /// source of truth) with no external input - the same class of exemption as the sidecar index
+    /// `reindex_binary` rebuilds on demand. There is nothing here a signed history could attest to
+    /// beyond "this cache was refreshed," which the cache's own presence already shows.
     fn backfill_binary(&self) -> Result<()> {
         let mut conn = self.conn.lock().expect("memory mutex poisoned");
         let rows: Vec<(i64, Vec<u8>)> = {
@@ -626,6 +671,10 @@ impl Memory {
                     "UPDATE facts SET last_access_ms = ?1, access_count = access_count + 1 WHERE id = ?2",
                     params![now, id],
                 )?;
+                // The data mutation above happens on every hit (it's what makes recency real-time
+                // for scoring/consolidation); the ledger record of it is batched (see
+                // `record_access`) so a hot recall path doesn't append dozens of near-noise entries.
+                self.record_access(id);
                 hits.push(Hit {
                     record,
                     score: sc,
@@ -1243,6 +1292,58 @@ mod tests {
         let embedder = Arc::new(TrigramHashEmbedder::default());
         let m = Memory::open(dir.path().join("brain.db"), embedder, ledger).unwrap();
         (m, dir)
+    }
+
+    #[test]
+    fn access_bumps_batch_into_one_ledger_entry_per_minute() {
+        let (m, _d) = mem();
+        let a = m
+            .remember(WriteReq::new(Region::Semantic, "alpha fact"))
+            .unwrap();
+        let before = m.ledger.tail(20).unwrap().len();
+
+        // First access opens the window; below the 60s threshold, nothing flushes yet - the field
+        // driving consolidation must still be usable without waiting on the ledger.
+        m.record_access(a.id);
+        assert_eq!(
+            m.ledger.tail(20).unwrap().len(),
+            before,
+            "a fresh window must not flush immediately"
+        );
+
+        // Simulate a minute of elapsed activity by rewinding the open window's start, then push a
+        // second access - this is what crosses the threshold in real use, just without a real sleep.
+        {
+            let mut batch = m.access_batch.lock().unwrap();
+            batch.window_start_ms -= 61_000;
+        }
+        m.record_access(a.id);
+
+        let entries = m.ledger.tail(20).unwrap();
+        let flushed = entries
+            .iter()
+            .rfind(|e| e.kind == "memory.access_batch")
+            .expect("crossing the window must append exactly one batched ledger entry");
+        let count = flushed
+            .payload
+            .get()
+            .parse::<serde_json::Value>()
+            .unwrap()["count"]
+            .as_u64()
+            .unwrap();
+        // The access that crosses the threshold is included in the SAME flush (no access is ever
+        // silently dropped) - so both the first (window-opening) and second (threshold-crossing)
+        // touches land in this one batch.
+        assert_eq!(count, 2, "the flush must include every access accumulated up to and including the one that crossed the threshold");
+
+        // The second access opened a fresh window and must not have flushed yet either.
+        let after_first_flush = m.ledger.tail(20).unwrap().len();
+        m.record_access(a.id);
+        assert_eq!(
+            m.ledger.tail(20).unwrap().len(),
+            after_first_flush,
+            "the new window must not flush again immediately"
+        );
     }
 
     /// A test-only embedder that can be toggled between "healthy" and "degraded" (mimicking a

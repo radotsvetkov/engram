@@ -206,6 +206,13 @@ pub struct SecurityCfg {
     /// not a default behavior of a "verifiable memory" product.
     #[serde(default)]
     pub auto_prune_memories: bool,
+    /// GROUNDED reflection: the hourly consolidation tick synthesizes a higher-level fact from a
+    /// small, bounded, co-scoped group of related Trusted-only memories, citing its sources (see
+    /// `reflection.rs`). OFF by default — it is the one genuinely new reasoning capability in the
+    /// memory-upgrade plan, ships opt-in per docs/MEMORY-UPGRADE-PLAN.md §"Phase D"'s locked decision,
+    /// and never runs over Untrusted-tainted memories regardless of this flag.
+    #[serde(default)]
+    pub auto_reflect: bool,
     /// Daemon-global egress allowlist: destination hosts the user has approved for runs that carry NO
     /// per-agent autonomy policy (the "default agent"). The egress gate consults this before staging a
     /// novel destination, so approving a staged action from a policy-less run actually persists (it is
@@ -512,6 +519,7 @@ impl Config {
                 "disable_skill_author": self.security.disable_skill_author,
                 "auto_distill_skills": self.security.auto_distill_skills,
                 "auto_prune_memories": self.security.auto_prune_memories,
+                "auto_reflect": self.security.auto_reflect,
                 // Destination hosts (not secret) the user approved for policy-less runs; UI-visible.
                 "egress_allowlist": self.security.egress_allowlist,
             },

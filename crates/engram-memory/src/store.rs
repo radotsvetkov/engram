@@ -44,9 +44,13 @@ const EXACT_FETCH_BATCH: usize = 500;
 const MMR_LAMBDA: f32 = 0.7;
 /// Reciprocal Rank Fusion constant (standard default).
 const RRF_K: f32 = 60.0;
+/// Bound on how many stale/low-importance candidate rows one reflection tick considers, across all
+/// region+scope groups combined - keeps [`Memory::reflection_candidates`]'s extra query cheap
+/// regardless of brain size.
+const REFLECTION_CANDIDATE_LIMIT: usize = 300;
 
 const COLS: &str =
-    "id,region,text,importance,taint,tier,source,metadata,content_hash,ledger_seq,created_ms,last_access_ms,access_count,scope_kind,scope_id,actor,valid_from_ms,valid_until_ms";
+    "id,region,text,importance,taint,tier,source,metadata,content_hash,ledger_seq,created_ms,last_access_ms,access_count,scope_kind,scope_id,actor,valid_from_ms,valid_until_ms,tree_level";
 
 #[derive(Debug, thiserror::Error)]
 pub enum MemoryError {
@@ -79,6 +83,12 @@ pub struct WriteReq {
     pub actor: String,
     /// Which world this memory belongs to (user-global by default). Recall is ringed by scope.
     pub scope: Scope,
+    /// RAPTOR-style tree-summary groundwork (see docs/MEMORY-UPGRADE-PLAN.md §4): 0 for an ordinary,
+    /// directly-witnessed fact; 1 for a synthesized fact the reflection pass wrote from other facts.
+    /// Not wired to any real multi-level tree yet — this only makes "is this a synthesis" a real
+    /// column instead of requiring a metadata-only convention, so a future second-level reflection
+    /// pass doesn't need a second schema migration.
+    pub tree_level: i64,
 }
 
 impl WriteReq {
@@ -92,6 +102,7 @@ impl WriteReq {
             metadata: serde_json::Value::Null,
             actor: "core".into(),
             scope: Scope::user(),
+            tree_level: 0,
         }
     }
     pub fn importance(mut self, v: f32) -> Self {
@@ -113,6 +124,16 @@ impl WriteReq {
     /// Bind this write to a scope (user-global, a project, or a session).
     pub fn scope(mut self, s: Scope) -> Self {
         self.scope = s;
+        self
+    }
+    pub fn metadata(mut self, m: serde_json::Value) -> Self {
+        self.metadata = m;
+        self
+    }
+    /// Mark this write as a reflection-pass synthesis (see [`Record::tree_level`]). Ordinary writes
+    /// never call this — it defaults to 0.
+    pub fn tree_level(mut self, level: i64) -> Self {
+        self.tree_level = level;
         self
     }
 }
@@ -150,6 +171,14 @@ pub struct Record {
     /// When this fact stopped being true - `None` while it's still current. Set by
     /// [`Memory::supersede`] on the OLD row at the moment a newer fact replaces it.
     pub valid_until_ms: Option<i64>,
+    /// RAPTOR-style tree-summary groundwork (see docs/MEMORY-UPGRADE-PLAN.md §4): 0 for an
+    /// ordinary, directly-witnessed fact; 1 for a synthesized fact the reflection pass
+    /// (`reflection.rs`) wrote from a small co-scoped group of other facts (whose ids/ledger
+    /// sequences live in `metadata.source_ids`/`source_seqs`). No row has ever had a *parent*
+    /// summary yet, so there is no `parent_id` field here - only the schema column exists
+    /// (via migration), reserved for a future second-level reflection pass without a second
+    /// migration.
+    pub tree_level: i64,
 }
 
 /// A detected-but-unconfirmed contradiction: `candidate_text` MAY supersede the current fact
@@ -471,8 +500,8 @@ impl Memory {
         // can never leave the fact searchable-but-missing or present-but-unsearchable.
         let tx = conn.transaction()?;
         tx.execute(
-            "INSERT INTO facts(region,text,importance,taint,tier,source,metadata,embedding,content_hash,ledger_seq,created_ms,last_access_ms,scope_kind,scope_id,embedding_bin,needs_reembed,actor,valid_from_ms) \
-             VALUES(?1,?2,?3,?4,'warm',?5,?6,?7,?8,?9,?10,?10,?11,?12,?13,?14,?15,?10)",
+            "INSERT INTO facts(region,text,importance,taint,tier,source,metadata,embedding,content_hash,ledger_seq,created_ms,last_access_ms,scope_kind,scope_id,embedding_bin,needs_reembed,actor,valid_from_ms,tree_level) \
+             VALUES(?1,?2,?3,?4,'warm',?5,?6,?7,?8,?9,?10,?10,?11,?12,?13,?14,?15,?10,?16)",
             params![
                 req.region.as_str(),
                 req.text,
@@ -489,6 +518,7 @@ impl Memory {
                 bin,
                 needs_reembed as i64,
                 req.actor,
+                req.tree_level,
             ],
         )?;
         let id = tx.last_insert_rowid();
@@ -517,6 +547,7 @@ impl Memory {
             actor: req.actor,
             valid_from_ms: now,
             valid_until_ms: None,
+            tree_level: req.tree_level,
         })
     }
 
@@ -1259,6 +1290,94 @@ impl Memory {
         Ok(demoted)
     }
 
+    /// Find small, bounded, co-scoped groups of related Trusted-only facts worth reflecting on -
+    /// the candidate-selection half of Phase D's grounded reflection pass
+    /// (docs/MEMORY-UPGRADE-PLAN.md §6 Phase D). Deliberately NOT RAPTOR-style clustering (locked
+    /// decision, §5): it scans the exact same warm/stale/low-importance candidate set
+    /// [`Memory::consolidate`] already fetches - restricted to Trusted provenance (a reflection
+    /// must never fire on tainted content) - and does a simple greedy pairwise-cosine grouping
+    /// within each (region, scope) ring, so a synthesis never mixes facts from different worlds.
+    /// Groups are capped at `max_groups` (a hard bound on how many single-LLM-call syntheses one
+    /// tick can trigger); a cluster smaller than 2 members is dropped (nothing to synthesize from
+    /// one fact alone). Ring iteration order is sorted for determinism (tests, and so a bounded
+    /// `max_groups` truncation is reproducible, not an arbitrary hash-order sample).
+    pub fn reflection_candidates(
+        &self,
+        warm_age: Duration,
+        min_similarity: f32,
+        max_groups: usize,
+    ) -> Result<Vec<Vec<Record>>> {
+        let now = now_ms() as i64;
+        let cutoff = warm_age.as_millis() as i64;
+        let conn = self.conn.lock().expect("memory mutex poisoned");
+        let candidates: Vec<Record> = {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT {COLS} FROM facts \
+                 WHERE tier = 'warm' AND deleted = 0 AND superseded_by IS NULL AND taint = 'trusted' \
+                 AND (?1 - last_access_ms) > ?2 AND importance < 0.7 \
+                 ORDER BY region, scope_kind, scope_id, id LIMIT ?3"
+            ))?;
+            let rows = stmt.query_map(
+                params![now, cutoff, REFLECTION_CANDIDATE_LIMIT as i64],
+                map_record,
+            )?;
+            let mut v = Vec::new();
+            for r in rows {
+                v.push(r?);
+            }
+            v
+        };
+        // Fetch each candidate's embedding alongside it (COLS omits it - an internal index, not
+        // content).
+        let mut embeddings: HashMap<i64, Vec<f32>> = HashMap::with_capacity(candidates.len());
+        for rec in &candidates {
+            let blob: Vec<u8> =
+                conn.query_row("SELECT embedding FROM facts WHERE id = ?1", [rec.id], |r| {
+                    r.get(0)
+                })?;
+            embeddings.insert(rec.id, from_bytes(&blob));
+        }
+        drop(conn);
+
+        // Group by (region, scope) so a synthesis never mixes facts from different worlds.
+        let mut by_ring: HashMap<(String, String, String), Vec<Record>> = HashMap::new();
+        for rec in candidates {
+            by_ring
+                .entry((rec.region.clone(), rec.scope_kind.clone(), rec.scope_id.clone()))
+                .or_default()
+                .push(rec);
+        }
+        let mut rings: Vec<_> = by_ring.into_iter().collect();
+        rings.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let mut groups: Vec<Vec<Record>> = Vec::new();
+        for (_, ring) in rings {
+            let mut used = vec![false; ring.len()];
+            for i in 0..ring.len() {
+                if used[i] {
+                    continue;
+                }
+                let mut cluster = vec![i];
+                used[i] = true;
+                for (j, u) in used.iter_mut().enumerate().skip(i + 1) {
+                    if *u {
+                        continue;
+                    }
+                    let sim = cosine(&embeddings[&ring[i].id], &embeddings[&ring[j].id]);
+                    if sim >= min_similarity {
+                        cluster.push(j);
+                        *u = true;
+                    }
+                }
+                if cluster.len() >= 2 {
+                    groups.push(cluster.into_iter().map(|k| ring[k].clone()).collect());
+                }
+            }
+        }
+        groups.truncate(max_groups);
+        Ok(groups)
+    }
+
     /// The third of the sleep-cycle triad (move/strengthen/prune) - conservative, reversible,
     /// automatic forgetting. Prunes only rows that are ALREADY superseded (a newer fact replaced
     /// them, so `superseded_by IS NOT NULL` already makes them invisible to every recall path
@@ -1503,6 +1622,15 @@ fn init_schema(conn: &Connection) -> Result<()> {
     // Only `Memory::recall_as_of` ever reads these - the default recall path is untouched.
     let _ = conn.execute("ALTER TABLE facts ADD COLUMN valid_from_ms INTEGER", []);
     let _ = conn.execute("ALTER TABLE facts ADD COLUMN valid_until_ms INTEGER", []);
+    // RAPTOR-style tree-summary groundwork (docs/MEMORY-UPGRADE-PLAN.md §4 / Phase D): `tree_level`
+    // is 0 for every ordinary fact, 1 for a reflection-pass synthesis (see `Record::tree_level`).
+    // `parent_id` has no writer yet - reserved so a future second-level reflection pass (a synthesis
+    // OF syntheses) doesn't need a second schema migration to point a fact at its own summary.
+    let _ = conn.execute(
+        "ALTER TABLE facts ADD COLUMN tree_level INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    let _ = conn.execute("ALTER TABLE facts ADD COLUMN parent_id INTEGER", []);
     // Backfill: every row's own creation time is a safe, always-correct valid_from default.
     let _ = conn.execute(
         "UPDATE facts SET valid_from_ms = created_ms WHERE valid_from_ms IS NULL",
@@ -1590,6 +1718,7 @@ fn map_record(r: &Row) -> rusqlite::Result<Record> {
         actor: r.get(15)?,
         valid_from_ms: r.get(16)?,
         valid_until_ms: r.get(17)?,
+        tree_level: r.get(18)?,
     })
 }
 
@@ -2534,6 +2663,76 @@ mod tests {
         assert!(
             near.iter().all(|r| !r.text.contains("cafeteria")),
             "an unrelated fact must not pass the similarity threshold"
+        );
+    }
+
+    #[test]
+    fn reflection_candidates_groups_related_stale_trusted_facts_and_excludes_the_rest() {
+        let (m, _d) = mem();
+        let related = [
+            "the payment gateway staging config uses TLS 1.2 certificates",
+            "the payment gateway staging config was migrated to TLS 1.3 certificates",
+            "the payment gateway staging environment enforces strict TLS certificate checks",
+        ];
+        let mut related_ids = Vec::new();
+        for text in related {
+            let rec = m
+                .remember(WriteReq::new(Region::Semantic, text).importance(0.2))
+                .unwrap();
+            related_ids.push(rec.id);
+        }
+        // An untrusted-provenance near-duplicate of the SAME topic must never enter a reflection
+        // group - a reflection is a Trusted-only synthesis.
+        let untrusted = m
+            .remember(
+                WriteReq::new(
+                    Region::Semantic,
+                    "the payment gateway staging config maybe uses TLS certificates too",
+                )
+                .importance(0.2)
+                .taint(Taint::Untrusted),
+            )
+            .unwrap();
+        // An unrelated fact must not be pulled into the same cluster.
+        let unrelated = m
+            .remember(WriteReq::new(Region::Semantic, "the cafeteria menu changes on Tuesdays").importance(0.2))
+            .unwrap();
+        // A high-importance fact is never a demotion/reflection candidate at all, related or not.
+        let important = m
+            .remember(
+                WriteReq::new(
+                    Region::Semantic,
+                    "the payment gateway staging config also uses TLS certificates",
+                )
+                .importance(0.9),
+            )
+            .unwrap();
+
+        // Age every row past the warm window (reflection reuses consolidate's exact predicate).
+        {
+            let conn = m.conn.lock().unwrap();
+            conn.execute("UPDATE facts SET last_access_ms = 0", []).unwrap();
+        }
+
+        let groups = m
+            .reflection_candidates(Duration::from_secs(60), 0.3, 5)
+            .unwrap();
+        assert_eq!(groups.len(), 1, "exactly one related cluster should form");
+        let ids: Vec<i64> = groups[0].iter().map(|r| r.id).collect();
+        for id in &related_ids {
+            assert!(ids.contains(id), "every related fact must be in the cluster");
+        }
+        assert!(
+            !ids.contains(&untrusted.id),
+            "an untrusted-provenance fact must never enter a reflection candidate group"
+        );
+        assert!(
+            !ids.contains(&unrelated.id),
+            "an unrelated fact must not be pulled into the cluster"
+        );
+        assert!(
+            !ids.contains(&important.id),
+            "a high-importance fact is never a demotion/reflection candidate"
         );
     }
 

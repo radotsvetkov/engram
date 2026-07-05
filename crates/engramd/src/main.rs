@@ -36,6 +36,7 @@ mod distill;
 mod embedder;
 mod git;
 mod hooks;
+mod reflection;
 mod scope;
 mod seed;
 mod tasks;
@@ -952,6 +953,7 @@ async fn run(mode: RunMode) -> Result<(), Box<dyn std::error::Error>> {
             "/v1/supersessions/{id}/resolve",
             post(supersessions_resolve),
         )
+        .route("/v1/memory/reflections", get(reflections_list))
         .route("/v1/consciousness", get(consciousness_get))
         .route("/v1/consciousness/distill", post(consciousness_distill))
         .route("/v1/consciousness/edit", post(consciousness_edit))
@@ -2615,6 +2617,34 @@ async fn supersessions_resolve(
         .resolve_supersession(id, r.accept, "user")
         .map_err(err)?;
     Ok(Json(json!({ "ok": ok, "id": id, "accepted": r.accept })))
+}
+
+#[derive(Deserialize, Default)]
+struct ReflectionsQuery {
+    /// Restrict to one ring: "project"/"session"/"user". Omitted = the user-global ring only
+    /// (matches every other model-facing scoped query's default - never silently whole-brain).
+    #[serde(default)]
+    scope_kind: Option<String>,
+    #[serde(default)]
+    scope_id: Option<String>,
+}
+
+/// List grounded-reflection facts (Phase D: docs/MEMORY-UPGRADE-PLAN.md §6) - synthesized memories
+/// the reflection pass wrote, permanently distinguishable from directly-witnessed facts by
+/// `source = "reflection"` (`metadata.reflection = true`, `tree_level = 1`, and `metadata.source_ids`
+/// citing exactly which facts it drew on). Every surface (desktop/TUI/CLI) reads this route rather
+/// than treating a reflection as an ordinary recall hit, per the locked "never visually
+/// indistinguishable" rule in §5.
+async fn reflections_list(State(app): State<App>, Query(q): Query<ReflectionsQuery>) -> ApiResult {
+    let scope = match (q.scope_kind.as_deref(), &q.scope_id) {
+        (Some("project"), Some(id)) => engram_core::ScopeCtx::project(id.clone()),
+        _ => engram_core::ScopeCtx::user_only(),
+    };
+    let recs = app
+        .memory
+        .by_source_scoped("reflection", &scope)
+        .map_err(err)?;
+    Ok(Json(serde_json::to_value(recs).map_err(err)?))
 }
 
 #[derive(Deserialize)]
@@ -4677,6 +4707,23 @@ fn spawn_consolidation_tick(app: App) {
                 // change — shell enabled, sandbox installed — so each tick retries a few. Bounded,
                 // and verify_and_adopt short-circuits already-active ids, so a clean state is free.
                 reverify_proposed_skills(&app, 3).await;
+            }
+            // Phase D grounded reflection (opt-in, default off - docs/MEMORY-UPGRADE-PLAN.md §6):
+            // synthesizes a higher-level fact from a small, bounded, co-scoped group of related
+            // Trusted-only memories, citing its sources. Same 14-day staleness window as
+            // consolidate() above - it scans the exact same candidate pool, not a separate one.
+            // Never fires under the offline mock provider or over Untrusted-tainted memories.
+            if app.cfg().security.auto_reflect {
+                let n = reflection::run_tick(
+                    &app.memory,
+                    &app.gateway,
+                    &app.model(),
+                    Duration::from_secs(14 * 24 * 3600),
+                )
+                .await;
+                if n > 0 {
+                    tracing::info!(written = n, "grounded reflection: synthesized new facts");
+                }
             }
             tokio::time::sleep(Duration::from_secs(3600)).await;
         }
@@ -6844,6 +6891,9 @@ fn apply_config_patch(cfg: &mut config::Config, p: &Value) {
         if let Some(b) = sec.get("auto_prune_memories").and_then(|v| v.as_bool()) {
             cfg.security.auto_prune_memories = b;
         }
+        if let Some(b) = sec.get("auto_reflect").and_then(|v| v.as_bool()) {
+            cfg.security.auto_reflect = b;
+        }
         if flag(sec, "clear_api_token") {
             cfg.security.api_token.clear();
         }
@@ -7412,7 +7462,7 @@ mod tests {
         apply_config_patch(
             &mut cfg,
             &json!({
-                "security": { "enable_worktree_isolation": true },
+                "security": { "enable_worktree_isolation": true, "auto_reflect": true },
                 "media": { "vision_model": "gpt-4o", "image_model": "dall-e-3",
                            "tts_model": "tts-1-hd", "stt_model": "whisper-large" },
                 "browser": { "chrome_path": "/opt/chromium", "cdp_port": 9333 },
@@ -7420,6 +7470,7 @@ mod tests {
             }),
         );
         assert!(cfg.security.enable_worktree_isolation);
+        assert!(cfg.security.auto_reflect);
         assert_eq!(cfg.media.vision_model, "gpt-4o");
         assert_eq!(cfg.media.image_model, "dall-e-3");
         assert_eq!(cfg.media.tts_model, "tts-1-hd");

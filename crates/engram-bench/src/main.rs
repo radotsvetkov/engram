@@ -1,24 +1,30 @@
 //! Paraphrase recall benchmark.
 //!
-//! The headline recall claim is that hybrid (semantic + keyword) memory finds the
-//! right fact for a query that shares *no words* with it - exactly where a
-//! keyword-only store returns nothing. This harness measures that honestly:
+//! The headline recall claim is that hybrid (semantic + keyword, RRF-fused) memory beats EITHER
+//! signal alone - and specifically finds the right fact for a query that shares *no words* with
+//! it, exactly where a keyword-only store returns nothing. This harness measures all three arms
+//! honestly, head to head, on the identical corpus and query set:
 //!
-//! - It reports hybrid recall@10 and MRR over a labelled query set.
-//! - It isolates the **zero-lexical-overlap** subset, where a keyword index has 0
-//!   recall *by construction*, and reports what hybrid recovers there.
+//! - **keyword-only**: the real FTS5/BM25 query `recall_inner`'s keyword arm runs, isolated (no
+//!   RRF, no semantic signal at all) - what a grep/full-text-only memory store would return.
+//! - **semantic-only**: exact cosine over the SAME stored embeddings, isolated (no keyword signal,
+//!   no RRF) - what a pure-vector-search memory store would return.
+//! - **hybrid**: Engram's actual `Memory::recall` (BM25 + semantic, fused by RRF).
 //!
-//! Run with the bundled offline embedder (`TrigramHashEmbedder`), this captures
-//! morphology and word-order - a real step up over keyword matching. Synonym-level
-//! paraphrase ("car" → "automobile") needs the transformer embedder that plugs into
-//! the same `Embedder` trait via the gateway; this harness is what measures it when
-//! that model is wired.
+//! It also isolates the **zero-lexical-overlap** subset, where keyword-only has 0 recall *by
+//! construction*, and reports what semantic-only and hybrid recover there.
+//!
+//! Run with the bundled offline embedder (`TrigramHashEmbedder`), this captures morphology and
+//! word-order - a real step up over keyword matching. Synonym-level paraphrase ("car" →
+//! "automobile") needs the transformer embedder that plugs into the same `Embedder` trait via the
+//! gateway; this harness is what measures it when that model is wired (or the static model2vec
+//! embedder, via `ENGRAM_STATIC_MODEL`).
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use engram_core::Ledger;
-use engram_memory::{Memory, Region, StaticEmbedder, TrigramHashEmbedder, WriteReq};
+use engram_memory::{cosine, embed::from_bytes, Embedder, Memory, Region, StaticEmbedder, TrigramHashEmbedder, WriteReq};
 
 struct Case {
     fact: &'static str,
@@ -145,32 +151,25 @@ struct Score {
     n: usize,
 }
 
-/// Run the recall benchmark with one embedder and return its scores.
-fn evaluate(embedder: Arc<dyn engram_memory::Embedder>) -> Score {
-    let dir = tempfile::tempdir().unwrap();
-    let ledger = Arc::new(Ledger::open(dir.path()).unwrap());
-    let mem = Memory::open(dir.path().join("bench.db"), embedder, ledger).unwrap();
-
-    let cases = cases();
-    let mut want: HashMap<&str, i64> = HashMap::new();
-    for c in &cases {
-        want.insert(
-            c.fact,
-            mem.remember(WriteReq::new(Region::Semantic, c.fact))
-                .unwrap()
-                .id,
-        );
-    }
-    for d in distractors() {
-        mem.remember(WriteReq::new(Region::Semantic, d)).unwrap();
-    }
-
-    let k = 10;
+/// Score a set of ranked-id lists (one per case) against their targets - shared scoring logic for
+/// all three arms (keyword-only, semantic-only, hybrid), so the numbers are directly comparable.
+/// `label` is only used for `ENGRAM_BENCH_VERBOSE=1` per-case tracing (which arm missed which
+/// query, and at what rank a hit landed) - set it to see exactly where an arm's numbers come from
+/// instead of trusting the aggregate percentage.
+fn score(label: &str, cases: &[Case], want: &HashMap<&str, i64>, ranked: impl Fn(&Case) -> Vec<i64>) -> Score {
+    let verbose = std::env::var("ENGRAM_BENCH_VERBOSE").is_ok();
     let (mut hits, mut mrr, mut hard_total, mut hard_hits) = (0usize, 0.0f32, 0usize, 0usize);
-    for c in &cases {
+    for c in cases {
         let target = want[c.fact];
-        let results = mem.recall(c.query, &[Region::Semantic], k).unwrap();
-        let pos = results.iter().position(|h| h.record.id == target);
+        let results = ranked(c);
+        let pos = results.iter().position(|&id| id == target);
+        if verbose {
+            eprintln!(
+                "  [{label}] {} pos={pos:?} query={:?}",
+                if pos.is_some() { "HIT " } else { "MISS" },
+                c.query
+            );
+        }
         let hard = !lexical_overlap(c.query, c.fact);
         if hard {
             hard_total += 1;
@@ -192,6 +191,103 @@ fn evaluate(embedder: Arc<dyn engram_memory::Embedder>) -> Score {
     }
 }
 
+/// The real FTS5/BM25 query `recall_inner`'s keyword arm runs (same tokenization as the private
+/// `build_match`: each >=2-char alphanumeric token, quoted and OR-joined), isolated - no RRF, no
+/// semantic signal. What a keyword/grep-only memory store would return.
+fn recall_keyword_only(conn: &rusqlite::Connection, query: &str, k: usize) -> Vec<i64> {
+    let toks: Vec<String> = query
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| t.len() >= 2)
+        .map(|t| format!("\"{t}\""))
+        .collect();
+    if toks.is_empty() {
+        return Vec::new();
+    }
+    let match_q = toks.join(" OR ");
+    let mut stmt = conn
+        .prepare(
+            "SELECT facts_fts.rowid FROM facts_fts JOIN facts f ON f.id = facts_fts.rowid \
+             WHERE facts_fts MATCH ?1 AND f.deleted = 0 ORDER BY bm25(facts_fts) LIMIT ?2",
+        )
+        .unwrap();
+    stmt.query_map(rusqlite::params![match_q, k as i64], |r| r.get::<_, i64>(0))
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect()
+}
+
+/// Exact cosine over the SAME stored embeddings, isolated - no keyword signal, no RRF. What a pure
+/// vector-search memory store would return.
+fn recall_semantic_only(
+    conn: &rusqlite::Connection,
+    embedder: &dyn Embedder,
+    query: &str,
+    k: usize,
+) -> Vec<i64> {
+    let q = embedder.embed(query);
+    let mut stmt = conn
+        .prepare("SELECT id, embedding FROM facts WHERE deleted = 0")
+        .unwrap();
+    let mut scored: Vec<(f32, i64)> = stmt
+        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .map(|(id, blob)| (cosine(&q, &from_bytes(&blob)), id))
+        .collect();
+    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    scored.truncate(k);
+    scored.into_iter().map(|(_, id)| id).collect()
+}
+
+struct Scores {
+    keyword: Score,
+    semantic: Score,
+    hybrid: Score,
+}
+
+/// Run all three arms (keyword-only, semantic-only, hybrid) with one embedder on the identical
+/// corpus and query set, so the comparison is head-to-head, not three separately-run numbers.
+fn evaluate(embedder: Arc<dyn Embedder>) -> Scores {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("bench.db");
+    let ledger = Arc::new(Ledger::open(dir.path()).unwrap());
+    let mem = Memory::open(db_path.clone(), embedder.clone(), ledger).unwrap();
+
+    let cases = cases();
+    let mut want: HashMap<&str, i64> = HashMap::new();
+    for c in &cases {
+        want.insert(
+            c.fact,
+            mem.remember(WriteReq::new(Region::Semantic, c.fact))
+                .unwrap()
+                .id,
+        );
+    }
+    for d in distractors() {
+        mem.remember(WriteReq::new(Region::Semantic, d)).unwrap();
+    }
+
+    let k = 10;
+    // A second, read-only connection to the SAME db file: WAL mode lets a reader see the writer's
+    // committed rows without touching Memory's private connection - keyword-only/semantic-only run
+    // the real stored FTS index and embeddings, not a separately-built index.
+    let raw = rusqlite::Connection::open(&db_path).unwrap();
+
+    let keyword = score("keyword", &cases, &want, |c| recall_keyword_only(&raw, c.query, k));
+    let semantic = score("semantic", &cases, &want, |c| {
+        recall_semantic_only(&raw, embedder.as_ref(), c.query, k)
+    });
+    let hybrid = score("hybrid", &cases, &want, |c| {
+        mem.recall(c.query, &[Region::Semantic], k)
+            .unwrap()
+            .iter()
+            .map(|h| h.record.id)
+            .collect()
+    });
+    Scores { keyword, semantic, hybrid }
+}
+
 fn main() {
     let trig = evaluate(Arc::new(TrigramHashEmbedder::default()));
     // Compare against the static (model2vec) embedder when ENGRAM_STATIC_MODEL points at a
@@ -207,11 +303,11 @@ fn main() {
                 }
             });
 
-    let total_facts = trig.n + distractors().len();
+    let total_facts = trig.hybrid.n + distractors().len();
     println!("# Engram benchmark - paraphrase recall & footprint\n");
     println!(
         "Corpus: {total_facts} facts. Queries: {}. Recall@10.\n",
-        trig.n
+        trig.hybrid.n
     );
 
     let row = |label: &str, s: &Score| {
@@ -231,13 +327,20 @@ fn main() {
             s.hard_total
         );
     };
-    println!("| Embedder | Recall@10 | MRR | Recall@10 on zero-overlap paraphrases |");
+    println!("## Head-to-head: keyword-only vs semantic-only vs hybrid (offline trigram-hash embedder)\n");
+    println!("| Arm | Recall@10 | MRR | Recall@10 on zero-overlap paraphrases |");
     println!("|---|---|---|---|");
-    row("trigram-hash (offline default)", &trig);
+    row("keyword-only (FTS5/BM25, isolated)", &trig.keyword);
+    row("semantic-only (exact cosine, isolated)", &trig.semantic);
+    row("hybrid (BM25 + semantic, RRF-fused - what Engram ships)", &trig.hybrid);
     if let Some(s) = &stat {
-        row("static model2vec (pure-Rust)", s);
+        println!("\n## With the static model2vec embedder (synonym-level, pure-Rust)\n");
+        println!("| Arm | Recall@10 | MRR | Recall@10 on zero-overlap paraphrases |");
+        println!("|---|---|---|---|");
+        row("keyword-only (FTS5/BM25, isolated)", &s.keyword);
+        row("semantic-only (exact cosine, isolated)", &s.semantic);
+        row("hybrid (BM25 + semantic, RRF-fused)", &s.hybrid);
     }
-    println!("| keyword-only baseline | - | - | 0% (by construction) |");
 
     println!(
         "\nBinary size (full agent): {}   ·   Idle RAM: 0 MB (socket-activated)",

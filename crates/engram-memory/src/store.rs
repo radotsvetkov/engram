@@ -46,7 +46,7 @@ const MMR_LAMBDA: f32 = 0.7;
 const RRF_K: f32 = 60.0;
 
 const COLS: &str =
-    "id,region,text,importance,taint,tier,source,metadata,content_hash,ledger_seq,created_ms,last_access_ms,access_count,scope_kind,scope_id,actor";
+    "id,region,text,importance,taint,tier,source,metadata,content_hash,ledger_seq,created_ms,last_access_ms,access_count,scope_kind,scope_id,actor,valid_from_ms,valid_until_ms";
 
 #[derive(Debug, thiserror::Error)]
 pub enum MemoryError {
@@ -143,6 +143,13 @@ pub struct Record {
     /// this only makes "which agent said this" a filterable fact instead of requiring a ledger
     /// cross-reference for something the fact itself should just say.
     pub actor: String,
+    /// When this fact became true (defaults to `created_ms` for a fresh write). Bi-temporal
+    /// versioning: `superseded_by` is still the UI-facing "current truth" pointer, unchanged; these
+    /// two columns are strictly additive and only consulted by [`Memory::recall_as_of`].
+    pub valid_from_ms: i64,
+    /// When this fact stopped being true - `None` while it's still current. Set by
+    /// [`Memory::supersede`] on the OLD row at the moment a newer fact replaces it.
+    pub valid_until_ms: Option<i64>,
 }
 
 /// A recall result with its fused score and the rank each arm gave it (so the UI can
@@ -448,8 +455,8 @@ impl Memory {
         // can never leave the fact searchable-but-missing or present-but-unsearchable.
         let tx = conn.transaction()?;
         tx.execute(
-            "INSERT INTO facts(region,text,importance,taint,tier,source,metadata,embedding,content_hash,ledger_seq,created_ms,last_access_ms,scope_kind,scope_id,embedding_bin,needs_reembed,actor) \
-             VALUES(?1,?2,?3,?4,'warm',?5,?6,?7,?8,?9,?10,?10,?11,?12,?13,?14,?15)",
+            "INSERT INTO facts(region,text,importance,taint,tier,source,metadata,embedding,content_hash,ledger_seq,created_ms,last_access_ms,scope_kind,scope_id,embedding_bin,needs_reembed,actor,valid_from_ms) \
+             VALUES(?1,?2,?3,?4,'warm',?5,?6,?7,?8,?9,?10,?10,?11,?12,?13,?14,?15,?10)",
             params![
                 req.region.as_str(),
                 req.text,
@@ -492,6 +499,8 @@ impl Memory {
             scope_kind: req.scope.kind.as_str().to_string(),
             scope_id: req.scope.id,
             actor: req.actor,
+            valid_from_ms: now,
+            valid_until_ms: None,
         })
     }
 
@@ -500,13 +509,13 @@ impl Memory {
     /// — for transparency / audit / the Atlas. For model-facing recall use [`Memory::recall_scoped`]
     /// so the user/project/session rings are respected and one project can't read another's work.
     pub fn recall(&self, query: &str, regions: &[Region], k: usize) -> Result<Vec<Hit>> {
-        self.recall_inner(query, regions, k, false, &ScopeCtx::any())
+        self.recall_inner(query, regions, k, false, &ScopeCtx::any(), None)
     }
 
     /// Whole-brain recall EXCLUDING untrusted-provenance memories. See [`Memory::recall_trusted_scoped`]
     /// for the ringed, model-facing variant.
     pub fn recall_trusted(&self, query: &str, regions: &[Region], k: usize) -> Result<Vec<Hit>> {
-        self.recall_inner(query, regions, k, true, &ScopeCtx::any())
+        self.recall_inner(query, regions, k, true, &ScopeCtx::any(), None)
     }
 
     /// Ringed recall: restricted to the union of the rings in `scope` (user ∪ active project ∪
@@ -518,7 +527,7 @@ impl Memory {
         k: usize,
         scope: &ScopeCtx,
     ) -> Result<Vec<Hit>> {
-        self.recall_inner(query, regions, k, false, scope)
+        self.recall_inner(query, regions, k, false, scope, None)
     }
 
     /// Ringed, TRUSTED-only recall - what a model should get as grounded context: only the rings
@@ -530,7 +539,22 @@ impl Memory {
         k: usize,
         scope: &ScopeCtx,
     ) -> Result<Vec<Hit>> {
-        self.recall_inner(query, regions, k, true, scope)
+        self.recall_inner(query, regions, k, true, scope, None)
+    }
+
+    /// "What did I believe as of `as_of_ms`" - a bi-temporal time-travel query, additive alongside
+    /// every other recall variant (which are all unaffected: they pass `as_of_ms: None`, matching
+    /// the exact prior behavior of filtering on `superseded_by IS NULL`). Trusted-only and ringed,
+    /// matching the model-facing/user-inspection family this belongs to (`recall_trusted_scoped`).
+    pub fn recall_as_of(
+        &self,
+        query: &str,
+        regions: &[Region],
+        k: usize,
+        scope: &ScopeCtx,
+        as_of_ms: i64,
+    ) -> Result<Vec<Hit>> {
+        self.recall_inner(query, regions, k, true, scope, Some(as_of_ms))
     }
 
     fn recall_inner(
@@ -540,6 +564,7 @@ impl Memory {
         k: usize,
         trusted_only: bool,
         scope: &ScopeCtx,
+        as_of_ms: Option<i64>,
     ) -> Result<Vec<Hit>> {
         let taint_clause = |prefix: &str| {
             if trusted_only {
@@ -547,6 +572,16 @@ impl Memory {
             } else {
                 String::new()
             }
+        };
+        // Bi-temporal validity: the default (as_of_ms: None) path is IDENTICAL to before this
+        // feature existed (`superseded_by IS NULL`) - recall_as_of is the only caller that ever
+        // passes Some. `t` is an i64 timestamp (never user-controlled text), safe to interpolate
+        // the same way `region_clause` already inlines its fixed enum strings.
+        let validity_clause = |prefix: &str| match as_of_ms {
+            None => format!("{prefix}superseded_by IS NULL"),
+            Some(t) => format!(
+                "{prefix}valid_from_ms <= {t} AND ({prefix}valid_until_ms IS NULL OR {prefix}valid_until_ms > {t})"
+            ),
         };
         let q_emb = self.embedder.embed(query);
         let conn = self.conn.lock().expect("memory mutex poisoned");
@@ -558,8 +593,9 @@ impl Memory {
             let sql = format!(
                 "SELECT facts_fts.rowid FROM facts_fts \
                  JOIN facts f ON f.id = facts_fts.rowid \
-                 WHERE facts_fts MATCH ? AND f.deleted = 0 AND f.superseded_by IS NULL AND {region}{taint} AND {scope} \
+                 WHERE facts_fts MATCH ? AND f.deleted = 0 AND {validity} AND {region}{taint} AND {scope} \
                  ORDER BY bm25(facts_fts) LIMIT ?",
+                validity = validity_clause("f."),
                 region = region_clause("f.", regions),
                 taint = taint_clause("f."),
                 scope = scope_sql,
@@ -593,7 +629,8 @@ impl Memory {
         let q_bin = quantize_binary(&q_emb);
         let (sem_scope_sql, sem_scope_binds) = scope_clause("", scope);
         let coarse_sql = format!(
-            "SELECT id, embedding_bin FROM facts WHERE deleted = 0 AND superseded_by IS NULL AND {region}{taint} AND {scope}",
+            "SELECT id, embedding_bin FROM facts WHERE deleted = 0 AND {validity} AND {region}{taint} AND {scope}",
+            validity = validity_clause(""),
             region = region_clause("", regions),
             taint = taint_clause(""),
             scope = sem_scope_sql,
@@ -793,17 +830,22 @@ impl Memory {
         if !supersedable {
             return Ok(false);
         }
+        let now = now_ms() as i64;
         let entry = self.ledger.append(
             "memory.supersede",
             "core",
-            json!({ "old": old_id, "by": by_id }),
+            json!({ "old": old_id, "by": by_id, "valid_until_ms": now }),
         )?;
         let n = {
             let conn = self.conn.lock().expect("memory mutex poisoned");
+            // Stamps valid_until_ms on the OLD row alongside superseded_by (bi-temporal versioning,
+            // additive - superseded_by stays the UI-facing "current truth" pointer every existing
+            // call site already filters on; valid_until_ms only feeds recall_as_of). Both are set in
+            // the SAME statement so they can never drift apart.
             conn.execute(
-                "UPDATE facts SET superseded_by = ?1, ledger_seq = ?2 \
-                 WHERE id = ?3 AND deleted = 0 AND superseded_by IS NULL",
-                params![by_id, entry.seq as i64, old_id],
+                "UPDATE facts SET superseded_by = ?1, ledger_seq = ?2, valid_until_ms = ?3 \
+                 WHERE id = ?4 AND deleted = 0 AND superseded_by IS NULL",
+                params![by_id, entry.seq as i64, now, old_id],
             )?
         };
         Ok(n > 0)
@@ -1226,6 +1268,25 @@ fn init_schema(conn: &Connection) -> Result<()> {
     // ordinary project/user ring (so the rest of the team still sees it), this just makes "which
     // agent said this" a queryable column instead of a ledger cross-reference.
     let _ = conn.execute("ALTER TABLE facts ADD COLUMN actor TEXT NOT NULL DEFAULT ''", []);
+    // Bi-temporal fact versioning, additive alongside the existing `superseded_by` "current truth"
+    // pointer (unchanged, still what every default recall filters on): `valid_from_ms` is when a
+    // fact became true, `valid_until_ms` (NULL = still current) is when `supersede()` replaced it.
+    // Only `Memory::recall_as_of` ever reads these - the default recall path is untouched.
+    let _ = conn.execute("ALTER TABLE facts ADD COLUMN valid_from_ms INTEGER", []);
+    let _ = conn.execute("ALTER TABLE facts ADD COLUMN valid_until_ms INTEGER", []);
+    // Backfill: every row's own creation time is a safe, always-correct valid_from default.
+    let _ = conn.execute(
+        "UPDATE facts SET valid_from_ms = created_ms WHERE valid_from_ms IS NULL",
+        [],
+    );
+    // Backfill for rows already superseded before this migration existed: the moment its
+    // replacement was created is an accurate (often exact) stand-in for when it stopped being
+    // valid, since supersede() is always called right after the replacement is written.
+    let _ = conn.execute(
+        "UPDATE facts SET valid_until_ms = (SELECT created_ms FROM facts b WHERE b.id = facts.superseded_by) \
+         WHERE superseded_by IS NOT NULL AND valid_until_ms IS NULL",
+        [],
+    );
     // Created AFTER the ALTERs so the referenced columns exist on a migrated legacy brain too.
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_facts_scope ON facts(scope_kind, scope_id, deleted)",
@@ -1298,6 +1359,8 @@ fn map_record(r: &Row) -> rusqlite::Result<Record> {
         scope_kind: r.get(13)?,
         scope_id: r.get(14)?,
         actor: r.get(15)?,
+        valid_from_ms: r.get(16)?,
+        valid_until_ms: r.get(17)?,
     })
 }
 
@@ -2199,6 +2262,57 @@ mod tests {
         let demoted = m.consolidate(Duration::from_secs(60)).unwrap();
         assert_eq!(demoted, 1);
         assert_eq!(m.get(rec.id).unwrap().unwrap().tier, "cold");
+    }
+
+    #[test]
+    fn recall_as_of_answers_what_was_true_at_a_past_moment() {
+        let (m, _d) = mem();
+        let berlin = m
+            .remember(WriteReq::new(Region::Identity, "User lives Berlin"))
+            .unwrap();
+        let munich = m
+            .remember(WriteReq::new(Region::Identity, "User lives Munich"))
+            .unwrap();
+        assert!(m.supersede(berlin.id, munich.id).unwrap());
+
+        // Give the pair clean, well-separated fabricated timestamps (real wall-clock writes in a
+        // fast test all cluster within milliseconds, which would make "before"/"after" meaningless).
+        {
+            let conn = m.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE facts SET valid_from_ms = 1000, valid_until_ms = 2000 WHERE id = ?1",
+                [berlin.id],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE facts SET valid_from_ms = 2000, valid_until_ms = NULL WHERE id = ?1",
+                [munich.id],
+            )
+            .unwrap();
+        }
+
+        let scope = ScopeCtx::user_only();
+        // As of t=1500 (after Berlin, before Munich): only Berlin was true.
+        let as_of_early = m
+            .recall_as_of("where the user lives", &[Region::Identity], 5, &scope, 1500)
+            .unwrap();
+        assert!(as_of_early.iter().any(|h| h.record.id == berlin.id));
+        assert!(as_of_early.iter().all(|h| h.record.id != munich.id));
+
+        // As of t=2500 (after the switch): only Munich.
+        let as_of_late = m
+            .recall_as_of("where the user lives", &[Region::Identity], 5, &scope, 2500)
+            .unwrap();
+        assert!(as_of_late.iter().any(|h| h.record.id == munich.id));
+        assert!(as_of_late.iter().all(|h| h.record.id != berlin.id));
+
+        // The default (non-as-of) recall path is untouched: exactly the current version, same as
+        // every existing recall test already asserts - re-confirmed here alongside the new feature.
+        let current = m
+            .recall("where the user lives", &[Region::Identity], 5)
+            .unwrap();
+        assert_eq!(current.len(), 1);
+        assert_eq!(current[0].record.id, munich.id);
     }
 
     #[test]

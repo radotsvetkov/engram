@@ -1041,6 +1041,13 @@ async fn run(mode: RunMode) -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/fs", get(terminal::fs_handler))
         .route("/v1/git/status", get(git::git_status))
         .route("/v1/git/diff", get(git::git_diff))
+        .route("/v1/git/branches", get(git::git_branches))
+        .route(
+            "/v1/git/worktrees",
+            get(git::git_worktrees)
+                .post(git::git_worktree_create)
+                .delete(git::git_worktree_remove),
+        )
         .route("/v1/tasks/{id}/changes", get(git::task_changes))
         .route("/v1/config", get(config_get).post(config_set))
         .route("/v1/config/test", post(config_test))

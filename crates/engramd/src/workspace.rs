@@ -241,6 +241,17 @@ impl WorkspaceStore {
             .filter(|w| !w.trim().is_empty())
             .map(PathBuf::from)
     }
+    /// A project's own `workdir`, directly - for callers (the terminal drawer, the git panel) that
+    /// key off the active project rather than a chat session.
+    pub fn workdir_for_project(&self, project_id: &str) -> Option<PathBuf> {
+        let d = self.data.lock().expect("ws");
+        d.projects
+            .iter()
+            .find(|p| p.id == project_id)
+            .and_then(|p| p.workdir.clone())
+            .filter(|w| !w.trim().is_empty())
+            .map(PathBuf::from)
+    }
     /// The last `n` turns of a session as (role, text), oldest-first - the conversation history the
     /// agentic chat needs so a follow-up ("let's try again") resolves against what was already said
     /// instead of re-asking for context. Long messages are truncated to keep the prompt bounded.

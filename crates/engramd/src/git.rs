@@ -30,6 +30,10 @@ const MAX_TEXT_BYTES: u64 = 256 * 1024;
 pub struct GitQuery {
     #[serde(default)]
     pub session: Option<String>,
+    /// An active project id, for callers (the terminal drawer, the topbar git chip) that aren't
+    /// tied to a chat session. `session` wins when both are present.
+    #[serde(default)]
+    pub project: Option<String>,
     #[serde(default)]
     pub path: Option<String>,
     /// diff the STAGED (index) side instead of the worktree side
@@ -37,10 +41,12 @@ pub struct GitQuery {
     pub staged: Option<bool>,
 }
 
-/// The session's project workdir, else the shared workspace — same resolution the agent uses.
-fn resolve_workdir(app: &App, session: Option<&str>) -> PathBuf {
+/// The session's project workdir, else the given project's workdir, else the shared workspace —
+/// same resolution the agent uses.
+fn resolve_workdir(app: &App, session: Option<&str>, project: Option<&str>) -> PathBuf {
     session
         .and_then(|sid| app.workspace.workdir_for_session(sid))
+        .or_else(|| project.and_then(|pid| app.workspace.workdir_for_project(pid)))
         .unwrap_or_else(|| app.workdir.clone())
 }
 
@@ -76,7 +82,7 @@ fn contained(workdir: &Path, rel: &str) -> Option<PathBuf> {
 
 /// GET /v1/git/status?session= — branch, ahead/behind, staged/unstaged/untracked, recent commits.
 pub async fn git_status(State(app): State<App>, Query(q): Query<GitQuery>) -> ApiResult {
-    let wd = resolve_workdir(&app, q.session.as_deref());
+    let wd = resolve_workdir(&app, q.session.as_deref(), q.project.as_deref());
     if !wd.join(".git").exists() {
         // Walking up to a parent repo is a choice, not an accident — report honestly instead.
         return Ok(Json(
@@ -172,7 +178,7 @@ pub async fn git_status(State(app): State<App>, Query(q): Query<GitQuery>) -> Ap
 /// GET /v1/git/diff?session=&path=&staged= — one file's unified diff (worktree or staged side).
 /// Untracked files diff against /dev/null so "what would this add" is still visible.
 pub async fn git_diff(State(app): State<App>, Query(q): Query<GitQuery>) -> ApiResult {
-    let wd = resolve_workdir(&app, q.session.as_deref());
+    let wd = resolve_workdir(&app, q.session.as_deref(), q.project.as_deref());
     let rel = q.path.as_deref().unwrap_or("");
     let abs = contained(&wd, rel).ok_or_else(|| err("path escapes the working directory"))?;
     let mut text = if q.staged == Some(true) {
@@ -337,4 +343,224 @@ fn unified(old: &Path, new: &Path, rel: &str) -> (String, usize, usize) {
         text
     };
     (text, adds, dels)
+}
+
+// ---- branches + worktrees: real git structure, not just the working-tree diff -----------------
+//
+// Read-only listing follows the same rule as the rest of this file. Creating/removing a worktree
+// is the one exception: it never touches tracked content or the current checkout, it only adds or
+// removes an ADDITIONAL checkout the human explicitly asked for - the same category of action
+// `enable_worktree_isolation` already performs programmatically for task isolation. To keep that
+// safe, every worktree this feature creates lives under a dedicated, per-project base directory,
+// and removal refuses anything outside it (never touch a worktree this feature didn't create).
+
+/// GET /v1/git/branches?session=|project= — local branches, current one marked.
+pub async fn git_branches(State(app): State<App>, Query(q): Query<GitQuery>) -> ApiResult {
+    let wd = resolve_workdir(&app, q.session.as_deref(), q.project.as_deref());
+    if !wd.join(".git").exists() {
+        return Ok(Json(json!({ "repo": false, "branches": [] })));
+    }
+    let raw = run_git(
+        &wd,
+        &[
+            "for-each-ref",
+            "--format=%(HEAD)\u{1f}%(refname:short)\u{1f}%(committerdate:unix)",
+            "refs/heads/",
+        ],
+    )
+    .await
+    .map_err(err)?;
+    let branches: Vec<Value> = raw
+        .lines()
+        .filter_map(|l| {
+            let p: Vec<&str> = l.split('\u{1f}').collect();
+            (p.len() == 3).then(|| {
+                json!({
+                    "name": p[1],
+                    "current": p[0].trim() == "*",
+                    "ts_ms": p[2].parse::<i64>().unwrap_or(0) * 1000,
+                })
+            })
+        })
+        .collect();
+    Ok(Json(json!({ "repo": true, "branches": branches })))
+}
+
+/// Parse `git worktree list --porcelain` into structured rows. Blocks are separated by a blank
+/// line; `cur` (already canonicalized) marks which row is the workdir this request resolved to.
+fn parse_worktrees(raw: &str, cur: &Path) -> Vec<Value> {
+    raw.split("\n\n")
+        .filter(|b| !b.trim().is_empty())
+        .filter_map(|block| {
+            let mut path = None;
+            let mut head = None;
+            let mut branch = None;
+            let (mut locked, mut prunable, mut bare) = (false, false, false);
+            for line in block.lines() {
+                if let Some(rest) = line.strip_prefix("worktree ") {
+                    path = Some(rest.to_string());
+                } else if let Some(rest) = line.strip_prefix("HEAD ") {
+                    head = Some(rest.chars().take(12).collect::<String>());
+                } else if let Some(rest) = line.strip_prefix("branch ") {
+                    branch = Some(rest.trim_start_matches("refs/heads/").to_string());
+                } else if line == "bare" {
+                    bare = true;
+                } else if line.starts_with("locked") {
+                    locked = true;
+                } else if line.starts_with("prunable") {
+                    prunable = true;
+                }
+            }
+            let path = path?;
+            let is_current = Path::new(&path)
+                .canonicalize()
+                .map(|c| c == cur)
+                .unwrap_or(false);
+            Some(json!({
+                "path": path, "head": head, "branch": branch,
+                "locked": locked, "prunable": prunable, "bare": bare, "current": is_current,
+            }))
+        })
+        .collect()
+}
+
+/// GET /v1/git/worktrees?session=|project= — every linked worktree of this project's repo.
+pub async fn git_worktrees(State(app): State<App>, Query(q): Query<GitQuery>) -> ApiResult {
+    let wd = resolve_workdir(&app, q.session.as_deref(), q.project.as_deref());
+    if !wd.join(".git").exists() {
+        return Ok(Json(json!({ "repo": false, "worktrees": [] })));
+    }
+    let raw = run_git(&wd, &["worktree", "list", "--porcelain"])
+        .await
+        .map_err(err)?;
+    let cur = wd.canonicalize().unwrap_or(wd.clone());
+    Ok(Json(
+        json!({ "repo": true, "worktrees": parse_worktrees(&raw, &cur) }),
+    ))
+}
+
+/// The base directory THIS feature creates worktrees under for a given project - distinct from the
+/// ephemeral per-task worktrees under `<home>/worktrees/<task-id>` (main.rs's `prepare_worktree`),
+/// which are throwaway task isolation, not something a human manages. Removal only ever touches
+/// paths confined here.
+fn managed_worktree_base(app: &App, project_id: &str) -> PathBuf {
+    Path::new(&app.home)
+        .join("worktrees")
+        .join("projects")
+        .join(project_id)
+}
+
+fn slugify(s: &str) -> String {
+    let slug: String = s
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let slug = slug.trim_matches('-');
+    if slug.is_empty() {
+        "branch".to_string()
+    } else {
+        slug.to_string()
+    }
+}
+
+#[derive(Deserialize)]
+pub struct WorktreeCreateReq {
+    pub project: String,
+    pub branch: String,
+    /// `true` to create `branch` fresh (optionally from `from`); `false` to check out an existing
+    /// branch into the new worktree.
+    #[serde(default)]
+    pub new_branch: bool,
+    #[serde(default)]
+    pub from: Option<String>,
+    /// Point the project's workdir at the new worktree immediately. Defaults on: the whole point
+    /// of creating one from this panel is to start working in it.
+    #[serde(default = "default_bind")]
+    pub bind: bool,
+}
+fn default_bind() -> bool {
+    true
+}
+
+/// POST /v1/git/worktrees — create a new linked worktree for a project's repo.
+pub async fn git_worktree_create(State(app): State<App>, Json(r): Json<WorktreeCreateReq>) -> ApiResult {
+    let wd = app
+        .workspace
+        .workdir_for_project(&r.project)
+        .ok_or_else(|| err("this project has no folder set"))?;
+    if !wd.join(".git").exists() {
+        return Err(err("not a git repository"));
+    }
+    let branch = r.branch.trim();
+    if branch.is_empty() || !branch.chars().all(|c| c.is_alphanumeric() || "-_./".contains(c)) {
+        return Err(err("invalid branch name"));
+    }
+    let base = managed_worktree_base(&app, &r.project);
+    let dest = base.join(slugify(branch));
+    if !dest.starts_with(&base) {
+        return Err(err("invalid destination path"));
+    }
+    if dest.exists() {
+        return Err(err("a worktree for this branch already exists"));
+    }
+    std::fs::create_dir_all(&base).map_err(err)?;
+    let dest_str = dest.to_string_lossy().into_owned();
+    let mut args: Vec<&str> = vec!["worktree", "add"];
+    if r.new_branch {
+        args.push("-b");
+        args.push(branch);
+    }
+    args.push(&dest_str);
+    if !r.new_branch {
+        args.push(branch);
+    } else if let Some(from) = r.from.as_deref().filter(|f| !f.trim().is_empty()) {
+        args.push(from);
+    }
+    run_git(&wd, &args).await.map_err(err)?;
+    if r.bind {
+        app.workspace
+            .update_project(&r.project, None, None, Some(dest_str.clone()));
+    }
+    Ok(Json(
+        json!({ "path": dest_str, "branch": branch, "bound": r.bind }),
+    ))
+}
+
+#[derive(Deserialize)]
+pub struct WorktreeRemoveQuery {
+    pub project: String,
+    pub path: String,
+}
+
+/// DELETE /v1/git/worktrees?project=&path= — remove a worktree, but ONLY one this feature created
+/// (confined under `managed_worktree_base`) and only if the project isn't actively using it.
+pub async fn git_worktree_remove(
+    State(app): State<App>,
+    Query(q): Query<WorktreeRemoveQuery>,
+) -> ApiResult {
+    let wd = app
+        .workspace
+        .workdir_for_project(&q.project)
+        .ok_or_else(|| err("this project has no folder set"))?;
+    let base = managed_worktree_base(&app, &q.project);
+    let target = PathBuf::from(&q.path);
+    let target_canon = target
+        .canonicalize()
+        .map_err(|_| err("worktree path not found"))?;
+    let base_canon = base.canonicalize().unwrap_or(base);
+    if !target_canon.starts_with(&base_canon) {
+        return Err(err(
+            "refusing to remove a worktree this feature didn't create",
+        ));
+    }
+    let wd_canon = wd.canonicalize().unwrap_or(wd.clone());
+    if target_canon == wd_canon {
+        return Err(err(
+            "this project is currently using that worktree - switch it to another folder first",
+        ));
+    }
+    run_git(&wd, &["worktree", "remove", "--force", &q.path])
+        .await
+        .map_err(err)?;
+    Ok(Json(json!({ "removed": q.path })))
 }

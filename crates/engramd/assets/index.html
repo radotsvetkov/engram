@@ -572,6 +572,43 @@
   .tg-card .primary { background:var(--accent); color:var(--accent-ink); border:none; border-radius:9px; padding:10px 20px; font-weight:600; font-size:14px; cursor:pointer; }
   .tg-card .primary:hover { filter:brightness(1.06); }
   .tg-fine { margin-top:14px; font-size:12px; color:var(--text-muted); }
+  /* per-project terminal drawer - a wider, right-side sibling of .panel; no backdrop scrim so chat
+     stays interactive behind it (same non-modal feel .panel already has). */
+  .term-drawer { position:fixed; top:0; right:0; width:min(880px,92vw); height:100vh; background:var(--surface-1);
+    border-left:1px solid var(--border-strong); transform:translateX(100%); transition:transform .2s ease-out;
+    display:flex; flex-direction:column; z-index:22; box-shadow:-18px 0 48px rgba(0,0,0,.35); }
+  .term-drawer.open { transform:translateX(0); }
+  .term-drawer .td-head { display:flex; align-items:center; gap:8px; padding:12px 14px; border-bottom:1px solid var(--border); flex:none; }
+  .term-drawer .td-head b { font-size:13px; font-weight:600; }
+  .term-drawer .td-head .x { margin-left:auto; cursor:pointer; color:var(--text-muted); background:none; border:none; font-size:16px; transition:color var(--dur-1); }
+  .term-drawer .td-head .x:hover { color:var(--text-primary); }
+  .term-drawer .term-wrap { height:auto; flex:1; min-height:0; }
+  .td-tabs { display:flex; align-items:center; gap:4px; padding:8px 10px 0; flex:none; overflow-x:auto; }
+  .td-tab { display:flex; align-items:center; gap:6px; padding:6px 10px; border-radius:8px 8px 0 0; cursor:pointer; font-size:12px;
+    color:var(--text-secondary); background:var(--surface-0); border:1px solid var(--border); border-bottom:none; white-space:nowrap; }
+  .td-tab:hover { color:var(--text-primary); }
+  .td-tab.active { color:var(--text-primary); border-color:var(--border-strong); }
+  .td-tab .td-x { color:var(--text-muted); border-radius:4px; padding:0 2px; }
+  .td-tab .td-x:hover { color:var(--text-primary); background:var(--surface-2); }
+  .td-tab-add { flex:none; background:none; border:none; color:var(--text-muted); cursor:pointer; padding:6px 8px; border-radius:6px; }
+  .td-tab-add:hover { color:var(--text-primary); background:var(--hover); }
+  /* git status chip - always visible in the topbar, next to the project switcher */
+  .git-top-wrap { position:relative; display:inline-flex; margin-right:2px; }
+  .git-top-pop { position:absolute; top:calc(100% + 6px); left:0; z-index:45; width:320px; max-height:70vh; overflow:auto;
+    background:var(--surface-2); border:1px solid var(--border-strong); border-radius:11px; box-shadow:var(--e3); padding:8px;
+    animation:menuIn .13s var(--ease-out); }
+  .git-top-pop .git-wt-link { display:block; margin-top:8px; padding:8px 9px; border-top:1px solid var(--border); color:var(--accent); font-size:12px; cursor:pointer; border-radius:7px; }
+  .git-top-pop .git-wt-link:hover { background:var(--hover); }
+  /* Branches & worktrees modal */
+  .wt-sec { font:10.5px var(--mono); color:var(--text-muted); text-transform:uppercase; letter-spacing:.06em; padding:10px 2px 6px; }
+  .wt-row { display:flex; align-items:center; gap:9px; padding:7px 8px; border-radius:8px; font-size:12.5px; color:var(--text-secondary); }
+  .wt-row:hover { background:var(--hover); }
+  .wt-row.cur { color:var(--accent); }
+  .wt-row .wt-path { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font:12px var(--mono); }
+  .wt-row .wt-branch { flex:none; font-size:11px; color:var(--text-muted); }
+  .wt-badge { flex:none; font:10px var(--mono); color:var(--warning); background:color-mix(in srgb, var(--warning) 14%, transparent); border-radius:6px; padding:1px 6px; }
+  .wt-form { display:flex; flex-direction:column; gap:8px; margin-top:10px; padding-top:10px; border-top:1px solid var(--border); }
+  .wt-form .row { margin-bottom:0; }
   /* Centered like every other view (Skills/Artifacts/Activity) - Schedule and Checkpoints used to
      hug the left edge, breaking the app's rhythm. */
   .panes { padding:22px 24px 60px; display:flex; flex-direction:column; gap:14px; max-width:920px; margin:0 auto; }
@@ -1005,6 +1042,8 @@
     color:var(--text-secondary); border-radius:var(--radius); padding:4px 9px; font-size:12px; cursor:pointer; transition:.15s; }
   .kbtn:hover { border-color:var(--border-strong); color:var(--text-primary); }
   .kbtn kbd { font:11px var(--mono); color:var(--text-muted); }
+  .kbtn .term-badge { font:600 10px var(--mono); color:var(--accent-ink); background:var(--accent); border-radius:8px; padding:1px 6px; }
+  #termBtn svg { width:15px; height:15px; flex:none; }
   .railgear { background:none; border:none; color:var(--text-secondary); cursor:pointer; padding:7px 9px; border-radius:var(--radius);
     display:flex; align-items:center; gap:9px; font:inherit; width:100%; }
   .railgear:hover { background:var(--surface-2); color:var(--text-primary); }
@@ -1746,8 +1785,10 @@ html[data-engram-theme="light"] .sched-pick .sp-row select, html[data-engram-the
     <header class="topbar">
       <button class="sb-toggle" id="sbToggle" onclick="event.stopPropagation();document.body.classList.toggle('sb-drawer')" title="Chats" aria-label="Show chats"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h10M4 18h16"/></svg></button>
       <span class="proj-top-wrap" id="projTopWrap"><button class="proj-top" id="projTop" onclick="projTopToggle(event)" title="Switch project — scopes chats, tasks, and memory"><span class="proj-dot"></span><span id="projTopName">…</span><svg class="proj-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></button></span>
+      <span class="git-top-wrap" id="gitTopWrap"></span>
       <h1 id="viewname">Tasks</h1>
       <div class="right">
+        <button class="kbtn" id="termBtn" onclick="toggleTerminalDrawer()" title="Terminal — this project's files &amp; shell (⌘`)" aria-label="Terminal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="2.6"/><path d="m7.5 9.5 2.6 2.5-2.6 2.5M13 14.5h3.6"/></svg><span id="termBtnBadge" class="term-badge" style="display:none"></span></button>
         <button class="kbtn" onclick="openPalette()" title="Command palette (⌘K)" aria-label="Command palette"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3-3"/></svg> <kbd aria-hidden="true">⌘K</kbd></button>
         <button id="haltBtn" class="stopbtn" style="display:none" onclick="toggleHalt()" title="Emergency stop: halts every running task at its next step"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2.5"/></svg><span id="haltLabel">Stop</span></button>
       </div>
@@ -1908,7 +1949,9 @@ const ICONS = {
   Checkpoints: SVG('<path d="M3 12a9 9 0 1 0 2.6-6.4"/><path d="M3 4v4h4"/><path d="M12 8v4.5l3 1.8"/>'),
 };
 const VIEWS = ['Chat','Tasks','Schedule','Memory','Skills','Artifacts'];
-const TOOLS = ['Activity','Terminal','Checkpoints'];       // power tools - pinned to the bottom of the rail
+// Terminal used to live here as a "general" tool tied to nothing in particular; it's now a
+// per-project drawer opened from the topbar (see openTerminalDrawer), not a rail-addressable view.
+const TOOLS = ['Activity','Checkpoints'];       // power tools - pinned to the bottom of the rail
 const ALL_VIEWS = [...VIEWS, ...TOOLS];
 let state = { route:'Tasks', tasks:[], offline:false };
 
@@ -1993,6 +2036,7 @@ async function poll(){
     const dot=document.getElementById('sbDot'); if(dot) dot.classList.add('awake');
     const dn=document.getElementById('sbDaemon'); if(dn) dn.textContent = h.offline ? 'engramd · offline model' : ('engramd · v'+(h.version||''));
     document.getElementById('status').innerHTML = 'awake <span class="live">·</span> v'+h.version;
+    refreshGitTop();   // same cadence as the rest of the trust spine - branch/dirty state stays live
   } catch(e){
     const dot=document.getElementById('sbDot'); if(dot) dot.classList.remove('awake');
     const dn=document.getElementById('sbDaemon'); if(dn) dn.textContent='engramd · sleeping';
@@ -2623,6 +2667,7 @@ async function openSession(id){
   if(!WS.byId[id]){ try{ WS.byId[id]=await J('/v1/sessions/'+encodeURIComponent(id)); }catch(_){ WS.byId[id]={id,messages:[]}; } }
   renderSidebar(); if(state.route!=='Chat') go('Chat'); else renderChat();
   refreshSendBtn();   // the Send/Stop button tracks the now-active session's run state
+  refreshGitTop();
 }
 async function favSession(id,e){ if(e) e.stopPropagation(); const s=WS.sessions.find(x=>x.id===id); if(!s) return; const fav=!s.fav;
   s.fav=fav; if(WS.byId[id]) WS.byId[id].fav=fav; renderSidebar();
@@ -2661,7 +2706,10 @@ async function pickProject(id){ projMenuOpen=false; WS.activeProject=id; WS.acti
   // Don't detach sessions that are still STREAMING — chatSay keeps writing into their byId object
   // and repaints on 'done'; wiping them mid-run silently dropped the finished answer from view.
   WS.byId=keepBusyById(); renderSidebar();
-  await loadSessions(); WS.activeSession=(WS.sessions[0]||{}).id||null; renderSidebar(); if(state.route==='Chat') renderChat(); }
+  await loadSessions(); WS.activeSession=(WS.sessions[0]||{}).id||null; renderSidebar(); if(state.route==='Chat') renderChat();
+  // Retarget the terminal drawer and git chip to the newly active project - each project keeps its
+  // own tabs/scrollback in memory, so switching back later restores exactly where it was left.
+  if(TERMS.open) renderTermDrawer(); termBtnSync(); refreshGitTop(); }
 // Prune the session cache but keep any session with a live local run (so its streaming object and
 // its final repaint survive a project switch).
 function keepBusyById(){ const keep={}; for(const sid of _busySessions){ if(WS.byId[sid]) keep[sid]=WS.byId[sid]; } return keep; }
@@ -5023,7 +5071,7 @@ function paletteCommands(){
   ((WS&&WS.sessions)||[]).slice(0,5).forEach(s=>cmds.push({group:'Chats', t:s.title||'New chat', sub:s.updated_ms?fmtAgo(s.updated_ms):'', ic:ICONS.Chat, run:()=>{ go('Chat'); openSession(s.id); }}));
   cmds.push({group:a, t:'New task', sub:'create a task', run:()=>{ go('Tasks'); setTimeout(()=>document.getElementById('composer')?.focus(),60); }});
   cmds.push({group:a, t:'Ask Engram', sub:'open chat', ic:ICONS.Chat, run:()=>go('Chat')});
-  cmds.push({group:a, t:'Browse files', sub:'the working folder tree, in the glass-box terminal', ic:ICONS.Terminal, run:()=>go('Terminal')});
+  cmds.push({group:a, t:'Browse files', sub:'the current project\'s folder tree, in the glass-box terminal', ic:ICONS.Terminal, run:()=>openTerminalDrawer()});
   cmds.push({group:a, t:'Verify ledger', sub:'re-check the signed chain', run:verifyLedgerNow});
   cmds.push({group:a, t:halted?'Resume agents':'Emergency stop', sub:'halt running tasks at the next step', run:toggleHalt});
   cmds.push({group:a, t:'Pending approvals', sub:'review what unattended agents staged to send', run:openApprovals});
@@ -5059,6 +5107,8 @@ window.addEventListener('keydown', e=>{
   if((e.metaKey||e.ctrlKey) && k===','){ e.preventDefault(); document.getElementById('cc').hidden? openCC(): closeCC(); return; }
   if((e.metaKey||e.ctrlKey) && k==='m' && document.getElementById('modelMenu')){ e.preventDefault(); toggleModelMenu(); return; }
   if((e.metaKey||e.ctrlKey) && k==='u' && document.getElementById('attachFileInput')){ e.preventDefault(); attachPickFiles(); return; }
+  // ⌘` toggles the per-project terminal drawer - the conventional "open terminal" chord.
+  if((e.metaKey||e.ctrlKey) && k==='`'){ e.preventDefault(); toggleTerminalDrawer(); return; }
   // ⌘1..⌘9 jump straight to a view (matching the rail order) — muscle-memory nav like Slack/Linear.
   if((e.metaKey||e.ctrlKey) && !e.shiftKey && !e.altKey && k>='1' && k<='9'){
     const v=ALL_VIEWS[+k-1]; if(v){ e.preventDefault(); go(v); return; }
@@ -5080,23 +5130,94 @@ window.addEventListener('keydown', e=>{
   if(k==='escape' && !document.getElementById('receipt').hidden){ e.preventDefault(); closeReceipt(); return; }
   if(k==='escape' && !document.getElementById('projModal').hidden){ e.preventDefault(); closeProjModal(); return; }
   if(k==='escape' && document.getElementById('panel').classList.contains('open')){ e.preventDefault(); closePanel(); return; }
+  if(k==='escape' && TERMS.open){ e.preventDefault(); closeTerminalDrawer(); return; }
   // Escape stops the active chat's run (matching Claude) — only when nothing else claimed the key.
   if(k==='escape' && state.route==='Chat' && _busySessions.has(WS.activeSession)){ e.preventDefault(); stopChat(WS.activeSession); }
 });
 
-// ---- Terminal - the glass-box shell (your commands signed into the ledger, like the agent's) ----
-let TERM = { cwd:null, parent:null, tree:[], log:[], hist:[], hi:-1, busy:false };
+// ---- Terminal - a per-project drawer, not a general shell tied to nothing --------------------
+// Each project keeps its OWN set of terminal tabs (cwd/scrollback/history) in TERMS.byProject, so
+// switching projects never destroys another project's session, and there's no daemon-wide "general"
+// terminal falling back to a folder the user never chose.
+let TERMS = { byProject:{}, activeByProject:{}, open:false };
+let _termTabSeq=1;
 function termShort(p){ if(!p) return ''; const s=p.split('/').filter(Boolean); return (s.length>2?'.../':'/')+s.slice(-2).join('/'); }
 const attrJson = x => escAttr(JSON.stringify(x));
 async function loadTree(path){
   try{ return await J(tok('/v1/fs'+(path?('?path='+encodeURIComponent(path)):''))); }catch(_){ return null; }
 }
-async function renderTerminal(){
-  const v=document.getElementById('view'); if(!v) return;
-  document.getElementById('viewname').textContent='Terminal';
-  const fs=await loadTree(TERM.cwd);
+function termTabs(){ const pid=WS.activeProject; return TERMS.byProject[pid]||(TERMS.byProject[pid]=[]); }
+function activeTab(){ const tabs=termTabs(); const id=TERMS.activeByProject[WS.activeProject]; return tabs.find(t=>t.id===id)||tabs[0]||null; }
+// Guarantees a tab exists for the ACTIVE project, lazily creating the project's first one seeded
+// from its own workdir (or gated on "no folder" if it doesn't have one) - never the shared daemon
+// workdir the old singleton terminal fell back to.
+function ensureActiveTab(){
+  if(!termTabs().length){
+    const proj=curProject();
+    const tab={ id:'t'+(_termTabSeq++), cwd:proj.workdir||null, parent:null, tree:[], log:[], hist:[], hi:-1, busy:false, noFolder:!proj.workdir };
+    termTabs().push(tab); TERMS.activeByProject[WS.activeProject]=tab.id;
+  }
+  return activeTab();
+}
+function termBtnSync(){
+  const b=document.getElementById('termBtnBadge'); if(!b) return;
+  const n=(TERMS.byProject[WS.activeProject]||[]).length;
+  b.textContent = n>1 ? String(n) : ''; b.style.display = n>1 ? 'inline-flex' : 'none';
+}
+async function openTerminalDrawer(){
+  TERMS.open=true; ensureActiveTab();
+  const dr=document.getElementById('termDrawer'); if(dr) dr.classList.add('open');
+  await renderTermDrawer();
+}
+function closeTerminalDrawer(){ TERMS.open=false; const dr=document.getElementById('termDrawer'); if(dr) dr.classList.remove('open'); }
+function toggleTerminalDrawer(){ TERMS.open ? closeTerminalDrawer() : openTerminalDrawer(); }
+async function termNewTab(){
+  const proj=curProject();
+  const tab={ id:'t'+(_termTabSeq++), cwd:proj.workdir||null, parent:null, tree:[], log:[], hist:[], hi:-1, busy:false, noFolder:!proj.workdir };
+  termTabs().push(tab); TERMS.activeByProject[WS.activeProject]=tab.id;
+  await renderTermDrawer();
+}
+function termSwitchTab(id){ TERMS.activeByProject[WS.activeProject]=id; renderTermDrawer(); }
+function termCloseTab(id,ev){ if(ev) ev.stopPropagation();
+  const tabs=termTabs(); const i=tabs.findIndex(t=>t.id===id); if(i<0) return;
+  tabs.splice(i,1);
+  if(TERMS.activeByProject[WS.activeProject]===id) TERMS.activeByProject[WS.activeProject]=(tabs[Math.max(0,i-1)]||{}).id||null;
+  renderTermDrawer();
+}
+function termTabsHtml(){
+  const tabs=termTabs(), activeId=TERMS.activeByProject[WS.activeProject];
+  const t=tabs.map((tb,i)=>`<div class="td-tab ${tb.id===activeId?'active':''}" onclick="termSwitchTab('${tb.id}')" title="${escAttr(tb.cwd||'no folder')}">
+      <span>${i+1}. ${esc(termShort(tb.cwd)||'shell')}</span>
+      ${tabs.length>1?`<span class="td-x" onclick="termCloseTab('${tb.id}',event)">×</span>`:''}</div>`).join('');
+  return `<div class="td-tabs">${t}<button class="td-tab-add" title="New terminal tab" onclick="termNewTab()">+</button></div>`;
+}
+async function termPickProjectFolder(){
+  const dir=await pickDir(); if(dir==null) return;
+  try{
+    const p=await J('/v1/projects/'+encodeURIComponent(WS.activeProject),{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({workdir:dir})});
+    const i=WS.projects.findIndex(x=>x.id===p.id); if(i>=0) WS.projects[i]=p;
+    const tab=activeTab(); if(tab){ tab.cwd=dir; tab.noFolder=false; }
+    renderTermDrawer(); refreshGitTop(); notify('Project folder set - '+dir,'ok');
+  }catch(e){ notify('Couldn\'t save the folder - '+e.message); }
+}
+async function renderTermDrawer(){
+  let dr=document.getElementById('termDrawer');
+  if(!dr){ dr=document.createElement('div'); dr.id='termDrawer'; dr.className='term-drawer'; document.body.appendChild(dr); }
+  if(TERMS.open) dr.classList.add('open');
+  const proj=curProject(), tab=ensureActiveTab();
+  const head=`<div class="td-head"><b>${esc(proj.name)}</b><span class="grow"></span><button class="x" onclick="closeTerminalDrawer()" aria-label="Close">✕</button></div>`;
+  if(tab.noFolder){
+    dr.innerHTML=`${head}<div class="term-gate"><div class="tg-card">
+      <div class="tg-ic">${ICONS.Terminal}</div>
+      <h2>No folder set for "${esc(proj.name)}"</h2>
+      <p>Pick a folder for this project to browse its files and run commands scoped to it - never the shared daemon workspace.</p>
+      <button class="primary" onclick="termPickProjectFolder()">Choose folder…</button>
+    </div></div>`;
+    return;
+  }
+  const fs=await loadTree(tab.cwd);
   if(!fs || fs.denied){
-    v.innerHTML=`<div class="term-gate"><div class="tg-card">
+    dr.innerHTML=`${head}<div class="term-gate"><div class="tg-card">
       <div class="tg-ic">${ICONS.Terminal}</div>
       <h2>A terminal that keeps no secrets</h2>
       <p>Engram signs every command - the agent's and your own - into one tamper-evident ledger, so even the lines you type by hand stay auditable. No human-shaped hole in the glass box.</p>
@@ -5105,49 +5226,54 @@ async function renderTerminal(){
     </div></div>`;
     return;
   }
-  TERM.cwd=fs.path; TERM.parent=fs.parent; TERM.tree=fs.entries||[];
-  if(!TERM.log.length) TERM.log=[{k:'sys',t:'Engram terminal - every command you run is signed into the ledger. Try ls, git status, pwd. Type clear to reset.'}];
-  v.innerHTML=`<div class="term-wrap">
-    <aside class="ftree" id="ftree"><div id="gitPanel"></div><div id="ftreeList"></div></aside>
-    <div class="term" id="term">
-      <div class="term-out" id="termOut"></div>
-      <div class="term-in"><span class="term-prompt" id="termPrompt">${esc(termShort(TERM.cwd))} $</span><input id="termCmd" class="term-cmd" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="run a command..."></div>
-    </div></div>`;
-  renderTree(); paintTerm(); gitPanelLoad();
+  tab.cwd=fs.path; tab.parent=fs.parent; tab.tree=fs.entries||[];
+  if(!tab.log.length) tab.log=[{k:'sys',t:'Engram terminal, scoped to "'+proj.name+'". Every command you run is signed into the ledger. Type clear to reset.'}];
+  dr.innerHTML=`${head}${termTabsHtml()}
+    <div class="term-wrap">
+      <aside class="ftree" id="ftree"><div id="gitPanel"></div><div id="ftreeList"></div></aside>
+      <div class="term" id="term">
+        <div class="term-out" id="termOut"></div>
+        <div class="term-in"><span class="term-prompt" id="termPrompt">${esc(termShort(tab.cwd))} $</span><input id="termCmd" class="term-cmd" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="run a command..."></div>
+      </div></div>`;
+  renderTree(); paintTerm(); gitPanelLoad(); termBtnSync();
   const inp=document.getElementById('termCmd'); inp.onkeydown=termKey; inp.focus();
   document.getElementById('term').addEventListener('mousedown', e=>{ if(e.target.tagName!=='INPUT' && (''+window.getSelection()).length===0) setTimeout(()=>inp.focus(),0); });
 }
 // ---- Git panel (read-only): branch, working-tree changes, recent commits ----------------------
 // Viewing only, by design - staging/committing/pushing stay deliberate terminal acts. Clicking a
-// file opens its unified diff, rendered with the same diff blocks chat uses.
+// file opens its unified diff, rendered with the same diff blocks chat uses. The row/log markup is
+// shared with the always-visible topbar git chip's popover (gitTopToggle below).
 const GITP={ open:true };
-async function gitPanelLoad(){
-  const box=document.getElementById('gitPanel'); if(!box) return;
-  let st=null; try{ st=await J('/v1/git/status'+(WS.activeSession?('?session='+encodeURIComponent(WS.activeSession)):'')); }catch(_){}
-  if(!st){ box.innerHTML=''; return; }
-  if(!st.repo){ box.innerHTML=`<div class="git-none" title="${escAttr(st.workdir||'')}">not a git repository</div>`; return; }
+async function gitFetchStatus(){ try{ return await J('/v1/git/status?project='+encodeURIComponent(WS.activeProject)); }catch(_){ return null; } }
+function gitStatusBodyHtml(st){
   const n=(st.staged||[]).length+(st.unstaged||[]).length+(st.untracked||[]).length;
-  const ab=(st.ahead||st.behind)?`<span class="git-ab" title="ahead/behind the upstream">${st.ahead?('↑'+st.ahead):''}${st.behind?(' ↓'+st.behind):''}</span>`:'';
   const row=(f,staged)=>`<div class="git-row st-${esc(f.status)}" title="${escAttr(f.path)} · ${esc(f.status)} — click for the diff" onclick="gitOpenDiff(${attrJson(f.path)},${staged})">
       <span class="git-dot"></span><span class="git-path">${esc(f.path.split('/').pop())}</span><span class="git-st">${esc(f.status[0].toUpperCase())}</span></div>`;
   const sec=(label,list,staged)=>list.length?`<div class="git-sec">${label} · ${list.length}</div>${list.map(f=>row(f,staged)).join('')}`:'';
   const log=(st.log||[]).slice(0,8).map(c=>`<div class="git-ci" title="${escAttr(c.subject)} — ${escAttr(c.author)}"><span class="git-h" title="copy ${escAttr(c.hash)}" onclick="navigator.clipboard&&navigator.clipboard.writeText('${escAttr(c.hash)}')">${esc(c.hash)}</span><span class="git-s">${esc(c.subject)}</span><span class="git-t">${fmtAgo(c.ts_ms)}</span></div>`).join('');
+  return `${sec('Staged', st.staged||[], true)}
+      ${sec('Changes', st.unstaged||[], false)}
+      ${sec('Untracked', st.untracked||[], false)}
+      ${n?'':'<div class="git-none">nothing to commit</div>'}
+      ${log?`<div class="git-sec">Recent commits</div>${log}`:''}`;
+}
+async function gitPanelLoad(){
+  const box=document.getElementById('gitPanel'); if(!box) return;
+  const st=await gitFetchStatus();
+  if(!st){ box.innerHTML=''; return; }
+  if(!st.repo){ box.innerHTML=`<div class="git-none" title="${escAttr(st.workdir||'')}">not a git repository</div>`; return; }
+  const n=(st.staged||[]).length+(st.unstaged||[]).length+(st.untracked||[]).length;
+  const ab=(st.ahead||st.behind)?`<span class="git-ab" title="ahead/behind the upstream">${st.ahead?('↑'+st.ahead):''}${st.behind?(' ↓'+st.behind):''}</span>`:'';
   box.innerHTML=`<div class="git-head" onclick="GITP.open=!GITP.open;gitPanelLoad()" title="${escAttr(st.workdir||'')}">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.4"/><circle cx="6" cy="18" r="2.4"/><circle cx="18" cy="9" r="2.4"/><path d="M6 8.4v7.2M18 11.4c0 3-2.5 3.6-5 3.6H8.4"/></svg>
       <b>${esc(st.branch||'(no branch)')}</b>${ab}
       ${n?`<span class="git-n">${n}</span>`:'<span class="git-clean" title="working tree clean">✓</span>'}
       <span class="grow"></span><button class="git-r" title="Refresh" onclick="event.stopPropagation();gitPanelLoad()">↻</button></div>
-    ${GITP.open?`<div class="git-body">
-      ${sec('Staged', st.staged||[], true)}
-      ${sec('Changes', st.unstaged||[], false)}
-      ${sec('Untracked', st.untracked||[], false)}
-      ${n?'':'<div class="git-none">nothing to commit</div>'}
-      ${log?`<div class="git-sec">Recent commits</div>${log}`:''}
-    </div>`:''}`;
+    ${GITP.open?`<div class="git-body">${gitStatusBodyHtml(st)}</div>`:''}`;
 }
 async function gitOpenDiff(path, staged){
   let r=null;
-  try{ r=await J('/v1/git/diff?path='+encodeURIComponent(path)+(staged?'&staged=true':'')+(WS.activeSession?('&session='+encodeURIComponent(WS.activeSession)):'')); }
+  try{ r=await J('/v1/git/diff?path='+encodeURIComponent(path)+(staged?'&staged=true':'')+'&project='+encodeURIComponent(WS.activeProject)); }
   catch(e){ notify('Couldn\'t diff - '+((e&&e.message)||'error')); return; }
   diffModal((staged?'staged · ':'')+path, r.diff||'(no changes)');
 }
@@ -5163,20 +5289,139 @@ function diffModal(title, diffText){
   const esc_=e=>{ if(e.key==='Escape'){ ov.remove(); document.removeEventListener('keydown',esc_); } };
   document.addEventListener('keydown',esc_);
 }
+// ---- Branches & worktrees: real git structure, reachable from the git chip's popover -----------
+async function gitWorktreeModal(){
+  const proj=curProject();
+  const ov=document.createElement('div'); ov.className='overlay'; ov.style.display='flex';
+  ov.onclick=e=>{ if(e.target===ov) ov.remove(); };
+  ov.innerHTML=`<div class="fv-card" style="width:min(640px,94vw);max-height:88vh;display:flex;flex-direction:column">
+    <div class="fv-head"><span class="fv-name">Branches &amp; worktrees · ${esc(proj.name)}</span><span class="grow"></span>
+      <button class="fv-x" aria-label="Close" onclick="this.closest('.overlay').remove()">×</button></div>
+    <div class="fv-body" id="wtBody"><div class="muted">Loading…</div></div></div>`;
+  document.body.appendChild(ov);
+  const esc_=e=>{ if(e.key==='Escape'){ ov.remove(); document.removeEventListener('keydown',esc_); } };
+  document.addEventListener('keydown',esc_);
+  await wtRefresh();
+}
+async function wtRefresh(){
+  const body=document.getElementById('wtBody'); if(!body) return;
+  const pid=WS.activeProject;
+  let branches=[], worktrees=[];
+  try{
+    const [b,w]=await Promise.all([
+      J('/v1/git/branches?project='+encodeURIComponent(pid)),
+      J('/v1/git/worktrees?project='+encodeURIComponent(pid)),
+    ]);
+    if(!b.repo){ body.innerHTML='<div class="git-none">This project isn\'t a git repository.</div>'; return; }
+    branches=b.branches||[]; worktrees=w.worktrees||[];
+  }catch(e){ body.innerHTML=`<div class="git-none">Couldn't load — ${esc(e.message||'error')}</div>`; return; }
+  // "Managed" = lives under this feature's own base dir - only those may be removed from here,
+  // never a worktree the user made by hand outside Engram.
+  const base='/worktrees/projects/'+pid+'/';
+  worktrees.forEach(w=>{ w.managed = w.path.includes(base); });
+  const wtRow=w=>`<div class="wt-row ${w.current?'cur':''}">
+      <span class="wt-path" title="${escAttr(w.path)}">${esc(w.path)}</span>
+      <span class="wt-branch">${esc(w.branch||'(detached)')}</span>
+      ${w.locked?'<span class="wt-badge">locked</span>':''}
+      ${w.current
+        ? '<span class="wt-badge" style="color:var(--accent);background:var(--accent-soft)">current</span>'
+        : `<button class="sbtn ghost" onclick="wtUse(${attrJson(w.path)})">Use this</button>${w.managed?`<button class="sbtn ghost" onclick="wtRemove(${attrJson(w.path)})">Remove</button>`:''}`}
+    </div>`;
+  const branchOpts=branches.map(b=>`<option value="${escAttr(b.name)}" ${b.current?'selected':''}>${esc(b.name)}${b.current?' (current)':''}</option>`).join('');
+  body.innerHTML=`
+    <div class="wt-sec">Worktrees · ${worktrees.length}</div>
+    ${worktrees.map(wtRow).join('')||'<div class="git-none">none</div>'}
+    <div class="wt-form">
+      <div class="wt-sec" style="padding-top:0">New worktree</div>
+      <div class="row"><label style="flex:1"><input type="radio" name="wtMode" value="existing" checked onchange="wtModeChange(this)"> Existing branch</label>
+        <label style="flex:1"><input type="radio" name="wtMode" value="new" onchange="wtModeChange(this)"> New branch</label></div>
+      <select id="wtBranchSel" class="ask-input">${branchOpts}</select>
+      <input id="wtBranchNew" class="ask-input" placeholder="new-branch-name" style="display:none">
+      <input id="wtFrom" class="ask-input" placeholder="base branch (optional, defaults to current)" style="display:none">
+      <label class="toggle"><input type="checkbox" id="wtBind" checked><span class="track"></span> Switch this project to the new worktree</label>
+      <div class="sactions"><span class="grow"></span><button class="sbtn primary" onclick="wtCreate()">Create worktree</button></div>
+    </div>`;
+}
+function wtModeChange(el){
+  const isNew=el.value==='new';
+  document.getElementById('wtBranchSel').style.display=isNew?'none':'';
+  document.getElementById('wtBranchNew').style.display=isNew?'':'none';
+  document.getElementById('wtFrom').style.display=isNew?'':'none';
+}
+async function wtCreate(){
+  const isNew=document.querySelector('input[name="wtMode"]:checked').value==='new';
+  const branch=isNew?document.getElementById('wtBranchNew').value.trim():document.getElementById('wtBranchSel').value;
+  if(!branch){ notify('Pick or name a branch'); return; }
+  const bind=document.getElementById('wtBind').checked;
+  const from=isNew?document.getElementById('wtFrom').value.trim():'';
+  try{
+    await J('/v1/git/worktrees',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({project:WS.activeProject, branch, new_branch:isNew, from:from||undefined, bind})});
+    notify('Worktree created','ok');
+    if(bind){ await loadWorkspace(); renderSidebar(); refreshGitTop(); if(TERMS.open) renderTermDrawer(); }
+    await wtRefresh();
+  }catch(e){ notify('Couldn\'t create worktree - '+e.message); }
+}
+async function wtUse(path){
+  try{
+    const p=await J('/v1/projects/'+encodeURIComponent(WS.activeProject),{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({workdir:path})});
+    const i=WS.projects.findIndex(x=>x.id===p.id); if(i>=0) WS.projects[i]=p;
+    notify('Switched to '+path,'ok'); refreshGitTop(); if(TERMS.open) renderTermDrawer();
+    await wtRefresh();
+  }catch(e){ notify('Couldn\'t switch - '+e.message); }
+}
+async function wtRemove(path){
+  if(!await askConfirm({title:'Remove worktree?',message:'Remove the worktree at "'+path+'"? This deletes its checked-out files (the branch itself is untouched).',ok:'Remove',danger:true})) return;
+  try{
+    await J('/v1/git/worktrees?project='+encodeURIComponent(WS.activeProject)+'&path='+encodeURIComponent(path),{method:'DELETE'});
+    notify('Worktree removed','ok'); await wtRefresh();
+  }catch(e){ notify('Couldn\'t remove - '+e.message); }
+}
+// ---- Git status chip: always visible in the topbar, next to the project switcher --------------
+let _gitTopStatus=null;
+async function refreshGitTop(){
+  const wrap=document.getElementById('gitTopWrap'); if(!wrap) return;
+  const st=await gitFetchStatus();
+  _gitTopStatus=(st&&st.repo)?st:null;
+  if(!_gitTopStatus){ wrap.innerHTML=''; gitTopClose(); return; }
+  const n=(st.staged||[]).length+(st.unstaged||[]).length+(st.untracked||[]).length;
+  const ab=(st.ahead||st.behind)?`<span class="git-ab">${st.ahead?('↑'+st.ahead):''}${st.behind?(' ↓'+st.behind):''}</span>`:'';
+  // Update just the BUTTON, not the whole wrap - the popover (gitTopMenu) lives as a sibling
+  // inside this same wrap, and a poll-driven refresh mid-read must not blow it out from under
+  // the user (wrap.innerHTML= would remove it, since it's a child of wrap too).
+  let btn=document.getElementById('gitTopBtn');
+  if(!btn){ wrap.innerHTML=`<button class="proj-top git-top" id="gitTopBtn" onclick="gitTopToggle(event)"></button>`; btn=document.getElementById('gitTopBtn'); }
+  btn.title='Git — branch, changes, and worktrees for '+curProject().name;
+  btn.innerHTML=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.2"/><circle cx="6" cy="18" r="2.2"/><circle cx="18" cy="9" r="2.2"/><path d="M6 8.2v7.6M18 11.2c0 3-2.5 3.6-5 3.6H8.4"/></svg>
+      <span>${esc(st.branch||'(detached)')}</span>${ab}${n?`<span class="git-n">${n}</span>`:''}`;
+}
+function gitTopClose(){ const m=document.getElementById('gitTopMenu'); if(m) m.remove(); }
+function gitTopToggle(ev){
+  if(ev) ev.stopPropagation();
+  if(document.getElementById('gitTopMenu')){ gitTopClose(); return; }
+  const wrap=document.getElementById('gitTopWrap'); if(!wrap || !_gitTopStatus) return;
+  const m=document.createElement('div'); m.id='gitTopMenu'; m.className='git-top-pop'; m.setAttribute('role','menu');
+  m.innerHTML = gitStatusBodyHtml(_gitTopStatus)
+    + `<div class="git-wt-link" onclick="gitTopClose();gitWorktreeModal()">Branches &amp; worktrees…</div>`;
+  wrap.appendChild(m);
+}
+document.addEventListener('click', e=>{ if(document.getElementById('gitTopMenu') && !e.target.closest('#gitTopWrap')) gitTopClose(); });
 function renderTree(){
+  const tab=activeTab(); if(!tab) return;
   const el=document.getElementById('ftreeList')||document.getElementById('ftree'); if(!el) return;
-  const up = TERM.parent ? `<div class="ft-row dir" onclick="termCd(${attrJson(TERM.parent)})"><span class="fi">↰</span><span class="fname">..</span></div>` : '';
-  const rows = (TERM.tree||[]).map(e=>{
-    const full=(TERM.cwd.endsWith('/')?TERM.cwd:TERM.cwd+'/')+e.name;
+  const up = tab.parent ? `<div class="ft-row dir" onclick="termCd(${attrJson(tab.parent)})"><span class="fi">↰</span><span class="fname">..</span></div>` : '';
+  const rows = (tab.tree||[]).map(e=>{
+    const full=(tab.cwd.endsWith('/')?tab.cwd:tab.cwd+'/')+e.name;
     return e.dir
       ? `<div class="ft-row dir" onclick="termCd(${attrJson(full)})"><span class="fi">▸</span><span class="fname">${esc(e.name)}</span></div>`
       : `<div class="ft-row file" onclick="termInsert(${attrJson(e.name)})"><span class="fi">·</span><span class="fname">${esc(e.name)}</span></div>`;
   }).join('') || '<div class="ft-row" style="color:var(--text-muted);cursor:default">empty</div>';
-  el.innerHTML=`<div class="ft-head" title="${escAttr(TERM.cwd)}">Files</div>${up}${rows}`;
+  el.innerHTML=`<div class="ft-head" title="${escAttr(tab.cwd)}">Files</div>${up}${rows}`;
 }
 function paintTerm(){
+  const tab=activeTab(); if(!tab) return;
   const o=document.getElementById('termOut'); if(!o) return;
-  o.innerHTML=TERM.log.map(e=>{
+  o.innerHTML=tab.log.map(e=>{
     if(e.k==='sys') return `<div class="t-sys">${esc(e.t)}</div>`;
     if(e.k==='cmd'){ const sig=e.hash?`<span class="t-sig" onclick="openReceipt()" title="signed into the ledger · seq ${esc(String(e.seq))}">◇ ${esc(String(e.hash).slice(0,8))}</span>`:''; return `<div class="t-cmd"><span class="t-prompt">${esc(termShort(e.cwd))} $</span><span class="t-text">${esc(e.t)}</span>${sig}</div>`; }
     if(e.k==='out' && e.t) return `<pre class="t-out">${esc(e.t)}</pre>`;
@@ -5186,41 +5431,44 @@ function paintTerm(){
   o.scrollTop=o.scrollHeight;
 }
 function termKey(e){
-  if(e.key==='Enter'){ e.preventDefault(); if(TERM.busy) return; const c=e.target.value; e.target.value=''; runTermCmd(c); }
-  else if(e.key==='ArrowUp'){ e.preventDefault(); if(TERM.hist.length){ TERM.hi=Math.min(TERM.hi+1,TERM.hist.length-1); e.target.value=TERM.hist[TERM.hist.length-1-TERM.hi]||''; } }
-  else if(e.key==='ArrowDown'){ e.preventDefault(); if(TERM.hi>0){ TERM.hi--; e.target.value=TERM.hist[TERM.hist.length-1-TERM.hi]||''; } else { TERM.hi=-1; e.target.value=''; } }
+  const tab=activeTab(); if(!tab) return;
+  if(e.key==='Enter'){ e.preventDefault(); if(tab.busy) return; const c=e.target.value; e.target.value=''; runTermCmd(c); }
+  else if(e.key==='ArrowUp'){ e.preventDefault(); if(tab.hist.length){ tab.hi=Math.min(tab.hi+1,tab.hist.length-1); e.target.value=tab.hist[tab.hist.length-1-tab.hi]||''; } }
+  else if(e.key==='ArrowDown'){ e.preventDefault(); if(tab.hi>0){ tab.hi--; e.target.value=tab.hist[tab.hist.length-1-tab.hi]||''; } else { tab.hi=-1; e.target.value=''; } }
 }
 async function runTermCmd(cmd){
+  const tab=activeTab(); if(!tab) return;
   cmd=(cmd||'').trim(); if(!cmd) return;
-  TERM.hist.push(cmd); TERM.hi=-1;
-  if(cmd==='clear'){ TERM.log=[]; paintTerm(); return; }
-  TERM.log.push({k:'cmd', cwd:TERM.cwd, t:cmd}); const entry=TERM.log[TERM.log.length-1]; paintTerm();
-  TERM.busy=true; const inp=document.getElementById('termCmd'); if(inp) inp.classList.add('term-busy');
+  tab.hist.push(cmd); tab.hi=-1;
+  if(cmd==='clear'){ tab.log=[]; paintTerm(); return; }
+  tab.log.push({k:'cmd', cwd:tab.cwd, t:cmd}); const entry=tab.log[tab.log.length-1]; paintTerm();
+  tab.busy=true; const inp=document.getElementById('termCmd'); if(inp) inp.classList.add('term-busy');
   try{
-    const r=await J('/v1/shell',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({command:cmd, cwd:TERM.cwd})});
-    if(r.denied){ TERM.busy=false; renderTerminal(); return; }
+    const r=await J('/v1/shell',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({command:cmd, cwd:tab.cwd})});
+    if(r.denied){ tab.busy=false; renderTermDrawer(); return; }
     entry.seq=r.seq; entry.hash=r.hash;
-    if(r.cwd) TERM.cwd=r.cwd;
-    if(r.stdout) TERM.log.push({k:'out',t:String(r.stdout).replace(/\n+$/,'')});
-    if(r.stderr) TERM.log.push({k:'err',t:String(r.stderr).replace(/\n+$/,'')});
-    const pr=document.getElementById('termPrompt'); if(pr) pr.textContent=termShort(TERM.cwd)+' $';
-    const fs=await loadTree(TERM.cwd); if(fs && !fs.denied){ TERM.parent=fs.parent; TERM.tree=fs.entries||[]; renderTree(); }
-    paintTerm();
-  }catch(e){ TERM.log.push({k:'err',t:'(could not run - '+(e.message||'error')+')'}); paintTerm(); }
-  finally{ TERM.busy=false; const i2=document.getElementById('termCmd'); if(i2){ i2.classList.remove('term-busy'); i2.focus(); } }
+    if(r.cwd) tab.cwd=r.cwd;
+    if(r.stdout) tab.log.push({k:'out',t:String(r.stdout).replace(/\n+$/,'')});
+    if(r.stderr) tab.log.push({k:'err',t:String(r.stderr).replace(/\n+$/,'')});
+    const pr=document.getElementById('termPrompt'); if(pr) pr.textContent=termShort(tab.cwd)+' $';
+    const fs=await loadTree(tab.cwd); if(fs && !fs.denied){ tab.parent=fs.parent; tab.tree=fs.entries||[]; renderTree(); }
+    paintTerm(); gitPanelLoad();
+  }catch(e){ tab.log.push({k:'err',t:'(could not run - '+(e.message||'error')+')'}); paintTerm(); }
+  finally{ tab.busy=false; const i2=document.getElementById('termCmd'); if(i2){ i2.classList.remove('term-busy'); i2.focus(); } }
 }
 async function termCd(path){
   // Browsing the tree changes the working directory (a read, not a recorded command); typing
   // `cd` is what lands a signed line. Keeps the ledger about intent, not every folder click.
+  const tab=activeTab(); if(!tab) return;
   const fs=await loadTree(path); if(!fs || fs.denied) return;
-  TERM.cwd=fs.path; TERM.parent=fs.parent; TERM.tree=fs.entries||[]; renderTree();
-  const pr=document.getElementById('termPrompt'); if(pr) pr.textContent=termShort(TERM.cwd)+' $';
+  tab.cwd=fs.path; tab.parent=fs.parent; tab.tree=fs.entries||[]; renderTree();
+  const pr=document.getElementById('termPrompt'); if(pr) pr.textContent=termShort(tab.cwd)+' $';
   const inp=document.getElementById('termCmd'); if(inp) inp.focus();
 }
 function termInsert(name){ const inp=document.getElementById('termCmd'); if(!inp) return; inp.value=(inp.value?inp.value+' ':'')+name; inp.focus(); }
 async function enableShell(){
   try{ await J('/v1/policy',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({allow_shell:true})});
-    if(typeof CFG!=='undefined' && CFG && CFG.security) CFG.security.allow_shell=true; renderTerminal(); }
+    if(typeof CFG!=='undefined' && CFG && CFG.security) CFG.security.allow_shell=true; renderTermDrawer(); }
   catch(e){ notify('Couldn\'t enable shell - '+e.message); }
 }
 // ---- Activity: the full, browsable, verifiable signed ledger ----
@@ -5404,7 +5652,6 @@ function renderView(){
   else if(state.route==='Memory') renderMemory();
   else if(state.route==='Skills') renderSkills();
   else if(state.route==='Artifacts') renderArtifacts(true);
-  else if(state.route==='Terminal') renderTerminal();
   else if(state.route==='Activity') renderActivity();
   else if(state.route==='Checkpoints') renderCheckpointsView();
   voiceMaybeMountHeaderBtn();
@@ -7446,7 +7693,7 @@ function slashCommands(){
     { cmd:'/schedule', t:'Open scheduled runs',               ic:I.Schedule, arg:false,
       run:()=>{ slashClear(); if(typeof go==='function') go('Schedule'); } },
     { cmd:'/terminal', t:'Open the glass-box terminal',       ic:I.Terminal, arg:false,
-      run:()=>{ slashClear(); if(typeof go==='function') go('Terminal'); } },
+      run:()=>{ slashClear(); if(typeof openTerminalDrawer==='function') openTerminalDrawer(); } },
     { cmd:'/settings', t:'Open settings',                     ic:I.Settings, arg:false,
       run:()=>{ slashClear(); if(typeof openCC==='function') openCC(); } },
     { cmd:'/mission',  t:'Decompose a goal into parallel subtask agents',  ic:I.Tasks,  arg:true,

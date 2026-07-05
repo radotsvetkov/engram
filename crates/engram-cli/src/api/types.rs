@@ -87,6 +87,30 @@ pub struct MemRecord {
     pub metadata: Value,
 }
 
+/// One row from `GET /v1/supersessions` - a detected-but-unconfirmed contradiction, never applied
+/// until a human accepts or rejects it via `POST /v1/supersessions/{id}/resolve`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PendingSupersession {
+    #[serde(default)]
+    pub id: i64,
+    #[serde(default)]
+    pub old_id: i64,
+    #[serde(default)]
+    pub candidate_text: String,
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default)]
+    pub region: String,
+    #[serde(default)]
+    pub scope_kind: String,
+    #[serde(default)]
+    pub scope_id: String,
+    #[serde(default)]
+    pub actor: String,
+    #[serde(default)]
+    pub created_ms: i64,
+}
+
 /// One recall hit from `GET /v1/recall`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RecallHit {

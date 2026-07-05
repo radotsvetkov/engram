@@ -2,8 +2,8 @@
 
 use crate::api::{
     AutonomyReport, ChatEvent, Client, Consciousness, EgressItem, Health, LedgerEntry,
-    LedgerVerify, MemRecord, MemoryStats, Meter, Project, RecalledRef, ScheduleJob, SessionMeta,
-    SessionMsg, Skill, StepRecord, Task, ToolInfo,
+    LedgerVerify, MemRecord, MemoryStats, Meter, PendingSupersession, Project, RecalledRef,
+    ScheduleJob, SessionMeta, SessionMsg, Skill, StepRecord, Task, ToolInfo,
 };
 use crate::ui::format::now_ms;
 use crate::ui::Theme;
@@ -56,6 +56,29 @@ impl View {
     }
 }
 
+/// Which list the Memory view's right-hand panel currently shows. Cycled with `Tab` while the
+/// Memory view is active.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum MemPanel {
+    #[default]
+    Recent,
+    /// Grounded-reflection facts (Phase D), permanently distinct from ordinary recall.
+    Reflections,
+    /// Detected-but-unconfirmed contradictions (Phase B) awaiting accept/reject - previously CLI-
+    /// only (`engram memory supersessions`), silently invisible from the TUI and desktop.
+    Supersessions,
+}
+
+impl MemPanel {
+    pub fn next(self) -> Self {
+        match self {
+            MemPanel::Recent => MemPanel::Reflections,
+            MemPanel::Reflections => MemPanel::Supersessions,
+            MemPanel::Supersessions => MemPanel::Recent,
+        }
+    }
+}
+
 /// Messages background tasks push back into the UI loop.
 pub enum Msg {
     Spine {
@@ -69,6 +92,8 @@ pub enum Msg {
     /// Grounded-reflection facts (Phase D) - kept separate from `MemoryRecent` so the Memory view
     /// can show them in a permanently distinct panel rather than mixed into the ordinary list.
     MemoryReflections(Vec<MemRecord>),
+    /// Pending (unconfirmed) contradictions - the desktop/TUI half of the accept/reject inbox.
+    MemorySupersessions(Vec<PendingSupersession>),
     MemoryStats(MemoryStats),
     Consciousness(Consciousness),
     Skills(Vec<Skill>),
@@ -296,12 +321,14 @@ pub struct App {
     pub tasks: Vec<Task>,
     pub memory_recent: Vec<MemRecord>,
     /// Grounded-reflection facts (Phase D), loaded alongside `memory_recent` - shown in their own
-    /// panel in the Memory view (toggle with `R`) so a synthesis is never mixed with, or mistaken
+    /// panel in the Memory view (cycle with `Tab`) so a synthesis is never mixed with, or mistaken
     /// for, a directly-witnessed memory.
     pub memory_reflections: Vec<MemRecord>,
-    /// Whether the Memory view's right-hand panel is currently showing reflections instead of
-    /// ordinary recent memories.
-    pub show_reflections: bool,
+    /// Pending (unconfirmed) contradictions - the accept/reject inbox, previously only reachable
+    /// via `engram memory supersessions` on the CLI.
+    pub pending_supersessions: Vec<PendingSupersession>,
+    /// Which list the Memory view's right-hand panel currently shows.
+    pub mem_panel: MemPanel,
     pub memory_stats: MemoryStats,
     pub consciousness: Option<Consciousness>,
     pub skills: Vec<Skill>,
@@ -510,7 +537,8 @@ impl App {
             tasks: vec![],
             memory_recent: vec![],
             memory_reflections: vec![],
-            show_reflections: false,
+            pending_supersessions: vec![],
+            mem_panel: MemPanel::default(),
             memory_stats: MemoryStats::default(),
             consciousness: None,
             skills: vec![],
@@ -687,6 +715,9 @@ impl App {
                         .ok()
                         .map(Msg::MemoryReflections)
                 });
+                self.fetch(|c| async move {
+                    c.supersessions_typed().await.ok().map(Msg::MemorySupersessions)
+                });
             }
             View::Skills => {
                 self.fetch(|c| async move { c.skills().await.ok().map(|s| Msg::Skills(s.skills)) });
@@ -787,14 +818,20 @@ impl App {
             }
             Msg::MemoryRecent(m) => {
                 self.memory_recent = m;
-                if self.view == View::Memory && !self.show_reflections {
+                if self.view == View::Memory && self.mem_panel == MemPanel::Recent {
                     self.clamp_sel(self.memory_recent.len());
                 }
             }
             Msg::MemoryReflections(m) => {
                 self.memory_reflections = m;
-                if self.view == View::Memory && self.show_reflections {
+                if self.view == View::Memory && self.mem_panel == MemPanel::Reflections {
                     self.clamp_sel(self.memory_reflections.len());
+                }
+            }
+            Msg::MemorySupersessions(m) => {
+                self.pending_supersessions = m;
+                if self.view == View::Memory && self.mem_panel == MemPanel::Supersessions {
+                    self.clamp_sel(self.pending_supersessions.len());
                 }
             }
             Msg::MemoryStats(s) => self.memory_stats = s,

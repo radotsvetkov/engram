@@ -2,7 +2,7 @@
 //! and a selectable list of recent memories you can forget.
 
 use super::window_start;
-use crate::tui::app::App;
+use crate::tui::app::{App, MemPanel};
 use crate::ui::format::{one_line, rel_time};
 use crate::ui::theme::region_color;
 use crossterm::event::{KeyCode, KeyEvent};
@@ -56,10 +56,10 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
         .split(rows[1]);
 
     self_model(app, f, body[0]);
-    if app.show_reflections {
-        reflections(app, f, body[1]);
-    } else {
-        recent(app, f, body[1]);
+    match app.mem_panel {
+        MemPanel::Recent => recent(app, f, body[1]),
+        MemPanel::Reflections => reflections(app, f, body[1]),
+        MemPanel::Supersessions => supersessions(app, f, body[1]),
     }
 }
 
@@ -143,7 +143,7 @@ fn is_reflection(r: &crate::api::types::MemRecord) -> bool {
 
 fn recent(app: &App, f: &mut Frame, area: Rect) {
     let t = &app.theme;
-    let block = super::panel(t, "Recent memories · R: reflections", app.memory_recent.len());
+    let block = super::panel(t, "Recent memories · Tab: cycle panel", app.memory_recent.len());
     let inner = block.inner(area);
     f.render_widget(block, area);
     let h = inner.height as usize;
@@ -190,7 +190,7 @@ fn recent(app: &App, f: &mut Frame, area: Rect) {
 /// directly-witnessed memory even at a glance.
 fn reflections(app: &App, f: &mut Frame, area: Rect) {
     let t = &app.theme;
-    let block = super::panel(t, "Reflections (synthesized) · R: recent", app.memory_reflections.len());
+    let block = super::panel(t, "Reflections (synthesized) · Tab: cycle panel", app.memory_reflections.len());
     let inner = block.inner(area);
     f.render_widget(block, area);
     let h = inner.height as usize;
@@ -234,11 +234,69 @@ fn reflections(app: &App, f: &mut Frame, area: Rect) {
     f.render_widget(Paragraph::new(Text::from(lines)), inner);
 }
 
+/// Pending (unconfirmed) contradictions - previously only reachable via `engram memory
+/// supersessions` on the CLI. `a` accepts, `x` rejects the selected row (see `handle_key`).
+fn supersessions(app: &App, f: &mut Frame, area: Rect) {
+    let t = &app.theme;
+    let block = super::panel(
+        t,
+        "Pending supersessions · a: accept  x: reject  Tab: cycle panel",
+        app.pending_supersessions.len(),
+    );
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let h = inner.height as usize;
+    let start = window_start(app.pending_supersessions.len(), h, app.sel);
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, p) in app
+        .pending_supersessions
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(h)
+    {
+        let selected = i == app.sel;
+        let bar = if selected { "▌" } else { " " };
+        let spans = vec![
+            Span::styled(format!("{bar} "), Style::default().fg(t.accent)),
+            Span::styled(format!("{:>4} ", p.id), Style::default().fg(t.faint)),
+            Span::styled("⇄ ", Style::default().fg(t.warn).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                crate::ui::format::ellipsize(
+                    &one_line(&p.candidate_text),
+                    inner.width.saturating_sub(28) as usize,
+                ),
+                Style::default().fg(if selected { t.fg } else { t.muted }),
+            ),
+            Span::styled(format!(" (replaces #{})", p.old_id), Style::default().fg(t.faint)),
+        ];
+        let mut line = Line::from(spans);
+        if selected {
+            line.style = Style::default().bg(t.sel_bg);
+            super::fill_row(&mut line, inner.width as usize);
+        }
+        lines.push(line);
+        if selected && !p.reason.is_empty() {
+            lines.push(Line::from(Span::styled(
+                format!("      {}", one_line(&p.reason)),
+                Style::default().fg(t.faint),
+            )));
+        }
+    }
+    if app.pending_supersessions.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  nothing pending - possible conflicts show up here for you to accept or reject",
+            Style::default().fg(t.muted),
+        )));
+    }
+    f.render_widget(Paragraph::new(Text::from(lines)), inner);
+}
+
 pub fn handle_key(app: &mut App, k: KeyEvent) -> bool {
-    let len = if app.show_reflections {
-        app.memory_reflections.len()
-    } else {
-        app.memory_recent.len()
+    let len = match app.mem_panel {
+        MemPanel::Recent => app.memory_recent.len(),
+        MemPanel::Reflections => app.memory_reflections.len(),
+        MemPanel::Supersessions => app.pending_supersessions.len(),
     };
     match k.code {
         KeyCode::Up | KeyCode::Char('k') => {
@@ -255,18 +313,21 @@ pub fn handle_key(app: &mut App, k: KeyEvent) -> bool {
             app.load_view(app.view);
             true
         }
-        // Shift-R: toggle the right-hand panel between ordinary recent memories and
-        // permanently-distinct synthesized reflections (never the same list, per the locked
-        // "never visually indistinguishable" rule).
-        KeyCode::Char('R') => {
-            app.show_reflections = !app.show_reflections;
+        // Tab: cycle the right-hand panel through Recent -> Reflections -> Supersessions -> Recent.
+        // Reflections and pending supersessions are never folded into the plain Recent list (the
+        // locked "never visually indistinguishable" rule for reflections; supersessions are a
+        // distinct accept/reject inbox, not a memory at all until resolved).
+        KeyCode::Tab => {
+            app.mem_panel = app.mem_panel.next();
             app.confirm_forget = None;
             app.sel = 0;
             true
         }
-        // Forget is destructive, so require a confirming second `f` on the same row.
-        KeyCode::Char('f') => {
-            let list = if app.show_reflections {
+        // Forget is destructive, so require a confirming second `f` on the same row. Only makes
+        // sense for the two memory-shaped panels, not the supersessions inbox (accept/reject there
+        // instead - see 'a'/'x' below).
+        KeyCode::Char('f') if app.mem_panel != MemPanel::Supersessions => {
+            let list = if app.mem_panel == MemPanel::Reflections {
                 &app.memory_reflections
             } else {
                 &app.memory_recent
@@ -278,7 +339,7 @@ pub fn handle_key(app: &mut App, k: KeyEvent) -> bool {
                     let client = app.client.clone();
                     let tx = app.tx.clone();
                     let project = app.active_project.clone();
-                    let reflecting = app.show_reflections;
+                    let reflecting = app.mem_panel == MemPanel::Reflections;
                     tokio::spawn(async move {
                         let _ = client.forget(id).await;
                         if reflecting {
@@ -294,6 +355,29 @@ pub fn handle_key(app: &mut App, k: KeyEvent) -> bool {
                     app.confirm_forget = Some(id);
                     app.toast(format!("press f again to forget memory {id}"));
                 }
+            }
+            true
+        }
+        // Accept/reject a pending supersession - the ONLY place a proposal can ever take effect.
+        // No confirming second keypress: unlike forget (silent, instant, easily mistaken for a
+        // no-op), this is a deliberate one-item review action the user already navigated to.
+        KeyCode::Char('a') | KeyCode::Char('x') if app.mem_panel == MemPanel::Supersessions => {
+            let accept = k.code == KeyCode::Char('a');
+            if let Some(p) = app.pending_supersessions.get(app.sel) {
+                let id = p.id;
+                let client = app.client.clone();
+                let tx = app.tx.clone();
+                tokio::spawn(async move {
+                    let _ = client.supersession_resolve(id, accept).await;
+                    if let Ok(items) = client.supersessions_typed().await {
+                        let _ = tx.send(crate::tui::app::Msg::MemorySupersessions(items));
+                    }
+                });
+                app.toast(format!(
+                    "{} supersession #{id}",
+                    if accept { "✓ accepted" } else { "✓ rejected" }
+                ));
+                app.sel = app.sel.saturating_sub(1);
             }
             true
         }

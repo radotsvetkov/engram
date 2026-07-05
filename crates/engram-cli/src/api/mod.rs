@@ -247,6 +247,12 @@ impl Client {
         self.get_value("/v1/supersessions").await
     }
 
+    /// Typed variant of [`Client::supersessions`], for surfaces (TUI) that render structured
+    /// fields rather than walking a raw `Value`.
+    pub async fn supersessions_typed(&self) -> Result<Vec<PendingSupersession>> {
+        self.get("/v1/supersessions").await
+    }
+
     pub async fn supersession_resolve(&self, id: i64, accept: bool) -> Result<Value> {
         self.post_value(
             &format!("/v1/supersessions/{id}/resolve"),

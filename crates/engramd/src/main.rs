@@ -4186,6 +4186,41 @@ pub(crate) async fn run_task_core(
             h.from, h.to, h.note
         ));
     }
+    // Extend the relay beyond the single immediately-prior hop: `prev.answer` above is only ever
+    // the LAST run's final answer, truncated to 4000 chars - two hops into a mission, everything
+    // from hop N-2 and earlier used to be gone from prompt construction entirely. Plan-milestone
+    // breadcrumbs (Region::Episodic, written per completed plan step - see UpdatePlanTool) and
+    // paged compaction detail both durably outlive any single hop, so a broader recall keyed on
+    // the task's own (stable across hops) title surfaces relevant earlier-hop detail regardless of
+    // how many runs back it happened - not just what the immediately-prior answer happened to say.
+    if let Ok(breadcrumbs) = app.memory.recall_scoped(
+        &task.title,
+        &[Region::Episodic],
+        6,
+        &engram_core::ScopeCtx::user_only(),
+    ) {
+        // Exclude the last run's own final-answer sentence (already injected verbatim above via
+        // prev.answer) so this adds earlier-hop detail instead of restating the same thing twice.
+        let already_included = task
+            .run
+            .as_ref()
+            .map(|r| r.answer.trim())
+            .unwrap_or_default();
+        let extra: Vec<&str> = breadcrumbs
+            .iter()
+            .map(|h| h.record.text.as_str())
+            .filter(|t| !already_included.contains(t))
+            .take(5)
+            .collect();
+        if !extra.is_empty() {
+            prompt.push_str("\n\n--- Earlier progress on this mission (recalled from memory) ---\n");
+            for e in extra {
+                prompt.push_str("- ");
+                prompt.push_str(e);
+                prompt.push('\n');
+            }
+        }
+    }
     let before = app.gateway.meter();
     // The ledger seq before the run, so we can find the egress destinations THIS run parks (the
     // `agent.egress_staged` entries it appends) and link them to this task for re-run-on-approve.

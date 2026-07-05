@@ -1078,6 +1078,31 @@ impl Memory {
         Ok(out)
     }
 
+    /// Every live memory with EXACTLY this `source` value, oldest first - how a paged-out
+    /// compaction exhaust (`source = "compaction:<run_tag>"`) or any other exact-source-tagged
+    /// write group gets found again later. Scoped like every other model-facing read, so a page-in
+    /// tool can't reach across rings any more than ordinary recall can.
+    pub fn by_source_scoped(&self, source: &str, scope: &ScopeCtx) -> Result<Vec<Record>> {
+        let conn = self.conn.lock().expect("memory mutex poisoned");
+        let (scope_sql, scope_binds) = scope_clause("", scope);
+        let sql = format!(
+            "SELECT {COLS} FROM facts WHERE source = ? AND deleted = 0 AND {scope} ORDER BY id ASC",
+            scope = scope_sql,
+        );
+        let mut binds: Vec<Value> = Vec::with_capacity(scope_binds.len() + 1);
+        binds.push(Value::Text(source.to_string()));
+        for id in scope_binds {
+            binds.push(Value::Text(id));
+        }
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(binds), map_record)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
     /// Promote a memory to the user-global ring - e.g. a project fact that turns out to be a durable
     /// cross-project preference, so it should follow the user everywhere. Ledgered and reversible.
     /// Refuses to promote UNTRUSTED-provenance memory into the trusted user-global ring (the
@@ -2616,6 +2641,33 @@ mod tests {
             .unwrap();
         assert_eq!(current.len(), 1);
         assert_eq!(current[0].record.id, munich.id);
+    }
+
+    #[test]
+    fn by_source_scoped_finds_exact_matches_in_order_and_respects_scope() {
+        let (m, _d) = mem();
+        let a = m
+            .remember(WriteReq::new(Region::Episodic, "page one").source("compaction:7"))
+            .unwrap();
+        let b = m
+            .remember(WriteReq::new(Region::Episodic, "page two").source("compaction:7"))
+            .unwrap();
+        m.remember(WriteReq::new(Region::Episodic, "unrelated page").source("compaction:8"))
+            .unwrap();
+        m.remember(
+            WriteReq::new(Region::Episodic, "a different project's page")
+                .source("compaction:7")
+                .scope(Scope::project("P")),
+        )
+        .unwrap();
+
+        let pages = m
+            .by_source_scoped("compaction:7", &ScopeCtx::user_only())
+            .unwrap();
+        assert_eq!(pages.len(), 2, "only this exact source, in the user ring");
+        assert_eq!(pages[0].id, a.id, "oldest first");
+        assert_eq!(pages[1].id, b.id);
+        assert!(pages.iter().all(|p| p.source.as_deref() == Some("compaction:7")));
     }
 
     #[test]

@@ -2138,6 +2138,157 @@ impl Tool for MemoryRememberTool {
     }
 }
 
+/// Page back in exactly what an earlier compaction paged out - the read half of the durable
+/// exhaust `Agent::maybe_compact` writes before discarding elided transcript (see agent.rs). Unlike
+/// `memory_recall` (similarity search, may or may not surface the right chunk), this fetches by the
+/// EXACT tag every page from one compaction event shares, in the order they were written - a
+/// deliberate "go get exactly what I paged out" lookup, not a best-effort search.
+pub struct MemoryRecallPageTool;
+
+#[async_trait]
+impl Tool for MemoryRecallPageTool {
+    fn name(&self) -> &str {
+        "memory_recall_page"
+    }
+    fn description(&self) -> &str {
+        "Fetch the full detail an earlier context compaction paged out to memory, by the run_tag \
+         noted in the compaction message (e.g. \"call memory_recall_page(42)\")."
+    }
+    fn schema(&self) -> Value {
+        json!({ "type": "object",
+            "properties": { "run_tag": { "type": "integer" } },
+            "required": ["run_tag"] })
+    }
+    fn reads_sensitive(&self) -> bool {
+        true
+    }
+    async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
+        if ctx.taint.is_untrusted() {
+            return Err(
+                "memory_recall_page is unavailable on a run that has read untrusted content (private-memory guard)"
+                    .into(),
+            );
+        }
+        let run_tag = args["run_tag"]
+            .as_i64()
+            .ok_or_else(|| "run_tag must be an integer".to_string())?;
+        let pages = ctx
+            .memory
+            .by_source_scoped(&format!("compaction:{run_tag}"), &ctx.scope)
+            .map_err(|e| e.to_string())?;
+        if pages.is_empty() {
+            return Ok(format!("(no paged-out content found for run_tag {run_tag})"));
+        }
+        Ok(pages
+            .iter()
+            .enumerate()
+            .map(|(i, p)| format!("--- page {} of {} ---\n{}", i + 1, pages.len(), p.text))
+            .collect::<Vec<_>>()
+            .join("\n\n"))
+    }
+}
+
+#[cfg(test)]
+mod memory_page_tool_tests {
+    use super::*;
+    use crate::tool::{Policy, ToolCtx};
+    use engram_core::{Ledger, Taint};
+    use engram_gateway::{Gateway, MockProvider};
+    use engram_memory::{Memory, Region, TrigramHashEmbedder, WriteReq};
+    use engram_skills::{Registry, SkillSigner};
+    use std::sync::Arc;
+
+    fn ctx_in(dir: &std::path::Path) -> ToolCtx {
+        let ledger = Arc::new(Ledger::open(dir).unwrap());
+        let memory = Arc::new(
+            Memory::open(
+                dir.join("b.db"),
+                Arc::new(TrigramHashEmbedder::default()),
+                ledger.clone(),
+            )
+            .unwrap(),
+        );
+        let signer = Arc::new(SkillSigner::load_or_create(dir.join("k")).unwrap());
+        let skills = Arc::new(Registry::open(dir, signer, ledger.clone()).unwrap());
+        let gateway = Arc::new(Gateway::new(Box::new(MockProvider), ledger.clone()));
+        ToolCtx {
+            memory,
+            skills,
+            gateway,
+            ledger,
+            taint: Taint::Trusted,
+            sensitive: false,
+            policy: Policy::default(),
+            workdir: dir.to_path_buf(),
+            model: "test".into(),
+            depth: 0,
+            browser: Arc::new(crate::tool::NoBrowser),
+            scope: engram_core::ScopeCtx::any(),
+            halt: None,
+            spend_counter: None,
+            token_budget: None,
+            on_step: None,
+            on_narration: None,
+            allowed_tools: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn fetches_exactly_the_pages_a_compaction_wrote_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ctx_in(dir.path());
+        ctx.memory
+            .remember(
+                WriteReq::new(Region::Episodic, "first half of the elided detail")
+                    .source("compaction:42"),
+            )
+            .unwrap();
+        ctx.memory
+            .remember(
+                WriteReq::new(Region::Episodic, "second half of the elided detail")
+                    .source("compaction:42"),
+            )
+            .unwrap();
+        ctx.memory
+            .remember(
+                WriteReq::new(Region::Episodic, "a different run's page").source("compaction:99"),
+            )
+            .unwrap();
+
+        let out = MemoryRecallPageTool
+            .run(&json!({ "run_tag": 42 }), &ctx)
+            .await
+            .unwrap();
+        assert!(out.contains("first half"));
+        assert!(out.contains("second half"));
+        assert!(!out.contains("different run"));
+        // Order preserved (page 1 before page 2 in the text), not just present.
+        assert!(out.find("first half").unwrap() < out.find("second half").unwrap());
+    }
+
+    #[tokio::test]
+    async fn an_unknown_run_tag_is_a_clear_miss_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ctx_in(dir.path());
+        let out = MemoryRecallPageTool
+            .run(&json!({ "run_tag": 12345 }), &ctx)
+            .await
+            .unwrap();
+        assert!(out.contains("no paged-out content"));
+    }
+
+    #[tokio::test]
+    async fn refuses_on_an_untrusted_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = ctx_in(dir.path());
+        ctx.taint = Taint::Untrusted;
+        assert!(MemoryRecallPageTool
+            .run(&json!({ "run_tag": 1 }), &ctx)
+            .await
+            .is_err());
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Media (vision, image generation, speech) - through the gateway
 // ---------------------------------------------------------------------------

@@ -241,9 +241,15 @@ impl Agent {
                 let _ = tokio::fs::remove_dir_all(&overflow).await;
             }
         }
-        let _ = ctx
+        // A stable identifier for THIS run, reused to tag every page this run's compaction exhausts
+        // to memory (see `maybe_compact`) - so a page-in tool can find exactly this run's paged-out
+        // detail later, across however many times it compacts. The ledger's own monotonic sequence
+        // number is already unique and already being generated here; no new id-generation needed.
+        let run_tag = ctx
             .ledger
-            .append("agent.start", self.actor.as_str(), json!({ "task": task }));
+            .append("agent.start", self.actor.as_str(), json!({ "task": task }))
+            .map(|e| e.seq)
+            .unwrap_or(0);
 
         for _ in 0..self.max_steps {
             // Kill switch: stop cleanly at the step boundary (keeps the partial receipt). Read from the
@@ -286,7 +292,7 @@ impl Agent {
                          you could not finish. Do not apologize at length."
                             .to_string(),
                     ));
-                    self.maybe_compact(&mut messages, &ctx, spent_counter).await;
+                    self.maybe_compact(&mut messages, &ctx, spent_counter, run_tag).await;
                     let req =
                         CompletionRequest::new(&self.model, messages.clone()).max_tokens(4096);
                     let answer = match self.complete_with_retry(req, ctx.taint, spent_counter).await {
@@ -312,7 +318,7 @@ impl Agent {
 
             // Keep the working context within budget so a long run never overflows the
             // model's window - summarize older turns, keep the freshest verbatim.
-            self.maybe_compact(&mut messages, &ctx, spent_counter).await;
+            self.maybe_compact(&mut messages, &ctx, spent_counter, run_tag).await;
 
             let req = CompletionRequest::new(&self.model, messages.clone())
                 .tools(tool_defs.clone())
@@ -328,7 +334,7 @@ impl Agent {
                 Ok(c) => c,
                 Err(e) => {
                     return Ok(self
-                        .salvage_on_error(&mut messages, &ctx, steps, spent_counter, e)
+                        .salvage_on_error(&mut messages, &ctx, steps, spent_counter, e, run_tag)
                         .await)
                 }
             };
@@ -561,7 +567,7 @@ impl Agent {
              list exactly what remains unfinished."
                 .to_string(),
         ));
-        self.maybe_compact(&mut messages, &ctx, spent_counter).await;
+        self.maybe_compact(&mut messages, &ctx, spent_counter, run_tag).await;
         let req = CompletionRequest::new(&self.model, messages.clone()).max_tokens(2048);
         let answer = match self
             .complete_with_retry(req, ctx.taint, spent_counter)
@@ -748,6 +754,7 @@ impl Agent {
         steps: Vec<StepRecord>,
         spent: &std::sync::atomic::AtomicU64,
         err: AgentError,
+        run_tag: u64,
     ) -> AgentRun {
         let _ = ctx.ledger.append(
             "agent.error",
@@ -771,7 +778,7 @@ impl Agent {
              (tables with the real links/prices/names you found). Briefly note anything unfinished."
                 .to_string(),
         ));
-        self.maybe_compact(messages, ctx, spent).await;
+        self.maybe_compact(messages, ctx, spent, run_tag).await;
         let req = CompletionRequest::new(&self.model, messages.clone()).max_tokens(4096);
         let answer = match self.complete_with_retry(req, ctx.taint, spent).await {
             Ok(c) if !c.text.trim().is_empty() => format!(
@@ -797,6 +804,7 @@ impl Agent {
         messages: &mut Vec<Message>,
         ctx: &ToolCtx,
         spent: &std::sync::atomic::AtomicU64,
+        run_tag: u64,
     ) {
         let total: u32 = messages.iter().map(msg_tokens).sum();
         if total <= compact_threshold() || messages.len() < 6 {
@@ -817,24 +825,50 @@ impl Agent {
             .get(1)
             .map(|m| m.content.clone())
             .unwrap_or_default();
-        let summary = self
-            .summarize(
-                &render_transcript(&messages[2..tail_start]),
-                ctx.taint,
-                spent,
-            )
-            .await;
+        let elided = render_transcript(&messages[2..tail_start]);
+        let summary = self.summarize(&elided, ctx.taint, spent).await;
+
+        // A durable exhaust: page the RAW elided transcript out to memory BEFORE discarding it, so
+        // compaction becomes evict-and-recallable (MemGPT-style paging) instead of permanently lossy.
+        // The lossy summary above still drives the live prompt (cheap, keeps the run moving); this
+        // is the detail a later memory_recall_page call - or a later mission hop - can page back in.
+        // Capped, not truncated silently: a page over the cap is chunked into several, never dropped.
+        const PAGE_CHARS: usize = 6000;
+        let mut paged_ids: Vec<i64> = Vec::new();
+        let chars: Vec<char> = elided.chars().collect();
+        let mut start = 0usize;
+        while start < chars.len() {
+            let end = (start + PAGE_CHARS).min(chars.len());
+            let chunk: String = chars[start..end].iter().collect();
+            if let Ok(rec) = ctx.memory.remember(
+                engram_memory::WriteReq::new(engram_memory::Region::Episodic, chunk)
+                    .source(format!("compaction:{run_tag}"))
+                    .actor(self.actor.as_str())
+                    .taint(ctx.taint)
+                    .scope(ctx.scope.durable_write_scope()),
+            ) {
+                paged_ids.push(rec.id);
+            }
+            start = end;
+        }
 
         let mut rebuilt = Vec::with_capacity(messages.len() - (tail_start - 2) + 1);
         rebuilt.push(messages[0].clone()); // system
         rebuilt.push(Message::user(format!(
-            "Original task:\n{task}\n\nProgress so far (older steps compacted to save context):\n{summary}"
+            "Original task:\n{task}\n\nProgress so far (older steps compacted to save context):\n{summary}\n\n\
+             (The full detail behind this summary was paged to memory - call memory_recall_page({run_tag}) \
+             if you need to look something specific up again.)"
         )));
         rebuilt.extend_from_slice(&messages[tail_start..]);
         let _ = ctx.ledger.append(
             "agent.compact",
             self.actor.as_str(),
-            json!({ "from_tokens": total, "kept_tail_msgs": messages.len() - tail_start }),
+            json!({
+                "from_tokens": total,
+                "kept_tail_msgs": messages.len() - tail_start,
+                "run_tag": run_tag,
+                "paged_memory_ids": paged_ids,
+            }),
         );
         *messages = rebuilt;
     }
@@ -2780,6 +2814,89 @@ mod tests {
             .unwrap()
             .iter()
             .any(|e| e.kind == "agent.budget"));
+    }
+
+    #[tokio::test]
+    async fn compaction_pages_the_elided_transcript_to_memory_before_discarding_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Arc::new(Ledger::open(dir.path()).unwrap());
+        let gateway = Arc::new(Gateway::new(
+            Box::new(ScriptedProvider::new(vec![Completion {
+                text: "a concise progress note".into(),
+                model: "test".into(),
+                tokens_in: 10,
+                tokens_out: 10,
+                tool_calls: vec![],
+            }])),
+            ledger.clone(),
+        ));
+        let ctx = ctx_for(dir.path(), &ledger, &gateway);
+        let agent = Agent::new(gateway, crate::default_tools(), "test");
+        let spent = std::sync::atomic::AtomicU64::new(0);
+
+        // Two large filler messages (index 2..4) push the transcript over the 96k-token default
+        // threshold; the tool-calling assistant turn at index 4 marks where the kept tail begins.
+        let mut messages = vec![
+            Message::system("sys"),
+            Message::user("do the thing"),
+            Message::user("alpha-marker-content ".repeat(20_000)),
+            Message::assistant("beta-marker-content ".repeat(20_000)),
+            Message::assistant_tool_calls(
+                "calling a tool",
+                vec![ToolCall {
+                    id: "1".into(),
+                    name: "foo".into(),
+                    arguments: json!({}),
+                }],
+            ),
+            Message::tool_result("1", "tool output"),
+        ];
+
+        agent.maybe_compact(&mut messages, &ctx, &spent, 42).await;
+
+        // The elided detail must be paged to memory BEFORE being discarded from the live context -
+        // this is the durable exhaust that makes compaction evict-and-recallable instead of a
+        // permanent loss. Both filler messages' content must be findable, not just summarized away.
+        let hits = ctx
+            .memory
+            .recall("alpha-marker-content", &[engram_memory::Region::Episodic], 20)
+            .unwrap();
+        assert!(
+            hits.iter().any(|h| h.record.text.contains("alpha-marker-content")),
+            "the first elided message's content must be recallable from a paged memory"
+        );
+        let hits = ctx
+            .memory
+            .recall("beta-marker-content", &[engram_memory::Region::Episodic], 20)
+            .unwrap();
+        assert!(
+            hits.iter().any(|h| h.record.text.contains("beta-marker-content")),
+            "the second elided message's content must be recallable from a paged memory"
+        );
+        // Every paged memory is tagged with this run's stable tag, so a page-in tool (or a future
+        // mission hop) can find exactly this run's paged detail.
+        assert!(hits
+            .iter()
+            .all(|h| h.record.source.as_deref() == Some("compaction:42")));
+
+        // The live context was actually compacted (shrunk to system + rewritten task+summary +
+        // kept tail), and the ledger entry names the pages it just wrote - not just a token count -
+        // so ledger replay can reconstruct exactly what was paged out and where it went.
+        assert_eq!(
+            messages.len(),
+            4,
+            "system + rewritten task/summary + the kept tail turn (tool-call + its result)"
+        );
+        let compact_entry = ledger
+            .read_all()
+            .unwrap()
+            .into_iter()
+            .find(|e| e.kind == "agent.compact")
+            .expect("must ledger the compaction");
+        let payload: serde_json::Value = compact_entry.payload.get().parse().unwrap();
+        assert_eq!(payload["run_tag"], 42);
+        let paged_ids = payload["paged_memory_ids"].as_array().unwrap();
+        assert!(!paged_ids.is_empty(), "the ledger entry must name the pages it wrote");
     }
 
     #[tokio::test]

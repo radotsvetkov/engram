@@ -62,6 +62,7 @@ fn base_tools() -> ToolRegistry {
         .with(Arc::new(tools::RequestApprovalTool))
         .with(Arc::new(tools::MemoryRecallTool))
         .with(Arc::new(tools::MemoryRememberTool))
+        .with(Arc::new(tools::MemoryRecallPageTool))
         // Verifiable receipts from the signed audit ledger — "prove what you did" (read-only).
         .with(Arc::new(tools::ProofOfActionTool))
         .with(Arc::new(tools::ReadFileTool))

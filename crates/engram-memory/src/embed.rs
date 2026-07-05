@@ -15,6 +15,16 @@ pub trait Embedder: Send + Sync {
     fn dim(&self) -> usize;
     fn embed(&self, text: &str) -> Vec<f32>;
     fn name(&self) -> &str;
+
+    /// Like [`Embedder::embed`], but also reports whether this call silently degraded to a
+    /// different embedding strategy than `name()` promises (e.g. a gateway embedder falling back
+    /// to a same-dimension trigram vector after the provider call failed). The default is "never
+    /// degrades" - true for every embedder except one that can itself fail mid-flight and needs a
+    /// caller-visible signal so the affected row can be marked for a later re-embed instead of
+    /// silently persisting a mis-ranked vector with no trace.
+    fn embed_checked(&self, text: &str) -> (Vec<f32>, bool) {
+        (self.embed(text), false)
+    }
 }
 
 /// Cosine similarity. Inputs need not be pre-normalised.

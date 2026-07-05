@@ -149,7 +149,14 @@ pub struct EmbedCfg {
 impl Default for EmbedCfg {
     fn default() -> Self {
         Self {
-            kind: "trigram".into(),
+            // "static" (the pure-Rust model2vec embedder, real synonym/paraphrase recall, no ONNX
+            // runtime) is the preferred default: when its model files are present at `{home}/
+            // embedder` it's used automatically; when they're not (nothing fetches/bundles them
+            // yet - see docs/MEMORY-UPGRADE-PLAN.md), the daemon's existing fallback silently and
+            // safely degrades to the dependency-free trigram embedder exactly as before, so this
+            // default is a strict improvement with no downside for users who already have the
+            // model, and a no-op for everyone else until fetch/bundling ships.
+            kind: "static".into(),
             model_dir: String::new(),
         }
     }
@@ -366,7 +373,14 @@ impl Config {
         if let Ok(m) = std::env::var("ENGRAM_MODEL") {
             c.provider.model = m;
         }
-        c.embed.kind = std::env::var("ENGRAM_EMBED").unwrap_or_else(|_| "trigram".into());
+        // Only override the default (now "static") when the env var is actually set - an
+        // unconditional fallback to a hardcoded "trigram" here used to silently undo
+        // `EmbedCfg::default()`'s choice on every fresh install (the from_env path runs
+        // precisely when there's no config.json yet), which is the one case the default
+        // matters most for.
+        if let Ok(kind) = std::env::var("ENGRAM_EMBED") {
+            c.embed.kind = kind;
+        }
         c.embed.model_dir = std::env::var("ENGRAM_STATIC_MODEL").unwrap_or_default();
         c.security.api_token = std::env::var("ENGRAM_API_TOKEN").unwrap_or_default();
         c.security.channel_secret = std::env::var("ENGRAM_CHANNEL_SECRET").unwrap_or_default();

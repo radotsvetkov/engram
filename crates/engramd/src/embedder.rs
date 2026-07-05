@@ -56,6 +56,10 @@ impl Embedder for GatewayEmbedder {
     }
 
     fn embed(&self, text: &str) -> Vec<f32> {
+        self.embed_checked(text).0
+    }
+
+    fn embed_checked(&self, text: &str) -> (Vec<f32>, bool) {
         let texts = vec![text.to_string()];
         // block_in_place hands this worker back to the runtime so block_on is legal on
         // the multi-thread runtime the daemon uses. Retry a few times with a short backoff first:
@@ -70,7 +74,9 @@ impl Embedder for GatewayEmbedder {
                 self.handle.block_on(self.gateway.embed(&texts, "memory"))
             });
             match result {
-                Ok(mut v) if !v.is_empty() && v[0].len() == self.dim => return v.swap_remove(0),
+                Ok(mut v) if !v.is_empty() && v[0].len() == self.dim => {
+                    return (v.swap_remove(0), false)
+                }
                 // A wrong-dimension reply is a configuration error, not a transient one — retrying
                 // can't fix it, so don't spin; fall through to the fallback immediately.
                 Ok(_) => break,
@@ -88,13 +94,54 @@ impl Embedder for GatewayEmbedder {
         // Provider still unavailable after retries (or a wrong-dim reply): fall back to a
         // same-dimension trigram vector rather than persisting zeros (which would silently drop the
         // memory from recall entirely). This degrades recall QUALITY for these records until a
-        // provider-healthy re-embed pass runs — see NEEDS-INTEGRATION: fallback-embedded records
-        // should be tagged so a background pass can re-embed them in the model's space.
+        // provider-healthy re-embed pass runs. The `true` return lets the caller (Memory::remember)
+        // mark the row `needs_reembed` so a background pass can find and repair it once the
+        // provider is healthy again, closing the gap this used to just warn about and forget.
         tracing::warn!(
             embedder = %self.name,
             "gateway embedding failed after {MAX_ATTEMPTS} attempts — using a same-dimension \
              fallback vector; this record will be mis-ranked until re-embedded"
         );
-        self.fallback.embed(text)
+        (self.fallback.embed(text), true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use engram_core::Ledger;
+    use engram_gateway::{Gateway, MockProvider};
+
+    // block_in_place (used by GatewayEmbedder::embed_checked) requires the multi-thread runtime.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn healthy_call_reports_not_degraded() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Arc::new(Ledger::open(dir.path()).unwrap());
+        let gateway = Arc::new(Gateway::new(Box::new(MockProvider), ledger));
+        // MockProvider's embeddings are 8-dim; matching that dimension is the "healthy" path.
+        let e = GatewayEmbedder::new(gateway, 8, "mock-model");
+        let (v, degraded) = e.embed_checked("hello world");
+        assert!(!degraded, "a dimension-matching mock reply must not be reported as degraded");
+        assert_eq!(v.len(), 8);
+    }
+
+    // block_in_place (used by GatewayEmbedder::embed_checked) requires the multi-thread runtime.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dimension_mismatch_falls_back_and_reports_degraded() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Arc::new(Ledger::open(dir.path()).unwrap());
+        let gateway = Arc::new(Gateway::new(Box::new(MockProvider), ledger));
+        // Ask for 256 dims from a provider that always replies with 8 - the exact failure mode a
+        // misconfigured/incompatible embeddings endpoint produces. This must fall back to a
+        // same-dimension trigram vector AND report `needs_reembed`-worthy degradation, closing the
+        // gap the embedder.rs NEEDS-INTEGRATION comment used to just warn about and forget.
+        let e = GatewayEmbedder::new(gateway, 256, "mock-model");
+        let (v, degraded) = e.embed_checked("hello world");
+        assert!(degraded, "a wrong-dimension reply must be reported as degraded");
+        assert_eq!(v.len(), 256, "the fallback vector must still match the configured dimension");
+        // embed() (the plain trait method every other call site uses) must expose the same fallback
+        // behavior, just without the degraded flag - it should never panic or return a mismatched
+        // dimension either.
+        assert_eq!(e.embed("hello again").len(), 256);
     }
 }

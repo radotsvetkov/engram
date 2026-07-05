@@ -155,6 +155,9 @@ pub struct Stats {
     pub total: i64,
     pub by_region: HashMap<String, i64>,
     pub by_tier: HashMap<String, i64>,
+    /// Live rows embedded via a degraded fallback (see `needs_reembed` on `facts`) - not yet
+    /// re-embedded in the configured model's real space, so mis-ranked until the repair pass runs.
+    pub needs_reembed: i64,
 }
 
 /// The brain on disk.
@@ -283,7 +286,7 @@ impl Memory {
 
     /// Store a memory: embed it, record it in the ledger, then persist it.
     pub fn remember(&self, req: WriteReq) -> Result<Record> {
-        let embedding = self.embedder.embed(&req.text);
+        let (embedding, needs_reembed) = self.embedder.embed_checked(&req.text);
         let blob = to_bytes(&embedding);
         let bin = quantize_binary(&embedding);
         let content_hash = blake3::hash(req.text.as_bytes()).to_hex().to_string();
@@ -390,8 +393,8 @@ impl Memory {
         // can never leave the fact searchable-but-missing or present-but-unsearchable.
         let tx = conn.transaction()?;
         tx.execute(
-            "INSERT INTO facts(region,text,importance,taint,tier,source,metadata,embedding,content_hash,ledger_seq,created_ms,last_access_ms,scope_kind,scope_id,embedding_bin) \
-             VALUES(?1,?2,?3,?4,'warm',?5,?6,?7,?8,?9,?10,?10,?11,?12,?13)",
+            "INSERT INTO facts(region,text,importance,taint,tier,source,metadata,embedding,content_hash,ledger_seq,created_ms,last_access_ms,scope_kind,scope_id,embedding_bin,needs_reembed) \
+             VALUES(?1,?2,?3,?4,'warm',?5,?6,?7,?8,?9,?10,?10,?11,?12,?13,?14)",
             params![
                 req.region.as_str(),
                 req.text,
@@ -406,6 +409,7 @@ impl Memory {
                 req.scope.kind.as_str(),
                 req.scope.id,
                 bin,
+                needs_reembed as i64,
             ],
         )?;
         let id = tx.last_insert_rowid();
@@ -969,11 +973,68 @@ impl Memory {
         })?;
         let by_region = group_count(&conn, "region")?;
         let by_tier = group_count(&conn, "tier")?;
+        let needs_reembed = conn.query_row(
+            "SELECT COUNT(*) FROM facts WHERE deleted = 0 AND needs_reembed = 1",
+            [],
+            |r| r.get(0),
+        )?;
         Ok(Stats {
             total,
             by_region,
             by_tier,
+            needs_reembed,
         })
+    }
+
+    /// The active embedder's identity string (e.g. `trigram-hash-v1`, `static-model2vec-v1`, or
+    /// `gateway:<provider>:<model>`) - what actually embedded the vectors on disk right now,
+    /// regardless of what was configured, so a caller can tell the two apart.
+    pub fn embedder_name(&self) -> &str {
+        self.embedder.name()
+    }
+
+    /// Re-embed every row flagged `needs_reembed` (rows written while the configured embedder was
+    /// degraded, e.g. a gateway outage that fell back to trigram) using the CURRENT embedder.
+    /// A no-op when nothing is flagged. Intended to run periodically (the hourly consolidation
+    /// tick) once the real embedder is healthy again, closing the gap where a degraded write used
+    /// to persist a mis-ranked vector with no repair path. Ledger-first, like every other mutation.
+    pub fn reembed_flagged(&self) -> Result<usize> {
+        let mut conn = self.conn.lock().expect("memory mutex poisoned");
+        let rows: Vec<(i64, String)> = {
+            let mut stmt =
+                conn.prepare("SELECT id, text FROM facts WHERE needs_reembed = 1 AND deleted = 0")?;
+            let mapped =
+                stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+            let mut v = Vec::new();
+            for row in mapped {
+                v.push(row?);
+            }
+            v
+        };
+        if rows.is_empty() {
+            return Ok(0);
+        }
+        self.ledger.append(
+            "memory.reembed_flagged",
+            "core",
+            json!({ "rows": rows.len(), "embedder": self.embedder.name() }),
+        )?;
+        let tx = conn.transaction()?;
+        let mut fixed = 0usize;
+        for (id, text) in &rows {
+            let (v, degraded) = self.embedder.embed_checked(text);
+            // Still degraded (embedder still unhealthy): leave the flag set, try again next pass.
+            if degraded {
+                continue;
+            }
+            tx.execute(
+                "UPDATE facts SET embedding = ?1, embedding_bin = ?2, needs_reembed = 0 WHERE id = ?3",
+                params![to_bytes(&v), quantize_binary(&v), id],
+            )?;
+            fixed += 1;
+        }
+        tx.commit()?;
+        Ok(fixed)
     }
 }
 
@@ -1022,6 +1083,13 @@ fn init_schema(conn: &Connection) -> Result<()> {
     );
     // The binary-quantized companion of `embedding` - the coarse index for two-stage recall.
     let _ = conn.execute("ALTER TABLE facts ADD COLUMN embedding_bin BLOB", []);
+    // Set when `remember()` had to fall back to a degraded embedding (e.g. the gateway model was
+    // unreachable), so a background pass can find and re-embed exactly these rows once the real
+    // embedder is healthy again, instead of leaving them silently mis-ranked forever.
+    let _ = conn.execute(
+        "ALTER TABLE facts ADD COLUMN needs_reembed INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
     // Created AFTER the ALTERs so the referenced columns exist on a migrated legacy brain too.
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_facts_scope ON facts(scope_kind, scope_id, deleted)",
@@ -1175,6 +1243,70 @@ mod tests {
         let embedder = Arc::new(TrigramHashEmbedder::default());
         let m = Memory::open(dir.path().join("brain.db"), embedder, ledger).unwrap();
         (m, dir)
+    }
+
+    /// A test-only embedder that can be toggled between "healthy" and "degraded" (mimicking a
+    /// gateway embedder that's fallen back after a provider outage), so `needs_reembed` marking
+    /// and `reembed_flagged()`'s repair pass can be exercised deterministically.
+    struct FlakyEmbedder {
+        inner: TrigramHashEmbedder,
+        healthy: std::sync::atomic::AtomicBool,
+    }
+    impl crate::embed::Embedder for FlakyEmbedder {
+        fn dim(&self) -> usize {
+            self.inner.dim()
+        }
+        fn embed(&self, text: &str) -> Vec<f32> {
+            self.inner.embed(text)
+        }
+        fn name(&self) -> &str {
+            "flaky-test-embedder"
+        }
+        fn embed_checked(&self, text: &str) -> (Vec<f32>, bool) {
+            let degraded = !self.healthy.load(std::sync::atomic::Ordering::SeqCst);
+            (self.inner.embed(text), degraded)
+        }
+    }
+
+    #[test]
+    fn a_degraded_write_is_flagged_and_reembed_flagged_repairs_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Arc::new(Ledger::open(dir.path()).unwrap());
+        let embedder = Arc::new(FlakyEmbedder {
+            inner: TrigramHashEmbedder::default(),
+            healthy: std::sync::atomic::AtomicBool::new(false),
+        });
+        let m = Memory::open(dir.path().join("brain.db"), embedder.clone(), ledger).unwrap();
+
+        let rec = m
+            .remember(WriteReq::new(Region::Semantic, "written while degraded"))
+            .unwrap();
+        let stats = m.stats().unwrap();
+        assert_eq!(stats.needs_reembed, 1, "a degraded write must be flagged");
+
+        // Still degraded: reembed_flagged() must leave the flag set rather than clearing it on a
+        // vector that's just as degraded as the one already stored.
+        assert_eq!(m.reembed_flagged().unwrap(), 0);
+        assert_eq!(m.stats().unwrap().needs_reembed, 1);
+
+        // Provider recovers: the next pass must clear the flag on the SAME row.
+        embedder
+            .healthy
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(m.reembed_flagged().unwrap(), 1);
+        assert_eq!(m.stats().unwrap().needs_reembed, 0);
+
+        // The row itself is untouched otherwise and still recallable.
+        let after = get_record(&m.conn.lock().unwrap(), rec.id).unwrap().unwrap();
+        assert_eq!(after.text, "written while degraded");
+
+        // A normal (non-degraded) write on the same brain is never flagged.
+        embedder
+            .healthy
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        m.remember(WriteReq::new(Region::Semantic, "written while healthy"))
+            .unwrap();
+        assert_eq!(m.stats().unwrap().needs_reembed, 0);
     }
 
     #[test]

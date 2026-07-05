@@ -1467,9 +1467,25 @@ async fn meter(State(app): State<App>) -> ApiResult {
 }
 
 async fn memory_stats(State(app): State<App>) -> ApiResult {
-    Ok(Json(
-        serde_json::to_value(app.memory.stats().map_err(err)?).map_err(err)?,
-    ))
+    let mut v = serde_json::to_value(app.memory.stats().map_err(err)?).map_err(err)?;
+    // Embedder health: what the user configured vs. what's actually embedding vectors right now.
+    // The selection at boot (see `run()`) silently falls back to trigram on any failure (a gateway
+    // provider with no embeddings endpoint, a missing/unreadable static model dir) and previously
+    // only logged a `tracing::warn!` - invisible outside the daemon's own log file. Surfacing it
+    // here turns a silent degradation into a fact every surface (desktop/TUI/CLI) can display.
+    let configured = app.cfg().embed.kind.clone();
+    let active = app.memory.embedder_name().to_string();
+    let degraded = match configured.as_str() {
+        "gateway" => !active.starts_with("gateway:"),
+        "static" => active != "static-model2vec-v1",
+        _ => false,
+    };
+    if let Some(obj) = v.as_object_mut() {
+        obj.insert("embedder_configured".into(), json!(configured));
+        obj.insert("embedder_active".into(), json!(active));
+        obj.insert("embedder_degraded".into(), json!(degraded));
+    }
+    Ok(Json(v))
 }
 
 /// Rebuild the derived binary coarse index from the stored embeddings - a repair hook if the index
@@ -4529,6 +4545,14 @@ fn spawn_consolidation_tick(app: App) {
                 Ok(n) if n > 0 => tracing::info!(demoted = n, "memory consolidated (warm -> cold)"),
                 Ok(_) => {}
                 Err(e) => tracing::warn!(error = %e, "consolidation failed"),
+            }
+            // Repair rows that were written while the embedder was degraded (a gateway outage
+            // that fell back to trigram): re-embed them now that the daemon's had time to
+            // recover, so a transient blip doesn't leave a memory mis-ranked forever.
+            match app.memory.reembed_flagged() {
+                Ok(n) if n > 0 => tracing::info!(fixed = n, "re-embedded rows flagged during a degraded write"),
+                Ok(_) => {}
+                Err(e) => tracing::warn!(error = %e, "reembed_flagged failed"),
             }
             // Skill-sleep: retire proposed-but-never-adopted skills (opt-in, same window as memory).
             if app.cfg().security.auto_distill_skills {

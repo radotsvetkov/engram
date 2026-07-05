@@ -645,6 +645,11 @@
   .recent-panel .rp-t { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .recent-panel .rp-m { font:11px var(--mono); color:var(--text-muted); flex:none; }
   .recent-panel .rp-empty { padding:16px; text-align:center; color:var(--text-muted); font-size:12px; }
+  /* Grounded reflections (Phase D) are never styled like an ordinary memory row: a fixed accent
+     glyph instead of a region-colored dot, and a source-count chip instead of an importance score,
+     so a synthesis can never be mistaken for a directly-witnessed fact at a glance. */
+  .recent-panel .rp-refl-mark { width:14px; text-align:center; flex:none; color:var(--accent); font-weight:700; }
+  .recent-panel .rp-src-tag { font:11px var(--mono); color:var(--accent); background:var(--accent-soft); border-radius:6px; padding:1px 6px; flex:none; }
   /* consciousness panel - the always-loaded working memory, docked as a glass card over the brain */
   .mind-panel { position:absolute; left:20px; top:62px; bottom:84px; width:332px; z-index:24; display:flex; flex-direction:column;
     background:var(--surface-1); border:1px solid var(--border-strong); border-radius:14px; box-shadow:var(--e4); overflow:hidden; }
@@ -3281,7 +3286,7 @@ async function renderMemory(){
     <div class="brain-overlay">
       <div class="brain-head">
         <div class="brain-title"><span class="brain-count" style="margin-left:0">${total} ${total===1?'memory':'memories'} · ${(stats.by_tier?.warm||0)} warm · ${(stats.by_tier?.cold||0)} cold</span></div>
-        <div class="brain-legend">${legend}<button class="brain-teach ghost" onclick="brainRecentToggle()" title="Browse recent memories as a list, filter by region">Recent</button><button class="brain-teach" onclick="openTeach()">+ Teach</button></div>
+        <div class="brain-legend">${legend}<button class="brain-teach ghost" onclick="brainRecentToggle()" title="Browse recent memories as a list, filter by region">Recent</button><button class="brain-teach ghost" onclick="brainReflectionsToggle()" title="Grounded reflections - synthesized facts, each citing exactly what it was built from">∴ Reflections</button><button class="brain-teach" onclick="openTeach()">+ Teach</button></div>
       </div>
       <div class="brain-foot"><div class="brain-recall">
         <input id="brainQ" placeholder="Recall a memory - try a paraphrase..." onkeydown="if(event.key==='Enter')brainRecall(); else if(event.key==='Escape')brainClearRecall()" oninput="if(!this.value&&BRAIN&&BRAIN.matched){BRAIN.matched=null;const n=document.getElementById('brainNote');if(n)n.textContent='';}">
@@ -3540,6 +3545,27 @@ async function brainRecentLoad(){
       const sc=r.scope_kind==='project'?'<span class="sc-tag sc-proj">project</span>':r.scope_kind==='session'?'<span class="sc-tag sc-sess">session</span>':''; const prom=(r.scope_kind==='project'||r.scope_kind==='session')?`<button class="rp-glob" title="Promote to a global fact about you — it will then follow you into every project" onclick="event.stopPropagation();makeGlobal(${r.id|0})">Make global</button>`:''; return `<div class="rp-i" style="--lc:${reg.color}" title="${escAttr(r.text||'')}" onclick="recallOpen(${r.id|0})"><span class="rp-dot"></span><span class="rp-t">${esc((r.text||'').replace(/\s+/g,' '))}</span>${sc}${prom}<span class="rp-m">${(r.importance||0).toFixed(1)}</span></div>`; }).join('')
       : '<div class="rp-empty">no memories in this region yet</div>';
   }catch(e){ const list=document.getElementById('rpList'); if(list) list.innerHTML='<div class="rp-empty">could not load</div>'; }
+}
+// Reflections panel (Phase D): grounded-reflection facts, permanently distinct from ordinary
+// recall - each row cites how many source facts it was synthesized from, so a reflection is never
+// visually indistinguishable from a directly-witnessed memory (docs/MEMORY-UPGRADE-PLAN.md §5/§6).
+function brainReflectionsToggle(){
+  const p=document.getElementById('brainReflections'); if(p){ p.remove(); return; }
+  const d=document.createElement('div'); d.id='brainReflections'; d.className='recent-panel'; document.querySelector('.brain-wrap')?.appendChild(d);
+  brainReflectionsLoad();
+}
+async function brainReflectionsLoad(){
+  const p=document.getElementById('brainReflections'); if(!p) return;
+  p.innerHTML=`<div class="rp-head"><span>∴ Reflections</span><button class="rp-x" onclick="document.getElementById('brainReflections').remove()">×</button></div><div class="rp-list" id="rpReflList"><div class="rp-empty">loading...</div></div>`;
+  try{
+    const recs=await J('/v1/memory/reflections');
+    const list=document.getElementById('rpReflList'); if(!list) return;
+    list.innerHTML = (recs&&recs.length) ? recs.map(r=>{
+      const nSrc=(r.metadata&&Array.isArray(r.metadata.source_ids))?r.metadata.source_ids.length:0;
+      return `<div class="rp-i rp-refl" title="${escAttr(r.text||'')}" onclick="recallOpen(${r.id|0})"><span class="rp-refl-mark">∴</span><span class="rp-t">${esc((r.text||'').replace(/\s+/g,' '))}</span><span class="rp-src-tag">${nSrc} source${nSrc===1?'':'s'}</span></div>`;
+    }).join('')
+      : '<div class="rp-empty">no reflections yet - opt in via Settings → auto_reflect</div>';
+  }catch(e){ const list=document.getElementById('rpReflList'); if(list) list.innerHTML='<div class="rp-empty">could not load</div>'; }
 }
 // Promote a project/session memory to a global fact about the user - it will then follow into every
 // project. Trusted-only (the backend refuses to globalize untrusted-provenance memory).

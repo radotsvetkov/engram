@@ -66,6 +66,9 @@ pub enum Msg {
     },
     Tasks(Vec<Task>),
     MemoryRecent(Vec<MemRecord>),
+    /// Grounded-reflection facts (Phase D) - kept separate from `MemoryRecent` so the Memory view
+    /// can show them in a permanently distinct panel rather than mixed into the ordinary list.
+    MemoryReflections(Vec<MemRecord>),
     MemoryStats(MemoryStats),
     Consciousness(Consciousness),
     Skills(Vec<Skill>),
@@ -292,6 +295,13 @@ pub struct App {
     // view data
     pub tasks: Vec<Task>,
     pub memory_recent: Vec<MemRecord>,
+    /// Grounded-reflection facts (Phase D), loaded alongside `memory_recent` - shown in their own
+    /// panel in the Memory view (toggle with `R`) so a synthesis is never mixed with, or mistaken
+    /// for, a directly-witnessed memory.
+    pub memory_reflections: Vec<MemRecord>,
+    /// Whether the Memory view's right-hand panel is currently showing reflections instead of
+    /// ordinary recent memories.
+    pub show_reflections: bool,
     pub memory_stats: MemoryStats,
     pub consciousness: Option<Consciousness>,
     pub skills: Vec<Skill>,
@@ -499,6 +509,8 @@ impl App {
             },
             tasks: vec![],
             memory_recent: vec![],
+            memory_reflections: vec![],
+            show_reflections: false,
             memory_stats: MemoryStats::default(),
             consciousness: None,
             skills: vec![],
@@ -668,6 +680,13 @@ impl App {
                 });
                 self.fetch(|c| async move { c.memory_stats().await.ok().map(Msg::MemoryStats) });
                 self.fetch(|c| async move { c.consciousness().await.ok().map(Msg::Consciousness) });
+                let project = self.active_project.clone();
+                self.fetch(move |c| async move {
+                    c.reflections(project.as_deref())
+                        .await
+                        .ok()
+                        .map(Msg::MemoryReflections)
+                });
             }
             View::Skills => {
                 self.fetch(|c| async move { c.skills().await.ok().map(|s| Msg::Skills(s.skills)) });
@@ -768,8 +787,14 @@ impl App {
             }
             Msg::MemoryRecent(m) => {
                 self.memory_recent = m;
-                if self.view == View::Memory {
+                if self.view == View::Memory && !self.show_reflections {
                     self.clamp_sel(self.memory_recent.len());
+                }
+            }
+            Msg::MemoryReflections(m) => {
+                self.memory_reflections = m;
+                if self.view == View::Memory && self.show_reflections {
+                    self.clamp_sel(self.memory_reflections.len());
                 }
             }
             Msg::MemoryStats(s) => self.memory_stats = s,

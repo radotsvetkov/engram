@@ -166,9 +166,24 @@ impl Client {
     }
 
     pub async fn recall(&self, q: &str, k: usize, task: Option<&str>) -> Result<Vec<RecallHit>> {
+        self.recall_as_of(q, k, task, None).await
+    }
+
+    /// `as_of_ms: Some(t)` answers "what did I believe on this date" (bi-temporal time-travel)
+    /// instead of ordinary current-state recall.
+    pub async fn recall_as_of(
+        &self,
+        q: &str,
+        k: usize,
+        task: Option<&str>,
+        as_of_ms: Option<i64>,
+    ) -> Result<Vec<RecallHit>> {
         let mut path = format!("/v1/recall?q={}&k={}", urlencode(q), k);
         if let Some(t) = task {
             path.push_str(&format!("&task={}", urlencode(t)));
+        }
+        if let Some(t) = as_of_ms {
+            path.push_str(&format!("&as_of={t}"));
         }
         self.get(&path).await
     }

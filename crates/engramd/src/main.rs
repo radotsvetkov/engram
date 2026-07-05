@@ -2550,6 +2550,12 @@ struct RecallQuery {
     q: String,
     task: Option<String>,
     k: Option<usize>,
+    /// Bi-temporal time-travel: "what did I believe on this date" (epoch milliseconds). Omitted =
+    /// ordinary current-state recall, unchanged. Routes through the trusted+user-scoped family
+    /// (`recall_as_of`) rather than whole-brain `recall()`, since "what did I believe" is a
+    /// personal-trust question, not an audit/Atlas one - matching `recall_trusted_scoped`'s family.
+    #[serde(default)]
+    as_of: Option<i64>,
 }
 
 async fn recall(State(app): State<App>, Query(q): Query<RecallQuery>) -> ApiResult {
@@ -2557,10 +2563,14 @@ async fn recall(State(app): State<App>, Query(q): Query<RecallQuery>) -> ApiResu
         Some(t) => Region::for_task(t),
         None => vec![],
     };
-    let hits = app
-        .memory
-        .recall(&q.q, &regions, q.k.unwrap_or(5))
-        .map_err(err)?;
+    let k = q.k.unwrap_or(5);
+    let hits = match q.as_of {
+        Some(as_of_ms) => app
+            .memory
+            .recall_as_of(&q.q, &regions, k, &engram_core::ScopeCtx::user_only(), as_of_ms)
+            .map_err(err)?,
+        None => app.memory.recall(&q.q, &regions, k).map_err(err)?,
+    };
     Ok(Json(serde_json::to_value(hits).map_err(err)?))
 }
 

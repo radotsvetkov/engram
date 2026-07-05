@@ -639,9 +639,16 @@ async fn memory(client: &Client, cmd: MemoryCmd, json: bool) -> Result<i32> {
             table(&["id", "region", "tier", "text"], &rows);
             Ok(0)
         }
-        MemoryCmd::Recall { query, k } => {
+        MemoryCmd::Recall { query, k, as_of } => {
             let q = join(&query);
-            let hits = client.recall(&q, k, None).await?;
+            let as_of_ms = match as_of.as_deref() {
+                Some(s) => Some(
+                    crate::ui::format::parse_date_to_ms(s)
+                        .ok_or_else(|| anyhow::anyhow!("invalid --as-of date: {s} (want YYYY-MM-DD or an epoch-ms integer)"))?,
+                ),
+                None => None,
+            };
+            let hits = client.recall_as_of(&q, k, None, as_of_ms).await?;
             if json {
                 print_json(
                     &hits
@@ -656,7 +663,10 @@ async fn memory(client: &Client, cmd: MemoryCmd, json: bool) -> Result<i32> {
                 );
                 return Ok(0);
             }
-            out::header(&format!("Recall · “{q}”"));
+            out::header(&match &as_of {
+                Some(d) => format!("Recall as of {d} · “{q}”"),
+                None => format!("Recall · “{q}”"),
+            });
             for h in &hits {
                 println!(
                     "  {} {} {}",

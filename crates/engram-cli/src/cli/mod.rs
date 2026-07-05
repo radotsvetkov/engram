@@ -225,6 +225,10 @@ pub enum MemoryCmd {
         query: Vec<String>,
         #[arg(long, default_value_t = 8)]
         k: usize,
+        /// Time-travel: "what did I believe on this date" (YYYY-MM-DD, or a raw epoch-ms integer).
+        /// Omitted = ordinary current-state recall.
+        #[arg(long = "as-of")]
+        as_of: Option<String>,
     },
     /// Write a memory.
     Remember {

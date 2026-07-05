@@ -89,6 +89,39 @@ fn civil_from_ms(ts_ms: i64) -> (i64, i64, i64) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
+/// Days since the Unix epoch for a civil (year, month, day) date - Howard Hinnant's civil→days
+/// algorithm, the exact inverse of `civil_from_ms` above.
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = if m > 2 { m - 3 } else { m + 9 };
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// Parse a `YYYY-MM-DD` date (local midnight) into a unix-ms timestamp - the CLI-friendly form of
+/// the bi-temporal `recall --as-of` flag. Also accepts a bare integer as an already-epoch-ms
+/// timestamp, so a script can pass either a human date or a precise value it already computed.
+pub fn parse_date_to_ms(s: &str) -> Option<i64> {
+    if let Ok(ms) = s.parse::<i64>() {
+        return Some(ms);
+    }
+    let parts: Vec<&str> = s.split('-').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let y = parts[0].parse::<i64>().ok()?;
+    let m = parts[1].parse::<i64>().ok()?;
+    let d = parts[2].parse::<i64>().ok()?;
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    let days = days_from_civil(y, m, d);
+    Some(days * 86_400_000 - local_offset_secs() * 1000)
+}
+
 /// Best-effort local UTC offset in seconds, cached. Falls back to 0 (UTC).
 fn local_offset_secs() -> i64 {
     use std::sync::OnceLock;
@@ -199,6 +232,29 @@ pub fn truncate_bytes(s: &mut String, max: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_date_to_ms_round_trips_through_civil_from_ms() {
+        for (y, m, d) in [(2024, 1, 1), (2026, 7, 5), (2000, 2, 29), (1970, 1, 1), (2099, 12, 31)] {
+            let ms = parse_date_to_ms(&format!("{y:04}-{m:02}-{d:02}")).unwrap();
+            assert_eq!(
+                civil_from_ms(ms),
+                (y, m, d),
+                "date round-trip failed for {y:04}-{m:02}-{d:02}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_date_to_ms_accepts_a_bare_epoch_ms_integer() {
+        assert_eq!(parse_date_to_ms("1234567890"), Some(1_234_567_890));
+    }
+
+    #[test]
+    fn parse_date_to_ms_rejects_garbage() {
+        assert_eq!(parse_date_to_ms("not-a-date"), None);
+        assert_eq!(parse_date_to_ms("2024-13-40"), None);
+    }
 
     #[test]
     fn truncate_bytes_never_cuts_a_char() {

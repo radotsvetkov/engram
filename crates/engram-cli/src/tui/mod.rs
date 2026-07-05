@@ -131,7 +131,7 @@ mod smoke {
     //! Renders every view at a range of terminal sizes against a headless
     //! backend, asserting the draw code never panics (out-of-bounds slices in
     //! wrapping/ellipsis/scroll math are the usual suspects).
-    use super::app::{App, LiveStep, PlanStep, Role, Turn, View};
+    use super::app::{App, FormKind, LiveStep, PlanStep, Role, Turn, View};
     use crate::api::{
         Consciousness, ConsciousnessLine, EgressItem, Health, LedgerEntry, LedgerVerify, MemRecord,
         Meter, ScheduleJob, Skill, StepRecord, Task, TaskRun,
@@ -391,6 +391,24 @@ mod smoke {
     }
 
     #[test]
+    fn schedule_edit_preserves_unedited_fields() {
+        // Editing a job must pre-fill Name/Task title from the job, but leave "When" BLANK —
+        // the stored Recurrence doesn't always round-trip through the NL parser, so a blank
+        // field (kept-current-cadence) is the only safe default. See app.rs edit_schedule_form.
+        let mut app = sample_app();
+        app.schedule[0].payload = json!({ "title": "send the digest" });
+        app.edit_schedule_form(0);
+        let form = app.form.as_ref().unwrap();
+        assert_eq!(form.fields.len(), 3);
+        assert_eq!(form.fields[0].value, "Evening digest");
+        assert_eq!(form.fields[1].value, "");
+        assert_eq!(form.fields[2].value, "send the digest");
+        assert!(matches!(&form.kind, FormKind::AddSchedule { id: Some(id) } if id == "s1"));
+        // The current cadence surfaces in the title instead of pre-filling the value.
+        assert!(form.title.contains("daily at 17:00"));
+    }
+
+    #[test]
     fn palette_overlay_renders() {
         let mut app = sample_app();
         app.open_palette();
@@ -510,6 +528,11 @@ mod smoke {
             let mut term = Terminal::new(TestBackend::new(90, 24)).unwrap();
             term.draw(|f| super::ui::draw(f, &mut app)).unwrap();
         }
+        // Schedule edit form (add is covered by the opener loop above).
+        let mut app = sample_app();
+        app.edit_schedule_form(0);
+        let mut term = Terminal::new(TestBackend::new(90, 24)).unwrap();
+        term.draw(|f| super::ui::draw(f, &mut app)).unwrap();
     }
 
     #[test]

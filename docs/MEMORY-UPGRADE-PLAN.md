@@ -258,13 +258,28 @@ memory search/filter parity are not yet implemented.**
    confirmed `--as-of` one millisecond before the switch shows the old name and after shows the new
    one, matching `supersede()`'s stamped timestamps exactly. TUI exposure (a "History" keybinding)
    and desktop UI exposure (a History expander) are still open - the backend + CLI half is done.
-2. **Replace the 3-rule literal-prefix supersession whitelist** (`converse.rs`'s `RULES` table,
-   Identity-only) with embedding-similarity-gated contradiction detection: on every Identity/Semantic
-   write, check for a high-cosine-but-not-identical prior row in the same region+ring; if found,
-   write a `pending_supersessions` row (never silently apply — §5) using `dissent.rs`'s exact
-   citation-and-strip-hallucination discipline, generalized into a small shared helper so both
-   `dissent.rs` and this feature use one proven verification implementation instead of two ad hoc
-   ones.
+2. **DONE (2026-07-05, `45f15f0`) — additive, not a replacement of the 3-rule whitelist.** During
+   implementation this was rescoped from "replace" to "extend": the existing 3-rule literal-prefix
+   whitelist (name/lives/works) is tested, working, singular-attribute-specific logic - ripping it
+   out was unnecessary risk for zero gain, since contradiction-detection now covers exactly the gap
+   the whitelist never touched (additive preference facts, which previously had ZERO contradiction
+   checking at all and just accumulated forever). Shipped: `crate::citation` extracts `dissent.rs`'s
+   citation-and-strip-hallucination parser into a shared, independently-tested helper (`dissent.rs`
+   now calls it internally, verified behavior-preserving by its own existing tests passing
+   unchanged); `Memory::find_similar_not_identical` + `propose_supersession` + `pending_supersessions`
+   + `resolve_supersession` implement the mandatory-confirmation flow (no auto-confirm escape hatch,
+   per §5's locked decision); `crate::contradiction::check` orchestrates the model call, mirroring
+   `dissent.rs`'s "stay silent under the offline mock" pattern exactly. Wired into BOTH conversational
+   paths that extract identity facts (the legacy `converse_stream` AND `learn_identity`, the one the
+   LIVE agentic chat actually calls - `learn_identity` had to become async to thread gateway/model
+   through, the same single-path-only trap the per-project-persona bug already showed this codebase
+   is prone to). New surface: `GET /v1/supersessions`, `POST /v1/supersessions/{id}/resolve`,
+   `engram memory supersessions [--accept ID | --reject ID]`. Verified: `citation.rs`'s own 6-test
+   suite; `contradiction.rs`'s 5 tests using `ScriptedProvider` for fully deterministic LLM-response
+   testing (no real API key needed) covering a genuine conflict, no-candidate (never calls the
+   model), a NONE reply, a hallucinated citation, and the offline-mock-silence case; 2 new
+   `engram-memory` tests; and a full live end-to-end accept flow against a real daemon. Desktop/TUI
+   inbox UI is still open - the backend + CLI half is done.
 3. **DONE (2026-07-05, `801d694`) — implemented as attribution, not a new ring.** Re-examined during
    implementation: a genuinely separate `ScopeKind::Agent` ring (unioned into recall like project/
    session) would mean an agent's memories are invisible to the rest of the team unless explicitly
@@ -308,6 +323,11 @@ memory search/filter parity are not yet implemented.**
    planned `valid_until_ms`, since bi-temporal versioning — item 1 below — isn't built yet; revisit
    once it lands, since `valid_until_ms` would let this also catch time-bounded-but-not-yet-superseded
    facts.)
+
+**Phase B status: all 7 backend items done (`70e7b53`, `801d694`, `fa51f30`, `d0e9d01`, `89bb553`,
+`45f15f0`, plus CLI in `99a5116`). Remaining: the desktop/TUI UI surfaces below (History view,
+pending-supersessions inbox, per-project/agent stats display) and the inert-persona-bug's CLI/TUI
+control (already fixed at the backend - see §6).**
 
 **Desktop / TUI / CLI**
 - Fact-history view: a "History" expander on a memory's detail view (all three surfaces) showing its

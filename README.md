@@ -175,7 +175,12 @@ morphological recall.
 - **Hybrid memory that survives sleep.** One embedded SQLite (WAL) file. Recall fuses a
   keyword arm (FTS5 / BM25) with a semantic arm (vector cosine) using Reciprocal Rank
   Fusion, and tells you which arm surfaced each hit. Idle consolidation moves stale facts
-  warm → cold and prunes the rest, the way sleep does.
+  warm → cold and prunes the rest, the way sleep does. Facts are bi-temporal (`engram memory
+  recall --as-of <date>` answers "what did I believe on this date"), and a new fact that
+  contradicts an existing one is never silently overwritten — it's proposed for you to
+  accept or reject, citing exactly what it read. An opt-in reflection pass can synthesize a
+  higher-level fact from a small group of related memories, always shown permanently
+  distinct from a directly-witnessed one.
 - **A signed audit ledger.** Append-only, content-addressed (BLAKE3), hash-chained, and
   Ed25519-signed. `engramd verify` replays the whole chain against the published public key
   **offline, without trusting the daemon** — exit 0 if intact, 1 if tampered at a named

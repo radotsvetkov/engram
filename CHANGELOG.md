@@ -6,10 +6,67 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-05
+
+A full memory-system upgrade: truth over time (bi-temporal recall, confirmed contradiction
+detection), long-task continuity (paged compaction, mission relay), grounded reflection, and a
+real benchmark suite proving the recall-quality wins with numbers instead of prose.
+
+### Added
+- **Bi-temporal memory recall.** `engram memory recall --as-of <date>` (CLI, TUI keybinding,
+  `GET /v1/recall?as_of=`) answers "what did I believe on this date" instead of only ever
+  showing current-state facts. Additive to the existing `supersede()` path — one code path,
+  not two.
+- **Contradiction detection with mandatory confirmation.** Extends supersession beyond the
+  old 3-rule, Identity-region-only literal-prefix whitelist to any region and any wording: a
+  new fact that resembles an existing one gets a citation-verified model judgment on whether
+  it contradicts it. Never applies automatically — always produces a `pending_supersessions`
+  row for a human to accept or reject. New surface everywhere: `GET /v1/supersessions`,
+  `POST /v1/supersessions/{id}/resolve`, `engram memory supersessions [--accept|--reject]`,
+  a TUI panel (`Tab` to cycle to it, `a`/`x` to accept/reject), and a desktop "⇄ Pending"
+  panel — closing what had been a CLI-only review workflow.
+- **Grounded reflection (opt-in, default off — `security.auto_reflect`).** An hourly pass
+  synthesizes a higher-level fact from a small, bounded, co-scoped group of related Trusted
+  memories, citing exactly which facts it drew on (`GET /v1/memory/reflections`,
+  `engram memory reflections`, a dedicated TUI/desktop panel). A reflection is never mixed
+  with, or visually indistinguishable from, a directly-witnessed memory on any surface.
+- **Agent attribution and per-scope stats.** Every memory records who wrote it (`user`,
+  `core`, a skill, or a durable agent's own name); `GET /v1/memory/stats` and
+  `engram memory stats` now break down by actor and can be scoped to one project.
+- **The procedural-memory bridge.** Skill promotion and revert now write real
+  `Region::Procedural` facts, so the brain's procedural-memory view finally shows real
+  points instead of staying empty.
+- **Long-task continuity.** Context compaction now pages the elided transcript out to memory
+  instead of discarding it (a new `memory_recall_page` tool reads it back); completed plan
+  steps leave durable episodic breadcrumbs; and a multi-run mission's prompt now also
+  recalls earlier-hop breadcrumbs, not just the single immediately-prior answer.
+- **A real, honest benchmark suite** (`crates/engram-bench/BENCHMARKS.md`): a three-arm
+  keyword-only / semantic-only / hybrid recall-quality comparison, plus the multi-project
+  scale benchmark, with real numbers and an honestly-reported non-obvious result rather than
+  a smoothed-over win claim.
+- **Skill self-improvement and consciousness editing, from every surface.**
+  `engram skills improve/revert/activate/teach` and `engram memory identity-edit/add/remove/
+  revert` (CLI); a matching TUI Skills-view score/provenance display and consciousness
+  editor.
+- **The cold tier now actually affects recall ranking** (a small penalty instead of being
+  purely informational), and opt-in, conservative, reversible auto-pruning of already-
+  superseded memories completes the sleep-cycle triad (consolidate → tier-penalize → prune).
+- **Fixed: per-project persona was computed but never actually injected** into the live
+  agentic chat path (`run_agent_task_cb`, the code behind the desktop/TUI chat, as opposed
+  to the simpler `agent_handler`) — a project's persona now reliably shapes its conversations.
+
 ### Fixed
 - **The README's prebuilt-binary link no longer goes stale.** It hardcoded a specific
   release tag in the download filename, so it always fetched v0.2.0 no matter how many
   versions had shipped since.
+- **The default embedder now matches what's actually configured.** `Config::from_env` used
+  to unconditionally overwrite the embedder kind even when `ENGRAM_EMBED` wasn't set,
+  silently reverting a configured static/gateway embedder back to the old default on every
+  boot. The default is now the real static (model2vec) embedder, with a clear
+  `embedder_degraded` signal (surfaced in `/v1/memory/stats`) when no model is installed and
+  it's quietly running on the trigram fallback instead.
+- **Two persist-time taint holes closed**, so untrusted content can no longer slip into
+  trusted recall via the legacy conversational path.
 
 ### Changed
 - **`install.sh` fetches a prebuilt binary by default** (resolves the latest GitHub

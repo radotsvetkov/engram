@@ -1,6 +1,6 @@
 [package]
 name = "engram-desktop"
-version = "0.3.3"
+version = "0.3.4"
 edition = "2021"
 authors = ["Radoslav Tsvetkov <tsvetkov.rado@gmail.com>"]
 description = "Engram desktop shell - a native window onto the local agent"

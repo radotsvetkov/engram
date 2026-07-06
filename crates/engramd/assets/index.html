@@ -589,8 +589,13 @@
     border-left:1px solid var(--border-strong); transform:translateX(100%); transition:transform .2s ease-out;
     display:flex; flex-direction:column; z-index:22; box-shadow:-18px 0 48px rgba(0,0,0,.35); }
   .files-drawer.open { transform:translateX(0); }
-  .fb-wrap { flex:1; min-height:0; display:grid; grid-template-columns:280px minmax(0,1fr); }
-  .fb-side { border-right:1px solid var(--border); overflow:auto; padding:10px 8px; background:var(--surface-0); display:flex; flex-direction:column; }
+  /* grid-template-rows is load-bearing: without it the single implicit row sizes to its tallest
+     item's CONTENT (a long file's rendered height), not to .fb-wrap's own bounded height - the
+     drawer then clips instead of scrolling, because nothing below ever gets a height to scroll
+     within. minmax(0,1fr) caps the row so .fb-side/.fprev can shrink and their own overflow:auto
+     takes over. Same class of bug as the .app-shell one already fixed elsewhere in this file. */
+  .fb-wrap { flex:1; min-height:0; display:grid; grid-template-columns:280px minmax(0,1fr); grid-template-rows:minmax(0,1fr); }
+  .fb-side { min-height:0; border-right:1px solid var(--border); overflow:auto; padding:10px 8px; background:var(--surface-0); display:flex; flex-direction:column; }
   .fb-path { font:11px var(--mono); color:var(--text-muted); padding:2px 6px 9px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; direction:rtl; text-align:left; }
   .fb-list { flex:1; }
   .fb-hid { display:flex; align-items:center; gap:6px; font-size:11px; color:var(--text-muted); padding:8px 6px 2px; cursor:pointer; user-select:none; flex:none; }
@@ -598,16 +603,20 @@
   .ft-row .ft-size { flex:none; font:10.5px var(--mono); color:var(--text-muted); }
   .ft-row.sel { background:var(--accent-soft); color:var(--text-primary); }
   .ft-row.sel .fname { color:var(--text-primary); }
-  .fprev { display:flex; flex-direction:column; min-width:0; background:var(--surface-0); }
+  .fprev { display:flex; flex-direction:column; min-width:0; min-height:0; background:var(--surface-0); }
   .fprev-head { display:flex; align-items:center; gap:10px; padding:10px 16px; border-bottom:1px solid var(--border); flex:none; }
   .fprev-head .fp-name { font:12.5px var(--mono); color:var(--text-primary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .fprev-head .fp-meta { flex:none; font-size:11px; color:var(--text-muted); }
+  .fp-dirty { flex:none; color:var(--warning); font-size:9px; }
   .fp-dl { flex:none; font-family:inherit; font-size:11.5px; color:var(--accent); text-decoration:none; border:1px solid var(--border); border-radius:7px; padding:3px 9px; background:none; cursor:pointer; }
   .fp-dl:hover { border-color:var(--border-strong); }
+  .fp-dl.primary { background:var(--accent); color:var(--accent-ink); border-color:var(--accent); font-weight:600; }
+  .fp-dl.primary:hover { filter:brightness(1.07); border-color:var(--accent); }
   .fprev-body { flex:1; overflow:auto; padding:14px 18px; min-height:0; }
   .fp-pre { margin:0; }
   .fp-pre code { font:12.5px/1.6 var(--mono); white-space:pre; }
   .fp-trunc { font-size:11.5px; color:var(--warning); background:color-mix(in srgb, var(--warning) 10%, transparent); border-radius:7px; padding:6px 10px; margin-bottom:10px; }
+  .fp-edit { width:100%; height:100%; box-sizing:border-box; background:none; color:var(--text-primary); border:none; outline:none; resize:none; font:12.5px/1.6 var(--mono); tab-size:4; }
   .fprev-empty { height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; color:var(--text-muted); font-size:13px; }
   .fprev-empty svg { width:30px; height:30px; opacity:.6; }
   .fprev-img { display:flex; align-items:center; justify-content:center; }
@@ -5191,6 +5200,7 @@ window.addEventListener('keydown', e=>{
   if(k==='escape' && !document.getElementById('receipt').hidden){ e.preventDefault(); closeReceipt(); return; }
   if(k==='escape' && !document.getElementById('projModal').hidden){ e.preventDefault(); closeProjModal(); return; }
   if(k==='escape' && document.getElementById('panel').classList.contains('open')){ e.preventDefault(); closePanel(); return; }
+  if(k==='escape' && _fpEditing){ e.preventDefault(); filesCancelEdit(); return; }
   if(k==='escape' && FILES.open){ e.preventDefault(); closeFilesDrawer(); return; }
   if(k==='escape' && TERMS.open){ e.preventDefault(); closeTerminalDrawer(); return; }
   // Escape stops the active chat's run (matching Claude) — only when nothing else claimed the key.
@@ -5559,7 +5569,11 @@ async function openFilesDrawer(){
   dr.classList.add('open');
   await renderFilesDrawer();
 }
-function closeFilesDrawer(){ FILES.open=false; const dr=document.getElementById('filesDrawer'); if(dr) dr.classList.remove('open'); }
+async function closeFilesDrawer(){
+  if(!(await filesGuardDirty())) return;   // unsaved edit - let the user cancel the close
+  _fpEditing=false; _fpDirty=false;
+  FILES.open=false; const dr=document.getElementById('filesDrawer'); if(dr) dr.classList.remove('open');
+}
 function toggleFilesDrawer(){ FILES.open ? closeFilesDrawer() : openFilesDrawer(); }
 async function filesRefresh(){
   // Re-list the current folder in place (used after terminal commands); keeps the selection.
@@ -5626,6 +5640,7 @@ function filesRenderList(){
 }
 let _filesNav=0;
 async function filesCd(path){
+  if(!(await filesGuardDirty())) return;   // unsaved edit on the file we're about to navigate away from
   // Navigation is a read, not a recorded command - same ledger-about-intent rule as the terminal.
   // The nav epoch makes rapid clicks latest-wins: a slow listing for an earlier click must not
   // overwrite the directory the user actually landed on (or another project's drawer).
@@ -5637,10 +5652,81 @@ async function filesCd(path){
   filesRenderList(); filesEmptyPreview();
 }
 function filesToggleHidden(on){ const st=filesState(); st.hidden=!!on; filesRefresh(); }   // relist in place - keeps selection+preview
-function filesSelect(path){ const st=filesState(); st.sel=path; filesRenderList(); filePreview(path); }
+async function filesSelect(path){
+  const st=filesState(); if(st.sel===path) return;
+  if(!(await filesGuardDirty())) return;   // unsaved edit on the file we're about to switch away from
+  st.sel=path; filesRenderList(); filePreview(path);
+}
 function filesEmptyPreview(){
+  _fpEditing=false; _fpDirty=false;
   const el=document.getElementById('fprev'); if(!el) return;
   el.innerHTML=`<div class="fprev-empty">${ICONS.Folder}<div>Select a file to preview it</div></div>`;
+}
+// ---- Edit-in-place: the preview pane doubles as a lightweight editor for text files ------------
+// _fpCur mirrors the last successfully loaded text file (path/text/ext/size/mtime/truncated) so
+// Cancel and the post-Save re-render don't need a network round trip for what's already in hand.
+let _fpCur=null, _fpEditing=false, _fpDirty=false;
+// Ask before losing an in-progress edit - called at every point that would otherwise silently
+// discard it (switching files, changing directory, closing the drawer). Resolves true to proceed.
+async function filesGuardDirty(){
+  if(!_fpEditing || !_fpDirty) return true;
+  const name=_fpCur?(String(_fpCur.path).split('/').pop()||'this file'):'this file';
+  return await askConfirm({title:'Discard unsaved changes?',message:'Your edits to "'+name+'" haven\'t been saved.',ok:'Discard',danger:true});
+}
+function fpHeadView(path,name,meta,editable){
+  return `<div class="fprev-head"><span class="fp-name" title="${escAttr(path)}">${esc(name)}</span>${meta?`<span class="fp-meta">${esc(meta)}</span>`:''}<span class="grow"></span>
+    ${editable?`<button class="fp-dl" onclick="filesStartEdit()">Edit</button>`:''}
+    <button class="fp-dl" onclick="filesCopyPath(${attrJson(path)})" title="Copy the full path — paste it into the terminal or chat">Copy path</button>
+    <button class="fp-dl" onclick="filesDownload(${attrJson(path)})">Download</button></div>`;
+}
+function fpHeadEdit(path,name){
+  return `<div class="fprev-head"><span class="fp-name" title="${escAttr(path)}">${esc(name)}</span><span class="fp-dirty" id="fpDirty" style="display:none" title="Unsaved changes">●</span><span class="grow"></span>
+    <button class="fp-dl" onclick="filesCancelEdit()">Cancel</button>
+    <button class="fp-dl primary" onclick="filesSaveEdit()">Save · ⌘S</button></div>`;
+}
+function filesRenderTextBody(text,ext,truncated,size){
+  const trunc=truncated?`<div class="fp-trunc">Preview truncated — showing the first ${afSize(text.length)} of ${afSize(size||0)}. Editing is off for a truncated preview; download the file to edit the whole thing.</div>`:'';
+  let body;
+  if(ext==='md'||ext==='markdown') body=`<div class="md-doc">${mdToHtml(text)}</div>`;
+  else if(text.length>200000) body=`<pre class="fp-pre"><code>${esc(text)}</code></pre>`;   // too big to highlight smoothly
+  else body=`<pre class="fp-pre"><code>${hl(text, fileLang(ext))}</code></pre>`;
+  return trunc+body;
+}
+function filesStartEdit(){
+  if(!_fpCur || _fpCur.truncated) return;
+  const el=document.getElementById('fprev'); if(!el) return;
+  _fpEditing=true; _fpDirty=false;
+  const name=String(_fpCur.path).split('/').pop()||'file';
+  el.innerHTML=fpHeadEdit(_fpCur.path,name)+`<div class="fprev-body"><textarea class="fp-edit" id="fpEdit" spellcheck="false" autocapitalize="off" autocomplete="off" wrap="off">${esc(_fpCur.text)}</textarea></div>`;
+  const ta=document.getElementById('fpEdit');
+  ta.addEventListener('input', ()=>{
+    const dirty=ta.value!==_fpCur.text;
+    if(dirty!==_fpDirty){ _fpDirty=dirty; const d=document.getElementById('fpDirty'); if(d) d.style.display=dirty?'inline':'none'; }
+  });
+  ta.addEventListener('keydown', e=>{ if((e.metaKey||e.ctrlKey) && (e.key==='s'||e.key==='S')){ e.preventDefault(); filesSaveEdit(); } });
+  ta.focus();
+}
+async function filesCancelEdit(){
+  if(!(await filesGuardDirty())) return;
+  _fpEditing=false; _fpDirty=false;
+  if(_fpCur) filePreview(_fpCur.path); else filesEmptyPreview();
+}
+async function filesSaveEdit(){
+  const ta=document.getElementById('fpEdit'); if(!ta || !_fpCur) return;
+  const content=ta.value, path=_fpCur.path;
+  const btn=document.querySelector('#filesDrawer .fp-dl.primary'); if(btn) btn.disabled=true;
+  try{
+    const r=await J('/v1/fs/write',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({path, content})});
+    if(r.denied){ notify('Shell access is off — enable it in Settings › Tools to save'); if(btn) btn.disabled=false; return; }
+    _fpCur={ path, text:content, ext:_fpCur.ext, size:r.size!=null?r.size:content.length, mtime_ms:r.mtime_ms, truncated:false };
+    _fpEditing=false; _fpDirty=false;
+    filesRefresh();   // the file's size likely changed - keep the left-hand list honest
+    const name=String(path).split('/').pop()||'file';
+    const meta=afSize(_fpCur.size)+(_fpCur.mtime_ms?(' · '+fmtAgo(_fpCur.mtime_ms)):'');
+    const el=document.getElementById('fprev');
+    if(el) el.innerHTML=fpHeadView(path,name,meta,true)+`<div class="fprev-body">${filesRenderTextBody(_fpCur.text,_fpCur.ext,false,_fpCur.size)}</div>`;
+    notify('Saved '+name,'ok');
+  }catch(e){ notify('Couldn\'t save — '+((e&&e.message)||'error')); if(btn) btn.disabled=false; }
 }
 // Raw bytes as a blob: URL, authenticated with the SAME Bearer header every other call uses -
 // a plain <img src>/<a href> request can't carry it (and the query-token fallback is deliberately
@@ -5679,14 +5765,14 @@ async function filesOpenTerminalHere(){
 }
 async function filePreview(path){
   const el=document.getElementById('fprev'); if(!el) return;
+  _fpEditing=false; _fpDirty=false;   // a fresh load always replaces whatever was being edited
   const pid=WS.activeProject;
   const name=String(path).split('/').pop()||'file';
   const ext=(name.split('.').pop()||'').toLowerCase();
   // A reply is stale if the user picked another file OR switched projects while it was in flight.
   const stale=()=> WS.activeProject!==pid || filesState().sel!==path;
-  const head=meta=>`<div class="fprev-head"><span class="fp-name" title="${escAttr(path)}">${esc(name)}</span>${meta?`<span class="fp-meta">${esc(meta)}</span>`:''}<span class="grow"></span>
-    <button class="fp-dl" onclick="filesCopyPath(${attrJson(path)})" title="Copy the full path — paste it into the terminal or chat">Copy path</button>
-    <button class="fp-dl" onclick="filesDownload(${attrJson(path)})">Download</button></div>`;
+  const head=meta=>fpHeadView(path,name,meta,false);
+  _fpCur=null;   // whatever text file was cached for editing no longer matches what's shown
   if(_IMG_EXT.includes(ext)){
     el.innerHTML=head('image')+`<div class="fprev-body fprev-img" id="fpImg"><div class="muted">Loading…</div></div>`;
     try{
@@ -5720,12 +5806,8 @@ async function filePreview(path){
     return;
   }
   const text=r.content||'';
-  const trunc=r.truncated?`<div class="fp-trunc">Preview truncated — showing the first ${afSize(text.length)} of ${afSize(r.size||0)}.</div>`:'';
-  let body;
-  if(ext==='md'||ext==='markdown') body=`<div class="md-doc">${mdToHtml(text)}</div>`;
-  else if(text.length>200000) body=`<pre class="fp-pre"><code>${esc(text)}</code></pre>`;   // too big to highlight smoothly
-  else body=`<pre class="fp-pre"><code>${hl(text, fileLang(ext))}</code></pre>`;
-  el.innerHTML=head(meta)+`<div class="fprev-body">${trunc}${body}</div>`;
+  _fpCur={ path, text, ext, size:r.size||0, mtime_ms:r.mtime_ms, truncated:!!r.truncated };
+  el.innerHTML=fpHeadView(path,name,meta,!r.truncated)+`<div class="fprev-body">${filesRenderTextBody(text,ext,r.truncated,r.size)}</div>`;
 }
 // ---- Activity: the full, browsable, verifiable signed ledger ----
 const ACT={ entries:[], filter:'all', verify:{}, pubkey:{} };
@@ -5743,6 +5825,7 @@ function actEntry(e){
   else if(k==='llm.call'){ label='Model call'; summary=(p.model||'model')+' · '+((p.tokens_in||0)+(p.tokens_out||0))+' tok · $'+(+(p.cost_usd||0)).toFixed(4); }
   else if(k==='policy.set'){ label='Policy changed'; summary='shell access '+(p.allow_shell?'enabled':'disabled'); }
   else if(k==='terminal.exec'){ label='Terminal command'; summary='$ '+(p.command||''); }
+  else if(k==='file.write'){ label='File saved'; summary=(p.path||'')+(p.bytes!=null?(' · '+afSize(p.bytes)):''); }
   else if(k.startsWith('agent.')){ label='Agent · '+(k.slice(6)||'step'); summary=p.command||p.tool||actShortJson(p); }
   else if(k==='channel.in'){ label='Inbound message'; summary='via '+(p.platform||'a channel'); }
   else if(k==='config.set'){ label='Settings updated'; summary=Object.keys(p).join(', ')||'config'; }

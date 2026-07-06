@@ -1052,6 +1052,7 @@ async fn run(mode: RunMode) -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/shell", post(terminal::shell_handler))
         .route("/v1/fs", get(terminal::fs_handler))
         .route("/v1/fs/read", get(terminal::fs_read_handler))
+        .route("/v1/fs/write", post(terminal::fs_write_handler))
         .route("/v1/git/status", get(git::git_status))
         .route("/v1/git/diff", get(git::git_diff))
         .route("/v1/git/branches", get(git::git_branches))

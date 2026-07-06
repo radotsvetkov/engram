@@ -6,7 +6,9 @@
 //! run through the same `allow_shell` gate and the same backend selection as the agent, and each
 //! one is signed into the ledger as `terminal.exec` by actor `user` - deliberately distinct from
 //! the agent's `agent.shell`, so a receipt can always say who ran what. `/v1/fs` (list) and
-//! `/v1/fs/read` (preview one file) are the read-only file browser that sits beside it.
+//! `/v1/fs/read` (preview one file) are the file browser that sits beside it; `/v1/fs/write`
+//! lets the human save an edit from that same preview, signed as `file.write` by actor `user` -
+//! distinct from the agent's `agent.write`, for the same who-did-what reason.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -47,6 +49,12 @@ pub struct FsReadQuery {
     /// path) - same escape hatch `/v1/artifact` has.
     #[serde(default)]
     pub view: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct FsWriteReq {
+    pub path: String,
+    pub content: String,
 }
 
 fn shell_enabled(app: &App) -> bool {
@@ -383,6 +391,73 @@ pub async fn fs_read_handler(State(app): State<App>, Query(q): Query<FsReadQuery
     .into_response()
 }
 
+/// Cap on a single save from the preview pane's editor - generous for any file a human would
+/// reasonably hand-edit there, but not an open-ended write sink.
+const WRITE_CAP: usize = 20 * 1024 * 1024;
+
+/// Resolve a write target: the parent must already exist (so this can't create arbitrary new
+/// directories), but the file itself doesn't have to - saving recreates it if it was deleted out
+/// from under the preview between load and save. Pure/testable, split out of the handler like
+/// `resolve_dir` is.
+fn resolve_write_target(requested: &str) -> Result<PathBuf, &'static str> {
+    let raw = PathBuf::from(requested);
+    let file_name = raw.file_name().ok_or("missing file name")?;
+    let parent = match raw.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => return Err("missing parent directory"),
+    };
+    match std::fs::canonicalize(parent) {
+        Ok(p) if p.is_dir() => Ok(p.join(file_name)),
+        _ => Err("parent directory not found"),
+    }
+}
+
+/// Save an edit made in the files-drawer preview pane. Same one-switch consent as everything
+/// else here (`allow_shell`); like `/v1/shell`, the human isn't confined to the project workdir -
+/// they already granted file-system access on their own machine.
+pub async fn fs_write_handler(State(app): State<App>, Json(r): Json<FsWriteReq>) -> Response {
+    if !shell_enabled(&app) {
+        return Json(json!({ "denied": true, "error": "Shell access is off." })).into_response();
+    }
+    if r.content.len() > WRITE_CAP {
+        return (StatusCode::PAYLOAD_TOO_LARGE, "content larger than 20MB").into_response();
+    }
+    let path = match resolve_write_target(&r.path) {
+        Ok(p) => p,
+        Err(e) => return (StatusCode::NOT_FOUND, e).into_response(),
+    };
+    if let Err(e) = std::fs::write(&path, r.content.as_bytes()) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
+    let meta = std::fs::metadata(&path).ok();
+    let size = meta
+        .as_ref()
+        .map(|m| m.len())
+        .unwrap_or(r.content.len() as u64);
+    let mtime_ms = meta
+        .as_ref()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64);
+    let entry = app
+        .ledger
+        .append(
+            "file.write",
+            "user",
+            json!({ "path": path.display().to_string(), "bytes": r.content.len() }),
+        )
+        .ok();
+    Json(json!({
+        "ok": true,
+        "path": path.display().to_string(),
+        "size": size,
+        "mtime_ms": mtime_ms,
+        "seq": entry.as_ref().map(|e| e.seq),
+        "hash": entry.as_ref().map(|e| e.hash.clone()),
+    }))
+    .into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -422,5 +497,31 @@ mod tests {
         assert!(!flag(Some("0")));
         assert!(!flag(Some("")));
         assert!(!flag(None));
+    }
+
+    #[test]
+    fn resolve_write_target_recreates_a_deleted_file_but_never_a_missing_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let existing = dir.path().join("notes.md");
+        std::fs::write(&existing, "original").unwrap();
+
+        // Overwriting an existing file resolves to itself.
+        let resolved = resolve_write_target(existing.to_str().unwrap()).unwrap();
+        assert_eq!(std::fs::canonicalize(&resolved).unwrap(), resolved);
+        assert_eq!(resolved.file_name().unwrap(), "notes.md");
+
+        // A file that no longer exists but whose PARENT does still resolves - saving recreates it.
+        std::fs::remove_file(&existing).unwrap();
+        let resolved = resolve_write_target(existing.to_str().unwrap()).unwrap();
+        assert_eq!(resolved.file_name().unwrap(), "notes.md");
+        assert_eq!(
+            resolved.parent().unwrap(),
+            std::fs::canonicalize(dir.path()).unwrap()
+        );
+
+        // A parent directory that doesn't exist is rejected outright - this must never silently
+        // create directories on the user's disk.
+        let missing_parent = dir.path().join("nonexistent-subdir").join("file.txt");
+        assert!(resolve_write_target(missing_parent.to_str().unwrap()).is_err());
     }
 }

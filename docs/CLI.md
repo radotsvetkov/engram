@@ -46,9 +46,12 @@ dismisses itself once the daemon answers. Then:
   agent has distilled but not yet activated shows as **`◆ proposed`** — press `a`
   to adopt it (the daemon replays its recorded gold examples and only activates
   it if they reproduce). Improvement counts show as `↗N` next to learned skills.
-- **Schedule**, **Agents** (create with `n`, delete with `d`), and an **Autonomy**
-  view where staged egress actions wait for your approval (`a` to allowlist, `d` to
-  deny) — the graduated-autonomy gate, in the terminal.
+- **Schedule** (a job can bind to a durable agent, so its unattended runs adopt that
+  agent's signed autonomy policy), **Agents** (create with `n`, delete with `d`; each
+  has a charter — its role/system prompt — an optional home project, and its own
+  distilled self-model, `c`, separate from your global working memory), and an
+  **Autonomy** view where staged egress actions wait for your approval (`a` to
+  allowlist, `d` to deny) — the graduated-autonomy gate, in the terminal.
 - **Ledger** — the signed, append-only audit chain with a live verification chip and
   a payload preview for the selected entry.
 - **Settings** — an editable browser over the daemon config: model provider, keys,
@@ -86,7 +89,7 @@ or unified-diff content) — in both the TUI chat pane and `engram ask` output.
 | Memory | `f` | forget the selected memory (×2 to confirm) |
 | Skills | `Enter` / `a` | toggle on/off · adopt a ◆ proposed skill |
 | Autonomy | `a` / `d` | approve / deny a staged egress |
-| Agents | `n` / `e` / `p` / `d` | create / edit / set autonomy policy / delete (×2) |
+| Agents | `n` / `e` / `p` / `c` / `d` | create / edit / set autonomy policy / self-model / delete (×2) |
 | Schedule | `a` / `Enter` / `d` | add a job / run now / delete |
 | Settings | `Enter` / `x` / `t` | edit/toggle/cycle (fields · MCP · tools) · clear secret · test provider |
 | Mouse | click / wheel | click a tab, wheel-scroll (palette "Toggle mouse" to disable) |
@@ -101,12 +104,12 @@ engram doctor                   # provider, tools, ledger integrity, config
 
 engram tasks list|show <id>|new <title> [--run]|run <id>|receipt <id>
 engram projects list|new <name> [--dir <path>]     # (alias: proj) scoped projects
-engram memory stats|recent|recall <q>|remember <text>|forget <id>|identity
+engram memory stats|recent|recall <q>|remember <text>|forget <id>|consciousness
 engram skills list [--filter]|show <id>|run <id> <input>|adopt <id>|enable <id>|disable <id>
 engram sessions list [--project <id>]|show <id>    # (alias: sess) chat transcripts
-engram schedule list|add <name> <when>|preview <when…>|run <id>|delete <id>
+engram schedule list|add <name> <when> [--title --agent]|preview <when…>|run <id>|delete <id>
 engram autonomy report|pending|approve <scope> <dest>|deny <scope> <dest>
-engram agents list|create <name> [--role --model --provider --emoji]|edit <id>|delete <id>|policy <id> [--egress --actions --max-actions --max-spend-cents --expires-days]
+engram agents list|create <name> [--charter --model --provider --emoji --home-project]|edit <id>|delete <id>|policy <id> [--egress --actions --max-actions --max-spend-cents --expires-days]|consciousness <id> [--distill]
 engram ledger tail|verify|pubkey
 engram config show|set <key> <value>|test
 engram tools [list|enable <name>|disable <name>]   # agent tools on/off
@@ -134,6 +137,8 @@ engram tools disable browser_open               # switch an agent tool off
 engram mcp add fs npx --args "-y @modelcontextprotocol/server-filesystem /tmp"
 engram ledger verify                            # exit 0 = chain intact, 1 = tampered
 engram schedule preview "every weekday at 9am"  # next-fire preview, no model call
+engram agents create Scout --charter "research thoroughly, cite sources" --home-project P1
+engram agents consciousness <id>                # what this agent has learned on its own
 engram status --json | jq .ledger               # scriptable everything
 ```
 

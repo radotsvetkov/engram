@@ -407,23 +407,36 @@ impl Client {
         self.get("/v1/schedule").await
     }
 
-    pub async fn schedule_add(&self, name: &str, when: &str, payload: Value) -> Result<Value> {
-        self.post_value(
-            "/v1/schedule",
-            json!({ "name": name, "when": when, "payload": payload }),
-        )
-        .await
+    /// `agent_id`: the durable agent this job runs as (blank = the default agent).
+    pub async fn schedule_add(
+        &self,
+        name: &str,
+        when: &str,
+        payload: Value,
+        agent_id: &str,
+    ) -> Result<Value> {
+        let mut body = serde_json::Map::new();
+        body.insert("name".into(), json!(name));
+        body.insert("when".into(), json!(when));
+        body.insert("payload".into(), payload);
+        if !agent_id.is_empty() {
+            body.insert("agent_id".into(), json!(agent_id));
+        }
+        self.post_value("/v1/schedule", Value::Object(body)).await
     }
 
     /// Rename, retime, or repoint an existing job. `when` blank keeps the current cadence — the
     /// stored `Recurrence` is structured JSON that doesn't always round-trip losslessly back
     /// through the natural-language parser, so the daemon treats an omitted `when` as "unchanged".
+    /// `agent_id`: `None` leaves the binding unchanged; `Some("")` clears it back to the default
+    /// agent; `Some(id)` rebinds it.
     pub async fn schedule_update(
         &self,
         id: &str,
         name: &str,
         when: &str,
         payload: Value,
+        agent_id: Option<&str>,
     ) -> Result<Value> {
         let mut body = serde_json::Map::new();
         body.insert("name".into(), json!(name));
@@ -431,6 +444,12 @@ impl Client {
             body.insert("when".into(), json!(when));
         }
         body.insert("payload".into(), payload);
+        if let Some(a) = agent_id {
+            body.insert(
+                "agent_id".into(),
+                if a.is_empty() { Value::Null } else { json!(a) },
+            );
+        }
         self.patch_value(&format!("/v1/schedule/{id}"), Value::Object(body))
             .await
     }
@@ -540,6 +559,18 @@ impl Client {
 
     pub async fn agent_activity(&self, id: &str) -> Result<Value> {
         self.get_value(&format!("/v1/agents/{id}/activity")).await
+    }
+
+    /// A durable agent's OWN distilled self-model - the last-distilled snapshot.
+    pub async fn agent_consciousness(&self, id: &str) -> Result<Value> {
+        self.get_value(&format!("/v1/agents/{id}/consciousness"))
+            .await
+    }
+
+    /// Force a fresh distill of a durable agent's own self-model.
+    pub async fn agent_consciousness_distill(&self, id: &str) -> Result<Value> {
+        self.post_value(&format!("/v1/agents/{id}/consciousness/distill"), json!({}))
+            .await
     }
 
     async fn delete_value(&self, path: &str) -> Result<Value> {

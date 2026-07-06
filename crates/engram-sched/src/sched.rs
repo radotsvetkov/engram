@@ -53,6 +53,13 @@ pub struct Job {
     /// The id of the most recent task this job spawned, so the UI can open its receipt.
     #[serde(default)]
     pub last_task_id: Option<String>,
+    /// The durable agent (by id) this job runs as, so an unattended fire adopts that agent's
+    /// SIGNED autonomy policy instead of always staging egress for review. First-class (not
+    /// buried in `payload`) so "this job runs as this agent" is a documented contract. `None` =
+    /// the default agent (today's gated behaviour). A job created before this field existed may
+    /// still carry the binding as `payload.agent` instead - callers should fall back to that.
+    #[serde(default)]
+    pub agent_id: Option<String>,
 }
 
 pub struct Scheduler {
@@ -95,6 +102,7 @@ impl Scheduler {
         name: impl Into<String>,
         payload: serde_json::Value,
         recurrence: Recurrence,
+        agent_id: Option<String>,
         now: DateTime<Utc>,
     ) -> Result<Job> {
         let name = name.into();
@@ -111,6 +119,7 @@ impl Scheduler {
             created_ms,
             last_fire_ms: None,
             last_task_id: None,
+            agent_id: agent_id.filter(|a| !a.trim().is_empty()),
         };
         {
             let mut jobs = self.jobs.lock().expect("sched mutex poisoned");
@@ -172,12 +181,16 @@ impl Scheduler {
     /// Update a job in place: rename, retime (new recurrence), or replace its payload. The id
     /// stays stable so receipts and UI links keep working; the next fire is recomputed when the
     /// cadence changes. The update is itself signed to the ledger.
+    /// `agent_id`: `None` = leave unchanged; `Some(None)` = clear back to the default agent;
+    /// `Some(Some(id))` = bind to that durable agent.
+    #[allow(clippy::too_many_arguments)]
     pub fn update(
         &self,
         id: &str,
         name: Option<String>,
         payload: Option<serde_json::Value>,
         recurrence: Option<Recurrence>,
+        agent_id: Option<Option<String>>,
         now: DateTime<Utc>,
     ) -> Result<Job> {
         let job = {
@@ -198,6 +211,9 @@ impl Scheduler {
                     .ok_or_else(|| SchedError::NeverFires(j.name.clone()))?;
                 j.recurrence = r;
                 j.next_fire_ms = next.timestamp_millis();
+            }
+            if let Some(a) = agent_id {
+                j.agent_id = a.filter(|a| !a.trim().is_empty());
             }
             let out = j.clone();
             save(&self.path, &jobs)?;
@@ -309,8 +325,14 @@ mod tests {
     fn adds_and_finds_due() {
         let (s, _d) = scheduler();
         // Fires in 1 second; not due now, due a minute later.
-        s.add("ping", json!({}), Recurrence::Interval { secs: 1 }, now())
-            .unwrap();
+        s.add(
+            "ping",
+            json!({}),
+            Recurrence::Interval { secs: 1 },
+            None,
+            now(),
+        )
+        .unwrap();
         assert!(s.due(now()).is_empty());
         let later = now() + chrono::Duration::seconds(2);
         assert_eq!(s.due(later).len(), 1);
@@ -321,7 +343,13 @@ mod tests {
         let (s, _d) = scheduler();
         let at = (now() + chrono::Duration::minutes(5)).timestamp_millis();
         let job = s
-            .add("reminder", json!({}), Recurrence::Once { at_ms: at }, now())
+            .add(
+                "reminder",
+                json!({}),
+                Recurrence::Once { at_ms: at },
+                None,
+                now(),
+            )
             .unwrap();
         let after = now() + chrono::Duration::minutes(6);
         let res = s.mark_fired(&job.id, after).unwrap();
@@ -337,6 +365,7 @@ mod tests {
                 "hourly",
                 json!({}),
                 Recurrence::Interval { secs: 3600 },
+                None,
                 now(),
             )
             .unwrap();
@@ -357,6 +386,7 @@ mod tests {
                 "daily",
                 json!({}),
                 Recurrence::Daily { hour: 9, min: 0 },
+                None,
                 now(),
             )
             .unwrap();
@@ -364,5 +394,32 @@ mod tests {
         let s = Scheduler::open(dir.path(), ledger).unwrap();
         assert_eq!(s.list().len(), 1);
         assert!(s.next_wake().is_some());
+    }
+
+    #[test]
+    fn agent_id_is_first_class_and_updatable() {
+        let (s, _d) = scheduler();
+        let job = s
+            .add(
+                "digest",
+                json!({}),
+                Recurrence::Interval { secs: 60 },
+                Some("ag1".into()),
+                now(),
+            )
+            .unwrap();
+        assert_eq!(job.agent_id.as_deref(), Some("ag1"));
+        // Some(None) clears it back to the default agent.
+        let cleared = s
+            .update(&job.id, None, None, None, Some(None), now())
+            .unwrap();
+        assert_eq!(cleared.agent_id, None);
+        // Some(Some(..)) rebinds it; None (the param itself) leaves it unchanged.
+        let rebound = s
+            .update(&job.id, None, None, None, Some(Some("ag2".into())), now())
+            .unwrap();
+        assert_eq!(rebound.agent_id.as_deref(), Some("ag2"));
+        let untouched = s.update(&job.id, None, None, None, None, now()).unwrap();
+        assert_eq!(untouched.agent_id.as_deref(), Some("ag2"));
     }
 }

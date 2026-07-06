@@ -627,6 +627,7 @@ mod tests {
                 on_step: None,
                 on_narration: None,
                 allowed_tools: None,
+                agent_actor: None,
             },
             dir,
         )

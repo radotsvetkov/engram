@@ -47,10 +47,14 @@ fn norm_effort(e: &str) -> String {
 pub struct AgentDef {
     pub id: String,
     pub name: String,
-    /// The role / system prompt - the specialization that narrows focus (less drift, less
-    /// hallucination) and leads the standing context when this agent runs a task.
-    #[serde(default)]
-    pub role: String,
+    /// This agent's charter: its role / system prompt - the specialization that narrows focus
+    /// (less drift, less hallucination) and leads the standing context when this agent runs a
+    /// task. Named `charter` (not `persona`/`role` alone) to stay distinct from the project
+    /// `brief` and the global SOUL.md persona - a different register (mandate, not voice).
+    /// `alias` keeps existing `agents.json` files (written under the old `role` key) loading
+    /// correctly.
+    #[serde(default, alias = "role")]
+    pub charter: String,
     /// The model this agent uses. Empty = the global default (right model per task).
     #[serde(default)]
     pub model: String,
@@ -74,6 +78,12 @@ pub struct AgentDef {
     /// the run chokepoint on top of the global `disabled_tools`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_tools: Option<Vec<String>>,
+    /// This agent's default project scope: when set, a kanban card assigned to this agent recalls
+    /// and writes into that project's ring (plus user-global) instead of user-global alone -
+    /// giving a non-coding agent (a content writer, a researcher) a home to work in without
+    /// needing a working directory. `None` = user-global only (today's behaviour).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_project: Option<String>,
     /// A signed standing AUTONOMY policy: when set, this agent may egress UNATTENDED within its
     /// allowlist + budget (scheduled runs no longer need a live human to approve each send). Signed
     /// with the skill key when the user authors it; verified at run construction (a forged/unsigned
@@ -137,7 +147,7 @@ impl AgentStore {
     pub fn create(
         &self,
         name: &str,
-        role: &str,
+        charter: &str,
         model: &str,
         provider: &str,
         base_url: &str,
@@ -148,13 +158,14 @@ impl AgentStore {
         let def = AgentDef {
             id: uid(),
             name: name.trim().to_string(),
-            role: role.trim().to_string(),
+            charter: charter.trim().to_string(),
             model: model.trim().to_string(),
             provider: provider.trim().to_string(),
             base_url: base_url.trim().to_string(),
             api_key: api_key.trim().to_string(),
             effort: norm_effort(effort),
             allowed_tools: None,
+            home_project: None,
             autonomy_policy: None,
             color: String::new(),
             emoji: String::new(),
@@ -174,7 +185,7 @@ impl AgentStore {
         &self,
         id: &str,
         name: Option<&str>,
-        role: Option<&str>,
+        charter: Option<&str>,
         model: Option<&str>,
         provider: Option<&str>,
         base_url: Option<&str>,
@@ -186,8 +197,8 @@ impl AgentStore {
         if let Some(n) = name {
             a.name = n.trim().to_string();
         }
-        if let Some(r) = role {
-            a.role = r.trim().to_string();
+        if let Some(c) = charter {
+            a.charter = c.trim().to_string();
         }
         if let Some(m) = model {
             a.model = m.trim().to_string();
@@ -207,6 +218,20 @@ impl AgentStore {
         if let Some(e) = effort {
             a.effort = norm_effort(e);
         }
+        a.updated_ms = now_ms();
+        let out = a.clone();
+        self.persist(&g);
+        Some(out)
+    }
+
+    /// Set (or clear) an agent's default project scope. `None`/blank clears it back to user-global.
+    pub fn set_home_project(&self, id: &str, project: Option<&str>) -> Option<AgentDef> {
+        let mut g = self.agents.lock().expect("agents lock");
+        let a = g.iter_mut().find(|a| a.id == id)?;
+        a.home_project = project
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .map(str::to_string);
         a.updated_ms = now_ms();
         let out = a.clone();
         self.persist(&g);
@@ -330,7 +355,7 @@ mod tests {
         let a = s.create("Scout", "research", "claude-haiku", "", "", "", "");
         assert_eq!(a.name, "Scout");
         assert_eq!(s.list().len(), 1);
-        assert_eq!(s.get(&a.id).unwrap().role, "research");
+        assert_eq!(s.get(&a.id).unwrap().charter, "research");
         // each Some applies; None leaves the field
         let u = s
             .update(
@@ -346,10 +371,24 @@ mod tests {
             .unwrap();
         assert_eq!(u.name, "Scout2");
         assert_eq!(u.model, "opus");
-        assert_eq!(u.role, "research");
+        assert_eq!(u.charter, "research");
         assert!(s.delete(&a.id));
         assert!(s.list().is_empty());
         assert!(!s.delete(&a.id)); // already gone
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn home_project_sets_and_clears() {
+        let d = tmpdir();
+        let s = AgentStore::open(&d);
+        let a = s.create("Writer", "drafts prose", "", "", "", "", "");
+        assert_eq!(a.home_project, None);
+        let u = s.set_home_project(&a.id, Some("marketing")).unwrap();
+        assert_eq!(u.home_project.as_deref(), Some("marketing"));
+        // A blank/None clears it back to user-global.
+        let cleared = s.set_home_project(&a.id, Some("  ")).unwrap();
+        assert_eq!(cleared.home_project, None);
         std::fs::remove_dir_all(&d).ok();
     }
 
@@ -376,6 +415,21 @@ mod tests {
         let s2 = AgentStore::open(&d);
         assert_eq!(s2.list().len(), 1);
         assert_eq!(s2.list()[0].name, "Persisted");
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn charter_alias_reads_a_legacy_role_key() {
+        // Older agents.json files persisted this field under the key "role" - the alias must keep
+        // them loading correctly after the charter rename, or every agent's charter vanishes.
+        let d = tmpdir();
+        std::fs::write(
+            d.join("agents.json"),
+            r#"[{"id":"a1","name":"Scout","role":"research","created_ms":1,"updated_ms":1}]"#,
+        )
+        .unwrap();
+        let s = AgentStore::open(&d);
+        assert_eq!(s.get("a1").unwrap().charter, "research");
         std::fs::remove_dir_all(&d).ok();
     }
 

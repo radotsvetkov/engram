@@ -334,6 +334,9 @@ pub struct ScheduleJob {
     pub payload: Value,
     #[serde(default)]
     pub recurrence: Value,
+    /// The durable agent this job runs as (`None` = the default agent).
+    #[serde(default)]
+    pub agent_id: Option<String>,
 }
 
 /// `POST /v1/schedule/preview`
@@ -485,7 +488,7 @@ pub struct Project {
     #[serde(default)]
     pub name: String,
     #[serde(default)]
-    pub persona: String,
+    pub brief: String,
     #[serde(default)]
     pub created_ms: i64,
     /// The working directory the project's agent operates in (None = shared daemon workdir).

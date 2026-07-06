@@ -702,7 +702,7 @@ async fn memory(client: &Client, cmd: MemoryCmd, json: bool) -> Result<i32> {
             }
             Ok(0)
         }
-        MemoryCmd::Identity { distill } => {
+        MemoryCmd::Consciousness { distill } => {
             if distill {
                 let _ = client.consciousness_distill().await;
             }
@@ -721,7 +721,7 @@ async fn memory(client: &Client, cmd: MemoryCmd, json: bool) -> Result<i32> {
             }
             Ok(0)
         }
-        MemoryCmd::IdentityEdit { id, text } => {
+        MemoryCmd::ConsciousnessEdit { id, text } => {
             let r = client.consciousness_edit(&id, &join(&text)).await?;
             if json {
                 print_json(&r);
@@ -730,7 +730,7 @@ async fn memory(client: &Client, cmd: MemoryCmd, json: bool) -> Result<i32> {
             }
             Ok(0)
         }
-        MemoryCmd::IdentityAdd { text } => {
+        MemoryCmd::ConsciousnessAdd { text } => {
             let r = client.consciousness_add(&join(&text)).await?;
             if json {
                 print_json(&r);
@@ -739,7 +739,7 @@ async fn memory(client: &Client, cmd: MemoryCmd, json: bool) -> Result<i32> {
             }
             Ok(0)
         }
-        MemoryCmd::IdentityRemove { id } => {
+        MemoryCmd::ConsciousnessRemove { id } => {
             let r = client.consciousness_remove(&id).await?;
             if json {
                 print_json(&r);
@@ -748,7 +748,7 @@ async fn memory(client: &Client, cmd: MemoryCmd, json: bool) -> Result<i32> {
             }
             Ok(0)
         }
-        MemoryCmd::IdentityRevert => {
+        MemoryCmd::ConsciousnessRevert => {
             let r = client.consciousness_revert().await?;
             if json {
                 print_json(&r);
@@ -1192,11 +1192,18 @@ async fn schedule(client: &Client, cmd: ScheduleCmd, json: bool) -> Result<i32> 
             }
             Ok(0)
         }
-        ScheduleCmd::Add { name, when, title } => {
+        ScheduleCmd::Add {
+            name,
+            when,
+            title,
+            agent,
+        } => {
             // The daemon falls back to the job name when no title is given; send an
             // empty object rather than a bare-string sentinel.
             let payload = title.map(|t| json!({ "title": t })).unwrap_or(json!({}));
-            let r = client.schedule_add(&name, &when, payload).await?;
+            let r = client
+                .schedule_add(&name, &when, payload, agent.as_deref().unwrap_or(""))
+                .await?;
             if json {
                 print_json(&r);
             } else {
@@ -1487,7 +1494,7 @@ async fn agents(client: &Client, cmd: Option<AgentsCmd>, json: bool) -> Result<i
             out::header(&format!("Agents ({})", arr.len()));
             for a in &arr {
                 let name = a.get("name").and_then(|x| x.as_str()).unwrap_or("?");
-                let role = a.get("role").and_then(|x| x.as_str()).unwrap_or("");
+                let charter = a.get("charter").and_then(|x| x.as_str()).unwrap_or("");
                 let model = a.get("model").and_then(|x| x.as_str()).unwrap_or("");
                 let emoji = a.get("emoji").and_then(|x| x.as_str()).unwrap_or("•");
                 let id = a.get("id").and_then(|x| x.as_str()).unwrap_or("");
@@ -1495,7 +1502,7 @@ async fn agents(client: &Client, cmd: Option<AgentsCmd>, json: bool) -> Result<i
                     "  {emoji} {}  {}  {}\n    {}",
                     bold(name),
                     out::tool(model),
-                    dim(&one_line(role)),
+                    dim(&one_line(charter)),
                     dim(id)
                 );
             }
@@ -1503,17 +1510,19 @@ async fn agents(client: &Client, cmd: Option<AgentsCmd>, json: bool) -> Result<i
         }
         AgentsCmd::Create {
             name,
-            role,
+            charter,
             model,
             provider,
             emoji,
+            home_project,
         } => {
             let body = json!({
                 "name": name,
-                "role": role.unwrap_or_default(),
+                "charter": charter.unwrap_or_default(),
                 "model": model.unwrap_or_default(),
                 "provider": provider.unwrap_or_default(),
                 "emoji": emoji.unwrap_or_default(),
+                "home_project": home_project,
             });
             let r = client.agents_create(body).await?;
             if json {
@@ -1525,18 +1534,20 @@ async fn agents(client: &Client, cmd: Option<AgentsCmd>, json: bool) -> Result<i
         }
         AgentsCmd::Edit {
             id,
-            role,
+            charter,
             model,
             provider,
             emoji,
+            home_project,
         } => {
             // Only send the fields that were provided.
             let mut m = serde_json::Map::new();
             for (k, v) in [
-                ("role", role),
+                ("charter", charter),
                 ("model", model),
                 ("provider", provider),
                 ("emoji", emoji),
+                ("home_project", home_project),
             ] {
                 if let Some(v) = v {
                     m.insert(k.into(), json!(v));
@@ -1553,6 +1564,40 @@ async fn agents(client: &Client, cmd: Option<AgentsCmd>, json: bool) -> Result<i
         AgentsCmd::Delete { id } => {
             client.agents_delete(&id).await?;
             println!("{} {id}", warn("deleted"));
+            Ok(0)
+        }
+        AgentsCmd::Consciousness { id, distill } => {
+            let c = if distill {
+                client.agent_consciousness_distill(&id).await?
+            } else {
+                client.agent_consciousness(&id).await?
+            };
+            if json {
+                print_json(&c);
+                return Ok(0);
+            }
+            let lines = c
+                .get("lines")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            if lines.is_empty() {
+                println!("{}", dim("(nothing distilled yet for this agent)"));
+                return Ok(0);
+            }
+            out::header(&format!(
+                "{id} · self-model · v{}",
+                c.get("version").and_then(|v| v.as_u64()).unwrap_or(0)
+            ));
+            for l in &lines {
+                let region = l.get("region").and_then(|v| v.as_str()).unwrap_or("?");
+                let text = l.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                println!(
+                    "  {} {}",
+                    out::tool(&format!("[{}]", region.chars().next().unwrap_or('?'))),
+                    text
+                );
+            }
             Ok(0)
         }
         AgentsCmd::Policy {

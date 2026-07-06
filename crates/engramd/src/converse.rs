@@ -38,7 +38,7 @@ pub async fn converse(
     gateway: &Gateway,
     text: &str,
     model: &str,
-    persona: Option<&str>,
+    brief: Option<&str>,
     attachments: &[Attachment],
     scope: &ScopeCtx,
 ) -> Result<Turn, String> {
@@ -49,7 +49,7 @@ pub async fn converse(
         gateway,
         text,
         model,
-        persona,
+        brief,
         attachments,
         scope,
         &mut sink,
@@ -212,7 +212,7 @@ pub async fn converse_stream(
     gateway: &Gateway,
     text: &str,
     model: &str,
-    persona: Option<&str>,
+    brief: Option<&str>,
     attachments: &[Attachment],
     scope: &ScopeCtx,
     on_delta: &mut (dyn FnMut(String) + Send),
@@ -322,9 +322,9 @@ pub async fn converse_stream(
     )];
     // The active project's standing instructions, if any - this is what gives each project its
     // own voice and priorities.
-    if let Some(p) = persona {
-        if !p.trim().is_empty() {
-            messages.push(Message::system(p.to_string()));
+    if let Some(b) = brief {
+        if !b.trim().is_empty() {
+            messages.push(Message::system(b.to_string()));
         }
     }
     if !recalled.is_empty() {

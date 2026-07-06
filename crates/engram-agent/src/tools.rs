@@ -2154,11 +2154,100 @@ impl Tool for MemoryRememberTool {
             .remember(
                 WriteReq::new(region, text)
                     .taint(ctx.taint)
-                    .actor("agent")
+                    .actor(ctx.agent_actor.clone().unwrap_or_else(|| "agent".into()))
                     .scope(write_scope),
             )
             .map_err(|e| e.to_string())?;
         Ok(format!("remembered as #{}", rec.id))
+    }
+}
+
+#[cfg(test)]
+mod memory_remember_tool_tests {
+    use super::*;
+    use crate::tool::{Policy, ToolCtx};
+    use engram_core::{Ledger, Taint};
+    use engram_gateway::{Gateway, MockProvider};
+    use engram_memory::{Memory, TrigramHashEmbedder};
+    use engram_skills::{Registry, SkillSigner};
+    use std::sync::Arc;
+
+    fn ctx_with_actor(dir: &std::path::Path, agent_actor: Option<&str>) -> ToolCtx {
+        let ledger = Arc::new(Ledger::open(dir).unwrap());
+        let memory = Arc::new(
+            Memory::open(
+                dir.join("b.db"),
+                Arc::new(TrigramHashEmbedder::default()),
+                ledger.clone(),
+            )
+            .unwrap(),
+        );
+        let signer = Arc::new(SkillSigner::load_or_create(dir.join("k")).unwrap());
+        let skills = Arc::new(Registry::open(dir, signer, ledger.clone()).unwrap());
+        let gateway = Arc::new(Gateway::new(Box::new(MockProvider), ledger.clone()));
+        ToolCtx {
+            memory,
+            skills,
+            gateway,
+            ledger,
+            taint: Taint::Trusted,
+            sensitive: false,
+            policy: Policy::default(),
+            workdir: dir.to_path_buf(),
+            model: "test".into(),
+            depth: 0,
+            browser: Arc::new(crate::tool::NoBrowser),
+            scope: engram_core::ScopeCtx::any(),
+            halt: None,
+            spend_counter: None,
+            token_budget: None,
+            on_step: None,
+            on_narration: None,
+            allowed_tools: None,
+            agent_actor: agent_actor.map(str::to_string),
+        }
+    }
+
+    /// This is the exact chain a per-agent consciousness slice depends on: `ctx.agent_actor`
+    /// (set by the daemon from the assigned `AgentDef`) must actually reach the stored memory's
+    /// `actor` column, or "what has THIS agent learned" has no real facts to filter to.
+    #[tokio::test]
+    async fn tags_the_stored_fact_with_the_running_agents_actor() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ctx_with_actor(dir.path(), Some("agent:Scout"));
+        MemoryRememberTool
+            .run(
+                &json!({ "text": "prefers citing arXiv papers", "region": "semantic" }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let recs = ctx
+            .memory
+            .recent_scoped(Region::Semantic, 10, &engram_core::ScopeCtx::user_only())
+            .unwrap();
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].actor, "agent:Scout");
+    }
+
+    /// No named agent driving the run (the default/ad-hoc path) keeps today's behaviour.
+    #[tokio::test]
+    async fn defaults_to_the_generic_actor_with_no_named_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ctx_with_actor(dir.path(), None);
+        MemoryRememberTool
+            .run(
+                &json!({ "text": "a fact with no agent driving the run" }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let recs = ctx
+            .memory
+            .recent_scoped(Region::Semantic, 10, &engram_core::ScopeCtx::user_only())
+            .unwrap();
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].actor, "agent");
     }
 }
 
@@ -2256,6 +2345,7 @@ mod memory_page_tool_tests {
             on_step: None,
             on_narration: None,
             allowed_tools: None,
+            agent_actor: None,
         }
     }
 
@@ -4064,6 +4154,7 @@ mod file_tools_tests {
             on_step: None,
             on_narration: None,
             allowed_tools: None,
+            agent_actor: None,
         }
     }
 

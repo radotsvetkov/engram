@@ -86,7 +86,7 @@ pub enum Cmd {
         cmd: MemoryCmd,
     },
 
-    /// Projects: the named worlds (memory scope + persona + working directory) work happens in.
+    /// Projects: the named worlds (memory scope + brief + working directory) work happens in.
     #[command(visible_alias = "proj")]
     Projects {
         #[command(subcommand)]
@@ -248,26 +248,31 @@ pub enum MemoryCmd {
     /// Forget a memory by id.
     Forget { id: i64 },
     /// The distilled self-model (consciousness).
-    Identity {
+    #[command(alias = "identity")]
+    Consciousness {
         /// Re-distill before showing.
         #[arg(long)]
         distill: bool,
     },
     /// Edit an existing consciousness line's text in place (pins it).
-    IdentityEdit {
+    #[command(alias = "identity-edit")]
+    ConsciousnessEdit {
         id: String,
         #[arg(trailing_var_arg = true)]
         text: Vec<String>,
     },
     /// Add a new, permanently-pinned consciousness line.
-    IdentityAdd {
+    #[command(alias = "identity-add")]
+    ConsciousnessAdd {
         #[arg(trailing_var_arg = true)]
         text: Vec<String>,
     },
     /// Remove a consciousness line by id.
-    IdentityRemove { id: String },
+    #[command(alias = "identity-remove")]
+    ConsciousnessRemove { id: String },
     /// Revert consciousness to its previous version.
-    IdentityRevert,
+    #[command(alias = "identity-revert")]
+    ConsciousnessRevert,
     /// List proposed contradictions awaiting a decision, or accept/reject one by id.
     Supersessions {
         #[arg(long)]
@@ -390,26 +395,34 @@ pub enum AgentsCmd {
     /// Create an agent.
     Create {
         name: String,
-        #[arg(long)]
-        role: Option<String>,
+        /// The agent's charter: its role / system prompt.
+        #[arg(long, alias = "role")]
+        charter: Option<String>,
         #[arg(long)]
         model: Option<String>,
         #[arg(long)]
         provider: Option<String>,
         #[arg(long)]
         emoji: Option<String>,
+        /// This agent's default project scope (blank = user-global only).
+        #[arg(long)]
+        home_project: Option<String>,
     },
     /// Update an agent's fields.
     Edit {
         id: String,
-        #[arg(long)]
-        role: Option<String>,
+        /// The agent's charter: its role / system prompt.
+        #[arg(long, alias = "role")]
+        charter: Option<String>,
         #[arg(long)]
         model: Option<String>,
         #[arg(long)]
         provider: Option<String>,
         #[arg(long)]
         emoji: Option<String>,
+        /// This agent's default project scope; pass an empty string to clear it back to user-global.
+        #[arg(long)]
+        home_project: Option<String>,
     },
     /// Delete an agent.
     Delete { id: String },
@@ -429,6 +442,14 @@ pub enum AgentsCmd {
         #[arg(long)]
         expires_days: Option<u64>,
     },
+    /// This agent's OWN distilled self-model - what it has learned, separate from your global
+    /// working memory.
+    Consciousness {
+        id: String,
+        /// Re-distill before showing.
+        #[arg(long)]
+        distill: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -442,6 +463,9 @@ pub enum ScheduleCmd {
         /// The task title to run on each fire.
         #[arg(long)]
         title: Option<String>,
+        /// The durable agent this job runs as (blank = the default agent).
+        #[arg(long)]
+        agent: Option<String>,
     },
     /// Preview when a cadence expression would next fire (no model call).
     Preview {

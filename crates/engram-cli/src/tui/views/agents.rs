@@ -1,5 +1,5 @@
 //! The Agents view — the named, durable agents registered with the daemon,
-//! each with its model, role, and autonomy posture.
+//! each with its model, charter, and autonomy posture.
 
 use super::window_start;
 use crate::tui::app::App;
@@ -35,9 +35,10 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
     for (i, a) in app.agents.iter().enumerate().skip(start).take(h) {
         let selected = i == app.sel;
         let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-        let role = a.get("role").and_then(|v| v.as_str()).unwrap_or("");
+        let charter = a.get("charter").and_then(|v| v.as_str()).unwrap_or("");
         let emoji = a.get("emoji").and_then(|v| v.as_str()).unwrap_or("•");
         let model = a.get("model").and_then(|v| v.as_str()).unwrap_or("");
+        let home_project = a.get("home_project").and_then(|v| v.as_str()).unwrap_or("");
         let policy = a
             .get("autonomy_policy")
             .map(|p| !p.is_null())
@@ -59,6 +60,14 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
                 Style::default().fg(t.accent2),
             ),
             Span::styled(
+                if home_project.is_empty() {
+                    String::new()
+                } else {
+                    format!("   📁 {home_project}")
+                },
+                Style::default().fg(t.muted),
+            ),
+            Span::styled(
                 if policy {
                     "   ⛨ autonomy".to_string()
                 } else {
@@ -69,7 +78,7 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
         ]));
         lines.push(Line::from(vec![
             Span::raw("    "),
-            Span::styled(one_line(role), Style::default().fg(t.muted)),
+            Span::styled(one_line(charter), Style::default().fg(t.muted)),
         ]));
     }
     f.render_widget(Paragraph::new(Text::from(lines)), inner);
@@ -102,6 +111,10 @@ pub fn handle_key(app: &mut App, k: KeyEvent) -> bool {
         }
         KeyCode::Char('p') => {
             app.policy_selected_agent();
+            true
+        }
+        KeyCode::Char('c') => {
+            app.show_agent_consciousness();
             true
         }
         // Destructive — requires a confirming second `d`.

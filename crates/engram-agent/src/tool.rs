@@ -125,6 +125,13 @@ pub struct ToolCtx {
     /// permissions the parent was restricted to. `None` = no scope (the parent could use every tool),
     /// so the subagent gets the full base toolset. The daemon seeds this on the top-level ctx.
     pub allowed_tools: Option<Vec<String>>,
+    /// When a durable named agent drives this run, the memory-actor tag it writes as
+    /// (`agent:<name>`), letting `memory_remember` attribute a fact to the specific agent instead
+    /// of the generic literal `"agent"`, so a per-agent consciousness slice can later filter to
+    /// what THIS agent learned. `None` = no named agent (today's behaviour, tagged plain
+    /// `"agent"`). Propagates to delegated subagents via the cloned ctx, so a worker a named
+    /// agent spawns still attributes to it.
+    pub agent_actor: Option<String>,
 }
 
 /// What the agent is permitted to do. Safe by default.

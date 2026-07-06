@@ -50,6 +50,14 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
                 format!("   {}", describe(&j.recurrence)),
                 Style::default().fg(t.muted),
             ),
+            Span::styled(
+                j.agent_id
+                    .as_deref()
+                    .filter(|a| !a.is_empty())
+                    .map(|a| format!("   ⛨ {a}"))
+                    .unwrap_or_default(),
+                Style::default().fg(t.good),
+            ),
         ]));
         let next = j
             .next_fire_ms

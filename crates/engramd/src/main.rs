@@ -965,6 +965,14 @@ async fn run(mode: RunMode) -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/agents/{id}", post(agents_update).delete(agents_delete))
         .route("/v1/agents/{id}/policy", post(agent_set_policy))
         .route("/v1/agents/{id}/activity", get(agent_activity))
+        .route(
+            "/v1/agents/{id}/consciousness",
+            get(agent_consciousness_get),
+        )
+        .route(
+            "/v1/agents/{id}/consciousness/distill",
+            post(agent_consciousness_distill),
+        )
         .route("/v1/egress/pending", get(egress_pending))
         .route("/v1/egress/approve", post(egress_approve))
         .route("/v1/egress/deny", post(egress_deny))
@@ -1104,7 +1112,7 @@ async fn run(mode: RunMode) -> Result<(), Box<dyn std::error::Error>> {
         let now = chrono::Utc::now();
         let mut fired = 0usize;
         for job in app.sched.due(now) {
-            let task = task_from_schedule(&app, &job.payload, &job.name);
+            let task = task_from_schedule(&app, &job.payload, job.agent_id.as_deref(), &job.name);
             let _ = app.sched.set_last_task(&job.id, &task.id);
             // Mark fired BEFORE running (matching spawn_scheduler_tick): if this one-shot process dies
             // mid-run, the occurrence is still consumed, so the next wake doesn't re-fire it — the same
@@ -1963,10 +1971,11 @@ async fn consciousness_revert(State(app): State<App>) -> ApiResult {
 /// like the provider key elsewhere - secrets never go back to the browser.
 fn agent_redacted(a: &agents::AgentDef) -> Value {
     json!({
-        "id": a.id, "name": a.name, "role": a.role, "model": a.model,
+        "id": a.id, "name": a.name, "charter": a.charter, "model": a.model,
         "provider": a.provider, "base_url": a.base_url,
         "api_key_set": !a.api_key.is_empty(), "effort": a.effort,
         "allowed_tools": a.allowed_tools,
+        "home_project": a.home_project,
         "color": a.color, "emoji": a.emoji,
         // The standing autonomy grant (allowlist + budget), without the signature, so the editor can
         // display and re-author it. Absent = no autonomous egress (today's gated behaviour).
@@ -2002,7 +2011,12 @@ async fn agents_create(State(app): State<App>, Json(p): Json<Value>) -> ApiResul
     if name.is_empty() {
         return Err(err("an agent needs a name"));
     }
-    let role = p.get("role").and_then(|v| v.as_str()).unwrap_or("");
+    // "charter" is the current key; "role" is accepted as a fallback for an older client.
+    let charter = p
+        .get("charter")
+        .or_else(|| p.get("role"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let model = p.get("model").and_then(|v| v.as_str()).unwrap_or("");
     let provider = p.get("provider").and_then(|v| v.as_str()).unwrap_or("");
     let base_url = p.get("base_url").and_then(|v| v.as_str()).unwrap_or("");
@@ -2010,7 +2024,7 @@ async fn agents_create(State(app): State<App>, Json(p): Json<Value>) -> ApiResul
     let effort = p.get("effort").and_then(|v| v.as_str()).unwrap_or("");
     let mut def = app
         .agents
-        .create(name, role, model, provider, base_url, api_key, effort);
+        .create(name, charter, model, provider, base_url, api_key, effort);
     if let Some(tools) = parse_allowed_tools(&p) {
         if let Some(updated) = app.agents.set_allowed_tools(&def.id, tools) {
             def = updated;
@@ -2022,6 +2036,11 @@ async fn agents_create(State(app): State<App>, Json(p): Json<Value>) -> ApiResul
             p.get("color").and_then(|v| v.as_str()),
             p.get("emoji").and_then(|v| v.as_str()),
         ) {
+            def = updated;
+        }
+    }
+    if let Some(hp) = p.get("home_project") {
+        if let Some(updated) = app.agents.set_home_project(&def.id, hp.as_str()) {
             def = updated;
         }
     }
@@ -2041,7 +2060,10 @@ async fn agents_update(
     Json(p): Json<Value>,
 ) -> ApiResult {
     let name = p.get("name").and_then(|v| v.as_str());
-    let role = p.get("role").and_then(|v| v.as_str());
+    let charter = p
+        .get("charter")
+        .or_else(|| p.get("role"))
+        .and_then(|v| v.as_str());
     let model = p.get("model").and_then(|v| v.as_str());
     let provider = p.get("provider").and_then(|v| v.as_str());
     let base_url = p.get("base_url").and_then(|v| v.as_str());
@@ -2049,7 +2071,9 @@ async fn agents_update(
     let effort = p.get("effort").and_then(|v| v.as_str());
     let mut def = app
         .agents
-        .update(&id, name, role, model, provider, base_url, api_key, effort)
+        .update(
+            &id, name, charter, model, provider, base_url, api_key, effort,
+        )
         .ok_or_else(|| err("no such agent"))?;
     if let Some(tools) = parse_allowed_tools(&p) {
         if let Some(updated) = app.agents.set_allowed_tools(&id, tools) {
@@ -2062,6 +2086,11 @@ async fn agents_update(
             p.get("color").and_then(|v| v.as_str()),
             p.get("emoji").and_then(|v| v.as_str()),
         ) {
+            def = updated;
+        }
+    }
+    if let Some(hp) = p.get("home_project") {
+        if let Some(updated) = app.agents.set_home_project(&id, hp.as_str()) {
             def = updated;
         }
     }
@@ -2553,6 +2582,24 @@ async fn agent_activity(State(app): State<App>, Path(id): Path<String>) -> ApiRe
         "name": name, "total": total, "by_kind": by_kind, "recent": recent,
         "last_ms": last_ms, "tasks_assigned": tasks_assigned,
     })))
+}
+
+/// A durable agent's OWN distilled self-model - what it has learned, separate from the user's
+/// global working memory. Returns the last-distilled snapshot (mirrors `GET /v1/consciousness`);
+/// `POST .../distill` forces a fresh pass.
+async fn agent_consciousness_get(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
+    let a = app.agents.get(&id).ok_or_else(|| err("no such agent"))?;
+    let c = conscious::Consciousness::open_for_agent(&app.home, &a.id);
+    Ok(Json(serde_json::to_value(c.snapshot()).map_err(err)?))
+}
+
+async fn agent_consciousness_distill(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
+    let a = app.agents.get(&id).ok_or_else(|| err("no such agent"))?;
+    let c = conscious::Consciousness::open_for_agent(&app.home, &a.id);
+    let st = c
+        .distill_for_agent(&app.memory, &app.ledger, &a.name)
+        .map_err(err)?;
+    Ok(Json(serde_json::to_value(st).map_err(err)?))
 }
 
 #[derive(Deserialize)]
@@ -3144,6 +3191,9 @@ pub(crate) async fn run_agent_task_cb(
         on_step: None,
         on_narration: None,
         allowed_tools: allowed.clone(),
+        // A named agent's memory writes attribute to it (`agent:<name>`), so a per-agent
+        // consciousness slice can later distill from exactly what THIS agent learned.
+        agent_actor: agent_def.map(|a| format!("agent:{}", a.name)),
     };
     // The global deny-list is also pushed into engram_agent so base_tools()/sub_tools() apply it,
     // which is what makes the curation hold for delegated SUBAGENTS (they never pass here).
@@ -3195,9 +3245,9 @@ pub(crate) async fn run_agent_task_cb(
     if let Some(a) = agent_def {
         agent = agent.actor(a.name.clone());
     }
-    // Standing context, in order: the assigned agent's ROLE (its specialization) leads, then the
-    // consciousness working memory (facts about the user), then the global persona (style). Together
-    // they replace SOUL.md as the source of truth for what the agent always knows.
+    // Standing context, in order: the assigned agent's CHARTER (its specialization/mandate) leads,
+    // then the consciousness working memory (facts about the user), then the global persona
+    // (style). Together they replace SOUL.md as the source of truth for what the agent always knows.
     // Assemble the standing context as budget-tagged parts (tier 0 = essential/always-kept, higher =
     // droppable-under-pressure), then pack them under a token ceiling so a flood of recalled memory
     // or a large ingested document can never crowd out the essentials or blow the model window.
@@ -3213,8 +3263,8 @@ pub(crate) async fn run_agent_task_cb(
         0,
     ));
     if let Some(a) = agent_def {
-        if !a.role.trim().is_empty() {
-            parts.push(budget::Part::new(a.role.clone(), 0));
+        if !a.charter.trim().is_empty() {
+            parts.push(budget::Part::new(a.charter.clone(), 0));
         }
     }
     // Refresh the consciousness from current memory before reading it, so identity/semantic facts
@@ -3227,6 +3277,16 @@ pub(crate) async fn run_agent_task_cb(
     if let Some(c) = app.consciousness.prompt_block() {
         parts.push(budget::Part::new(c, 0)); // curated working memory: essential
     }
+    // A named agent's OWN distilled self-model - what THIS agent has learned (memory_remember
+    // writes tagged `agent:<name>` via ctx.agent_actor), separate from the user's global working
+    // memory above. Re-distilled fresh each run like the global block.
+    if let Some(a) = agent_def {
+        let agent_conscious = conscious::Consciousness::open_for_agent(&app.home, &a.id);
+        let _ = agent_conscious.distill_for_agent(&app.memory, &app.ledger, &a.name);
+        if let Some(c) = agent_conscious.prompt_block() {
+            parts.push(budget::Part::new(c, 1));
+        }
+    }
     // Layered working memory: after the always-loaded GLOBAL block, add a per-project block for the
     // active project (its own durable facts), loaded only when a project is in scope - so "what
     // matters in THIS project" is present without leaking into any other project's context.
@@ -3234,12 +3294,12 @@ pub(crate) async fn run_agent_task_cb(
         if let Some(pb) = conscious::project_block(&app.memory, pid) {
             parts.push(budget::Part::new(pb, 1));
         }
-        // The active project's own standing instructions (Project.persona, editable in the desktop
+        // The active project's own standing instructions (Project.brief, editable in the desktop
         // UI's project settings) - previously only consulted by the legacy /v1/converse path, so
         // editing it had ZERO effect on the live agentic chat every user actually exercises, with
         // no warning that the control was inert. Wiring it in here is the fix.
-        if let Some(pp) = app.workspace.project_persona(pid) {
-            parts.push(budget::Part::new(pp, 1));
+        if let Some(pb) = app.workspace.project_brief(pid) {
+            parts.push(budget::Part::new(pb, 1));
         }
     }
     if let Some(mb) = &memory_block {
@@ -4330,9 +4390,17 @@ pub(crate) async fn run_task_core(
             }));
         }
     });
-    // If a durable agent is assigned to this card, it drives the run (its role + model) and signs
+    // If a durable agent is assigned to this card, it drives the run (its charter + model) and signs
     // every step as itself - the auditable team.
     let agent_def = task.agent.as_ref().and_then(|aid| app.agents.get(aid));
+    // The board itself has no per-task project field, so a card's scope comes from its assigned
+    // agent's home_project (if any) - the one place a non-coding agent (a content writer, a
+    // researcher) gets a default memory ring to read/write into instead of user-global alone.
+    let run_scope = agent_def
+        .as_ref()
+        .and_then(|a| a.home_project.clone())
+        .map(engram_core::ScopeCtx::project)
+        .unwrap_or_else(engram_core::ScopeCtx::user_only);
     // Working-tree isolation: with ENGRAM_WORKTREES=1 and a git workspace, each task runs in its
     // OWN detached git worktree, so several agents can work the same project in parallel without
     // clobbering each other's files. The guard removes the worktree when the run finishes (any path).
@@ -4391,7 +4459,7 @@ pub(crate) async fn run_task_core(
         approved,
         attended,
         run_halt,
-        engram_core::ScopeCtx::user_only(), // task-board runs are not project-bound yet → user-global
+        run_scope,
     )
     .await;
     if let Ok(mut g) = app.run_halts.lock() {
@@ -4834,14 +4902,23 @@ fn schedule_task_fields(payload: &Value, fallback_name: &str) -> (String, String
     (fallback_name.to_string(), detail)
 }
 
-fn task_from_schedule(app: &App, payload: &Value, fallback_name: &str) -> tasks::Task {
+/// `agent_id` is the job's first-class binding (`Job.agent_id`); `payload.agent` is still checked
+/// as a fallback for a job persisted before that field existed.
+fn task_from_schedule(
+    app: &App,
+    payload: &Value,
+    agent_id: Option<&str>,
+    fallback_name: &str,
+) -> tasks::Task {
     let (title, detail) = schedule_task_fields(payload, fallback_name);
     let task = app.tasks.create(title, detail, "schedule".into());
-    if let Some(agent) = payload
-        .get("agent")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-    {
+    let agent = agent_id.filter(|s| !s.is_empty()).or_else(|| {
+        payload
+            .get("agent")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+    });
+    if let Some(agent) = agent {
         if let Some(updated) = app.tasks.set_agent(&task.id, Some(agent.to_string())) {
             return updated;
         }
@@ -4866,7 +4943,8 @@ fn spawn_scheduler_tick(app: App) {
                 app.activity.touch();
             }
             for job in due {
-                let task = task_from_schedule(&app, &job.payload, &job.name);
+                let task =
+                    task_from_schedule(&app, &job.payload, job.agent_id.as_deref(), &job.name);
                 tracing::info!(job = %job.name, task = %task.id, "scheduler firing a task");
                 // Record the task on the job before running so a crash mid-run still leaves a
                 // pointer to the (failed) receipt for the UI's "last run" affordance.
@@ -4989,10 +5067,10 @@ struct ConverseReq {
 }
 
 async fn converse_handler(State(app): State<App>, Json(r): Json<ConverseReq>) -> ApiResult {
-    let persona = r
+    let brief = r
         .session
         .as_ref()
-        .and_then(|sid| app.workspace.persona_for_session(sid));
+        .and_then(|sid| app.workspace.brief_for_session(sid));
     let scope = r
         .session
         .as_ref()
@@ -5003,7 +5081,7 @@ async fn converse_handler(State(app): State<App>, Json(r): Json<ConverseReq>) ->
         &app.gateway,
         &r.text,
         &app.model(),
-        persona.as_deref(),
+        brief.as_deref(),
         &r.attachments,
         &scope,
     )
@@ -6329,7 +6407,13 @@ impl engram_agent::Tool for ScheduleTool {
         }
         let job = self
             .sched
-            .add(name.clone(), json!({ "title": instruction }), rec, now)
+            .add(
+                name.clone(),
+                json!({ "title": instruction }),
+                rec,
+                None,
+                now,
+            )
             .map_err(|e| e.to_string())?;
         let _ = ctx.ledger.append(
             "agent.schedule",
@@ -6359,6 +6443,10 @@ struct ScheduleReq {
     when: String,
     #[serde(default)]
     payload: Value,
+    /// The durable agent this job runs as. First-class; `payload.agent` is still accepted as a
+    /// fallback for an older client.
+    #[serde(default)]
+    agent_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -6384,9 +6472,15 @@ async fn schedule_preview(State(_app): State<App>, Query(q): Query<PreviewQuery>
 async fn schedule_add(State(app): State<App>, Json(r): Json<ScheduleReq>) -> ApiResult {
     let now = chrono::Utc::now();
     let recurrence = parse_schedule(&r.when, now).map_err(err)?;
+    let agent_id = r.agent_id.or_else(|| {
+        r.payload
+            .get("agent")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    });
     let job = app
         .sched
-        .add(r.name, r.payload, recurrence, now)
+        .add(r.name, r.payload, recurrence, agent_id, now)
         .map_err(err)?;
     Ok(Json(serde_json::to_value(job).map_err(err)?))
 }
@@ -6402,6 +6496,9 @@ struct ScheduleUpdateReq {
     /// Natural-language cadence ("every weekday at 9am"); omitted/blank keeps the current one.
     when: Option<String>,
     payload: Option<Value>,
+    /// Absent = unchanged; `null` = clear back to the default agent; a string = rebind.
+    #[serde(default)]
+    agent_id: Option<Value>,
 }
 
 /// Edit a scheduled job in place - rename, retime, or change what it does - without losing its
@@ -6416,9 +6513,10 @@ async fn schedule_update(
         Some(w) if !w.trim().is_empty() => Some(parse_schedule(w, now).map_err(err)?),
         _ => None,
     };
+    let agent_id = r.agent_id.map(|v| v.as_str().map(str::to_string));
     let job = app
         .sched
-        .update(&id, r.name, r.payload, rec, now)
+        .update(&id, r.name, r.payload, rec, agent_id, now)
         .map_err(err)?;
     Ok(Json(serde_json::to_value(job).map_err(err)?))
 }
@@ -6433,7 +6531,7 @@ async fn schedule_run(State(app): State<App>, Path(id): Path<String>) -> ApiResu
         .into_iter()
         .find(|j| j.id == id)
         .ok_or_else(|| ApiError("schedule not found".into()))?;
-    let task = task_from_schedule(&app, &job.payload, &job.name);
+    let task = task_from_schedule(&app, &job.payload, job.agent_id.as_deref(), &job.name);
     // Record the task on the job before running so a crash mid-run still leaves a pointer to
     // the (failed) receipt for the UI's "last run" affordance.
     let _ = app.sched.set_last_task(&job.id, &task.id);
@@ -7263,8 +7361,11 @@ async fn projects_update(
         .get("name")
         .and_then(|v| v.as_str())
         .map(|s| s.trim().to_string());
-    let persona = b
-        .get("persona")
+    // "brief" is the current key; "persona" is accepted as a fallback so an older client (or a
+    // hand-written script) still works after the rename.
+    let brief = b
+        .get("brief")
+        .or_else(|| b.get("persona"))
         .and_then(|v| v.as_str())
         .map(str::to_string);
     // A provided workdir is attach-or-created; an empty string clears it back to the shared workdir.
@@ -7275,7 +7376,7 @@ async fn projects_update(
     };
     let p = app
         .workspace
-        .update_project(&id, name, persona, workdir)
+        .update_project(&id, name, brief, workdir)
         .ok_or_else(|| ApiError("project not found".into()))?;
     Ok(Json(serde_json::to_value(p).map_err(err)?))
 }

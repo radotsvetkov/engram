@@ -1545,6 +1545,7 @@ mod tests {
             on_step: None,
             on_narration: None,
             allowed_tools: None,
+            agent_actor: None,
         };
         let agent = Agent::new(gateway, crate::default_tools(), "test");
         let run = agent
@@ -1622,6 +1623,7 @@ mod tests {
             on_step: None,
             on_narration: None,
             allowed_tools: None,
+            agent_actor: None,
         };
         let agent = Agent::new(gateway, crate::default_tools(), "test");
         let run = agent.run("write the file", ctx).await.unwrap();
@@ -1687,6 +1689,7 @@ mod tests {
             on_step: None,
             on_narration: None,
             allowed_tools: None,
+            agent_actor: None,
         };
         let agent = Agent::new(gateway, crate::default_tools(), "test");
         let run = agent.run("edit the notes", ctx).await.unwrap();
@@ -1743,6 +1746,7 @@ mod tests {
             on_step: None,
             on_narration: None,
             allowed_tools: None,
+            agent_actor: None,
         };
         let run = Agent::new(gateway, crate::default_tools(), "test")
             .run("run echo", ctx)
@@ -1796,6 +1800,7 @@ mod tests {
             on_step: None,
             on_narration: None,
             allowed_tools: None,
+            agent_actor: None,
         };
         let run = Agent::new(gateway, crate::default_tools(), "test")
             .run("do the thing", ctx)
@@ -1849,6 +1854,7 @@ mod tests {
             on_step: None,
             on_narration: None,
             allowed_tools: None,
+            agent_actor: None,
         };
 
         // vision_analyze reads the image, encodes it, and reaches the model (mock here).
@@ -1911,6 +1917,7 @@ mod tests {
             on_step: None,
             on_narration: None,
             allowed_tools: None,
+            agent_actor: None,
         };
         let out = crate::tools::SendMessageTool
             .run(
@@ -2029,6 +2036,7 @@ mod tests {
             on_step: None,
             on_narration: None,
             allowed_tools: None,
+            agent_actor: None,
         };
         let run = Agent::new(gateway, tools, "test")
             .run("do the thing", ctx)
@@ -2240,6 +2248,7 @@ mod tests {
             on_step: None,
             on_narration: None,
             allowed_tools: None,
+            agent_actor: None,
         };
         Agent::new(gateway, tools, "test")
             .run("go", ctx)
@@ -2369,6 +2378,7 @@ mod tests {
             on_step: None,
             on_narration: None,
             allowed_tools: None,
+            agent_actor: None,
         };
         Agent::new(gateway, tools, "test")
             .run("go", ctx)
@@ -2441,6 +2451,7 @@ mod tests {
             on_step: None,
             on_narration: None,
             allowed_tools: None,
+            agent_actor: None,
         };
         let run = Agent::new(gateway, tools, "test")
             .run("do it", ctx)
@@ -2519,6 +2530,7 @@ mod tests {
             on_step: None,
             on_narration: None,
             allowed_tools: None,
+            agent_actor: None,
         };
         let tools = ToolRegistry::new().with(Arc::new(Echo));
         let start = std::time::Instant::now();
@@ -2606,6 +2618,7 @@ mod tests {
             on_step: None,
             on_narration: None,
             allowed_tools: None,
+            agent_actor: None,
         };
         let tools = ToolRegistry::new().with(Arc::new(BigTool));
         let run = Agent::new(gateway, tools, "test")
@@ -2667,6 +2680,7 @@ mod tests {
             on_step: None,
             on_narration: None,
             allowed_tools: None,
+            agent_actor: None,
         };
         let run = Agent::new(gateway, crate::default_tools(), "test")
             .reflect(true)
@@ -2727,6 +2741,7 @@ mod tests {
             on_step: None,
             on_narration: None,
             allowed_tools: None,
+            agent_actor: None,
         };
         let run = Agent::new(gateway, crate::default_tools(), "test")
             .run("plan and do it", ctx)
@@ -2778,6 +2793,7 @@ mod tests {
             on_step: None,
             on_narration: None,
             allowed_tools: None,
+            agent_actor: None,
         }
     }
 
@@ -3008,6 +3024,7 @@ mod tests {
             on_step: None,
             on_narration: None,
             allowed_tools: None,
+            agent_actor: None,
         };
         let tools = ToolRegistry::new().with(Arc::new(Writer(ran.clone())));
         let run = Agent::new(gateway, tools, "test")

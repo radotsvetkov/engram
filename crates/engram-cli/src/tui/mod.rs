@@ -318,7 +318,7 @@ mod smoke {
             reason: "destination_not_allowlisted".into(),
         }];
         app.agents = vec![
-            json!({"id":"a1","name":"Researcher","role":"deep web research","emoji":"🔎","model":"claude-opus-4-8","autonomy_policy":null}),
+            json!({"id":"a1","name":"Researcher","charter":"deep web research","emoji":"🔎","model":"claude-opus-4-8","autonomy_policy":null}),
         ];
         app.config_raw = Some(json!({
             "provider": {"kind":"openrouter","model":"minimax/minimax-m3","base_url":"https://openrouter.ai/api/v1","effort":"","api_key_set":true},
@@ -397,12 +397,14 @@ mod smoke {
         // field (kept-current-cadence) is the only safe default. See app.rs edit_schedule_form.
         let mut app = sample_app();
         app.schedule[0].payload = json!({ "title": "send the digest" });
+        app.schedule[0].agent_id = Some("ag1".into());
         app.edit_schedule_form(0);
         let form = app.form.as_ref().unwrap();
-        assert_eq!(form.fields.len(), 3);
+        assert_eq!(form.fields.len(), 4);
         assert_eq!(form.fields[0].value, "Evening digest");
         assert_eq!(form.fields[1].value, "");
         assert_eq!(form.fields[2].value, "send the digest");
+        assert_eq!(form.fields[3].value, "ag1");
         assert!(matches!(&form.kind, FormKind::AddSchedule { id: Some(id) } if id == "s1"));
         // The current cadence surfaces in the title instead of pre-filling the value.
         assert!(form.title.contains("daily at 17:00"));

@@ -102,6 +102,7 @@ pub async fn run_case(case: &Case) -> Result<Outcome, String> {
         on_step: None,
         on_narration: None,
         allowed_tools: None,
+        agent_actor: None,
     };
     let mut agent = Agent::new(gateway, engram_agent::default_tools(), "eval")
         .max_steps(case.max_steps.unwrap_or(12))

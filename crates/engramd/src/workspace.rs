@@ -18,12 +18,16 @@ pub struct Project {
     pub name: String,
     pub created_ms: u64,
     /// Standing instructions for this project's chats - what gives a project its own voice.
-    #[serde(default)]
-    pub persona: String,
+    /// Named `brief` (not `persona`) to stay distinct from the daemon-wide SOUL.md persona
+    /// (`App.persona`) - the two used to share one field name across scopes, resolved only by
+    /// which accessor a caller happened to invoke. `alias` keeps existing `workspace.json` files
+    /// (written under the old `persona` key) loading correctly.
+    #[serde(default, alias = "persona")]
+    pub brief: String,
     /// The working directory this project's agent operates in: file/shell tools run here (and are
     /// confined to it), artifacts land here. `None` falls back to the shared daemon workdir, so a
     /// project without a directory behaves exactly as before. This is the third leg of a project,
-    /// alongside its memory scope and its persona.
+    /// alongside its memory scope and its brief.
     #[serde(default)]
     pub workdir: Option<String>,
 }
@@ -121,7 +125,7 @@ impl WorkspaceStore {
                 id: "personal".into(),
                 name: "Personal".into(),
                 created_ms: now_ms(),
-                persona: String::new(),
+                brief: String::new(),
                 workdir: None,
             });
         }
@@ -183,7 +187,7 @@ impl WorkspaceStore {
             id: new_id("p"),
             name,
             created_ms: now_ms(),
-            persona: String::new(),
+            brief: String::new(),
             workdir: workdir.filter(|w| !w.trim().is_empty()),
         };
         self.data.lock().expect("ws").projects.push(p.clone());
@@ -194,7 +198,7 @@ impl WorkspaceStore {
         &self,
         id: &str,
         name: Option<String>,
-        persona: Option<String>,
+        brief: Option<String>,
         // `Some(path)` sets the working directory (an empty/blank path clears it back to the shared
         // workdir); `None` leaves it unchanged.
         workdir: Option<String>,
@@ -205,8 +209,8 @@ impl WorkspaceStore {
                 if let Some(n) = name {
                     p.name = n;
                 }
-                if let Some(per) = persona {
-                    p.persona = per;
+                if let Some(b) = brief {
+                    p.brief = b;
                 }
                 if let Some(w) = workdir {
                     let w = w.trim();
@@ -276,8 +280,8 @@ impl WorkspaceStore {
         turns
     }
 
-    /// The standing-instructions persona for the project that owns a session (if any).
-    pub fn persona_for_session(&self, session_id: &str) -> Option<String> {
+    /// The standing-instructions brief for the project that owns a session (if any).
+    pub fn brief_for_session(&self, session_id: &str) -> Option<String> {
         let d = self.data.lock().expect("ws");
         let pid = d
             .sessions
@@ -285,20 +289,20 @@ impl WorkspaceStore {
             .find(|s| s.id == session_id)
             .map(|s| s.project_id.clone())?;
         drop(d);
-        self.project_persona(&pid)
+        self.project_brief(&pid)
     }
 
-    /// The standing-instructions persona for a project, by project id directly - the form the
+    /// The standing-instructions brief for a project, by project id directly - the form the
     /// agentic run path needs, since it carries a `ScopeCtx::project` id rather than a session id.
-    /// Was previously only reachable via `persona_for_session`, which the live agentic chat path
-    /// (unlike the legacy simple `/v1/converse` path) never called - a project's persona editor in
+    /// Was previously only reachable via `brief_for_session`, which the live agentic chat path
+    /// (unlike the legacy simple `/v1/converse` path) never called - a project's brief editor in
     /// the desktop UI had zero effect on real chats, with no warning that it was inert.
-    pub fn project_persona(&self, project_id: &str) -> Option<String> {
+    pub fn project_brief(&self, project_id: &str) -> Option<String> {
         let d = self.data.lock().expect("ws");
         d.projects
             .iter()
             .find(|p| p.id == project_id)
-            .map(|p| p.persona.clone())
+            .map(|p| p.brief.clone())
             .filter(|p| !p.trim().is_empty())
     }
 
@@ -586,31 +590,46 @@ mod tests {
     use super::*;
 
     #[test]
-    fn project_persona_resolves_by_project_id_directly() {
+    fn project_brief_resolves_by_project_id_directly() {
         let dir = tempfile::tempdir().unwrap();
         let ws = WorkspaceStore::open(dir.path());
         let p = ws.create_project("Apollo".into(), None);
 
-        // No persona set yet: both accessors agree on None.
-        assert_eq!(ws.project_persona(&p.id), None);
+        // No brief set yet: both accessors agree on None.
+        assert_eq!(ws.project_brief(&p.id), None);
         let s = ws.create_session(p.id.clone(), None);
-        assert_eq!(ws.persona_for_session(&s.id), None);
+        assert_eq!(ws.brief_for_session(&s.id), None);
 
         ws.update_project(&p.id, None, Some("Always answer in haiku.".into()), None);
 
-        // project_persona() - the form the agentic run path (run_agent_task_cb, keyed by
+        // project_brief() - the form the agentic run path (run_agent_task_cb, keyed by
         // ScopeCtx::project rather than a session id) actually needs - now resolves it directly.
         assert_eq!(
-            ws.project_persona(&p.id).as_deref(),
+            ws.project_brief(&p.id).as_deref(),
             Some("Always answer in haiku.")
         );
-        // persona_for_session() must still agree (it now delegates to project_persona()).
+        // brief_for_session() must still agree (it now delegates to project_brief()).
         assert_eq!(
-            ws.persona_for_session(&s.id).as_deref(),
+            ws.brief_for_session(&s.id).as_deref(),
             Some("Always answer in haiku.")
         );
         // An unknown project id resolves to None, not a panic.
-        assert_eq!(ws.project_persona("does-not-exist"), None);
+        assert_eq!(ws.project_brief("does-not-exist"), None);
+    }
+
+    #[test]
+    fn project_brief_alias_reads_a_legacy_persona_key() {
+        // Older workspace.json files persisted this field under the key "persona" - the alias
+        // must keep them loading correctly after the brief rename, or every project's standing
+        // instructions silently vanish on upgrade.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("workspace.json"),
+            r#"{"projects":[{"id":"p1","name":"Legacy","created_ms":1,"persona":"Old voice.","workdir":null}],"sessions":[]}"#,
+        )
+        .unwrap();
+        let ws = WorkspaceStore::open(dir.path());
+        assert_eq!(ws.project_brief("p1").as_deref(), Some("Old voice."));
     }
 
     #[test]

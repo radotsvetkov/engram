@@ -158,6 +158,24 @@ registry, the gateway, the scheduler, and the agent's toolset, and exposes them 
 local HTTP API plus the desktop control center. Every request keeps the brain awake and
 fires a spike; after an idle window with no requests the process exits to zero.
 
+### Identity: SOUL.md, briefs, charters, and self-models
+
+Four distinct, non-overlapping layers shape what an agent knows about itself and the user,
+assembled into every run's prompt in this order: **SOUL.md** (one global, live-editable file —
+your standing voice/rules, the same for every project and every agent); a project's own
+**brief** (per-project standing instructions, independent of SOUL.md — what gives one project
+a different voice than another); a durable agent's **charter** (its role/system prompt — the
+specialization that narrows focus, distinct from persona/brief, which shape voice rather than
+mandate); and **consciousness** (a small, always-loaded, distilled self-model — never hand-
+written, only ever the verbatim text of real trusted memories, so every line traces to
+evidence). Consciousness has two independent slices: the global one (facts about the user,
+shared by every agent) and, for each durable named agent, its own — distilled only from facts
+*that agent itself wrote* (tagged `agent:<name>` at write time), so a content-writer agent and
+a research agent accumulate separate expertise even while sharing the same underlying memory
+store. Uploaded documents are deliberately excluded from all of this: they become ordinary,
+recallable memory chunks, never standing instructions — the guard against turning a merely-
+uploaded PDF into a prompt-injection channel.
+
 ### `engram-cli` — the terminal client
 
 The same control surface, keyboard-first, in your terminal. A single small binary (`engram`)

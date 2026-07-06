@@ -1316,7 +1316,7 @@
   .receipt .r-foot { display:flex; align-items:center; gap:11px; padding:11px 15px; border-top:1px solid var(--border); background:var(--surface-1); }
   .receipt .r-foot .hint { font:11px var(--mono); color:var(--text-muted); margin-left:auto; }
   @media (prefers-reduced-motion: reduce) { .recall, .model-menu, .proj-menu, .pal-box, .statusbar .seal, .receipt, .receipt .r-seal { animation:none !important; } }
-  /* per-project persona editor */
+  /* per-project brief editor */
   .proj-modal { width:min(540px,93vw); margin-top:13vh; background:var(--surface-1); border:1px solid var(--border-strong);
     border-radius:var(--r-modal); box-shadow:var(--e4); padding:22px 24px 20px; animation:menu-in var(--dur-2) var(--ease-spring); transform-origin:top center; }
   .proj-modal h2 { font-size:17px; font-weight:600; margin:0 0 4px; }
@@ -1994,7 +1994,7 @@ function projTopToggle(ev){
   const m=document.createElement('div'); m.id='projTopMenu'; m.className='proj-top-menu'; m.setAttribute('role','menu');
   const cur=curProject();
   m.innerHTML = WS.projects.map(p=>`<div class="${p.id===cur.id?'cur':''}" onclick="projTopClose();pickProject('${escAttr(p.id)}')"><span class="proj-dot"></span>${esc(p.name)}</div>`).join('')
-    +`<div class="add" onclick="projTopClose();openProjPersona()">✎ Edit "${esc(cur.name)}" persona</div>`
+    +`<div class="add" onclick="projTopClose();openProjBrief()">✎ Edit "${esc(cur.name)}" brief</div>`
     +(WS.projects.length>1?`<div class="add" style="color:var(--danger)" onclick="projTopClose();deleteProject()">Delete "${esc(cur.name)}"</div>`:'')
     +`<div class="add" onclick="projTopClose();addProject()">+ New project</div>`;
   wrap.appendChild(m);
@@ -2727,29 +2727,29 @@ async function pickDir(){
   const p = await askInput({title:'Project folder (optional)',label:'The folder this project’s agent reads and writes files in. Leave blank to use the shared workspace — it’s created if it doesn’t exist.',placeholder:'e.g. ~/code/my-app',ok:'Use folder'});
   return (p && p.trim()) ? p.trim() : null;
 }
-async function addProject(){ projMenuOpen=false; const n=await askInput({title:'New project',label:'Sessions, persona, its own memory scope, and a working directory live inside a project.',placeholder:'e.g. Apex, Research, Personal',ok:'Next'}); if(!(n&&n.trim())){ renderSidebar(); return; }
+async function addProject(){ projMenuOpen=false; const n=await askInput({title:'New project',label:'Sessions, a brief, its own memory scope, and a working directory live inside a project.',placeholder:'e.g. Apex, Research, Personal',ok:'Next'}); if(!(n&&n.trim())){ renderSidebar(); return; }
   const workdir=await pickDir();
   const body={name:n.trim()}; if(workdir) body.workdir=workdir;
   try{ const p=await J('/v1/projects',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}); WS.projects.push(p); pickProject(p.id); if(workdir) notify('Project folder: '+workdir,'ok'); }
   catch(e){ notify('Couldn\'t create project - '+e.message); }
 }
-function openProjPersona(){
+function openProjBrief(){
   projMenuOpen=false; renderSidebar();
   const p=curProject();
   document.getElementById('projModal').hidden=false;
   document.getElementById('projModalBody').innerHTML=`
-    <h2>${esc(p.name)} · persona</h2>
+    <h2>${esc(p.name)} · brief</h2>
     <div class="sub">Standing instructions for this project's chats - they give the project its own voice. Formal and compliance-aware for a client; casual for personal. Applies to the very next message; other projects are unaffected.</div>
-    <div class="field"><textarea id="projPersona" rows="8" placeholder="e.g. You are formal and precise. Cite sources. Never speculate about regulated data - say when you're unsure.">${esc(p.persona||'')}</textarea></div>
-    <div class="sactions"><button class="sbtn" onclick="closeProjModal()">Cancel</button><span class="grow"></span><button class="sbtn primary" onclick="saveProjPersona()">Save</button></div>`;
-  setTimeout(()=>document.getElementById('projPersona')?.focus(),30);
+    <div class="field"><textarea id="projBrief" rows="8" placeholder="e.g. You are formal and precise. Cite sources. Never speculate about regulated data - say when you're unsure.">${esc(p.brief||'')}</textarea></div>
+    <div class="sactions"><button class="sbtn" onclick="closeProjModal()">Cancel</button><span class="grow"></span><button class="sbtn primary" onclick="saveProjBrief()">Save</button></div>`;
+  setTimeout(()=>document.getElementById('projBrief')?.focus(),30);
 }
 function closeProjModal(){ document.getElementById('projModal').hidden=true; }
-async function saveProjPersona(){
-  const p=curProject(), persona=document.getElementById('projPersona').value;
-  try{ const up=await J('/v1/projects/'+encodeURIComponent(p.id),{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({persona})});
+async function saveProjBrief(){
+  const p=curProject(), brief=document.getElementById('projBrief').value;
+  try{ const up=await J('/v1/projects/'+encodeURIComponent(p.id),{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({brief})});
     const i=WS.projects.findIndex(x=>x.id===p.id); if(i>=0) WS.projects[i]=up;
-    closeProjModal(); renderSidebar(); notify('Project persona saved - it shapes the next message','ok'); }
+    closeProjModal(); renderSidebar(); notify('Project brief saved - it shapes the next message','ok'); }
   catch(e){ notify('Save failed - '+e.message); }
 }
 function renderSidebar(){
@@ -4345,10 +4345,10 @@ function ccPersona(c){
 function ccWorkspace(){
   const projs=WS.projects||[];
   const rows=projs.map(p=>{
-    const active=p.id===WS.activeProject, hasPersona=p.persona&&p.persona.trim();
+    const active=p.id===WS.activeProject, hasBrief=p.brief&&p.brief.trim();
     const wd=(p.workdir&&p.workdir.trim()) ? esc(p.workdir) : 'shared workspace';
     return `<div class="ws-proj${active?' active':''}">
-      <div class="ws-pinfo"><div class="ws-prow"><span class="ws-pname">${esc(p.name)}</span>${active?'<span class="badge set">active</span>':''}${hasPersona?'<span class="badge" title="has its own standing instructions">persona</span>':''}</div>
+      <div class="ws-pinfo"><div class="ws-prow"><span class="ws-pname">${esc(p.name)}</span>${active?'<span class="badge set">active</span>':''}${hasBrief?'<span class="badge" title="has its own standing instructions">brief</span>':''}</div>
         <div class="ws-pdir" title="the folder this project's agent reads and writes files in">📁 ${wd}</div></div>
       <div class="ws-pacts">${active?'':`<button class="sbtn" onclick="wsPick('${escAttr(p.id)}')">Open</button>`}<button class="sbtn ghost" onclick="wsEditProject('${escAttr(p.id)}')">Edit</button>${projs.length>1?`<button class="sbtn ghost" onclick="wsDeleteProject('${escAttr(p.id)}')">Delete</button>`:''}</div>
     </div>`;
@@ -4369,7 +4369,7 @@ async function wsNewProject(){
 }
 async function wsPick(id){ await pickProject(id); if(ccActive==='workspace') renderCC(); }
 function wsEditProject(id){
-  const p=(WS.projects||[]).find(x=>x.id===id)||{id,name:'',persona:''};
+  const p=(WS.projects||[]).find(x=>x.id===id)||{id,name:'',brief:''};
   const ov=document.createElement('div'); ov.className='overlay ask';
   ov.innerHTML=`<div class="ask-card" style="width:min(560px,93vw)">
     <div class="ask-title">Edit project</div>
@@ -4380,7 +4380,7 @@ function wsEditProject(id){
       <button type="button" class="sbtn ghost" onclick="wsPickDir(this)">Choose…</button>
       ${p.workdir&&p.workdir.trim()?'<button type="button" class="sbtn ghost" onclick="document.getElementById(\'wpDir\').value=\'\'" title="Use the shared workspace">Clear</button>':''}
     </div>
-    <textarea class="ask-input" id="wpPersona" rows="5" placeholder="Standing instructions for this project - how Engram should behave here (optional)." style="resize:vertical;font:inherit;line-height:1.5">${esc(p.persona||'')}</textarea>
+    <textarea class="ask-input" id="wpBrief" rows="5" placeholder="Standing instructions for this project - how Engram should behave here (optional)." style="resize:vertical;font:inherit;line-height:1.5">${esc(p.brief||'')}</textarea>
     <div class="ask-actions"><button class="ask-ghost" onclick="this.closest('.overlay').remove()">Cancel</button><button class="ask-ok" onclick="wsSaveProject('${escAttr(id)}',this)">Save</button></div>
   </div>`;
   document.body.appendChild(ov); setTimeout(()=>{ const n=ov.querySelector('#wpName'); n.focus(); n.select(); },20);
@@ -4390,10 +4390,10 @@ async function wsPickDir(btn){
   const inp=btn.closest('.ask-card').querySelector('#wpDir'); if(inp) inp.value=dir;
 }
 async function wsSaveProject(id, btn){
-  const ov=btn.closest('.overlay'); const name=ov.querySelector('#wpName').value.trim(), persona=ov.querySelector('#wpPersona').value;
+  const ov=btn.closest('.overlay'); const name=ov.querySelector('#wpName').value.trim(), brief=ov.querySelector('#wpBrief').value;
   const dirEl=ov.querySelector('#wpDir');
   if(!name){ notify('A project needs a name'); return; }
-  const body={name,persona};
+  const body={name,brief};
   // Always send workdir so an empty string can CLEAR the binding back to the shared workspace
   // (the daemon treats '' as clear, a path as attach-or-create). The old modal couldn't set it,
   // so a project's folder was write-once and invisible.
@@ -4495,12 +4495,13 @@ function agentsGridHtml(){
   if(!AGENTS.length) return `<div class="mind-empty"><b>No agents yet.</b><br>Create a specialist - a role and its own model - then assign it to a kanban card. Every step it runs is signed as that agent.</div>`;
   return AGENTS.map(a=>{
     const model = a.model ? esc(a.model) : '<span style="opacity:.65">default model</span>';
-    const role = (a.role||'').replace(/\s+/g,' ').trim();
+    const charter = (a.charter||'').replace(/\s+/g,' ').trim();
+    const homeProj = a.home_project ? (WS.projects||[]).find(p=>p.id===a.home_project) : null;
     const av = a.emoji ? `<span style="font-size:16px;margin-right:5px">${esc(a.emoji)}</span>`
               : (a.color ? `<span class="ag-dot" style="background:${escAttr(a.color)};margin-right:7px"></span>` : '');
     return `<div class="integ-card">
-      <div class="ih"><span class="it">${av}${esc(a.name)}</span><span class="badge">${model}</span></div>
-      <div class="id">${role?esc(role.slice(0,130)):'<span style="opacity:.6">No role set - runs with the default behaviour.</span>'}</div>
+      <div class="ih"><span class="it">${av}${esc(a.name)}</span><span class="badge">${model}</span>${homeProj?`<span class="badge" title="default project scope">📁 ${esc(homeProj.name)}</span>`:''}</div>
+      <div class="id">${charter?esc(charter.slice(0,130)):'<span style="opacity:.6">No charter set - runs with the default behaviour.</span>'}</div>
       <div class="integ-act"><button class="sbtn" onclick="agentEdit('${escAttr(a.id)}')">Edit</button><button class="sbtn ghost" onclick="agentActivity('${escAttr(a.id)}')">Experience</button><span style="flex:1"></span><button class="sbtn ghost" onclick="agentDelete('${escAttr(a.id)}')">Delete</button></div>
     </div>`;
   }).join('');
@@ -4519,6 +4520,23 @@ async function agentActivity(id){
     <div class="exp-kinds">${kindChips}</div>
     <div class="exp-lbl">recent - newest first</div>
     <div class="exp-recent">${recent}</div>
+    <div class="ask-actions"><button class="ask-ghost" onclick="this.closest('.overlay').remove();agentConsciousness('${escAttr(id)}')">Self-model →</button><span class="grow"></span><button class="ask-ok" onclick="this.closest('.overlay').remove()">Close</button></div>
+  </div>`;
+  document.body.appendChild(ov);
+}
+// A durable agent's OWN distilled self-model - what it has learned, separate from the user's
+// global working memory (Settings → Persona). Distilled fresh each open.
+async function agentConsciousness(id){
+  const agentName = ((AGENTS||[]).find(a=>a.id===id)||{}).name || 'Agent';
+  let st; try{ st=await J('/v1/agents/'+id+'/consciousness/distill',{method:'POST'}); }
+  catch(e){ notify('Couldn\'t load - '+e.message); return; }
+  const lines=(st.lines||[]).map(l=>`<div class="exp-row"><span class="exp-k">[${esc((l.region||'?')[0])}]</span><span style="flex:1;padding:0 8px">${esc(l.text)}</span></div>`).join('')
+    || '<div class="exp-empty">Nothing distilled yet - it accrues as this agent runs tasks and learns things of its own.</div>';
+  const ov=document.createElement('div'); ov.className='overlay ask';
+  ov.innerHTML=`<div class="ask-card" style="width:min(580px,94vw)">
+    <div class="ask-title">${esc(agentName)} · self-model</div>
+    <div class="ask-msg">What this agent has learned on its own - distinct from your global working memory, which every agent shares. v${st.version||0}.</div>
+    <div class="exp-recent">${lines}</div>
     <div class="ask-actions"><button class="ask-ok" onclick="this.closest('.overlay').remove()">Close</button></div>
   </div>`;
   document.body.appendChild(ov);
@@ -4527,20 +4545,20 @@ function ccAgents(){
   // Render from cache; refresh async and repaint the grid in place (renderCCBody is sync).
   J('/v1/agents').then(a=>{ AGENTS=a||[]; if(ccActive==='agents'){ const el=document.getElementById('agentsGrid'); if(el) el.innerHTML=agentsGridHtml(); } }).catch(()=>{});
   const starters=[
-    {name:'Researcher', emoji:'🔎', color:'#85b7eb', role:'You research thoroughly. Gather from multiple sources, cross-check claims, cite where each fact came from, and end with a short synthesis of what matters.'},
-    {name:'Coder', emoji:'🛠️', color:'#45c8a8', role:'You write and review code. Prefer small, tested changes; explain trade-offs briefly; never leave code in a broken state; cite file paths and line numbers.'},
-    {name:'Writer', emoji:'✍️', color:'#e0a23c', role:'You draft clear, structured prose. Lead with the point, keep paragraphs short, and match the tone the user asks for. Offer one alternative angle when useful.'},
+    {name:'Researcher', emoji:'🔎', color:'#85b7eb', charter:'You research thoroughly. Gather from multiple sources, cross-check claims, cite where each fact came from, and end with a short synthesis of what matters.'},
+    {name:'Coder', emoji:'🛠️', color:'#45c8a8', charter:'You write and review code. Prefer small, tested changes; explain trade-offs briefly; never leave code in a broken state; cite file paths and line numbers.'},
+    {name:'Writer', emoji:'✍️', color:'#e0a23c', charter:'You draft clear, structured prose. Lead with the point, keep paragraphs short, and match the tone the user asks for. Offer one alternative angle when useful.'},
   ].map(s=>`<div class="integ-card"><div class="ih"><span class="it">${s.emoji} ${s.name}</span></div>
-      <div class="id">${esc(s.role.slice(0,90))}…</div>
-      <div class="integ-act"><button class="sbtn" onclick="starterAgent(${attrJson(s.name)},${attrJson(s.emoji)},${attrJson(s.color)},${attrJson(s.role)},this)">Add to team</button></div></div>`).join('');
-  return ccHead('Agents','Your auditable team. Each agent runs with its own role and model; assign one to a kanban card and every step it takes is signed as that agent - a team you can audit, not an opaque swarm.')+`
+      <div class="id">${esc(s.charter.slice(0,90))}…</div>
+      <div class="integ-act"><button class="sbtn" onclick="starterAgent(${attrJson(s.name)},${attrJson(s.emoji)},${attrJson(s.color)},${attrJson(s.charter)},this)">Add to team</button></div></div>`).join('');
+  return ccHead('Agents','Your auditable team. Each agent runs with its own charter and model; assign one to a kanban card and every step it takes is signed as that agent - a team you can audit, not an opaque swarm.')+`
     <div class="scard"><div class="sactions" style="margin-bottom:12px"><button class="sbtn primary" onclick="agentEdit('')">+ New agent</button><span class="grow"></span></div>
       <div class="integ-grid" id="agentsGrid">${agentsGridHtml()}</div></div>
-    <div class="scard"><h3>Starter agents</h3><div class="desc">One click adds a ready-made teammate - rename, restyle, or tighten its role any time.</div>
+    <div class="scard"><h3>Starter agents</h3><div class="desc">One click adds a ready-made teammate - rename, restyle, or tighten its charter any time.</div>
       <div class="integ-grid">${starters}</div></div>`;
 }
 function agentEdit(id){
-  const a = AGENTS.find(x=>x.id===id) || {id:'',name:'',role:'',model:'',provider:'',base_url:'',api_key_set:false};
+  const a = AGENTS.find(x=>x.id===id) || {id:'',name:'',charter:'',model:'',provider:'',base_url:'',home_project:'',api_key_set:false};
   const models = Object.keys(MODEL_META).map(m=>`<option value="${escAttr(m)}">`).join('');
   const provOpts = ['<option value="">Global provider (just override the model)</option>']
     .concat(Object.keys(PROVIDERS).filter(k=>k!=='mock').map(k=>`<option value="${k}"${a.provider===k?' selected':''}>${esc(PROVIDERS[k].label)}</option>`)).join('');
@@ -4583,13 +4601,17 @@ function agentEdit(id){
   const ov=document.createElement('div'); ov.className='overlay ask';
   ov.innerHTML=`<div class="ask-card" style="width:min(560px,93vw)">
     <div class="ask-title">${a.id?'Edit agent':'New agent'}</div>
-    <div class="ask-msg">A specialist with a narrow role drifts less and hallucinates less. It signs every step it runs as itself. Give it its own model (and provider) to match the model to the task: a cheap one for triage, a frontier one for hard reasoning.</div>
+    <div class="ask-msg">A specialist with a narrow charter drifts less and hallucinates less. It signs every step it runs as itself. Give it its own model (and provider) to match the model to the task: a cheap one for triage, a frontier one for hard reasoning.</div>
     <input class="ask-input" id="agName" placeholder="Name - e.g. Scout, Reviewer, Researcher" value="${escAttr(a.name)}" autocomplete="off">
     ${personaRow}
-    <textarea class="ask-input" id="agRole" rows="4" placeholder="Role / system prompt - what this agent specializes in and how it behaves." style="resize:vertical;font:inherit;line-height:1.5">${esc(a.role)}</textarea>
+    <textarea class="ask-input" id="agCharter" rows="4" placeholder="Charter / system prompt - what this agent specializes in and how it behaves." style="resize:vertical;font:inherit;line-height:1.5">${esc(a.charter)}</textarea>
     <input class="ask-input" id="agModel" list="agModels" placeholder="Model (optional) - blank uses the default" value="${escAttr(a.model)}" autocomplete="off"><datalist id="agModels">${models}</datalist>
     <select class="ask-input" id="agProvider">${provOpts}</select>
     <input class="ask-input" id="agBase" placeholder="Base URL (optional - blank uses the provider default)" value="${escAttr(a.base_url||'')}" autocomplete="off">
+    <select class="ask-input" id="agHomeProject" title="This agent's default project scope - lets a non-coding agent (a writer, a researcher) read/write into a project without a working directory.">
+      <option value=""${!a.home_project?' selected':''}>Home project - user-global only</option>
+      ${(WS.projects||[]).map(p=>`<option value="${escAttr(p.id)}"${a.home_project===p.id?' selected':''}>${esc(p.name)}</option>`).join('')}
+    </select>
     <input class="ask-input" type="password" id="agKey" placeholder="${a.api_key_set?'•••• - blank keeps the saved key':'API key for this agent (only if it uses its own provider)'}" autocomplete="off">
     <select class="ask-input" id="agEffort" title="How hard this agent's model thinks. Applied when the agent runs through its own provider; ignored by models that don't support it.">
       ${[['','Reasoning effort - Auto (model default)'],['low','Reasoning effort - Low'],['medium','Reasoning effort - Medium'],['high','Reasoning effort - High']].map(([v,l])=>`<option value="${v}"${(a.effort||'')===v?' selected':''}>${esc(l)}</option>`).join('')}
@@ -4607,11 +4629,11 @@ function agPickColor(el, color){
   box.querySelectorAll('.ag-sw').forEach(s=>s.classList.remove('on'));
   if(box.dataset.color) el.classList.add('on');
 }
-async function starterAgent(name, emoji, color, role, btn){
+async function starterAgent(name, emoji, color, charter, btn){
   if((AGENTS||[]).some(a=>a.name===name)){ notify('"'+name+'" is already on the team'); return; }
   if(btn) btn.disabled=true;
   try{
-    await J('/v1/agents',{method:'POST',headers:MIND_JSON,body:JSON.stringify({name,role,emoji,color,model:'',provider:'',base_url:'',api_key:'',effort:''})});
+    await J('/v1/agents',{method:'POST',headers:MIND_JSON,body:JSON.stringify({name,charter,emoji,color,model:'',provider:'',base_url:'',api_key:'',effort:''})});
     AGENTS=await J('/v1/agents'); notify(emoji+' '+name+' joined the team','ok');
     const el=document.getElementById('agentsGrid'); if(el) el.innerHTML=agentsGridHtml();
   }catch(e){ notify('Couldn\'t add - '+((e&&e.message)||'error')); }
@@ -4620,7 +4642,7 @@ async function starterAgent(name, emoji, color, role, btn){
 async function agentSave(id, btn){
   const ov=btn.closest('.overlay');
   const name=ov.querySelector('#agName').value.trim();
-  const role=ov.querySelector('#agRole').value.trim();
+  const charter=ov.querySelector('#agCharter').value.trim();
   const model=ov.querySelector('#agModel').value.trim();
   const provider=ov.querySelector('#agProvider').value.trim();
   const base_url=ov.querySelector('#agBase').value.trim();
@@ -4628,9 +4650,10 @@ async function agentSave(id, btn){
   const effort=ov.querySelector('#agEffort').value;
   const emoji=ov.querySelector('#agEmoji').value.trim();
   const color=ov.querySelector('#agSwatches').dataset.color||'';
+  const home_project=ov.querySelector('#agHomeProject').value;
   if(!name){ notify('An agent needs a name'); return; }
   try{
-    const body=JSON.stringify({name,role,model,provider,base_url,api_key,effort,color,emoji});
+    const body=JSON.stringify({name,charter,model,provider,base_url,api_key,effort,color,emoji,home_project});
     if(id) await J('/v1/agents/'+id,{method:'POST',headers:MIND_JSON,body});
     else await J('/v1/agents',{method:'POST',headers:MIND_JSON,body});
     ov.remove(); notify('Agent saved · signed','ok'); if(ccActive==='agents') renderCC();
@@ -4845,7 +4868,7 @@ function ccAbout(c){
     ['What does "signed ledger" actually mean?','Every action appends an Ed25519-signed, hash-chained entry. Change one byte of history and the chain stops verifying. Run <code>engramd verify ~/.engram</code> in a terminal to check it without trusting the running app.'],
     ['Can the agent leak my data to the web?','Not silently. If a run has read untrusted content while holding private context, outbound actions are refused (the trifecta guard) and staged for your explicit, signed approval.'],
     ['What is the difference between a chat and a task?','Chat answers you live. A task runs in the background with tools - browsing, files, shell if you allow it - and lands on the board with a receipt of every step.'],
-    ['What are projects?','Workspaces with their own chats, persona, working folder, and memory scope. Facts learned in one project don\'t bleed into another; global facts about you follow everywhere.'],
+    ['What are projects?','Workspaces with their own chats, brief, working folder, and memory scope. Facts learned in one project don\'t bleed into another; global facts about you follow everywhere.'],
     ['What is Working memory (consciousness)?','A distilled set of lines about you that ships with every answer. See and edit it on the Memory view - or from the Context chip in the composer.'],
     ['Why does a skill say "unverified"?','It has no recorded input->output examples to score improvements against. Add an example and the improve loop can prove a rewrite is better before adopting it.'],
     ['How much does it cost at rest?','Nothing. The daemon sleeps to zero when idle and wakes on demand; you pay only your model provider for the tokens you actually use.'],
@@ -6198,10 +6221,13 @@ function schedCardHtml(job){
   } else {
     last = `<span class="sc-last">never run</span>`;
   }
+  const curAgent = job.agent_id||(job.payload&&job.payload.agent)||'';
+  const agentDef = curAgent ? (AGENTS||[]).find(a=>a.id===curAgent) : null;
+  const agentBadge = agentDef ? `<span class="badge" title="runs as this durable agent">${agentDef.emoji?esc(agentDef.emoji)+' ':''}${esc(agentDef.name)}</span>` : '';
   return `<div class="sched-card${running?' is-running':''}" data-job="${escAttr(job.id)}">
     <div class="sc-top">
       <span class="sc-name">${esc(job.name)}</span>
-      ${badge}
+      ${badge}${agentBadge}
       <span class="sc-actions">${runBtn}${editBtn}${delBtn}</span>
     </div>
     <div class="sc-meter${due?' sc-due':''}" data-start="${job.last_fire_ms||job.created_ms||0}" data-next="${job.next_fire_ms||0}"><i style="width:${pct}%"></i></div>
@@ -6348,15 +6374,18 @@ async function addJobPro(){
   if(!prompt){ notify('Tell Engram what to do when this job fires'); promptEl?.focus(); return; }
   if(!when){ whenEl?.focus(); return; }
   const name = (nameEl?.value.trim()) || prompt.replace(/\s+/g,' ').slice(0,42) || 'job';
-  const agent = (document.getElementById('sagent')?.value || '').trim();
+  const agent_id = (document.getElementById('sagent')?.value || '').trim();
   try {
-    // payload.title -> the run prompt (the daemon runs title, optionally + payload.detail). payload.agent
-    // (when set) makes the unattended run adopt that durable agent's SIGNED autonomy policy, so egress
-    // can proceed within the allowlist instead of always staging for review.
+    // payload.title -> the run prompt (the daemon runs title, optionally + payload.detail).
+    // agent_id (when set) makes the unattended run adopt that durable agent's SIGNED autonomy
+    // policy, so egress can proceed within the allowlist instead of always staging for review.
+    // First-class field (not payload.agent) - "this job runs as this agent" is a documented
+    // contract on Job itself, not an emergent payload convention.
     const payload = { title:prompt, prompt, label:name };
-    if(agent) payload.agent = agent;
+    const body = { name, when, payload };
+    if(agent_id) body.agent_id = agent_id;
     await J('/v1/schedule', { method:'POST', headers:{'content-type':'application/json'},
-      body: JSON.stringify({ name, when, payload }) });
+      body: JSON.stringify(body) });
     notify('Scheduled · ' + name, 'ok');
     renderScheduleView();
   } catch(e){ notify('Couldn\'t schedule - ' + e.message); }
@@ -6384,9 +6413,12 @@ async function editJob(id, e){
   if(e) e.stopPropagation();
   const job=(_schedJobs||[]).find(j=>j.id===id); if(!job) return;
   const p=job.payload||{};
+  // agent_id is the current first-class binding; payload.agent is a fallback for a job scheduled
+  // before that field existed.
+  const curAgent=job.agent_id||p.agent||'';
   const cad=cadenceSchedule(job.recurrence);
   const agents=['<option value="">Default agent — egress stages for review</option>']
-    .concat((AGENTS||[]).map(a=>`<option value="${escAttr(a.id)}"${(p.agent===a.id)?' selected':''}>${a.emoji?esc(a.emoji)+' ':''}${esc(a.name)}</option>`)).join('');
+    .concat((AGENTS||[]).map(a=>`<option value="${escAttr(a.id)}"${(curAgent===a.id)?' selected':''}>${a.emoji?esc(a.emoji)+' ':''}${esc(a.name)}</option>`)).join('');
   const ov=document.createElement('div'); ov.className='overlay ask';
   ov.innerHTML=`<div class="ask-card" style="width:min(560px,94vw)">
     <div class="ask-title">Edit schedule</div>
@@ -6404,12 +6436,15 @@ async function editJob(id, e){
     const name=(document.getElementById('ejName').value||'').trim()||job.name;
     const when=(document.getElementById('ejWhen').value||'').trim();
     const prompt=(document.getElementById('ejPrompt').value||'').trim();
-    const agent=(document.getElementById('ejAgent').value||'').trim();
+    const agent_id=(document.getElementById('ejAgent').value||'').trim();
+    // Drop any legacy payload.agent - the binding now lives in the first-class agent_id field.
     const payload={...p, title:prompt||p.title, prompt:prompt||p.prompt, label:name};
-    if(agent) payload.agent=agent; else delete payload.agent;
+    delete payload.agent;
+    const body=when?{name,when,payload}:{name,payload};
+    body.agent_id=agent_id||null;
     try{
       await J('/v1/schedule/'+encodeURIComponent(id),{method:'PATCH',headers:{'content-type':'application/json'},
-        body:JSON.stringify(when?{name,when,payload}:{name,payload})});
+        body:JSON.stringify(body)});
       ov.remove(); notify('Schedule updated · signed','ok'); renderScheduleView();
     }catch(err){ notify('Couldn\'t update - '+((err&&err.message)||'check the cadence')); }
   };
@@ -7290,7 +7325,7 @@ function obClose(skip){
 // (clicks pass through everywhere except the card), Esc or Skip ends it, never shows twice. ----
 const TOUR_STEPS=[
   { sel:'#composer',   title:'Ask anything',                 body:'↵ sends a chat message. ⌘↵ turns the same words into a background task that can browse, run code, and write files.' },
-  { sel:'#ctxChip',    title:'See what ships with a message', body:'Project scope, working memory, persona, pinned files - the exact context, inspectable before you send.' },
+  { sel:'#ctxChip',    title:'See what ships with a message', body:'Project scope, working memory, brief, pinned files - the exact context, inspectable before you send.' },
   { sel:'.modelpick',  title:'Pick the brain',               body:'Switch the model and its reasoning effort per chat. Providers and keys live in Settings → Gateways.' },
   { sel:'.nav a[href="#Tasks"]', title:'Work runs in the background', body:'Tasks research and act on their own, and land with a signed receipt. ⌘2 jumps here; ⌘1-9 reach every view.' },
   { sel:'#ledgerChip', title:'Proof, not trust',             body:'Every action - the agent’s and yours - is signed into a tamper-evident ledger. Click it anytime to verify.' },
@@ -7523,7 +7558,7 @@ document.addEventListener('keydown', e=>{
 });
 
 // ---- context popover: exactly what ships with the next message — the glass box, applied to the
-// prompt itself. Scope, working memory, persona, and pinned files/memories, each inspectable. ----
+// prompt itself. Scope, working memory, brief, and pinned files/memories, each inspectable. ----
 const _CTXC={t:0,lines:null};
 async function ctxLines(){
   if(_CTXC.lines && Date.now()-_CTXC.t<60000) return _CTXC.lines;
@@ -7552,7 +7587,7 @@ async function ctxToggle(ev){
   const lines=await ctxLines();
   if(!document.getElementById('ctxPop')) return;   // closed while loading
   const mindPrev=lines.length?esc((lines[0].text||'').replace(/\s+/g,' ').slice(0,70))+(lines.length>1?` — and ${lines.length-1} more`:''):'Empty — teach Engram a fact or distill it from your brain.';
-  const personaSet=!!(proj.persona&&proj.persona.trim());
+  const briefSet=!!(proj.brief&&proj.brief.trim());
   const pinRows=pins.length?pins.map(it=>`<div class="ctx-row"><span class="cx-ic">${CTX_ICONS.pins}</span><span><b>${esc(it.name)}</b><span class="cx-sub">${it.kind==='memory'?'pinned memory':it.kind==='url'?'linked page':'attached file'}</span></span></div>`).join(''):'';
   pop.innerHTML=`
     <div class="cx-h">With your next message</div>
@@ -7564,10 +7599,10 @@ async function ctxToggle(ev){
       <span class="cx-ic">${CTX_ICONS.mind}</span>
       <span><b>Working memory</b><span class="cx-sub">${mindPrev}</span></span>
       <span class="cx-badge">${lines.length} line${lines.length===1?'':'s'}</span></div>
-    <div class="ctx-row clk" onclick="ctxClose();openProjPersona()" title="${personaSet?'Edit':'Set'} this project's persona">
+    <div class="ctx-row clk" onclick="ctxClose();openProjBrief()" title="${briefSet?'Edit':'Set'} this project's brief">
       <span class="cx-ic">${CTX_ICONS.voice}</span>
-      <span><b>Persona</b><span class="cx-sub">${personaSet?esc(proj.persona.replace(/\s+/g,' ').slice(0,70)):'None — set standing instructions to shape this project’s voice.'}</span></span>
-      <span class="cx-badge">${personaSet?'set':'add'}</span></div>
+      <span><b>Brief</b><span class="cx-sub">${briefSet?esc(proj.brief.replace(/\s+/g,' ').slice(0,70)):'None — set standing instructions to shape this project’s voice.'}</span></span>
+      <span class="cx-badge">${briefSet?'set':'add'}</span></div>
     ${pinRows||`<div class="ctx-row"><span class="cx-ic">${CTX_ICONS.pins}</span><span><b>Nothing pinned</b><span class="cx-sub">Attach files or pin a memory with the paperclip — they ride along with the message.</span></span></div>`}
     <div class="ctx-foot">After each answer, the memories it actually used appear beneath it — click any to inspect. Every step is signed into the ledger.</div>`;
 }

@@ -81,7 +81,21 @@ pub struct Consciousness {
 impl Consciousness {
     /// Load `<home>/consciousness.json`, or start empty.
     pub fn open(home: &str) -> Self {
-        let path = std::path::Path::new(home).join("consciousness.json");
+        Self::open_at(std::path::Path::new(home).join("consciousness.json"))
+    }
+
+    /// Open (or create) a durable agent's OWN consciousness slice, keyed by its stable id (not its
+    /// renameable name) at `<home>/consciousness/<agent_id>.json` - a separate distilled self-model
+    /// from the global one, holding only what THIS agent has learned. Falls back to the global file
+    /// for ad-hoc/delegate runs is the caller's job (pass `None` for `agent_id` and call [`Self::open`]
+    /// instead).
+    pub fn open_for_agent(home: &str, agent_id: &str) -> Self {
+        let dir = std::path::Path::new(home).join("consciousness");
+        let _ = std::fs::create_dir_all(&dir);
+        Self::open_at(dir.join(format!("{}.json", sanitize_id(agent_id))))
+    }
+
+    fn open_at(path: PathBuf) -> Self {
         let inner = std::fs::read_to_string(&path)
             .ok()
             .and_then(|s| serde_json::from_str::<Persisted>(&s).ok())
@@ -128,6 +142,28 @@ impl Consciousness {
     /// Re-distill: keep pinned lines, then fill the rest from the most important TRUSTED identity
     /// and semantic memories. Deterministic (no model call) so every line traces to real evidence.
     pub fn distill(&self, mem: &Memory, ledger: &Ledger) -> Result<State, String> {
+        self.distill_filtered(mem, ledger, None)
+    }
+
+    /// Re-distill a durable agent's OWN consciousness slice: same candidate pool as [`Self::distill`]
+    /// (trusted, non-document, user-global identity/semantic facts), narrowed to facts THIS agent
+    /// itself wrote (`actor == "agent:<name>"` - see `ToolCtx::agent_actor`). Call on a `Consciousness`
+    /// opened via [`Self::open_for_agent`]; reuses the same distillation/pinning/history machinery.
+    pub fn distill_for_agent(
+        &self,
+        mem: &Memory,
+        ledger: &Ledger,
+        agent_name: &str,
+    ) -> Result<State, String> {
+        self.distill_filtered(mem, ledger, Some(&format!("agent:{agent_name}")))
+    }
+
+    fn distill_filtered(
+        &self,
+        mem: &Memory,
+        ledger: &Ledger,
+        actor_filter: Option<&str>,
+    ) -> Result<State, String> {
         // Gather candidates first (no lock held during DB work). The GLOBAL block distils only the
         // USER-GLOBAL ring, so a project's semantic note can never pollute the working memory shown
         // in every project. Per-project facts live in the separate per-project block (`project_block`).
@@ -148,6 +184,11 @@ impl Consciousness {
                     .as_deref()
                     .map(|s| s.starts_with(crate::corpus::DOC_SOURCE_PREFIX))
                     .unwrap_or(false);
+                if let Some(af) = actor_filter {
+                    if r.actor != af {
+                        continue;
+                    }
+                }
                 if r.taint.eq_ignore_ascii_case("trusted") && !is_doc {
                     cands.push(r);
                 }
@@ -219,7 +260,12 @@ impl Consciousness {
             .append(
                 "consciousness.distill",
                 "user",
-                json!({ "version": next_version, "n": lines.len(), "lines": sources }),
+                json!({
+                    "version": next_version, "n": lines.len(), "lines": sources,
+                    // Which slice changed: absent = the global consciousness, else the agent actor
+                    // whose own slice this is - so the ledger disambiguates the two.
+                    "actor_filter": actor_filter,
+                }),
             )
             .map_err(|e| e.to_string())?;
         push_history(&mut g);
@@ -404,6 +450,15 @@ pub fn project_block(mem: &Memory, project_id: &str) -> Option<String> {
     Some(s)
 }
 
+/// Defensive filesystem-safe filename for an agent id (ids are internally-generated hex strings
+/// already safe as-is, but this keeps a stray/foreign id from escaping the consciousness dir).
+fn sanitize_id(id: &str) -> String {
+    id.chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .take(64)
+        .collect()
+}
+
 fn push_history(g: &mut Persisted) {
     if g.history.len() >= HISTORY {
         g.history.pop_front();
@@ -542,5 +597,61 @@ mod tests {
         );
         // A project with no facts yields no block (a fresh project starts with an empty block).
         assert!(project_block(&mem, "EMPTY").is_none());
+    }
+
+    #[test]
+    fn per_agent_consciousness_isolates_by_actor() {
+        let (_d, mem, ledger, _c) = setup();
+        // A fact the user taught directly (actor "core"/default) belongs only in the GLOBAL block.
+        mem.remember(WriteReq::new(Region::Identity, "the user is a rustacean").importance(0.9))
+            .unwrap();
+        // A fact "Scout" learned about itself (actor "agent:Scout") belongs only in Scout's slice.
+        mem.remember(
+            WriteReq::new(Region::Semantic, "Scout prefers citing primary sources")
+                .importance(0.9)
+                .actor("agent:Scout"),
+        )
+        .unwrap();
+        // A fact a DIFFERENT agent learned must not leak into Scout's slice either.
+        mem.remember(
+            WriteReq::new(Region::Semantic, "Writer prefers short paragraphs")
+                .importance(0.9)
+                .actor("agent:Writer"),
+        )
+        .unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let scout = Consciousness::open_for_agent(dir.path().to_str().unwrap(), "ag-scout");
+        scout.distill_for_agent(&mem, &ledger, "Scout").unwrap();
+        let block = scout.prompt_block().unwrap_or_default();
+        assert!(
+            block.contains("citing primary sources"),
+            "Scout's own fact present: {block}"
+        );
+        assert!(
+            !block.contains("rustacean"),
+            "a user-taught (non-agent-actor) fact must not leak into an agent's slice: {block}"
+        );
+        assert!(
+            !block.contains("short paragraphs"),
+            "a DIFFERENT agent's fact must not leak into Scout's slice: {block}"
+        );
+
+        // Two agents get separate storage files under the same home.
+        let writer = Consciousness::open_for_agent(dir.path().to_str().unwrap(), "ag-writer");
+        writer.distill_for_agent(&mem, &ledger, "Writer").unwrap();
+        let wblock = writer.prompt_block().unwrap_or_default();
+        assert!(wblock.contains("short paragraphs"));
+        assert!(!wblock.contains("citing primary sources"));
+        assert!(dir
+            .path()
+            .join("consciousness")
+            .join("ag-scout.json")
+            .exists());
+        assert!(dir
+            .path()
+            .join("consciousness")
+            .join("ag-writer.json")
+            .exists());
     }
 }

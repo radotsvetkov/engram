@@ -1222,6 +1222,7 @@ for line in sys.stdin:
             on_step: None,
             on_narration: None,
             allowed_tools: None,
+            agent_actor: None,
         }
     }
 

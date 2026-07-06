@@ -6,6 +6,37 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-07-06
+
+### Added
+- **A durable agent's own charter and self-model.** `AgentDef` gains a `charter` field (its
+  role/system prompt, renamed from `role` — a non-colliding name for the per-agent identity
+  register, distinct from persona/brief which shape voice rather than mandate) and an optional
+  `home_project` (a default project scope for a non-coding agent — a content writer or
+  researcher — with no working directory required; kanban-board task runs, which previously had
+  no project scope at all, now resolve to the assigned agent's home project). Memory writes made
+  through `memory_remember` during a named agent's run now attribute to that agent
+  (`agent:<name>`) instead of the generic literal `"agent"`, which makes a genuinely new feature
+  possible: each durable agent gets its own distilled, always-loaded self-model — what *that
+  agent* has learned — kept separate from the shared global one and from every other agent's.
+  New surface: `GET/POST /v1/agents/{id}/consciousness[/distill]`, `engram agents consciousness
+  <id> [--distill]`, a TUI `c` keybinding on the Agents view, and a "Self-model" link in the
+  desktop agent's track-record panel.
+- **Scheduled jobs bind to a durable agent as a first-class field.** `Job.agent_id` replaces the
+  old `payload.agent` convention (still read as a fallback for a job scheduled before this
+  change), so "this job runs as this agent" is a documented contract instead of an emergent
+  payload key — surfaced in `engram schedule add/edit --agent`, the TUI schedule form, and the
+  desktop scheduler.
+
+### Changed
+- **Naming cleanup, closing two real collisions found in a grounded architecture review:**
+  `Project.persona` is renamed to `Project.brief` (the daemon-wide SOUL.md persona and a
+  project's own standing instructions used to share one field name, disambiguated only by which
+  accessor happened to be called), and the CLI's `engram memory identity[-edit|-add|-remove
+  |-revert]` verbs are renamed to `consciousness*` to match the API/route/struct layer, which had
+  called this feature `Consciousness` all along. Both old names still work (`persona`/`identity`
+  accepted as aliases) so no existing script or saved `workspace.json`/`agents.json` breaks.
+
 ## [0.3.1] - 2026-07-06
 
 ### Added
@@ -182,7 +213,8 @@ The foundation: a reactive core, a signed ledger, and hybrid memory.
   learning loop with an A/B promotion gate.
 - **Benchmark harness** (`engram-bench`) for paraphrase recall and footprint.
 
-[Unreleased]: https://github.com/radotsvetkov/engram/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/radotsvetkov/engram/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/radotsvetkov/engram/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/radotsvetkov/engram/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/radotsvetkov/engram/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/radotsvetkov/engram/releases/tag/v0.2.0

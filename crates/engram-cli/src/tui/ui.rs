@@ -533,7 +533,9 @@ fn footer_hint(app: &App) -> &'static str {
         View::Schedule => " ↑↓ move   a add   e edit   ↵ run   d delete   r refresh   ? help",
         View::Autonomy => " ↑↓ move   a approve   d deny   r refresh   ? help",
         View::Ledger => " ↑↓ move   r refresh   / cmds   ? help",
-        View::Agents => " ↑↓ move   n new   e edit   p policy   d delete (×2)   r refresh",
+        View::Agents => {
+            " ↑↓ move   n new   e edit   p policy   c self-model   d delete (×2)   r refresh"
+        }
         View::Settings => {
             " ↑↓ move   ↵ edit/toggle (fields·MCP·tools)   x clear secret   d del MCP   t test"
         }

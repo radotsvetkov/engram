@@ -1724,10 +1724,11 @@ impl App {
             title: "New agent".into(),
             fields: vec![
                 FormField::new("Name", "", "required"),
-                FormField::new("Role", "", "system prompt / specialty"),
+                FormField::new("Charter", "", "system prompt / specialty"),
                 FormField::new("Model", "", "blank = global default"),
                 FormField::new("Provider", "", "blank = global"),
                 FormField::new("Emoji", "", "e.g. 🔎"),
+                FormField::new("Home project", "", "blank = user-global only"),
             ],
             sel: 0,
             cursor: 0,
@@ -1747,10 +1748,15 @@ impl App {
             title: format!("Edit agent · {}", s("name")),
             fields: vec![
                 FormField::new("Name", s("name"), "required"),
-                FormField::new("Role", s("role"), "system prompt / specialty"),
+                FormField::new("Charter", s("charter"), "system prompt / specialty"),
                 FormField::new("Model", s("model"), "blank = global default"),
                 FormField::new("Provider", s("provider"), "blank = global"),
                 FormField::new("Emoji", s("emoji"), ""),
+                FormField::new(
+                    "Home project",
+                    s("home_project"),
+                    "blank = user-global only",
+                ),
             ],
             sel: 0,
             cursor: 0,
@@ -1782,6 +1788,42 @@ impl App {
             sel: 0,
             cursor: 0,
             kind: FormKind::SetPolicy { id },
+        });
+    }
+
+    /// Show a quick summary of the selected agent's OWN distilled self-model (what it has
+    /// learned, separate from the user's global working memory) as a toast.
+    pub fn show_agent_consciousness(&mut self) {
+        let Some(a) = self.agents.get(self.sel) else {
+            return;
+        };
+        let Some(id) = a.get("id").and_then(|v| v.as_str()).map(str::to_string) else {
+            return;
+        };
+        let name = a
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("agent")
+            .to_string();
+        self.toast(format!("· loading {name}'s self-model…"));
+        self.fetch(move |c| async move {
+            match c.agent_consciousness_distill(&id).await {
+                Ok(st) => {
+                    let lines = st
+                        .get("lines")
+                        .and_then(|v| v.as_array())
+                        .cloned()
+                        .unwrap_or_default();
+                    let msg = if lines.is_empty() {
+                        format!("· {name} hasn't learned anything of its own yet")
+                    } else {
+                        let first = lines[0].get("text").and_then(|v| v.as_str()).unwrap_or("");
+                        format!("· {name} knows {} thing(s) — e.g. \"{first}\"", lines.len())
+                    };
+                    Some(Msg::Toast(msg))
+                }
+                Err(e) => Some(Msg::Toast(format!("· couldn't load self-model: {e}"))),
+            }
         });
     }
 
@@ -1817,6 +1859,7 @@ impl App {
                 FormField::new("Name", "", "required"),
                 FormField::new("When", "", "e.g. every weekday at 9am"),
                 FormField::new("Task title", "", "what to run on each fire"),
+                FormField::new("Agent id", "", "blank = default agent"),
             ],
             sel: 0,
             cursor: 0,
@@ -1839,6 +1882,7 @@ impl App {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
+        let agent_id = j.agent_id.clone().unwrap_or_default();
         self.form = Some(FormModal {
             title: format!(
                 "Edit scheduled job · {} — now: {}",
@@ -1849,6 +1893,7 @@ impl App {
                 FormField::new("Name", j.name.clone(), "required"),
                 FormField::new("When", "", "blank keeps the current cadence"),
                 FormField::new("Task title", title, "what to run on each fire"),
+                FormField::new("Agent id", agent_id, "blank clears to default agent"),
             ],
             sel: 0,
             cursor: 0,
@@ -2195,7 +2240,13 @@ impl App {
                 // create, send blanks (the daemon treats them as global defaults).
                 let mut m = serde_json::Map::new();
                 m.insert("name".into(), json!(name));
-                for (key, idx) in [("role", 1), ("model", 2), ("provider", 3), ("emoji", 4)] {
+                for (key, idx) in [
+                    ("charter", 1),
+                    ("model", 2),
+                    ("provider", 3),
+                    ("emoji", 4),
+                    ("home_project", 5),
+                ] {
                     let v = get(idx);
                     if !edit || !v.is_empty() {
                         m.insert(key.into(), json!(v));
@@ -2255,6 +2306,7 @@ impl App {
                 let name = get(0);
                 let when = get(1);
                 let title = get(2);
+                let agent_id = get(3);
                 let editing = id.is_some();
                 if name.is_empty() || (!editing && when.is_empty()) {
                     self.toast(if editing {
@@ -2272,7 +2324,10 @@ impl App {
                 match id {
                     Some(id) => {
                         self.fetch(move |c| async move {
-                            match c.schedule_update(&id, &name, &when, payload).await {
+                            match c
+                                .schedule_update(&id, &name, &when, payload, Some(&agent_id))
+                                .await
+                            {
                                 Ok(_) => c.schedule().await.ok().map(Msg::Schedule),
                                 Err(e) => Some(Msg::Toast(format!("· couldn't update job: {e}"))),
                             }
@@ -2281,7 +2336,7 @@ impl App {
                     }
                     None => {
                         self.fetch(move |c| async move {
-                            match c.schedule_add(&name, &when, payload).await {
+                            match c.schedule_add(&name, &when, payload, &agent_id).await {
                                 Ok(_) => c.schedule().await.ok().map(Msg::Schedule),
                                 Err(e) => Some(Msg::Toast(format!("· couldn't schedule: {e}"))),
                             }

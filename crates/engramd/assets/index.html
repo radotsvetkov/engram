@@ -504,11 +504,9 @@
   .thinking i:nth-child(2){ animation-delay:.18s; } .thinking i:nth-child(3){ animation-delay:.36s; }
   @keyframes tpulse { 0%,60%,100%{ opacity:.25; transform:translateY(0); } 30%{ opacity:.9; transform:translateY(-3px); } }
   .msg .note { font-size:11px; color:var(--text-muted); margin-top:4px; }
-  /* terminal - the glass-box shell */
-  .term-wrap { height:100%; display:grid; grid-template-columns:232px minmax(0,1fr); }
-  .ftree { border-right:1px solid var(--border); overflow:auto; padding:10px 8px; background:var(--surface-0); }
-  .ft-head { font:11px var(--mono); color:var(--text-muted); text-transform:uppercase; letter-spacing:.06em; padding:2px 6px 9px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  /* git panel above the file tree - read-only status/diffs/log */
+  /* terminal - the glass-box shell (pure shell; the folder browser is its own drawer now) */
+  .term-wrap { height:100%; display:flex; }
+  /* git panel above the file list - read-only status/diffs/log */
   #gitPanel { margin-bottom:10px; }
   .git-head { display:flex; align-items:center; gap:7px; padding:7px 8px; border:1px solid var(--border); border-radius:9px;
     background:var(--surface-1); cursor:pointer; font-size:12px; color:var(--text-secondary); }
@@ -572,17 +570,48 @@
   .tg-card .primary { background:var(--accent); color:var(--accent-ink); border:none; border-radius:9px; padding:10px 20px; font-weight:600; font-size:14px; cursor:pointer; }
   .tg-card .primary:hover { filter:brightness(1.06); }
   .tg-fine { margin-top:14px; font-size:12px; color:var(--text-muted); }
-  /* per-project terminal drawer - a wider, right-side sibling of .panel; no backdrop scrim so chat
+  /* per-project terminal drawer - a right-side sibling of .panel; no backdrop scrim so chat
      stays interactive behind it (same non-modal feel .panel already has). */
-  .term-drawer { position:fixed; top:0; right:0; width:min(880px,92vw); height:100vh; background:var(--surface-1);
+  .term-drawer { position:fixed; top:0; right:0; width:min(780px,92vw); height:100vh; background:var(--surface-1);
     border-left:1px solid var(--border-strong); transform:translateX(100%); transition:transform .2s ease-out;
     display:flex; flex-direction:column; z-index:22; box-shadow:-18px 0 48px rgba(0,0,0,.35); }
   .term-drawer.open { transform:translateX(0); }
-  .term-drawer .td-head { display:flex; align-items:center; gap:8px; padding:12px 14px; border-bottom:1px solid var(--border); flex:none; }
-  .term-drawer .td-head b { font-size:13px; font-weight:600; }
-  .term-drawer .td-head .x { margin-left:auto; cursor:pointer; color:var(--text-muted); background:none; border:none; font-size:16px; transition:color var(--dur-1); }
-  .term-drawer .td-head .x:hover { color:var(--text-primary); }
+  .td-head { display:flex; align-items:center; gap:8px; padding:12px 14px; border-bottom:1px solid var(--border); flex:none; }
+  .td-head b { font-size:13px; font-weight:600; }
+  .td-head > svg { width:15px; height:15px; color:var(--text-muted); flex:none; }
+  .td-head .td-sub { font-size:11px; color:var(--text-muted); text-transform:uppercase; letter-spacing:.06em; }
+  .td-head .x { margin-left:auto; cursor:pointer; color:var(--text-muted); background:none; border:none; font-size:16px; transition:color var(--dur-1); }
+  .td-head .x:hover { color:var(--text-primary); }
   .term-drawer .term-wrap { height:auto; flex:1; min-height:0; }
+  /* per-project files drawer - the folder browser + file preview, the terminal's sibling.
+     Browsing what's IN the project and running commands are different jobs; each gets a surface. */
+  .files-drawer { position:fixed; top:0; right:0; width:min(1020px,94vw); height:100vh; background:var(--surface-1);
+    border-left:1px solid var(--border-strong); transform:translateX(100%); transition:transform .2s ease-out;
+    display:flex; flex-direction:column; z-index:22; box-shadow:-18px 0 48px rgba(0,0,0,.35); }
+  .files-drawer.open { transform:translateX(0); }
+  .fb-wrap { flex:1; min-height:0; display:grid; grid-template-columns:280px minmax(0,1fr); }
+  .fb-side { border-right:1px solid var(--border); overflow:auto; padding:10px 8px; background:var(--surface-0); display:flex; flex-direction:column; }
+  .fb-path { font:11px var(--mono); color:var(--text-muted); padding:2px 6px 9px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; direction:rtl; text-align:left; }
+  .fb-list { flex:1; }
+  .fb-hid { display:flex; align-items:center; gap:6px; font-size:11px; color:var(--text-muted); padding:8px 6px 2px; cursor:pointer; user-select:none; flex:none; }
+  .fb-hid input { accent-color:var(--accent); }
+  .ft-row .ft-size { flex:none; font:10.5px var(--mono); color:var(--text-muted); }
+  .ft-row.sel { background:var(--accent-soft); color:var(--text-primary); }
+  .ft-row.sel .fname { color:var(--text-primary); }
+  .fprev { display:flex; flex-direction:column; min-width:0; background:var(--surface-0); }
+  .fprev-head { display:flex; align-items:center; gap:10px; padding:10px 16px; border-bottom:1px solid var(--border); flex:none; }
+  .fprev-head .fp-name { font:12.5px var(--mono); color:var(--text-primary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .fprev-head .fp-meta { flex:none; font-size:11px; color:var(--text-muted); }
+  .fp-dl { flex:none; font-family:inherit; font-size:11.5px; color:var(--accent); text-decoration:none; border:1px solid var(--border); border-radius:7px; padding:3px 9px; background:none; cursor:pointer; }
+  .fp-dl:hover { border-color:var(--border-strong); }
+  .fprev-body { flex:1; overflow:auto; padding:14px 18px; min-height:0; }
+  .fp-pre { margin:0; }
+  .fp-pre code { font:12.5px/1.6 var(--mono); white-space:pre; }
+  .fp-trunc { font-size:11.5px; color:var(--warning); background:color-mix(in srgb, var(--warning) 10%, transparent); border-radius:7px; padding:6px 10px; margin-bottom:10px; }
+  .fprev-empty { height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; color:var(--text-muted); font-size:13px; }
+  .fprev-empty svg { width:30px; height:30px; opacity:.6; }
+  .fprev-img { display:flex; align-items:center; justify-content:center; }
+  .fprev-img img { max-width:100%; max-height:100%; border-radius:8px; }
   .td-tabs { display:flex; align-items:center; gap:4px; padding:8px 10px 0; flex:none; overflow-x:auto; }
   .td-tab { display:flex; align-items:center; gap:6px; padding:6px 10px; border-radius:8px 8px 0 0; cursor:pointer; font-size:12px;
     color:var(--text-secondary); background:var(--surface-0); border:1px solid var(--border); border-bottom:none; white-space:nowrap; }
@@ -1043,7 +1072,7 @@
   .kbtn:hover { border-color:var(--border-strong); color:var(--text-primary); }
   .kbtn kbd { font:11px var(--mono); color:var(--text-muted); }
   .kbtn .term-badge { font:600 10px var(--mono); color:var(--accent-ink); background:var(--accent); border-radius:8px; padding:1px 6px; }
-  #termBtn svg { width:15px; height:15px; flex:none; }
+  #termBtn svg, #filesBtn svg { width:15px; height:15px; flex:none; }
   .railgear { background:none; border:none; color:var(--text-secondary); cursor:pointer; padding:7px 9px; border-radius:var(--radius);
     display:flex; align-items:center; gap:9px; font:inherit; width:100%; }
   .railgear:hover { background:var(--surface-2); color:var(--text-primary); }
@@ -1788,7 +1817,8 @@ html[data-engram-theme="light"] .sched-pick .sp-row select, html[data-engram-the
       <span class="git-top-wrap" id="gitTopWrap"></span>
       <h1 id="viewname">Tasks</h1>
       <div class="right">
-        <button class="kbtn" id="termBtn" onclick="toggleTerminalDrawer()" title="Terminal — this project's files &amp; shell (⌘`)" aria-label="Terminal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="2.6"/><path d="m7.5 9.5 2.6 2.5-2.6 2.5M13 14.5h3.6"/></svg><span id="termBtnBadge" class="term-badge" style="display:none"></span></button>
+        <button class="kbtn" id="filesBtn" onclick="toggleFilesDrawer()" title="Folder — browse this project's files (⌘E)" aria-label="Folder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 18.3a1.9 1.9 0 0 1-1.9 1.9H4.9A1.9 1.9 0 0 1 3 18.3V5.7a1.9 1.9 0 0 1 1.9-1.9h4.2l2 2.4h8A1.9 1.9 0 0 1 21 8.1v10.2Z"/></svg></button>
+        <button class="kbtn" id="termBtn" onclick="toggleTerminalDrawer()" title="Terminal — this project's shell (⌘`)" aria-label="Terminal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="2.6"/><path d="m7.5 9.5 2.6 2.5-2.6 2.5M13 14.5h3.6"/></svg><span id="termBtnBadge" class="term-badge" style="display:none"></span></button>
         <button class="kbtn" onclick="openPalette()" title="Command palette (⌘K)" aria-label="Command palette"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3-3"/></svg> <kbd aria-hidden="true">⌘K</kbd></button>
         <button id="haltBtn" class="stopbtn" style="display:none" onclick="toggleHalt()" title="Emergency stop: halts every running task at its next step"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2.5"/></svg><span id="haltLabel">Stop</span></button>
       </div>
@@ -1944,6 +1974,7 @@ const ICONS = {
   Skills: SVG('<path d="M12 3.2l1.7 4.5 4.5 1.7-4.5 1.7L12 15.6l-1.7-4.5L5.8 9.4l4.5-1.7L12 3.2Z"/><path d="M18.4 14.2l.8 2.1 2.1.8-2.1.8-.8 2.1-.8-2.1-2.1-.8 2.1-.8.8-2.1Z"/>'),
   Artifacts: SVG('<rect x="3" y="3.5" width="18" height="17" rx="2.6"/><circle cx="8.4" cy="9" r="1.7"/><path d="m4 18 5-5 4 4 3-3 4 4"/>'),
   Terminal: SVG('<rect x="3" y="4.5" width="18" height="15" rx="2.6"/><path d="m7.5 9.5 2.6 2.5-2.6 2.5M13 14.5h3.6"/>'),
+  Folder: SVG('<path d="M21 18.3a1.9 1.9 0 0 1-1.9 1.9H4.9A1.9 1.9 0 0 1 3 18.3V5.7a1.9 1.9 0 0 1 1.9-1.9h4.2l2 2.4h8A1.9 1.9 0 0 1 21 8.1v10.2Z"/>'),
   Activity: SVG('<path d="M12 3.2l6.5 2.6v5.2c0 4.3-2.8 7-6.5 8.4-3.7-1.4-6.5-4.1-6.5-8.4V5.8L12 3.2Z"/><path d="m9.2 11.8 2 2 3.6-3.8"/>'),
   Settings: SVG('<path d="M21 5H10M6 5H3M21 12h-7M10 12H3M21 19h-4M13 19H3"/><circle cx="8" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="15" cy="19" r="2"/>'),
   Checkpoints: SVG('<path d="M3 12a9 9 0 1 0 2.6-6.4"/><path d="M3 4v4h4"/><path d="M12 8v4.5l3 1.8"/>'),
@@ -2707,9 +2738,9 @@ async function pickProject(id){ projMenuOpen=false; WS.activeProject=id; WS.acti
   // and repaints on 'done'; wiping them mid-run silently dropped the finished answer from view.
   WS.byId=keepBusyById(); renderSidebar();
   await loadSessions(); WS.activeSession=(WS.sessions[0]||{}).id||null; renderSidebar(); if(state.route==='Chat') renderChat();
-  // Retarget the terminal drawer and git chip to the newly active project - each project keeps its
-  // own tabs/scrollback in memory, so switching back later restores exactly where it was left.
-  if(TERMS.open) renderTermDrawer(); termBtnSync(); refreshGitTop(); }
+  // Retarget the terminal/files drawers and git chip to the newly active project - each project
+  // keeps its own tabs/scrollback/browse spot in memory, so switching back restores where it was.
+  if(TERMS.open) renderTermDrawer(); if(FILES.open) renderFilesDrawer(); termBtnSync(); refreshGitTop(); }
 // Prune the session cache but keep any session with a live local run (so its streaming object and
 // its final repaint survive a project switch).
 function keepBusyById(){ const keep={}; for(const sid of _busySessions){ if(WS.byId[sid]) keep[sid]=WS.byId[sid]; } return keep; }
@@ -5094,7 +5125,8 @@ function paletteCommands(){
   ((WS&&WS.sessions)||[]).slice(0,5).forEach(s=>cmds.push({group:'Chats', t:s.title||'New chat', sub:s.updated_ms?fmtAgo(s.updated_ms):'', ic:ICONS.Chat, run:()=>{ go('Chat'); openSession(s.id); }}));
   cmds.push({group:a, t:'New task', sub:'create a task', run:()=>{ go('Tasks'); setTimeout(()=>document.getElementById('composer')?.focus(),60); }});
   cmds.push({group:a, t:'Ask Engram', sub:'open chat', ic:ICONS.Chat, run:()=>go('Chat')});
-  cmds.push({group:a, t:'Browse files', sub:'the current project\'s folder tree, in the glass-box terminal', ic:ICONS.Terminal, run:()=>openTerminalDrawer()});
+  cmds.push({group:a, t:'Browse files', sub:'this project\'s folder — open any file in a preview', ic:ICONS.Folder, key:'⌘E', run:()=>openFilesDrawer()});
+  cmds.push({group:a, t:'Open terminal', sub:'this project\'s glass-box shell', ic:ICONS.Terminal, key:'⌘`', run:()=>openTerminalDrawer()});
   cmds.push({group:a, t:'Verify ledger', sub:'re-check the signed chain', run:verifyLedgerNow});
   cmds.push({group:a, t:halted?'Resume agents':'Emergency stop', sub:'halt running tasks at the next step', run:toggleHalt});
   cmds.push({group:a, t:'Pending approvals', sub:'review what unattended agents staged to send', run:openApprovals});
@@ -5132,6 +5164,12 @@ window.addEventListener('keydown', e=>{
   if((e.metaKey||e.ctrlKey) && k==='u' && document.getElementById('attachFileInput')){ e.preventDefault(); attachPickFiles(); return; }
   // ⌘` toggles the per-project terminal drawer - the conventional "open terminal" chord.
   if((e.metaKey||e.ctrlKey) && k==='`'){ e.preventDefault(); toggleTerminalDrawer(); return; }
+  // ⌘E toggles the per-project files drawer (the explorer chord, sans shift). Plain Ctrl+E inside
+  // a text field is left alone - on macOS/WebKit that's the readline move-to-end-of-line binding.
+  if((e.metaKey||e.ctrlKey) && !e.shiftKey && !e.altKey && k==='e'){
+    const a=document.activeElement, editing=a && (/^(input|textarea|select)$/i.test(a.tagName) || a.isContentEditable);
+    if(!(editing && e.ctrlKey && !e.metaKey)){ e.preventDefault(); toggleFilesDrawer(); return; }
+  }
   // ⌘1..⌘9 jump straight to a view (matching the rail order) — muscle-memory nav like Slack/Linear.
   if((e.metaKey||e.ctrlKey) && !e.shiftKey && !e.altKey && k>='1' && k<='9'){
     const v=ALL_VIEWS[+k-1]; if(v){ e.preventDefault(); go(v); return; }
@@ -5153,12 +5191,13 @@ window.addEventListener('keydown', e=>{
   if(k==='escape' && !document.getElementById('receipt').hidden){ e.preventDefault(); closeReceipt(); return; }
   if(k==='escape' && !document.getElementById('projModal').hidden){ e.preventDefault(); closeProjModal(); return; }
   if(k==='escape' && document.getElementById('panel').classList.contains('open')){ e.preventDefault(); closePanel(); return; }
+  if(k==='escape' && FILES.open){ e.preventDefault(); closeFilesDrawer(); return; }
   if(k==='escape' && TERMS.open){ e.preventDefault(); closeTerminalDrawer(); return; }
   // Escape stops the active chat's run (matching Claude) — only when nothing else claimed the key.
   if(k==='escape' && state.route==='Chat' && _busySessions.has(WS.activeSession)){ e.preventDefault(); stopChat(WS.activeSession); }
 });
 
-// ---- Terminal - a per-project drawer, not a general shell tied to nothing --------------------
+// ---- Terminal - a per-project drawer, a PURE shell (files live in their own drawer) -----------
 // Each project keeps its OWN set of terminal tabs (cwd/scrollback/history) in TERMS.byProject, so
 // switching projects never destroys another project's session, and there's no daemon-wide "general"
 // terminal falling back to a folder the user never chose.
@@ -5166,8 +5205,9 @@ let TERMS = { byProject:{}, activeByProject:{}, open:false };
 let _termTabSeq=1;
 function termShort(p){ if(!p) return ''; const s=p.split('/').filter(Boolean); return (s.length>2?'.../':'/')+s.slice(-2).join('/'); }
 const attrJson = x => escAttr(JSON.stringify(x));
-async function loadTree(path){
-  try{ return await J(tok('/v1/fs'+(path?('?path='+encodeURIComponent(path)):''))); }catch(_){ return null; }
+async function loadTree(path, hidden){
+  const q=[]; if(path) q.push('path='+encodeURIComponent(path)); if(hidden) q.push('hidden=1');
+  try{ return await J(tok('/v1/fs'+(q.length?('?'+q.join('&')):''))); }catch(_){ return null; }
 }
 function termTabs(){ const pid=WS.activeProject; return TERMS.byProject[pid]||(TERMS.byProject[pid]=[]); }
 function activeTab(){ const tabs=termTabs(); const id=TERMS.activeByProject[WS.activeProject]; return tabs.find(t=>t.id===id)||tabs[0]||null; }
@@ -5198,7 +5238,7 @@ async function resolveProjectWorkdir(){
 async function ensureActiveTab(){
   if(!termTabs().length){
     const cwd=await resolveProjectWorkdir();
-    const tab={ id:'t'+(_termTabSeq++), cwd, parent:null, tree:[], log:[], hist:[], hi:-1, busy:false, noFolder:!cwd };
+    const tab={ id:'t'+(_termTabSeq++), cwd, log:[], hist:[], hi:-1, busy:false, noFolder:!cwd };
     termTabs().push(tab); TERMS.activeByProject[WS.activeProject]=tab.id;
   }
   return activeTab();
@@ -5209,6 +5249,7 @@ function termBtnSync(){
   b.textContent = n>1 ? String(n) : ''; b.style.display = n>1 ? 'inline-flex' : 'none';
 }
 async function openTerminalDrawer(){
+  closeFilesDrawer();   // the two right-side drawers share the edge - one at a time
   TERMS.open=true; await ensureActiveTab();
   const dr=document.getElementById('termDrawer'); if(dr) dr.classList.add('open');
   await renderTermDrawer();
@@ -5217,7 +5258,7 @@ function closeTerminalDrawer(){ TERMS.open=false; const dr=document.getElementBy
 function toggleTerminalDrawer(){ TERMS.open ? closeTerminalDrawer() : openTerminalDrawer(); }
 async function termNewTab(){
   const cwd=await resolveProjectWorkdir();
-  const tab={ id:'t'+(_termTabSeq++), cwd, parent:null, tree:[], log:[], hist:[], hi:-1, busy:false, noFolder:!cwd };
+  const tab={ id:'t'+(_termTabSeq++), cwd, log:[], hist:[], hi:-1, busy:false, noFolder:!cwd };
   termTabs().push(tab); TERMS.activeByProject[WS.activeProject]=tab.id;
   await renderTermDrawer();
 }
@@ -5241,7 +5282,9 @@ async function termPickProjectFolder(){
     const p=await J('/v1/projects/'+encodeURIComponent(WS.activeProject),{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({workdir:dir})});
     const i=WS.projects.findIndex(x=>x.id===p.id); if(i>=0) WS.projects[i]=p;
     const tab=activeTab(); if(tab){ tab.cwd=dir; tab.noFolder=false; }
-    renderTermDrawer(); refreshGitTop(); notify('Project folder set - '+dir,'ok');
+    const fst=FILES.byProject[WS.activeProject]; if(fst){ fst.cwd=dir; fst.parent=null; fst.sel=null; }
+    if(TERMS.open) renderTermDrawer(); if(FILES.open) renderFilesDrawer();
+    refreshGitTop(); notify('Project folder set - '+dir,'ok');
   }catch(e){ notify('Couldn\'t save the folder - '+e.message); }
 }
 async function renderTermDrawer(){
@@ -5249,7 +5292,7 @@ async function renderTermDrawer(){
   if(!dr){ dr=document.createElement('div'); dr.id='termDrawer'; dr.className='term-drawer'; document.body.appendChild(dr); }
   if(TERMS.open) dr.classList.add('open');
   const proj=curProject(), tab=await ensureActiveTab();
-  const head=`<div class="td-head"><b>${esc(proj.name)}</b><span class="grow"></span><button class="x" onclick="closeTerminalDrawer()" aria-label="Close">✕</button></div>`;
+  const head=`<div class="td-head">${ICONS.Terminal}<b>${esc(proj.name)}</b><span class="td-sub">terminal</span><span class="grow"></span><button class="x" onclick="closeTerminalDrawer()" aria-label="Close">✕</button></div>`;
   if(tab.noFolder){
     // Only reachable if auto-provisioning a folder for this project actually FAILED (resolveProjectWorkdir
     // already toasted why) - the normal "no folder yet" case never gets here, it's provisioned silently.
@@ -5261,6 +5304,7 @@ async function renderTermDrawer(){
     </div></div>`;
     return;
   }
+  // A cheap /v1/fs probe doubles as the shell-consent gate check and normalizes tab.cwd.
   const fs=await loadTree(tab.cwd);
   if(!fs || fs.denied){
     dr.innerHTML=`${head}<div class="term-gate"><div class="tg-card">
@@ -5272,23 +5316,22 @@ async function renderTermDrawer(){
     </div></div>`;
     return;
   }
-  tab.cwd=fs.path; tab.parent=fs.parent; tab.tree=fs.entries||[];
+  tab.cwd=fs.path;
   if(!tab.log.length) tab.log=[{k:'sys',t:'Engram terminal, scoped to "'+proj.name+'". Every command you run is signed into the ledger. Type clear to reset.'}];
   dr.innerHTML=`${head}${termTabsHtml()}
     <div class="term-wrap">
-      <aside class="ftree" id="ftree"><div id="gitPanel"></div><div id="ftreeList"></div></aside>
       <div class="term" id="term">
         <div class="term-out" id="termOut"></div>
         <div class="term-in"><span class="term-prompt" id="termPrompt">${esc(termShort(tab.cwd))} $</span><input id="termCmd" class="term-cmd" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="run a command..."></div>
       </div></div>`;
-  renderTree(); paintTerm(); gitPanelLoad(); termBtnSync();
+  paintTerm(); termBtnSync();
   const inp=document.getElementById('termCmd'); inp.onkeydown=termKey; inp.focus();
   document.getElementById('term').addEventListener('mousedown', e=>{ if(e.target.tagName!=='INPUT' && (''+window.getSelection()).length===0) setTimeout(()=>inp.focus(),0); });
 }
 // ---- Git panel (read-only): branch, working-tree changes, recent commits ----------------------
-// Viewing only, by design - staging/committing/pushing stay deliberate terminal acts. Clicking a
-// file opens its unified diff, rendered with the same diff blocks chat uses. The row/log markup is
-// shared with the always-visible topbar git chip's popover (gitTopToggle below).
+// Lives in the files drawer's sidebar. Viewing only, by design - staging/committing/pushing stay
+// deliberate terminal acts. Clicking a file opens its unified diff, rendered with the same diff
+// blocks chat uses. The row/log markup is shared with the topbar git chip's popover (gitTopToggle).
 const GITP={ open:true };
 async function gitFetchStatus(){ try{ return await J('/v1/git/status?project='+encodeURIComponent(WS.activeProject)); }catch(_){ return null; } }
 function gitStatusBodyHtml(st){
@@ -5452,18 +5495,6 @@ function gitTopToggle(ev){
   wrap.appendChild(m);
 }
 document.addEventListener('click', e=>{ if(document.getElementById('gitTopMenu') && !e.target.closest('#gitTopWrap')) gitTopClose(); });
-function renderTree(){
-  const tab=activeTab(); if(!tab) return;
-  const el=document.getElementById('ftreeList')||document.getElementById('ftree'); if(!el) return;
-  const up = tab.parent ? `<div class="ft-row dir" onclick="termCd(${attrJson(tab.parent)})"><span class="fi">↰</span><span class="fname">..</span></div>` : '';
-  const rows = (tab.tree||[]).map(e=>{
-    const full=(tab.cwd.endsWith('/')?tab.cwd:tab.cwd+'/')+e.name;
-    return e.dir
-      ? `<div class="ft-row dir" onclick="termCd(${attrJson(full)})"><span class="fi">▸</span><span class="fname">${esc(e.name)}</span></div>`
-      : `<div class="ft-row file" onclick="termInsert(${attrJson(e.name)})"><span class="fi">·</span><span class="fname">${esc(e.name)}</span></div>`;
-  }).join('') || '<div class="ft-row" style="color:var(--text-muted);cursor:default">empty</div>';
-  el.innerHTML=`<div class="ft-head" title="${escAttr(tab.cwd)}">Files</div>${up}${rows}`;
-}
 function paintTerm(){
   const tab=activeTab(); if(!tab) return;
   const o=document.getElementById('termOut'); if(!o) return;
@@ -5497,25 +5528,204 @@ async function runTermCmd(cmd){
     if(r.stdout) tab.log.push({k:'out',t:String(r.stdout).replace(/\n+$/,'')});
     if(r.stderr) tab.log.push({k:'err',t:String(r.stderr).replace(/\n+$/,'')});
     const pr=document.getElementById('termPrompt'); if(pr) pr.textContent=termShort(tab.cwd)+' $';
-    const fs=await loadTree(tab.cwd); if(fs && !fs.denied){ tab.parent=fs.parent; tab.tree=fs.entries||[]; renderTree(); }
-    paintTerm(); gitPanelLoad();
+    // `cd` moved the tab - refresh the tab strip so its label/tooltip show the real cwd.
+    const ts=document.querySelector('#termDrawer .td-tabs'); if(ts) ts.outerHTML=termTabsHtml();
+    paintTerm();
+    // A command may have created/changed files - keep the open files drawer and git chip honest.
+    if(FILES.open) filesRefresh(); refreshGitTop();
   }catch(e){ tab.log.push({k:'err',t:'(could not run - '+(e.message||'error')+')'}); paintTerm(); }
   finally{ tab.busy=false; const i2=document.getElementById('termCmd'); if(i2){ i2.classList.remove('term-busy'); i2.focus(); } }
 }
-async function termCd(path){
-  // Browsing the tree changes the working directory (a read, not a recorded command); typing
-  // `cd` is what lands a signed line. Keeps the ledger about intent, not every folder click.
-  const tab=activeTab(); if(!tab) return;
-  const fs=await loadTree(path); if(!fs || fs.denied) return;
-  tab.cwd=fs.path; tab.parent=fs.parent; tab.tree=fs.entries||[]; renderTree();
-  const pr=document.getElementById('termPrompt'); if(pr) pr.textContent=termShort(tab.cwd)+' $';
-  const inp=document.getElementById('termCmd'); if(inp) inp.focus();
-}
-function termInsert(name){ const inp=document.getElementById('termCmd'); if(!inp) return; inp.value=(inp.value?inp.value+' ':'')+name; inp.focus(); }
 async function enableShell(){
   try{ await J('/v1/policy',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({allow_shell:true})});
-    if(typeof CFG!=='undefined' && CFG && CFG.security) CFG.security.allow_shell=true; renderTermDrawer(); }
+    if(typeof CFG!=='undefined' && CFG && CFG.security) CFG.security.allow_shell=true;
+    if(TERMS.open) renderTermDrawer(); if(FILES.open) renderFilesDrawer(); }
   catch(e){ notify('Couldn\'t enable shell - '+e.message); }
+}
+// ---- Files - a per-project folder browser with an inline file preview -------------------------
+// Split out of the terminal drawer: browsing what's IN the project and running commands are
+// different jobs, so each gets its own topbar button and drawer. Each project remembers its own
+// spot (cwd + selected file + hidden-files toggle) in FILES.byProject, like terminal tabs do.
+const FILES = { open:false, byProject:{} };
+function filesState(){
+  const pid=WS.activeProject;
+  return FILES.byProject[pid]||(FILES.byProject[pid]={ cwd:null, parent:null, entries:[], sel:null, hidden:false });
+}
+async function openFilesDrawer(){
+  closeTerminalDrawer();   // the two right-side drawers share the edge - one at a time
+  FILES.open=true;
+  let dr=document.getElementById('filesDrawer');
+  if(!dr){ dr=document.createElement('div'); dr.id='filesDrawer'; dr.className='files-drawer'; document.body.appendChild(dr); }
+  dr.classList.add('open');
+  await renderFilesDrawer();
+}
+function closeFilesDrawer(){ FILES.open=false; const dr=document.getElementById('filesDrawer'); if(dr) dr.classList.remove('open'); }
+function toggleFilesDrawer(){ FILES.open ? closeFilesDrawer() : openFilesDrawer(); }
+async function filesRefresh(){
+  // Re-list the current folder in place (used after terminal commands); keeps the selection.
+  const pid=WS.activeProject, st=filesState(); if(!FILES.open || !st.cwd) return;
+  const fs=await loadTree(st.cwd, st.hidden); if(!fs || fs.denied) return;
+  if(WS.activeProject!==pid) return;   // project switched mid-flight - its own render owns the DOM
+  st.cwd=fs.path; st.parent=fs.parent; st.entries=fs.entries||[];
+  filesRenderList(); gitPanelLoad();
+}
+async function renderFilesDrawer(){
+  const dr=document.getElementById('filesDrawer'); if(!dr) return;
+  // Guard every await against a mid-render project switch: pickProject fires a fresh render for
+  // the new project, and a slow listing for the OLD one must not finish "last" and paint a
+  // mixed-project drawer (old header, new entries).
+  const pid=WS.activeProject, proj=curProject(), st=filesState();
+  const head=`<div class="td-head">${ICONS.Folder}<b>${esc(proj.name)}</b><span class="td-sub">files</span><span class="grow"></span>
+    <button class="fp-dl" onclick="filesOpenTerminalHere()" title="Open a terminal tab in the folder you're viewing">Open in terminal</button>
+    <button class="x" onclick="closeFilesDrawer()" aria-label="Close">✕</button></div>`;
+  if(!st.cwd){ st.cwd=await resolveProjectWorkdir(); if(WS.activeProject!==pid) return; }
+  if(!st.cwd){
+    // Same only-if-provisioning-failed fallback as the terminal (resolveProjectWorkdir toasted why).
+    dr.innerHTML=`${head}<div class="term-gate"><div class="tg-card">
+      <div class="tg-ic">${ICONS.Folder}</div>
+      <h2>Couldn't set up a folder for "${esc(proj.name)}"</h2>
+      <p>Engram normally creates a dedicated folder for a project automatically. Pick one yourself instead.</p>
+      <button class="primary" onclick="termPickProjectFolder()">Choose folder…</button>
+    </div></div>`;
+    return;
+  }
+  const fs=await loadTree(st.cwd, st.hidden);
+  if(WS.activeProject!==pid) return;
+  if(!fs || fs.denied){
+    dr.innerHTML=`${head}<div class="term-gate"><div class="tg-card">
+      <div class="tg-ic">${ICONS.Folder}</div>
+      <h2>See exactly what's in the box</h2>
+      <p>Browsing the project's folder shares one consent with the shell: a single switch covers everything Engram may touch on this machine - reading files here, and running commands in the terminal.</p>
+      <button class="primary" onclick="enableShell()">Enable file &amp; shell access</button>
+      <div class="tg-fine">You can turn this off any time in <a href="#" onclick="openCC('tools');return false" style="color:var(--accent)">Settings › Tools</a>.</div>
+    </div></div>`;
+    return;
+  }
+  st.cwd=fs.path; st.parent=fs.parent; st.entries=fs.entries||[];
+  dr.innerHTML=`${head}
+    <div class="fb-wrap">
+      <aside class="fb-side"><div id="gitPanel"></div>
+        <div class="fb-path" title="${escAttr(st.cwd)}">${esc(st.cwd)}</div>
+        <div class="fb-list" id="fbList"></div>
+        <label class="fb-hid"><input type="checkbox" ${st.hidden?'checked':''} onchange="filesToggleHidden(this.checked)"> show hidden files</label></aside>
+      <div class="fprev" id="fprev"></div>
+    </div>`;
+  filesRenderList(); gitPanelLoad();
+  if(st.sel) filePreview(st.sel); else filesEmptyPreview();
+}
+function filesRenderList(){
+  const st=filesState(); const el=document.getElementById('fbList'); if(!el) return;
+  const up = st.parent ? `<div class="ft-row dir" onclick="filesCd(${attrJson(st.parent)})"><span class="fi">↰</span><span class="fname">..</span></div>` : '';
+  const rows=(st.entries||[]).map(e=>{
+    const full=(st.cwd.endsWith('/')?st.cwd:st.cwd+'/')+e.name;
+    return e.dir
+      ? `<div class="ft-row dir" onclick="filesCd(${attrJson(full)})"><span class="fi">▸</span><span class="fname">${esc(e.name)}</span></div>`
+      : `<div class="ft-row file ${st.sel===full?'sel':''}" onclick="filesSelect(${attrJson(full)})"><span class="fi">·</span><span class="fname">${esc(e.name)}</span><span class="ft-size">${e.size?afSize(e.size):''}</span></div>`;
+  }).join('') || '<div class="ft-row" style="color:var(--text-muted);cursor:default">empty</div>';
+  el.innerHTML=up+rows;
+}
+let _filesNav=0;
+async function filesCd(path){
+  // Navigation is a read, not a recorded command - same ledger-about-intent rule as the terminal.
+  // The nav epoch makes rapid clicks latest-wins: a slow listing for an earlier click must not
+  // overwrite the directory the user actually landed on (or another project's drawer).
+  const pid=WS.activeProject, st=filesState(), nav=++_filesNav;
+  const fs=await loadTree(path, st.hidden); if(!fs || fs.denied) return;
+  if(_filesNav!==nav || WS.activeProject!==pid) return;
+  st.cwd=fs.path; st.parent=fs.parent; st.entries=fs.entries||[]; st.sel=null;
+  const p=document.querySelector('#filesDrawer .fb-path'); if(p){ p.textContent=st.cwd; p.title=st.cwd; }
+  filesRenderList(); filesEmptyPreview();
+}
+function filesToggleHidden(on){ const st=filesState(); st.hidden=!!on; filesRefresh(); }   // relist in place - keeps selection+preview
+function filesSelect(path){ const st=filesState(); st.sel=path; filesRenderList(); filePreview(path); }
+function filesEmptyPreview(){
+  const el=document.getElementById('fprev'); if(!el) return;
+  el.innerHTML=`<div class="fprev-empty">${ICONS.Folder}<div>Select a file to preview it</div></div>`;
+}
+// Raw bytes as a blob: URL, authenticated with the SAME Bearer header every other call uses -
+// a plain <img src>/<a href> request can't carry it (and the query-token fallback is deliberately
+// reserved for EventSource/WebSocket routes).
+async function filesBlobUrl(path){
+  const r=await fetch(tok('/v1/fs/read?path='+encodeURIComponent(path)+'&raw=1'),{headers:AUTH});
+  if(!r.ok) throw new Error((await r.text().catch(()=>''))||('HTTP '+r.status));
+  return URL.createObjectURL(await r.blob());
+}
+let _fpBlob=null;   // the preview pane shows one image at a time - revoke the last object URL
+function _fpSetBlob(u){ if(_fpBlob){ try{ URL.revokeObjectURL(_fpBlob); }catch(_){} } _fpBlob=u; return u; }
+async function filesDownload(path){
+  const name=String(path).split('/').pop()||'file';
+  try{
+    const url=await filesBlobUrl(path);
+    const el=document.createElement('a'); el.href=url; el.download=name;
+    document.body.appendChild(el); el.click(); el.remove();
+    setTimeout(()=>URL.revokeObjectURL(url), 4000);
+    notify('Downloaded '+name,'ok');
+  }catch(e){ notify('Couldn\'t download '+name+' — '+((e&&e.message)||'error')); }
+}
+function filesCopyPath(path){
+  (navigator.clipboard?navigator.clipboard.writeText(path):Promise.reject())
+    .then(()=>notify('Path copied','ok')).catch(()=>notify('Couldn\'t copy the path'));
+}
+// Jump from browsing to doing: a terminal tab opened AT the folder being viewed.
+async function filesOpenTerminalHere(){
+  const cwd=filesState().cwd; if(!cwd) return;
+  await openTerminalDrawer();
+  const tab=activeTab();
+  if(tab && !tab.noFolder && tab.cwd!==cwd){
+    const nt={ id:'t'+(_termTabSeq++), cwd, log:[], hist:[], hi:-1, busy:false, noFolder:false };
+    termTabs().push(nt); TERMS.activeByProject[WS.activeProject]=nt.id;
+    await renderTermDrawer();
+  }
+}
+async function filePreview(path){
+  const el=document.getElementById('fprev'); if(!el) return;
+  const pid=WS.activeProject;
+  const name=String(path).split('/').pop()||'file';
+  const ext=(name.split('.').pop()||'').toLowerCase();
+  // A reply is stale if the user picked another file OR switched projects while it was in flight.
+  const stale=()=> WS.activeProject!==pid || filesState().sel!==path;
+  const head=meta=>`<div class="fprev-head"><span class="fp-name" title="${escAttr(path)}">${esc(name)}</span>${meta?`<span class="fp-meta">${esc(meta)}</span>`:''}<span class="grow"></span>
+    <button class="fp-dl" onclick="filesCopyPath(${attrJson(path)})" title="Copy the full path — paste it into the terminal or chat">Copy path</button>
+    <button class="fp-dl" onclick="filesDownload(${attrJson(path)})">Download</button></div>`;
+  if(_IMG_EXT.includes(ext)){
+    el.innerHTML=head('image')+`<div class="fprev-body fprev-img" id="fpImg"><div class="muted">Loading…</div></div>`;
+    try{
+      const url=_fpSetBlob(await filesBlobUrl(path));
+      if(stale()) return;
+      const box=document.getElementById('fpImg');
+      if(box) box.innerHTML=`<img src="${escAttr(url)}" alt="${escAttr(name)}">`;
+    }catch(e){
+      if(stale()) return;
+      const box=document.getElementById('fpImg');
+      if(box) box.innerHTML=`<div class="git-none">Couldn't load — ${esc((e&&e.message)||'error')}</div>`;
+    }
+    return;
+  }
+  el.innerHTML=head('')+`<div class="fprev-body"><div class="muted">Loading…</div></div>`;
+  let r=null;
+  try{ r=await J(tok('/v1/fs/read?path='+encodeURIComponent(path))); }
+  catch(e){
+    if(stale()) return;   // a late failure must not stomp the preview of the file now selected
+    el.innerHTML=head('')+`<div class="fprev-body"><div class="git-none">Couldn't read — ${esc((e&&e.message)||'error')}</div></div>`;
+    return;
+  }
+  if(stale()) return;
+  if(r.denied){ renderFilesDrawer(); return; }   // consent was switched off mid-session - show the gate
+  const meta=afSize(r.size||0)+(r.mtime_ms?(' · '+fmtAgo(r.mtime_ms)):'');
+  if(r.binary){
+    el.innerHTML=head(meta)+`<div class="fprev-body"><div class="fprev-empty" style="height:auto;padding:44px 0">
+      <div>Binary file — no text preview</div>
+      ${ext==='pdf'?`<button class="sbtn ghost" onclick="openExternal(${attrJson(tok('/v1/fs/read?path='+encodeURIComponent(path)+'&raw=1&view=1'))})">Open in browser</button>`:''}
+    </div></div>`;
+    return;
+  }
+  const text=r.content||'';
+  const trunc=r.truncated?`<div class="fp-trunc">Preview truncated — showing the first ${afSize(text.length)} of ${afSize(r.size||0)}.</div>`:'';
+  let body;
+  if(ext==='md'||ext==='markdown') body=`<div class="md-doc">${mdToHtml(text)}</div>`;
+  else if(text.length>200000) body=`<pre class="fp-pre"><code>${esc(text)}</code></pre>`;   // too big to highlight smoothly
+  else body=`<pre class="fp-pre"><code>${hl(text, fileLang(ext))}</code></pre>`;
+  el.innerHTML=head(meta)+`<div class="fprev-body">${trunc}${body}</div>`;
 }
 // ---- Activity: the full, browsable, verifiable signed ledger ----
 const ACT={ entries:[], filter:'all', verify:{}, pubkey:{} };
@@ -7021,6 +7231,7 @@ const ENGRAM_SLASH = [
   ['/model','Pick the model'],
   ['/schedule','Open scheduled runs'],
   ['/terminal','Open the glass-box terminal'],
+  ['/files','Browse this project\'s folder'],
   ['/verify','Re-walk and verify the signed ledger'],
   ['/clear','Start a new chat'],
   ['/stop','Emergency-halt running agents'],
@@ -7752,6 +7963,8 @@ function slashCommands(){
       run:()=>{ slashClear(); if(typeof go==='function') go('Schedule'); } },
     { cmd:'/terminal', t:'Open the glass-box terminal',       ic:I.Terminal, arg:false,
       run:()=>{ slashClear(); if(typeof openTerminalDrawer==='function') openTerminalDrawer(); } },
+    { cmd:'/files',    t:'Browse this project\'s folder',     ic:I.Folder,   arg:false,
+      run:()=>{ slashClear(); if(typeof openFilesDrawer==='function') openFilesDrawer(); } },
     { cmd:'/settings', t:'Open settings',                     ic:I.Settings, arg:false,
       run:()=>{ slashClear(); if(typeof openCC==='function') openCC(); } },
     { cmd:'/mission',  t:'Decompose a goal into parallel subtask agents',  ic:I.Tasks,  arg:true,

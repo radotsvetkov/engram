@@ -5,13 +5,14 @@
 //! human-shaped hole in the glass box: actions nobody could later audit. So commands typed here
 //! run through the same `allow_shell` gate and the same backend selection as the agent, and each
 //! one is signed into the ledger as `terminal.exec` by actor `user` - deliberately distinct from
-//! the agent's `agent.shell`, so a receipt can always say who ran what. `/v1/fs` is the
-//! read-only file tree that sits beside it.
+//! the agent's `agent.shell`, so a receipt can always say who ran what. `/v1/fs` (list) and
+//! `/v1/fs/read` (preview one file) are the read-only file browser that sits beside it.
 
 use std::path::PathBuf;
 use std::time::Duration;
 
 use axum::extract::{Query, State};
+use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Deserialize;
@@ -30,6 +31,22 @@ pub struct ShellReq {
 pub struct FsQuery {
     #[serde(default)]
     pub path: Option<String>,
+    /// "1"/"true" to include dotfiles (hidden by default).
+    #[serde(default)]
+    pub hidden: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct FsReadQuery {
+    #[serde(default)]
+    pub path: Option<String>,
+    /// "1"/"true" to stream the raw bytes (images, downloads) instead of a JSON text preview.
+    #[serde(default)]
+    pub raw: Option<String>,
+    /// "1"/"true" to serve inline even for non-raster types (the explicit "open in browser"
+    /// path) - same escape hatch `/v1/artifact` has.
+    #[serde(default)]
+    pub view: Option<String>,
 }
 
 fn shell_enabled(app: &App) -> bool {
@@ -179,22 +196,36 @@ pub async fn shell_handler(State(app): State<App>, Json(r): Json<ShellReq>) -> R
     .into_response()
 }
 
-/// List a directory for the file tree (dirs first, dotfiles hidden, capped). Read-only, but
-/// gated behind the same shell switch so the whole terminal surface is one consent.
+fn flag(v: Option<&str>) -> bool {
+    matches!(v, Some("1") | Some("true"))
+}
+
+/// List a directory for the file browser (dirs first, dotfiles hidden unless `hidden=1`, capped).
+/// Read-only, but gated behind the same shell switch so the whole files-and-shell surface is one
+/// consent.
 pub async fn fs_handler(State(app): State<App>, Query(q): Query<FsQuery>) -> Response {
     if !shell_enabled(&app) {
         return Json(json!({ "denied": true, "error": "Shell access is off." })).into_response();
     }
+    let show_hidden = flag(q.hidden.as_deref());
     let dir = resolve_dir(&app, q.path.as_deref());
-    let mut entries: Vec<(bool, String)> = Vec::new();
+    let mut entries: Vec<(bool, String, u64)> = Vec::new();
     if let Ok(rd) = std::fs::read_dir(&dir) {
         for e in rd.flatten().take(4000) {
             let name = e.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.') {
+            if !show_hidden && name.starts_with('.') {
                 continue; // hide dotfiles by default
             }
-            let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
-            entries.push((is_dir, name));
+            // std::fs::metadata follows symlinks (DirEntry::file_type doesn't), so a linked
+            // folder browses as a folder instead of posing as an unopenable zero-byte file.
+            let md = std::fs::metadata(e.path()).ok();
+            let is_dir = md.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+            let size = if is_dir {
+                0
+            } else {
+                md.as_ref().map(|m| m.len()).unwrap_or(0)
+            };
+            entries.push((is_dir, name, size));
         }
     }
     // Directories first, then case-insensitive by name.
@@ -205,7 +236,7 @@ pub async fn fs_handler(State(app): State<App>, Query(q): Query<FsQuery>) -> Res
     entries.truncate(500);
     let list: Vec<_> = entries
         .into_iter()
-        .map(|(dir, name)| json!({ "dir": dir, "name": name }))
+        .map(|(dir, name, size)| json!({ "dir": dir, "name": name, "size": size }))
         .collect();
     Json(json!({
         "path": dir.display().to_string(),
@@ -213,4 +244,183 @@ pub async fn fs_handler(State(app): State<App>, Query(q): Query<FsQuery>) -> Res
         "entries": list,
     }))
     .into_response()
+}
+
+/// Best-effort content type for raw file serving - enough for the preview pane to show images
+/// and for the browser to open PDFs; everything unrecognized downloads as octet-stream.
+fn mime_for(name: &str) -> &'static str {
+    let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "bmp" => "image/bmp",
+        "ico" => "image/x-icon",
+        "pdf" => "application/pdf",
+        "html" | "htm" => "text/html; charset=utf-8",
+        "json" => "application/json; charset=utf-8",
+        "txt" | "md" | "log" | "csv" => "text/plain; charset=utf-8",
+        _ => "application/octet-stream",
+    }
+}
+
+/// Whether a raw file may render inline in the dashboard origin. Only raster images are safe;
+/// SVG/HTML (scriptable) and everything else are forced to `attachment` so a file dropped into
+/// the workdir can't execute same-origin when someone navigates to its raw URL. `view=1` (the
+/// explicit open-in-browser path) opts back in. Mirrors `/v1/artifact`'s policy.
+fn serves_inline(mime: &str, view: bool) -> bool {
+    view || matches!(
+        mime,
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/bmp" | "image/x-icon"
+    )
+}
+
+/// How much of a file the JSON preview returns; bigger files are truncated with a flag so the UI
+/// can say so and offer the raw download instead.
+const PREVIEW_CAP: u64 = 1_500_000;
+/// Hard cap for raw serving - the drawer is a preview, not a file server.
+const RAW_CAP: u64 = 64 * 1024 * 1024;
+
+/// Read one file for the files-drawer preview. Default: JSON `{name,size,mtime_ms,binary,
+/// truncated,content}` with a capped UTF-8 preview; `raw=1`: the bytes themselves with a guessed
+/// content type (for `<img>`, PDFs, and the Download link). Same read-only consent gate as
+/// `/v1/fs`; like directory listings, reads aren't ledger events - the ledger records intent
+/// (commands), not browsing.
+pub async fn fs_read_handler(State(app): State<App>, Query(q): Query<FsReadQuery>) -> Response {
+    if !shell_enabled(&app) {
+        return Json(json!({ "denied": true, "error": "Shell access is off." })).into_response();
+    }
+    let Some(req) = q.path.as_deref().filter(|p| !p.trim().is_empty()) else {
+        return (StatusCode::BAD_REQUEST, "missing path").into_response();
+    };
+    let path = match std::fs::canonicalize(req) {
+        Ok(p) if p.is_file() => p,
+        _ => return (StatusCode::NOT_FOUND, "not a file").into_response(),
+    };
+    let meta = match std::fs::metadata(&path) {
+        Ok(m) => m,
+        Err(e) => return (StatusCode::NOT_FOUND, e.to_string()).into_response(),
+    };
+    let size = meta.len();
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".into());
+    let mtime_ms = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64);
+
+    if flag(q.raw.as_deref()) {
+        // Enforce the cap on the actual read, not just the stat - a file that grows between the
+        // two would otherwise balloon the response vec past the "hard cap" the comment promises.
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        match std::fs::File::open(&path) {
+            Ok(f) => {
+                if let Err(e) = f.take(RAW_CAP + 1).read_to_end(&mut bytes) {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+                }
+            }
+            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        }
+        if bytes.len() as u64 > RAW_CAP {
+            return (StatusCode::PAYLOAD_TOO_LARGE, "file larger than 64MB").into_response();
+        }
+        let mime = mime_for(&name);
+        let inline = serves_inline(mime, flag(q.view.as_deref()));
+        let mut resp = bytes.into_response();
+        resp.headers_mut()
+            .insert(header::CONTENT_TYPE, HeaderValue::from_static(mime));
+        resp.headers_mut().insert(
+            header::X_CONTENT_TYPE_OPTIONS,
+            HeaderValue::from_static("nosniff"),
+        );
+        let dispo = format!(
+            "{}; filename=\"{}\"",
+            if inline { "inline" } else { "attachment" },
+            name.replace(['"', '\\'], "_")
+        );
+        if let Ok(v) = HeaderValue::from_str(&dispo) {
+            resp.headers_mut().insert(header::CONTENT_DISPOSITION, v);
+        }
+        return resp;
+    }
+
+    use std::io::Read;
+    let mut buf = Vec::new();
+    match std::fs::File::open(&path) {
+        Ok(f) => {
+            if let Err(e) = f.take(PREVIEW_CAP + 1).read_to_end(&mut buf) {
+                return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+            }
+        }
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+    let truncated = buf.len() as u64 > PREVIEW_CAP;
+    if truncated {
+        buf.truncate(PREVIEW_CAP as usize);
+    }
+    // NUL in the head = not text. Lossy UTF-8 is fine for a preview pane.
+    let binary = buf.iter().take(8192).any(|&b| b == 0);
+    let content = if binary {
+        String::new()
+    } else {
+        String::from_utf8_lossy(&buf).into_owned()
+    };
+    Json(json!({
+        "path": path.display().to_string(),
+        "name": name,
+        "size": size,
+        "mtime_ms": mtime_ms,
+        "binary": binary,
+        "truncated": truncated,
+        "content": content,
+    }))
+    .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scriptable_types_never_render_inline_without_view() {
+        // The whole point of the raw-serving policy: a repo-cloned or agent-written .html/.svg in
+        // the workdir must download, not execute same-origin.
+        assert!(!serves_inline(mime_for("evil.html"), false));
+        assert!(!serves_inline(mime_for("evil.htm"), false));
+        assert!(!serves_inline(mime_for("evil.svg"), false));
+        assert!(!serves_inline(mime_for("data.json"), false));
+        assert!(!serves_inline(mime_for("notes.txt"), false));
+        // Raster images are safe to inline (so <img> previews work).
+        assert!(serves_inline(mime_for("shot.png"), false));
+        assert!(serves_inline(mime_for("photo.JPEG"), false));
+        assert!(serves_inline(mime_for("anim.gif"), false));
+        // view=1 (explicit open-in-browser) opts anything back into inline.
+        assert!(serves_inline(mime_for("evil.html"), true));
+        assert!(serves_inline(mime_for("doc.pdf"), true));
+    }
+
+    #[test]
+    fn mime_guess_covers_the_preview_whitelist() {
+        assert_eq!(mime_for("a.png"), "image/png");
+        assert_eq!(mime_for("a.webp"), "image/webp");
+        assert_eq!(mime_for("a.svg"), "image/svg+xml");
+        assert_eq!(mime_for("a.pdf"), "application/pdf");
+        assert_eq!(mime_for("noext"), "application/octet-stream");
+        assert_eq!(mime_for("UPPER.PNG"), "image/png");
+    }
+
+    #[test]
+    fn flag_only_accepts_the_truthy_forms() {
+        assert!(flag(Some("1")));
+        assert!(flag(Some("true")));
+        assert!(!flag(Some("0")));
+        assert!(!flag(Some("")));
+        assert!(!flag(None));
+    }
 }

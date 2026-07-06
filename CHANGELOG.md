@@ -6,6 +6,20 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-07-06
+
+### Fixed
+- The files-drawer preview pane clipped instead of scrolling on files taller than the visible
+  area (a grid-sizing bug: the preview grid's row had no height cap, so it grew to fit the
+  content instead of the drawer).
+
+### Added
+- The file preview can now edit a file in place: an **Edit** button swaps the rendered view for
+  a plain-text editor, **Save** (or ⌘S) writes it back through a new `POST /v1/fs/write` -
+  gated by the same shell consent as the rest of the drawer and signed into the ledger as
+  `file.write`. Switching files, navigating, or closing the drawer with unsaved edits prompts to
+  discard first, and a failed save keeps the edit in the textarea instead of losing it.
+
 ## [0.3.3] - 2026-07-06
 
 ### Changed

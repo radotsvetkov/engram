@@ -6,6 +6,27 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-07-06
+
+### Changed
+- **The desktop terminal drawer is now two separate panels.** Browsing a project's files and
+  running shell commands used to share one drawer (file tree + git panel + shell). They're now
+  independent topbar buttons: **Folder** (⌘E) opens a real file browser with an inline preview
+  pane — markdown renders, code is highlighted, images display, binaries and oversized files are
+  handled gracefully — plus per-file Copy-path/Download and a "show hidden files" toggle.
+  **Terminal** (⌘\`) is now a plain multi-tab shell. Each keeps its own state per project.
+
+### Added
+- `GET /v1/fs/read`: reads one file for the new preview pane (capped text preview) or, with
+  `raw=1`, streams its bytes for images and downloads. `/v1/fs` gained a `hidden` toggle and
+  real file sizes, and directory listings now follow symlinks so a linked folder browses like
+  a normal one.
+
+### Security
+- Raw file serving mirrors `/v1/artifact`'s inline policy: only raster images render inline in
+  the dashboard origin; HTML, SVG, and everything else are served as a download instead, so a
+  file dropped into the workdir (by a repo clone or an agent) can never execute same-origin.
+
 ## [0.3.2] - 2026-07-06
 
 ### Added

@@ -2684,8 +2684,16 @@ async function approveEgress(id){ runTaskLive(id, true); }
 
 // ---- workspace: projects -> sessions -> favorites (daemon-backed, survives reload) ----
 let WS={ projects:[{id:'personal',name:'Personal'}], activeProject:'personal', sessions:[], activeSession:null, byId:{} }, projMenuOpen=false;
+// Remembers which project was open across a full app quit/relaunch - client-side (like every other
+// UI-only preference here: engram.tok/engram.ui/engram.onboarded), not server-side. "Active project"
+// is per-window UI focus, not shared workspace data - a second client pointed at the same daemon
+// (another tab, another window) should keep its OWN focus, not fight over one server-stored value.
+function loadLastProject(){ try{ return localStorage.getItem('engram.activeProject')||''; }catch(_){ return ''; } }
+function saveLastProject(id){ try{ if(id) localStorage.setItem('engram.activeProject', id); }catch(_){} }
 async function loadWorkspace(){
   try{ const ps=await J('/v1/projects'); if(ps&&ps.length) WS.projects=ps; }catch(_){}
+  const last=loadLastProject();
+  if(last && WS.projects.find(p=>p.id===last)) WS.activeProject=last;
   if(!WS.projects.find(p=>p.id===WS.activeProject)) WS.activeProject=(WS.projects[0]||{id:'personal'}).id;
   await loadSessions();
   if(!WS.sessions.find(s=>s.id===WS.activeSession)) WS.activeSession=(WS.sessions[0]||{}).id||null;
@@ -2737,12 +2745,12 @@ async function deleteProject(){
   if(!await askConfirm({title:'Delete project?',message:'Delete "'+p.name+'" and all its chats? This cannot be undone.',ok:'Delete',danger:true})){ renderSidebar(); return; }
   try{ await J('/v1/projects/'+encodeURIComponent(p.id),{method:'DELETE'});
     WS.projects=WS.projects.filter(x=>x.id!==p.id); WS.byId={};
-    WS.activeProject=(WS.projects[0]||{id:'personal'}).id; WS.activeSession=null;
+    WS.activeProject=(WS.projects[0]||{id:'personal'}).id; WS.activeSession=null; saveLastProject(WS.activeProject);
     await loadSessions(); WS.activeSession=(WS.sessions[0]||{}).id||null;
     renderSidebar(); if(state.route==='Chat') renderChat(); notify('Project deleted','ok');
   }catch(e){ notify('Couldn\'t delete - '+e.message); }
 }
-async function pickProject(id){ projMenuOpen=false; WS.activeProject=id; WS.activeSession=null;
+async function pickProject(id){ projMenuOpen=false; WS.activeProject=id; WS.activeSession=null; saveLastProject(id);
   // Don't detach sessions that are still STREAMING — chatSay keeps writing into their byId object
   // and repaints on 'done'; wiping them mid-run silently dropped the finished answer from view.
   WS.byId=keepBusyById(); renderSidebar();
@@ -2910,16 +2918,35 @@ function cbStorePrune(){
   for(const k in _cbStore){ if(!live.has(k)) delete _cbStore[k]; }
 }
 function mdInline(t){ // t is already escaped
-  // Pull inline-code out FIRST (behind a NUL-delimited placeholder that cannot occur in escaped
-  // text) so emphasis/link rules never run inside literal code spans, then restore it.
-  const codes=[], S=String.fromCharCode(0);
-  t = t.replace(/`([^`]+)`/g,(m,c)=>{ codes.push(c); return S+(codes.length-1)+S; });
+  // Pull inline-code AND link HTML (markdown [text](url) and bare https?:// URLs) out FIRST, behind
+  // NUL-delimited placeholders that cannot occur in escaped text, so the emphasis rules below never
+  // run on their contents and can't corrupt them - then restore both, links last, as literal HTML.
+  // This matters specifically for the bare-URL rule: without it, e.g. a URL containing a literal
+  // '*' (a query-string wildcard, a glob path) got an <em>/<strong> spliced into the middle of it
+  // by the emphasis rules running first, silently truncating the built href to a URL prefix.
+  const codes=[], links=[], S=String.fromCharCode(0);
+  t = t.replace(/`([^`]+)`/g,(m,c)=>{ codes.push(c); return S+'c'+(codes.length-1)+S; });
+  t = t.replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g,(m,txt,url)=>{
+    links.push(`<a href="${url.replace(/"/g,'%22').replace(/'/g,'%27')}" target="_blank" rel="noopener">${txt}</a>`);
+    return S+'u'+(links.length-1)+S;
+  });
+  // Bare URLs not already wrapped by the markdown-link rule above - so plain text like "open
+  // http://localhost:8000/" (e.g. after the agent starts a local server) is clickable too, not
+  // just properly-authored [text](url) links. The URL body excludes whitespace/`<`/the NUL
+  // placeholder sentinel (so it can never swallow an adjacent code/link placeholder) and `(`/`)`
+  // (so two paren-adjacent URLs with no space split into two links, not one). A comma/semicolon is
+  // allowed inside the URL UNLESS immediately followed by another http(s):// - so a query string
+  // like `?tags=a,b,c` or an `&amp;`-escaped `&` survives, but "url1,url2" with no space still
+  // splits into two.
+  t = t.replace(/https?:\/\/(?:[^\s<\x00(),;]|[,;](?!https?:\/\/))+[^\s<\x00(),;.,;:!?'")\]]/g,(m)=>{
+    links.push(`<a href="${m.replace(/"/g,'%22').replace(/'/g,'%27')}" target="_blank" rel="noopener">${m}</a>`);
+    return S+'u'+(links.length-1)+S;
+  });
   t = t
     .replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')
     .replace(/(^|[^*])\*([^*\n]+)\*/g,'$1<em>$2</em>')
-    .replace(/~~([^~\n]+)~~/g,'<del>$1</del>')
-    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g,(m,txt,url)=>`<a href="${url.replace(/"/g,'%22').replace(/'/g,'%27')}" target="_blank" rel="noopener">${txt}</a>`);
-  return t.replace(new RegExp(S+'(\\d+)'+S,'g'),(m,i)=>`<code class="ic">${codes[+i]}</code>`);
+    .replace(/~~([^~\n]+)~~/g,'<del>$1</del>');
+  return t.replace(new RegExp(S+'([cu])(\\d+)'+S,'g'),(m,kind,i)=>kind==='c' ? `<code class="ic">${codes[+i]}</code>` : links[+i]);
 }
 function mdToHtml(raw){
   const blocks=[];
@@ -4466,7 +4493,7 @@ async function wsDeleteProject(id){
   if(!await askConfirm({title:'Delete project?',message:'Delete "'+(p?p.name:'this project')+'" and all its chats? This cannot be undone.',ok:'Delete',danger:true})) return;
   try{ await J('/v1/projects/'+encodeURIComponent(id),{method:'DELETE'});
     WS.projects=WS.projects.filter(x=>x.id!==id);
-    if(WS.activeProject===id){ WS.activeProject=(WS.projects[0]||{id:'personal'}).id; WS.byId={}; WS.activeSession=null; await loadSessions(); WS.activeSession=(WS.sessions[0]||{}).id||null; }
+    if(WS.activeProject===id){ WS.activeProject=(WS.projects[0]||{id:'personal'}).id; saveLastProject(WS.activeProject); WS.byId={}; WS.activeSession=null; await loadSessions(); WS.activeSession=(WS.sessions[0]||{}).id||null; }
     notify('Project deleted','ok'); if(ccActive==='workspace') renderCC(); renderSidebar(); if(state.route==='Chat') renderChat();
   }catch(e){ notify('Couldn\'t delete - '+e.message); }
 }

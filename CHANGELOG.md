@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-07-07
+
+### Fixed
+- A tainted run's network-isolated shell sandbox (Seatbelt on macOS, bubblewrap on Linux) denied
+  *all* networking, including loopback - so the agent could never start and verify a local dev
+  server (e.g. `python3 -m http.server`) on a run that had read any web content. Loopback traffic
+  can't reach anywhere off the machine, so it's carved back out of the deny on both platforms;
+  everything off-machine is still refused.
+
 ## [0.3.6] - 2026-07-07
 
 ### Fixed

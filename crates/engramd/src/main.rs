@@ -7319,30 +7319,49 @@ async fn projects_create(State(app): State<App>, Json(b): Json<Value>) -> ApiRes
         name
     };
     // Optional working directory for this project: attach-or-create. A relative or ~-path is
-    // resolved; the directory is created if missing, then stored canonicalised.
+    // resolved; the directory is created if missing, then stored canonicalised. This is the
+    // literal-attach form (point the project at an existing folder, e.g. a scripted client wiring
+    // up a repo it already has) - distinct from `parent_dir` below.
     let workdir = match b.get("workdir").and_then(|v| v.as_str()).map(str::trim) {
         Some(w) if !w.is_empty() => Some(resolve_project_dir(w).map_err(ApiError)?),
         _ => None,
     };
+    // `parent_dir`: the LOCATION a folder-picker chose for a brand-new project (e.g. the user
+    // picked "Desktop"). The project still gets its own dedicated subfolder under it - the same
+    // guarantee as picking nothing at all, just rooted where the user chose instead of under the
+    // daemon's home. Ignored if `workdir` was given explicitly (that already says exactly what to
+    // attach to).
+    let parent_dir = b
+        .get("parent_dir")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(expand_tilde);
     let p = app.workspace.create_project(name, workdir);
-    let p = provision_workdir_if_missing(&app.workspace, &app.home, p);
+    let p = provision_workdir_if_missing(&app.workspace, &app.home, parent_dir.as_deref(), p);
     Ok(Json(serde_json::to_value(p).map_err(err)?))
 }
 
 /// Give a freshly created project a folder immediately if it doesn't already have one - the
 /// eager half of what `projects_ensure_workdir` does lazily on first terminal/files use.
 /// Without this, opening the files drawer right after creating a project (before anything else
-/// happens to trigger `ensure-workdir`) showed nothing there yet. Best-effort: on failure the
-/// project is returned unchanged and `ensure-workdir` still backfills it on first use, exactly
-/// like it already does for projects created before this existed. Split out of the handler
-/// (takes the pieces it needs instead of a whole `App`) so it's unit-testable directly.
+/// happens to trigger `ensure-workdir`) showed nothing there yet. `location`, if given, roots the
+/// new folder there instead of under the daemon's home (the folder-picker case). Best-effort: on
+/// any failure - including a bad `location` - falls back to the daemon-home default rather than
+/// leaving the project folderless; `ensure-workdir` still backfills it on first use as a last
+/// resort, exactly like it already does for projects created before this existed. Split out of
+/// the handler (takes the pieces it needs instead of a whole `App`) so it's unit-testable.
 fn provision_workdir_if_missing(
     workspace: &workspace::WorkspaceStore,
     home: &str,
+    location: Option<&str>,
     p: workspace::Project,
 ) -> workspace::Project {
     if p.workdir.as_deref().is_none_or(|w| w.trim().is_empty()) {
-        if let Ok(dir) = default_project_dir(home, &p.id, &p.name) {
+        let picked = location
+            .and_then(|loc| named_project_dir(std::path::Path::new(loc), &p.id, &p.name).ok());
+        let dir = picked.or_else(|| default_project_dir(home, &p.id, &p.name).ok());
+        if let Some(dir) = dir {
             if let Some(updated) = workspace.update_project(&p.id, None, None, Some(dir)) {
                 return updated;
             }
@@ -7355,14 +7374,7 @@ fn provision_workdir_if_missing(
 /// (attach-or-create), and return the canonical absolute path. Errors if the path exists but is a
 /// file, or can't be created.
 fn resolve_project_dir(raw: &str) -> Result<String, String> {
-    let expanded = if let Some(rest) = raw.strip_prefix("~/") {
-        match std::env::var("HOME") {
-            Ok(h) => format!("{h}/{rest}"),
-            Err(_) => raw.to_string(),
-        }
-    } else {
-        raw.to_string()
-    };
+    let expanded = expand_tilde(raw);
     let path = std::path::Path::new(&expanded);
     if path.exists() {
         if !path.is_dir() {
@@ -7404,13 +7416,19 @@ async fn projects_update(
         .ok_or_else(|| ApiError("project not found".into()))?;
     Ok(Json(serde_json::to_value(p).map_err(err)?))
 }
-/// Auto-provision a per-project folder the first time something needs one and the project
-/// doesn't already have one - `<home>/projects/<slug>`, created if missing. Keeps every project
-/// isolated by default without making the user pick a folder before they can open its terminal;
-/// a project created before this feature existed gets backfilled the same way, lazily, on first
-/// use. A name collision (two projects called the same thing) disambiguates with a suffix from
-/// the project id.
-fn default_project_dir(home: &str, project_id: &str, project_name: &str) -> Result<String, String> {
+/// Create (if missing) a folder for a project under `base`, named after the project - never the
+/// raw `base` itself. Used both to auto-provision a project's folder under the daemon's home (no
+/// location picked, `base = <home>/projects`) and under a location the user picked in the folder
+/// dialog (`base` = that location) - either way the project always gets its OWN dedicated folder,
+/// never becomes bound to whatever pre-existing folder `base` happens to be. Scoping an agent to
+/// "the user's whole Desktop" would be a much bigger blast radius than anyone who picks "Desktop"
+/// as a location for a new project actually intends. A name collision (two projects called the
+/// same thing under the same base) disambiguates with a suffix from the project id.
+fn named_project_dir(
+    base: &std::path::Path,
+    project_id: &str,
+    project_name: &str,
+) -> Result<String, String> {
     let mut slug: String = project_name
         .trim()
         .chars()
@@ -7426,7 +7444,6 @@ fn default_project_dir(home: &str, project_id: &str, project_name: &str) -> Resu
         slug = slug.replace("--", "-");
     }
     let slug = slug.trim_matches('-').to_string();
-    let base = std::path::Path::new(home).join("projects");
     let stem = if slug.is_empty() {
         project_id.to_string()
     } else {
@@ -7443,6 +7460,30 @@ fn default_project_dir(home: &str, project_id: &str, project_name: &str) -> Resu
         .canonicalize()
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| dir.to_string_lossy().into_owned()))
+}
+/// Auto-provision a per-project folder the first time something needs one and the project
+/// doesn't already have one - `<home>/projects/<slug>`, created if missing. Keeps every project
+/// isolated by default without making the user pick a folder before they can open its terminal;
+/// a project created before this feature existed gets backfilled the same way, lazily, on first
+/// use.
+fn default_project_dir(home: &str, project_id: &str, project_name: &str) -> Result<String, String> {
+    named_project_dir(
+        &std::path::Path::new(home).join("projects"),
+        project_id,
+        project_name,
+    )
+}
+/// Expand a leading `~/` against `$HOME`. Shared by the two flavors of "the user handed us a
+/// path": attach-this-exact-folder (`resolve_project_dir`) and pick-a-location-for-a-new-folder
+/// (`projects_create`'s `parent_dir`).
+fn expand_tilde(raw: &str) -> String {
+    match raw.strip_prefix("~/") {
+        Some(rest) => match std::env::var("HOME") {
+            Ok(h) => format!("{h}/{rest}"),
+            Err(_) => raw.to_string(),
+        },
+        None => raw.to_string(),
+    }
 }
 /// POST /v1/projects/{id}/ensure-workdir — give this project a folder if it doesn't have one yet,
 /// so opening its terminal never has to ask first. Idempotent: a project that already has a
@@ -7564,10 +7605,11 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let ws = workspace::WorkspaceStore::open(home.path());
 
-        // No workdir given at creation - gets one immediately, not lazily.
+        // No workdir given at creation, no location picked - gets one immediately under the
+        // daemon's home, not lazily.
         let p = ws.create_project("Apex Research".into(), None);
         assert!(p.workdir.is_none());
-        let p = provision_workdir_if_missing(&ws, home.path().to_str().unwrap(), p);
+        let p = provision_workdir_if_missing(&ws, home.path().to_str().unwrap(), None, p);
         let dir = p.workdir.clone().expect("a folder was provisioned");
         assert!(
             std::path::Path::new(&dir).is_dir(),
@@ -7575,10 +7617,70 @@ mod tests {
         );
         assert!(dir.ends_with("projects/apex-research"), "got: {dir}");
 
-        // A project that already has one (explicitly chosen by the user at creation) is untouched.
+        // A project that already has one (explicitly chosen by the user at creation) is untouched,
+        // even when a location is also given - workdir wins.
         let explicit = ws.create_project("Chosen".into(), Some("/tmp".into()));
-        let out = provision_workdir_if_missing(&ws, home.path().to_str().unwrap(), explicit);
+        let out = provision_workdir_if_missing(
+            &ws,
+            home.path().to_str().unwrap(),
+            Some("/tmp"),
+            explicit,
+        );
         assert_eq!(out.workdir.as_deref(), Some("/tmp"));
+    }
+
+    #[test]
+    fn provision_workdir_if_missing_creates_a_named_subfolder_under_a_picked_location() {
+        // The bug this guards: picking "Desktop" as a location for a new project called "Rado1"
+        // must create ~/Desktop/rado1 - NOT bind the project directly to ~/Desktop itself (which
+        // already exists, so a naive attach-or-create would silently just use it as-is).
+        let home = tempfile::tempdir().unwrap();
+        let ws = workspace::WorkspaceStore::open(home.path());
+        let picked_location = tempfile::tempdir().unwrap(); // stands in for "the user's Desktop"
+
+        let p = ws.create_project("Rado1".into(), None);
+        let p = provision_workdir_if_missing(
+            &ws,
+            home.path().to_str().unwrap(),
+            Some(picked_location.path().to_str().unwrap()),
+            p,
+        );
+        let dir = p.workdir.expect("a folder was provisioned");
+        assert_ne!(
+            std::path::Path::new(&dir),
+            std::fs::canonicalize(picked_location.path()).unwrap(),
+            "the project must get its OWN folder, never become bound to the picked location itself"
+        );
+        assert!(std::path::Path::new(&dir).is_dir());
+        assert_eq!(
+            std::path::Path::new(&dir).file_name().unwrap(),
+            "rado1",
+            "got: {dir}"
+        );
+        assert_eq!(
+            std::path::Path::new(&dir).parent().unwrap(),
+            std::fs::canonicalize(picked_location.path()).unwrap(),
+            "must be created INSIDE the picked location, not under the daemon's home"
+        );
+    }
+
+    #[test]
+    fn provision_workdir_if_missing_falls_back_to_home_when_the_location_cannot_be_used() {
+        // A bogus/unwritable location must not leave the project folderless - fall back to the
+        // same daemon-home default used when no location was picked at all.
+        let home = tempfile::tempdir().unwrap();
+        let ws = workspace::WorkspaceStore::open(home.path());
+        let p = ws.create_project("Fallback Test".into(), None);
+        let p = provision_workdir_if_missing(
+            &ws,
+            home.path().to_str().unwrap(),
+            Some("/this/does/not/exist/and/cannot/be/created/\0bad"),
+            p,
+        );
+        let dir = p
+            .workdir
+            .expect("a folder was provisioned via the fallback");
+        assert!(dir.ends_with("projects/fallback-test"), "got: {dir}");
     }
 
     #[test]

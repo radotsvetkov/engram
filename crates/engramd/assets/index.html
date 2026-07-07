@@ -2753,23 +2753,32 @@ async function pickProject(id){ projMenuOpen=false; WS.activeProject=id; WS.acti
 // Prune the session cache but keep any session with a live local run (so its streaming object and
 // its final repaint survive a project switch).
 function keepBusyById(){ const keep={}; for(const sid of _busySessions){ if(WS.byId[sid]) keep[sid]=WS.byId[sid]; } return keep; }
-// Pick a project working directory: a native folder picker inside the Tauri desktop app, a
-// text-path prompt in a plain browser. Returns a path string, or null if the user skipped it.
-async function pickDir(){
+// Pick a folder: a native folder picker inside the Tauri desktop app, a text-path prompt in a
+// plain browser. Returns a path string, or null if the user skipped it. `opts.location=true` is
+// for a NEW project - the caller sends the result as `parent_dir`, not `workdir`: the picked
+// folder is where to CREATE the project's own subfolder, not the project's folder itself (picking
+// "Desktop" must not bind a whole existing folder full of unrelated files to the project - it
+// should get its own folder named after it, right there).
+async function pickDir(opts){
+  opts=opts||{};
   try{
     const dlg = window.__TAURI__ && window.__TAURI__.dialog;
     if(dlg && dlg.open){
-      const sel = await dlg.open({ directory:true, multiple:false, title:'Choose the project folder' });
+      const title = opts.location ? 'Choose where to create the project\'s folder' : 'Choose the project folder';
+      const sel = await dlg.open({ directory:true, multiple:false, title });
       return (typeof sel === 'string' && sel) ? sel : null;
     }
   }catch(_){}
-  // Browser fallback: ask for a path (blank = no directory, uses the shared workspace).
-  const p = await askInput({title:'Project folder (optional)',label:'The folder this project’s agent reads and writes files in. Leave blank to use the shared workspace — it’s created if it doesn’t exist.',placeholder:'e.g. ~/code/my-app',ok:'Use folder'});
+  // Browser fallback: ask for a path (blank = no directory, uses Engram's own storage).
+  const label = opts.location
+    ? 'Where to put this project — Engram creates a new folder named after it right there. Leave blank to use Engram\'s own storage instead.'
+    : 'The folder this project\'s agent reads and writes files in. Leave blank to use Engram\'s own storage instead.';
+  const p = await askInput({title:'Project folder (optional)',label,placeholder:'e.g. ~/code/my-app',ok:'Use folder'});
   return (p && p.trim()) ? p.trim() : null;
 }
 async function addProject(){ projMenuOpen=false; const n=await askInput({title:'New project',label:'Sessions, a brief, its own memory scope, and a working directory live inside a project.',placeholder:'e.g. Apex, Research, Personal',ok:'Next'}); if(!(n&&n.trim())){ renderSidebar(); return; }
-  const workdir=await pickDir();
-  const body={name:n.trim()}; if(workdir) body.workdir=workdir;
+  const parentDir=await pickDir({location:true});
+  const body={name:n.trim()}; if(parentDir) body.parent_dir=parentDir;
   try{ const p=await J('/v1/projects',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}); WS.projects.push(p); pickProject(p.id); if(p.workdir) notify('Project folder: '+p.workdir,'ok'); }
   catch(e){ notify('Couldn\'t create project - '+e.message); }
 }
@@ -4402,8 +4411,8 @@ function ccWorkspace(){
 async function wsNewProject(){
   const n=await askInput({title:'New project',label:'Sessions, standing instructions, memory scope, and a working directory live inside a project.',placeholder:'e.g. Apex, Research',ok:'Next'});
   if(!(n&&n.trim())) return;
-  const workdir=await pickDir();
-  const body={name:n.trim()}; if(workdir) body.workdir=workdir;
+  const parentDir=await pickDir({location:true});
+  const body={name:n.trim()}; if(parentDir) body.parent_dir=parentDir;
   try{
     const p=await J('/v1/projects',{method:'POST',headers:MIND_JSON,body:JSON.stringify(body)});
     WS.projects.push(p);

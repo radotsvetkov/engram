@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-07-07
+
+### Fixed
+- A new project's folder is now provisioned at creation time instead of lazily on first
+  terminal/files-drawer use, and the Settings › Workspace "+ New project" flow now switches to
+  the project it just created. Previously, creating a project there and immediately opening the
+  Folder drawer could land on nothing, or on whatever project was active before.
+
 ## [0.3.4] - 2026-07-06
 
 ### Fixed

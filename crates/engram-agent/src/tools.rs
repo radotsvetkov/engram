@@ -753,8 +753,16 @@ pub fn shell_command(
 /// plain shell and the caller should prefer an explicit backend (docker/ssh) there.
 ///
 /// Validated on macOS: interpreters (python3/node/…) start normally, outbound network is refused, and
-/// writes outside `workdir` (e.g. the user's home) are denied. On Linux, `--unshare-net` removes all
-/// network and only `workdir` is bind-mounted read-write over a read-only root.
+/// writes outside `workdir` (e.g. the user's home) are denied. Network-denied still permits loopback
+/// (`localhost`/`127.0.0.1`/`::1`) - a request to `localhost` can never reach anywhere off this
+/// machine, so it carries none of the exfiltration risk `(deny network*)` exists to close, and without
+/// this carve-out a completely benign "start a local dev server and check it" is indistinguishable
+/// from real network access and gets blocked outright (confirmed: `python3 -m http.server` couldn't
+/// bind a port at all under a network-denied run; a genuine external request is still refused).
+/// On Linux, `--unshare-net` removes all network including loopback (the fresh netns's `lo` starts
+/// down); `ip link set lo up` brings up ONLY the loopback interface before running the command, same
+/// carve-out, same reasoning - unverified on this build (no Linux target available to test against;
+/// falls back to no loopback if `ip` isn't installed in the sandboxed environment, same as before).
 pub fn sandbox_command(
     workdir: &std::path::Path,
     command: &str,
@@ -765,8 +773,18 @@ pub fn sandbox_command(
         let wd = workdir.display().to_string();
         let home = std::env::var("HOME").unwrap_or_default();
         // `allow default` lets interpreters start; then deny the network (the exfiltration vector) and
-        // deny writes to the user's home except the skill's own scratch dir under workdir.
-        let net = if allow_net { "" } else { "(deny network*)\n" };
+        // deny writes to the user's home except the skill's own scratch dir under workdir. Loopback is
+        // carved back out of the deny: it can serve a local dev server to `curl localhost` but can't
+        // reach anywhere off-machine, so it's not part of the threat `(deny network*)` guards against.
+        let net = if allow_net {
+            String::new()
+        } else {
+            "(deny network*)\n\
+             (allow network-bind (local ip \"localhost:*\"))\n\
+             (allow network-inbound (local ip \"localhost:*\"))\n\
+             (allow network-outbound (remote ip \"localhost:*\"))\n"
+                .to_string()
+        };
         let profile = format!(
             "(version 1)\n(allow default)\n{net}(deny file-write* (subpath \"{home}\"))\n(allow file-write* (subpath \"{wd}\"))\n"
         );
@@ -785,9 +803,18 @@ pub fn sandbox_command(
     {
         let wd = workdir.display().to_string();
         let mut args: Vec<String> = Vec::new();
-        if !allow_net {
+        // `--unshare-net`'s fresh network namespace has only `lo`, and it starts DOWN - so even a
+        // request to `localhost` fails, same over-broad "network denied" as the plain `(deny
+        // network*)` case this mirrors on macOS. Bring up ONLY loopback before the real command;
+        // there's still no route off this machine, so this can't be used to exfiltrate anything.
+        // Best-effort: if `ip` isn't installed in the sandboxed environment this silently no-ops
+        // and loopback stays down, same as before this change.
+        let effective_command = if allow_net {
+            command.to_string()
+        } else {
             args.push("--unshare-net".into());
-        }
+            format!("ip link set lo up 2>/dev/null; {command}")
+        };
         args.extend([
             "--die-with-parent".into(),
             "--ro-bind".into(),
@@ -804,7 +831,7 @@ pub fn sandbox_command(
             wd,
             "sh".into(),
             "-c".into(),
-            command.to_string(),
+            effective_command,
         ]);
         ("bwrap".into(), args)
     }
@@ -1060,8 +1087,67 @@ mod html_text_tests {
 
 #[cfg(test)]
 mod shell_backend_tests {
-    use super::shell_command;
+    use super::{sandbox_command, shell_command};
     use std::path::Path;
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn sandbox_network_denied_still_carves_out_loopback() {
+        // The bug this guards: a tainted run's shell went through `(deny network*)` with no
+        // exception, so `python3 -m http.server` could never bind a port at all - "start a local
+        // dev server" was silently impossible for every network-denied run, not just genuinely
+        // risky (off-machine) network use.
+        let (_, args) = sandbox_command(Path::new("/w"), "python3 -m http.server 8000", false);
+        let profile = &args[1];
+        assert!(
+            profile.contains("(deny network*)"),
+            "still denies network by default"
+        );
+        assert!(
+            profile.contains("(allow network-bind (local ip \"localhost:*\"))"),
+            "must still be able to bind a loopback listener - got: {profile}"
+        );
+        assert!(
+            profile.contains("(allow network-inbound (local ip \"localhost:*\"))"),
+            "must still be reachable ON loopback - got: {profile}"
+        );
+        assert!(
+            profile.contains("(allow network-outbound (remote ip \"localhost:*\"))"),
+            "must still be able to curl loopback - got: {profile}"
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn sandbox_network_allowed_has_no_network_rules_at_all() {
+        let (_, args) = sandbox_command(Path::new("/w"), "curl https://example.com", true);
+        let profile = &args[1];
+        assert!(
+            !profile.contains("network"),
+            "allow_net=true must not add ANY network restriction - got: {profile}"
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn sandbox_network_denied_brings_loopback_up_before_the_real_command() {
+        let (_, args) = sandbox_command(Path::new("/w"), "python3 -m http.server 8000", false);
+        assert!(args.iter().any(|a| a == "--unshare-net"));
+        let cmd = args.last().unwrap();
+        assert!(
+            cmd.starts_with("ip link set lo up"),
+            "loopback must be brought up before the real command - got: {cmd}"
+        );
+        assert!(cmd.ends_with("python3 -m http.server 8000"));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn sandbox_network_allowed_skips_the_loopback_dance() {
+        let (_, args) = sandbox_command(Path::new("/w"), "curl https://example.com", true);
+        assert!(!args.iter().any(|a| a == "--unshare-net"));
+        assert_eq!(args.last().unwrap(), "curl https://example.com");
+    }
 
     #[test]
     fn local_backend() {
@@ -1118,8 +1204,13 @@ impl Tool for ShellTool {
         true
     }
     fn description(&self) -> &str {
-        "Run a shell command in the working directory and return its output. Disabled \
-         unless explicitly enabled, and refused on a run that has read untrusted content."
+        "Run a shell command in the working directory and return its output. This call waits for \
+         the command to exit, so for a process that must keep running (a dev server, a watcher), \
+         background it inside the command itself, e.g. `cmd >server.log 2>&1 & sleep 1 && curl -sf \
+         localhost:PORT` - it keeps running after this call returns; check it later by curling the \
+         port or reading the log. Disabled unless explicitly enabled, and refused on a run that has \
+         read untrusted content (loopback/localhost still works even then - only off-machine network \
+         is denied)."
     }
     fn schema(&self) -> Value {
         json!({ "type": "object", "properties": { "command": { "type": "string" } }, "required": ["command"] })

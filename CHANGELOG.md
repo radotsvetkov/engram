@@ -6,6 +6,17 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.8] - 2026-07-08
+
+### Added
+- Bare URLs in chat text now auto-linkify (not just markdown `[text](url)` links) - so a reply
+  like "open http://localhost:8000/" after the agent starts a local dev server is directly
+  clickable, opening in your real browser like any other link.
+
+### Fixed
+- The desktop app now remembers which project was active and reopens on it after a full quit and
+  relaunch, instead of always landing back on Personal.
+
 ## [0.3.7] - 2026-07-07
 
 ### Fixed

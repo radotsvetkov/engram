@@ -7324,9 +7324,31 @@ async fn projects_create(State(app): State<App>, Json(b): Json<Value>) -> ApiRes
         Some(w) if !w.is_empty() => Some(resolve_project_dir(w).map_err(ApiError)?),
         _ => None,
     };
-    Ok(Json(
-        serde_json::to_value(app.workspace.create_project(name, workdir)).map_err(err)?,
-    ))
+    let p = app.workspace.create_project(name, workdir);
+    let p = provision_workdir_if_missing(&app.workspace, &app.home, p);
+    Ok(Json(serde_json::to_value(p).map_err(err)?))
+}
+
+/// Give a freshly created project a folder immediately if it doesn't already have one - the
+/// eager half of what `projects_ensure_workdir` does lazily on first terminal/files use.
+/// Without this, opening the files drawer right after creating a project (before anything else
+/// happens to trigger `ensure-workdir`) showed nothing there yet. Best-effort: on failure the
+/// project is returned unchanged and `ensure-workdir` still backfills it on first use, exactly
+/// like it already does for projects created before this existed. Split out of the handler
+/// (takes the pieces it needs instead of a whole `App`) so it's unit-testable directly.
+fn provision_workdir_if_missing(
+    workspace: &workspace::WorkspaceStore,
+    home: &str,
+    p: workspace::Project,
+) -> workspace::Project {
+    if p.workdir.as_deref().is_none_or(|w| w.trim().is_empty()) {
+        if let Ok(dir) = default_project_dir(home, &p.id, &p.name) {
+            if let Some(updated) = workspace.update_project(&p.id, None, None, Some(dir)) {
+                return updated;
+            }
+        }
+    }
+    p
 }
 
 /// Resolve a user-supplied project directory: expand a leading `~`, create it if it doesn't exist
@@ -7536,6 +7558,28 @@ fn init_tracing() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provision_workdir_if_missing_backfills_a_folder_but_never_overwrites_one() {
+        let home = tempfile::tempdir().unwrap();
+        let ws = workspace::WorkspaceStore::open(home.path());
+
+        // No workdir given at creation - gets one immediately, not lazily.
+        let p = ws.create_project("Apex Research".into(), None);
+        assert!(p.workdir.is_none());
+        let p = provision_workdir_if_missing(&ws, home.path().to_str().unwrap(), p);
+        let dir = p.workdir.clone().expect("a folder was provisioned");
+        assert!(
+            std::path::Path::new(&dir).is_dir(),
+            "the folder must exist on disk, not just be a stored path"
+        );
+        assert!(dir.ends_with("projects/apex-research"), "got: {dir}");
+
+        // A project that already has one (explicitly chosen by the user at creation) is untouched.
+        let explicit = ws.create_project("Chosen".into(), Some("/tmp".into()));
+        let out = provision_workdir_if_missing(&ws, home.path().to_str().unwrap(), explicit);
+        assert_eq!(out.workdir.as_deref(), Some("/tmp"));
+    }
 
     #[test]
     fn pending_egress_excludes_resolved_and_dedupes() {

@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-07-07
+
+### Fixed
+- Picking a folder for a *new* project (e.g. "Desktop") no longer binds that exact folder to the
+  project. It now creates a new subfolder named after the project inside the picked location -
+  the same guarantee a project already got when no folder was picked at all - so a project named
+  "Rado1" reliably gets a "Rado1" folder, and the agent is never accidentally scoped to an
+  existing folder full of unrelated files.
+
 ## [0.3.5] - 2026-07-07
 
 ### Fixed

@@ -6,6 +6,22 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.9] - 2026-07-09
+
+### Added
+- 135 new built-in skills, taking the library from 43 to 178. Highlights: financial
+  calculators (compound interest, amortization, NPV/IRR, unit economics, cap tables, VC
+  valuation); startup/strategy frameworks (Business Model Canvas, Lean Canvas, TAM/SAM/SOM,
+  OKRs, RICE/ICE, Jobs-to-be-Done, Three Horizons); marketing/growth/SEO tooling (keyword
+  research, meta-tag and sitemap audits, schema.org generation, funnel/cohort/A-B-test math,
+  ad copy checks, pricing psychology); defensive security utilities (password strength, JWT
+  decode, CORS/security-header checks, STRIDE threat modeling, secrets scanning, CVE lookup);
+  scaffolding for React, Vue, Express, FastAPI, Flask, Django, Go, Rust/axum, ROS, and Arduino
+  projects; text-based diagramming and documents (Mermaid diagrams, SVG infographics, HTML
+  dashboards, a dependency-free minimal PowerPoint generator); an MCP server scaffolder; and
+  more across git/CI, hardware, and localization. Every skill is stdlib-only Python, signed on
+  install, and can be toggled on/off individually from the dashboard.
+
 ## [0.3.8] - 2026-07-08
 
 ### Added

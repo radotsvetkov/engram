@@ -768,6 +768,19 @@ const SEED_SKILLS: &[SeedSkill] = &[
         description: "Scores a page against a canonical 12-item WCAG-inspired accessibility checklist, returning present/missing and prioritized fixes with real-world impact. Input JSON {present_elements}.",
         when_to_use: "the user wants a quick self-assessment of a page or app's accessibility coverage",
         source: include_str!("skills/accessibility_audit_checklist.py") },
+    // --- batch 9: a few remaining explicitly-named gaps (GitHub PRs, llama.cpp, Node debugging) ---
+    SeedSkill { id: "github_pr_create", category: "software", net: true,
+        description: "Opens a real GitHub pull request via the REST API — a mutating write, same risk class as github_issue_create/email. Needs GITHUB_TOKEN/GH_TOKEN. Input JSON {repo:'owner/name', title, head, base?, body?, draft?}.",
+        when_to_use: "the user explicitly asks to open a pull request directly on a GitHub repo",
+        source: include_str!("skills/github_pr_create.py") },
+    SeedSkill { id: "llama_cpp_config_gen", category: "software", net: false,
+        description: "Builds a llama.cpp `llama-server` launch command and flag reference from a model path and tuning knobs (context size, GPU layers, port). Input JSON {model_path, context_size?, gpu_layers?, port?, host?, threads?}.",
+        when_to_use: "the user wants to run a local GGUF model with llama.cpp and needs the right server launch flags",
+        source: include_str!("skills/llama_cpp_config_gen.py") },
+    SeedSkill { id: "node_debug_config_gen", category: "software", net: false,
+        description: "Generates a VS Code launch.json config and equivalent CLI command for launching or attaching a Node.js debugger. Input JSON {mode?: launch|attach, program?, port?, args?, name?}.",
+        when_to_use: "the user wants to set up Node.js debugging (launch or attach) in VS Code or via the CLI",
+        source: include_str!("skills/node_debug_config_gen.py") },
 ];
 
 /// Install any built-in skill from [`SEED_SKILLS`] that isn't already present. Id-guarded against the

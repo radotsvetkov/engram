@@ -6,6 +6,38 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-10
+
+### Added
+- 92 more built-in skills, taking the library from 178 to 270. New ground: data science
+  and statistics (descriptive stats, correlation, t-tests/chi-square, regression &
+  classification metrics, outliers, forecasting); LLM/AI tooling (token & context-window
+  estimation, RAG chunking, embedding similarity, TF-IDF, BLEU/ROUGE, edit distance,
+  few-shot & prompt templating); agentic problem-solving frameworks (task decomposition,
+  ReAct loop scaffolds, decision matrices, pre-mortem, OODA, first-principles, SCAMPER,
+  retry/backoff); databases & scale (DDL generation, normalization checks, index advising,
+  sharding, CAP-theorem, pagination, caching, migrations, capacity planning, SLO error
+  budgets, queue sizing, rate limiters); full-stack framework scaffolds for PHP (Laravel,
+  Symfony, WordPress), Elixir (Phoenix), C# (ASP.NET Core), Java (Spring Boot), Ruby
+  (Rails), C++ (CMake), Node (NestJS, Fastify), and mobile/hybrid (Jetpack Compose, React
+  Native, Flutter, SwiftUI, Ionic); and universal data plumbing (CSV↔JSON, JSON Schema
+  validation, pivot tables, XML↔JSON, .env parsing with secret masking, SQL formatting,
+  dedupe, fake-data generation, Markdown tables). Every skill is stdlib-only Python,
+  signed on install, and individually toggleable.
+- New built-in agent tools for open-ended work:
+  - **`grep`** now takes a real regular-expression pattern (with `ignore_case`, an optional
+    `literal` fixed-string mode, and `context` lines around each hit) instead of a literal
+    substring match.
+  - **`multi_edit`** applies several edits to one file in a single atomic call — all-or-
+    nothing, with the same uniqueness and whitespace-tolerant matching as `edit_file`.
+  - **`shell_start` / `shell_output` / `shell_kill`** run a command in the background (a dev
+    server, a watcher), stream its output incrementally, and stop it — instead of
+    fire-and-forget. Same enable/taint gate as `shell`.
+  - **`schedule_list` / `schedule_cancel`** let the agent inspect and cancel the recurring
+    tasks it can already create with `schedule_task`.
+  - **`read_document`** extracts text from PDF, Word (.docx), and Excel (.xlsx/.xls/.ods)
+    files — which the UTF-8-only `read_file` can't read — via a panic-isolated subprocess.
+
 ## [0.3.9] - 2026-07-09
 
 ### Added

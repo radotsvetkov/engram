@@ -904,7 +904,7 @@ checksum = "66b7e2430c6dff6a955451e2cfc438f09cea1965a9d6f87f7e3b90decc014099"
 
 [[package]]
 name = "engram-agent"
-version = "0.3.9"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "base64",
@@ -927,7 +927,7 @@ dependencies = [
 
 [[package]]
 name = "engram-bench"
-version = "0.3.9"
+version = "0.4.0"
 dependencies = [
  "engram-core",
  "engram-memory",
@@ -937,7 +937,7 @@ dependencies = [
 
 [[package]]
 name = "engram-cli"
-version = "0.3.9"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -954,7 +954,7 @@ dependencies = [
 
 [[package]]
 name = "engram-core"
-version = "0.3.9"
+version = "0.4.0"
 dependencies = [
  "blake3",
  "ed25519-dalek",
@@ -970,7 +970,7 @@ dependencies = [
 
 [[package]]
 name = "engram-eval"
-version = "0.3.9"
+version = "0.4.0"
 dependencies = [
  "engram-agent",
  "engram-core",
@@ -985,7 +985,7 @@ dependencies = [
 
 [[package]]
 name = "engram-gateway"
-version = "0.3.9"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "base64",
@@ -1002,7 +1002,7 @@ dependencies = [
 
 [[package]]
 name = "engram-memory"
-version = "0.3.9"
+version = "0.4.0"
 dependencies = [
  "blake3",
  "engram-core",
@@ -1016,7 +1016,7 @@ dependencies = [
 
 [[package]]
 name = "engram-sched"
-version = "0.3.9"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "engram-core",
@@ -1029,7 +1029,7 @@ dependencies = [
 
 [[package]]
 name = "engram-skills"
-version = "0.3.9"
+version = "0.4.0"
 dependencies = [
  "blake3",
  "ed25519-dalek",
@@ -1050,7 +1050,7 @@ dependencies = [
 
 [[package]]
 name = "engramd"
-version = "0.3.9"
+version = "0.4.0"
 dependencies = [
  "async-stream",
  "async-trait",

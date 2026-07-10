@@ -19,6 +19,10 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 async-trait = "0.1"
 base64 = "0.22"
+# Real regex for the `grep` tool (patterns, ignore-case, context lines) - substring-only search
+# is a real capability gap for a coding agent. RE2-style linear-time matching, no catastrophic
+# backtracking, so it's safe to run untimed on model-supplied patterns.
+regex = "1"
 tokio = { workspace = true, features = ["rt", "process", "fs", "time", "io-util", "macros", "net"] }
 # Web tools (fetch/search). On by default - an agent that can't reach the web is half an agent.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"], optional = true }

@@ -1216,46 +1216,7 @@ impl Tool for ShellTool {
         json!({ "type": "object", "properties": { "command": { "type": "string" } }, "required": ["command"] })
     }
     async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
-        if !ctx.policy.allow_shell {
-            return Err("shell tool is disabled (set ENGRAM_TOOLS_SHELL=1 to enable)".into());
-        }
-        let backend = ctx.policy.shell_backend.as_deref();
-        if ctx.taint.is_untrusted() {
-            // The injection guard blocks shell on a tainted run because untrusted content could steer
-            // a command to exfiltrate/damage. Two things safely lift it, and both are ledgered:
-            //   (a) an explicit one-time human approval (the same `approved` escape the egress gate
-            //       uses) — a human is watching and signed off on running-after-reading; or
-            //   (b) a network-isolated backend — the built-in OS `sandbox` (network-denied) or the
-            //       Docker backend (`docker run --network none`, see `shell_command`): with no
-            //       network there IS no exfiltration channel, the precise risk the taint gate stops.
-            //       `ssh:` (runs on a remote host with network) and `singularity:` (no network flag)
-            //       are NOT isolated, so they still require explicit approval.
-            let sandboxed = match backend {
-                Some("sandbox") => true,
-                Some(b) if b.starts_with("ssh:") || b.starts_with("singularity:") => false,
-                Some(_) => true, // docker image → --network none
-                None => false,   // plain local shell → full network
-            };
-            if ctx.policy.approved {
-                let _ = ctx.ledger.append(
-                    "agent.shell_deescalated",
-                    "agent",
-                    json!({ "reason": "user_approved" }),
-                );
-            } else if sandboxed {
-                let _ = ctx.ledger.append(
-                    "agent.shell_deescalated",
-                    "agent",
-                    json!({ "reason": "network_isolated_sandbox", "backend": backend }),
-                );
-            } else {
-                return Err(
-                    "shell refused: this run read untrusted content (injection guard). Get the user's \
-                     one-time approval, or run in the network-isolated Docker sandbox, to proceed."
-                        .into(),
-                );
-            }
-        }
+        let backend = shell_gate(ctx)?;
         let command = arg_str(args, "command")?;
         let _ = ctx.ledger.append(
             "agent.shell",
@@ -1281,6 +1242,321 @@ impl Tool for ShellTool {
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         ))
+    }
+}
+
+/// Shared `allow_shell` + taint/injection gate for every shell tool (foreground and background).
+/// Returns the backend to use (or a refusal), and ledgers the de-escalation reason when a tainted
+/// run is let through. Kept in one place so `shell` and `shell_start` can never diverge on safety.
+fn shell_gate(ctx: &ToolCtx) -> Result<Option<&str>, String> {
+    if !ctx.policy.allow_shell {
+        return Err("shell tool is disabled (set ENGRAM_TOOLS_SHELL=1 to enable)".into());
+    }
+    let backend = ctx.policy.shell_backend.as_deref();
+    if ctx.taint.is_untrusted() {
+        // The injection guard blocks shell on a tainted run because untrusted content could steer
+        // a command to exfiltrate/damage. Two things safely lift it, and both are ledgered:
+        //   (a) an explicit one-time human approval (the same `approved` escape the egress gate
+        //       uses) — a human is watching and signed off on running-after-reading; or
+        //   (b) a network-isolated backend — the built-in OS `sandbox` (network-denied) or the
+        //       Docker backend (`docker run --network none`): with no network there IS no
+        //       exfiltration channel, the precise risk the taint gate stops. `ssh:` (remote host
+        //       with network) and `singularity:` (no network flag) are NOT isolated.
+        let sandboxed = match backend {
+            Some("sandbox") => true,
+            Some(b) if b.starts_with("ssh:") || b.starts_with("singularity:") => false,
+            Some(_) => true, // docker image → --network none
+            None => false,   // plain local shell → full network
+        };
+        if ctx.policy.approved {
+            let _ = ctx.ledger.append(
+                "agent.shell_deescalated",
+                "agent",
+                json!({ "reason": "user_approved" }),
+            );
+        } else if sandboxed {
+            let _ = ctx.ledger.append(
+                "agent.shell_deescalated",
+                "agent",
+                json!({ "reason": "network_isolated_sandbox", "backend": backend }),
+            );
+        } else {
+            return Err(
+                "shell refused: this run read untrusted content (injection guard). Get the user's \
+                 one-time approval, or run in the network-isolated Docker sandbox, to proceed."
+                    .into(),
+            );
+        }
+    }
+    Ok(backend)
+}
+
+// ---------------------------------------------------------------------------
+// Background shell — long-running processes (dev servers, watchers, tails) with a
+// handle to read their streaming output and kill them, instead of fire-and-forget `&`.
+// ---------------------------------------------------------------------------
+
+/// One backgrounded process: its captured output, live status, and a one-shot kill switch.
+struct BgProc {
+    command: String,
+    /// stdout+stderr interleaved as lines arrive, capped to the tail (see `BG_BUF_CAP`).
+    output: std::sync::Arc<std::sync::Mutex<String>>,
+    /// `None` while running; `Some(code)` once exited (code -1 = killed / no code).
+    status: std::sync::Arc<std::sync::Mutex<Option<i32>>>,
+    /// How many bytes of `output` `shell_output` has already returned (incremental reads).
+    read_cursor: usize,
+    /// Taken and fired by `shell_kill`.
+    kill: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+/// Cap each process's retained output so a chatty server can't grow the buffer unbounded; we keep
+/// the most recent bytes (the tail is what matters for "is it up / what did it just log").
+const BG_BUF_CAP: usize = 256 * 1024;
+
+fn bg_table() -> &'static std::sync::Mutex<std::collections::HashMap<String, BgProc>> {
+    static TABLE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, BgProc>>> =
+        std::sync::OnceLock::new();
+    TABLE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn bg_next_id() -> String {
+    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+    format!(
+        "bg-{}",
+        N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
+}
+
+/// Append `line` to the shared buffer, trimming the front if it exceeds the cap.
+fn bg_append(buf: &std::sync::Arc<std::sync::Mutex<String>>, line: &str) {
+    if let Ok(mut b) = buf.lock() {
+        b.push_str(line);
+        b.push('\n');
+        if b.len() > BG_BUF_CAP {
+            let cut = b.len() - BG_BUF_CAP;
+            // Trim to a char boundary so we never split a UTF-8 sequence.
+            let mut start = cut;
+            while start < b.len() && !b.is_char_boundary(start) {
+                start += 1;
+            }
+            *b = b[start..].to_string();
+        }
+    }
+}
+
+/// Start a shell command in the background and return a handle id. Same safety gate as `shell`.
+pub struct ShellStartTool;
+
+#[async_trait]
+impl Tool for ShellStartTool {
+    fn name(&self) -> &str {
+        "shell_start"
+    }
+    fn side_effecting(&self) -> bool {
+        true
+    }
+    fn description(&self) -> &str {
+        "Start a shell command in the BACKGROUND (a dev server, a watcher, a long build) and return \
+         a handle id immediately instead of waiting for it to exit. Read its streaming output later \
+         with `shell_output` (by id) and stop it with `shell_kill`. Same enable/taint rules as \
+         `shell`. Use this for anything that keeps running; use `shell` for commands that finish."
+    }
+    fn schema(&self) -> Value {
+        json!({ "type": "object", "properties": { "command": { "type": "string" } }, "required": ["command"] })
+    }
+    async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
+        let backend = shell_gate(ctx)?;
+        let command = arg_str(args, "command")?.to_string();
+        let _ = ctx.ledger.append(
+            "agent.shell_start",
+            "agent",
+            json!({ "command": command, "backend": backend.unwrap_or("local") }),
+        );
+        let (program, cmd_args) = shell_command(backend, &ctx.workdir, &command);
+        use std::process::Stdio;
+        let mut child = tokio::process::Command::new(&program)
+            .args(&cmd_args)
+            .current_dir(&ctx.workdir)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            // If the daemon exits, don't leave orphaned background children behind.
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|e| format!("failed to start: {e}"))?;
+
+        let output = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let status = std::sync::Arc::new(std::sync::Mutex::new(None::<i32>));
+        let (kill_tx, kill_rx) = tokio::sync::oneshot::channel::<()>();
+
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        // Drain both streams into the shared buffer as lines arrive.
+        if let Some(so) = stdout {
+            let buf = output.clone();
+            tokio::spawn(async move {
+                use tokio::io::AsyncBufReadExt;
+                let mut lines = tokio::io::BufReader::new(so).lines();
+                while let Ok(Some(l)) = lines.next_line().await {
+                    bg_append(&buf, &l);
+                }
+            });
+        }
+        if let Some(se) = stderr {
+            let buf = output.clone();
+            tokio::spawn(async move {
+                use tokio::io::AsyncBufReadExt;
+                let mut lines = tokio::io::BufReader::new(se).lines();
+                while let Ok(Some(l)) = lines.next_line().await {
+                    bg_append(&buf, &l);
+                }
+            });
+        }
+        // Manager task: wait for exit OR a kill request, then record the exit status.
+        let st = status.clone();
+        tokio::spawn(async move {
+            let code = tokio::select! {
+                r = child.wait() => r.ok().and_then(|s| s.code()).unwrap_or(-1),
+                _ = kill_rx => {
+                    let _ = child.start_kill();
+                    let _ = child.wait().await;
+                    -1
+                }
+            };
+            if let Ok(mut s) = st.lock() {
+                *s = Some(code);
+            }
+        });
+
+        let id = bg_next_id();
+        if let Ok(mut t) = bg_table().lock() {
+            t.insert(
+                id.clone(),
+                BgProc {
+                    command: command.clone(),
+                    output,
+                    status,
+                    read_cursor: 0,
+                    kill: Some(kill_tx),
+                },
+            );
+        }
+        Ok(format!(
+            "started background process {id}: {command}\nread its output with shell_output {{\"id\":\"{id}\"}}, stop it with shell_kill {{\"id\":\"{id}\"}}"
+        ))
+    }
+}
+
+/// Read new output from a backgrounded process (incremental since the last read) and its status.
+pub struct ShellOutputTool;
+
+#[async_trait]
+impl Tool for ShellOutputTool {
+    fn name(&self) -> &str {
+        "shell_output"
+    }
+    fn reads_sensitive(&self) -> bool {
+        true
+    }
+    fn description(&self) -> &str {
+        "Read output from a background process started with `shell_start`. Returns whatever it has \
+         printed SINCE THE LAST shell_output call (stdout+stderr interleaved) plus whether it is \
+         still running or its exit code. Omit `id` to list all background processes."
+    }
+    fn schema(&self) -> Value {
+        json!({ "type": "object", "properties": {
+            "id": { "type": "string", "description": "the handle from shell_start; omit to list all" }
+        } })
+    }
+    async fn run(&self, args: &Value, _ctx: &ToolCtx) -> Result<String, String> {
+        let table = bg_table();
+        // No id → a compact listing of every tracked process.
+        let Some(id) = args["id"].as_str() else {
+            let t = table.lock().map_err(|_| "background table poisoned")?;
+            if t.is_empty() {
+                return Ok("(no background processes)".into());
+            }
+            let mut lines: Vec<String> = t
+                .iter()
+                .map(|(id, p)| {
+                    let st = p
+                        .status
+                        .lock()
+                        .ok()
+                        .and_then(|s| *s)
+                        .map(|c| format!("exited({c})"))
+                        .unwrap_or_else(|| "running".into());
+                    format!("{id}\t{st}\t{}", p.command)
+                })
+                .collect();
+            lines.sort();
+            return Ok(lines.join("\n"));
+        };
+        let mut t = table.lock().map_err(|_| "background table poisoned")?;
+        let Some(p) = t.get_mut(id) else {
+            return Err(format!("no background process with id '{id}'"));
+        };
+        let full = p
+            .output
+            .lock()
+            .map_err(|_| "output buffer poisoned")?
+            .clone();
+        // Incremental: return only what's new since last read. If the capped buffer trimmed past
+        // our cursor, reset to the start of what's still retained.
+        let start = p.read_cursor.min(full.len());
+        let new = &full[start..];
+        p.read_cursor = full.len();
+        let status = p.status.lock().ok().and_then(|s| *s);
+        let state = match status {
+            None => "running".to_string(),
+            Some(c) => format!("exited (code {c})"),
+        };
+        let body = if new.is_empty() {
+            "(no new output)".to_string()
+        } else {
+            new.to_string()
+        };
+        Ok(format!("[{id}] {state}\n{body}"))
+    }
+}
+
+/// Stop a background process started with `shell_start`.
+pub struct ShellKillTool;
+
+#[async_trait]
+impl Tool for ShellKillTool {
+    fn name(&self) -> &str {
+        "shell_kill"
+    }
+    fn side_effecting(&self) -> bool {
+        true
+    }
+    fn description(&self) -> &str {
+        "Stop a background process started with `shell_start`, by its handle id. Idempotent - \
+         killing an already-exited process just reports its state."
+    }
+    fn schema(&self) -> Value {
+        json!({ "type": "object", "properties": { "id": { "type": "string" } }, "required": ["id"] })
+    }
+    async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
+        let id = arg_str(args, "id")?;
+        let mut t = bg_table().lock().map_err(|_| "background table poisoned")?;
+        let Some(p) = t.get_mut(id) else {
+            return Err(format!("no background process with id '{id}'"));
+        };
+        let already = p.status.lock().ok().and_then(|s| *s);
+        if let Some(c) = already {
+            return Ok(format!("{id} already exited (code {c})"));
+        }
+        // Fire the one-shot kill; the manager task performs start_kill + reaps the child.
+        if let Some(tx) = p.kill.take() {
+            let _ = tx.send(());
+            let _ = ctx
+                .ledger
+                .append("agent.shell_kill", "agent", json!({ "id": id }));
+            Ok(format!("sent kill to {id}"))
+        } else {
+            Ok(format!("{id} is already being stopped"))
+        }
     }
 }
 
@@ -2035,15 +2311,19 @@ impl Tool for GrepTool {
         "grep"
     }
     fn description(&self) -> &str {
-        "Search file contents within the working directory for a literal string and return \
-         `path:line: text` hits. Optional `glob` to restrict files and `ignore_case`."
+        "Search file contents within the working directory with a REGEX pattern and return \
+         `path:line: text` hits. `query` is a regular expression (e.g. `fn \\w+\\(`, `TODO|FIXME`); \
+         set `literal` to search for the exact string instead. Optional `glob` to restrict files, \
+         `ignore_case`, and `context` (lines of surrounding context to show around each hit)."
     }
     fn schema(&self) -> Value {
         json!({ "type": "object",
             "properties": {
-                "query": { "type": "string" },
+                "query": { "type": "string", "description": "regex pattern (or exact string if `literal` is true)" },
                 "glob": { "type": "string", "description": "only search files matching this glob" },
-                "ignore_case": { "type": "boolean" }
+                "ignore_case": { "type": "boolean" },
+                "literal": { "type": "boolean", "description": "treat `query` as an exact string, not a regex" },
+                "context": { "type": "integer", "description": "lines of context to show before & after each hit (0-10)" }
             },
             "required": ["query"] })
     }
@@ -2053,17 +2333,27 @@ impl Tool for GrepTool {
     async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
         let query = arg_str(args, "query")?;
         let ignore_case = args["ignore_case"].as_bool().unwrap_or(false);
-        let needle = if ignore_case {
-            query.to_lowercase()
+        let literal = args["literal"].as_bool().unwrap_or(false);
+        let context = args["context"].as_u64().unwrap_or(0).min(10) as usize;
+        // Build the matcher. A `literal` search escapes the pattern so regex metacharacters are
+        // matched verbatim; otherwise `query` is a real regex. `(?i)` gives case-insensitivity.
+        let pattern = if literal {
+            regex::escape(query)
         } else {
             query.to_string()
         };
+        let re = regex::RegexBuilder::new(&pattern)
+            .case_insensitive(ignore_case)
+            // Bound the compiled program so a huge model-supplied pattern can't blow up memory.
+            .size_limit(1 << 20)
+            .build()
+            .map_err(|e| format!("invalid regex pattern: {e}"))?;
         let glob = args["glob"].as_str();
         let base = std::fs::canonicalize(&ctx.workdir).unwrap_or_else(|_| ctx.workdir.clone());
         let mut out = Vec::new();
         let mut stack = vec![ctx.workdir.clone()];
         let limit = 200usize;
-        while let Some(dir) = stack.pop() {
+        'outer: while let Some(dir) = stack.pop() {
             let mut rd = match tokio::fs::read_dir(&dir).await {
                 Ok(rd) => rd,
                 Err(_) => continue,
@@ -2102,18 +2392,28 @@ impl Tool for GrepTool {
                 let Ok(text) = tokio::fs::read_to_string(&p).await else {
                     continue;
                 };
-                for (i, line) in text.lines().enumerate() {
-                    let hay = if ignore_case {
-                        line.to_lowercase()
-                    } else {
-                        line.to_string()
-                    };
-                    if hay.contains(&needle) {
-                        let shown: String = line.chars().take(200).collect();
-                        out.push(format!("{rels}:{}: {}", i + 1, shown.trim()));
+                let lines: Vec<&str> = text.lines().collect();
+                for (i, line) in lines.iter().enumerate() {
+                    if re.is_match(line) {
+                        if context > 0 {
+                            // Show `context` lines on each side, prefixed with the file:line so a
+                            // multi-file result stays unambiguous. A blank separator between hits.
+                            if !out.is_empty() {
+                                out.push("--".to_string());
+                            }
+                            let lo = i.saturating_sub(context);
+                            let hi = (i + context + 1).min(lines.len());
+                            for (j, ln) in lines[lo..hi].iter().enumerate() {
+                                let shown: String = ln.chars().take(200).collect();
+                                out.push(format!("{rels}:{}: {}", lo + j + 1, shown));
+                            }
+                        } else {
+                            let shown: String = line.chars().take(200).collect();
+                            out.push(format!("{rels}:{}: {}", i + 1, shown.trim()));
+                        }
                         if out.len() >= limit {
-                            out.push(format!("(stopped at {limit} hits)"));
-                            return Ok(out.join("\n"));
+                            out.push(format!("(stopped at {limit} output lines)"));
+                            break 'outer;
                         }
                     }
                 }
@@ -4573,6 +4873,129 @@ mod file_tools_tests {
             out.starts_with("fn main() {\n") && out.ends_with("}\n"),
             "surroundings kept: {out}"
         );
+    }
+
+    #[tokio::test]
+    async fn background_shell_streams_output_and_kills() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = ctx_in(dir.path());
+        ctx.policy.allow_shell = true; // background shell honors the same gate as `shell`
+
+        // 1) A short command: start it, let it finish, and read its output incrementally.
+        let start = ShellStartTool
+            .run(&json!({"command": "echo hello-bg"}), &ctx)
+            .await
+            .unwrap();
+        let id = start
+            .split("background process ")
+            .nth(1)
+            .and_then(|s| s.split(':').next())
+            .unwrap()
+            .to_string();
+        // Give the drain + manager tasks a moment to capture output and reap the child.
+        let mut out = String::new();
+        for _ in 0..50 {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            out = ShellOutputTool.run(&json!({"id": id}), &ctx).await.unwrap();
+            if out.contains("hello-bg") {
+                break;
+            }
+        }
+        assert!(out.contains("hello-bg"), "should capture stdout: {out}");
+        // A second read is incremental — the already-returned line is not repeated.
+        let again = ShellOutputTool.run(&json!({"id": id}), &ctx).await.unwrap();
+        assert!(
+            !again.contains("hello-bg"),
+            "incremental read repeated output: {again}"
+        );
+
+        // 2) A long-runner: start it, confirm it's running, kill it, confirm it stops.
+        let start2 = ShellStartTool
+            .run(&json!({"command": "sleep 30"}), &ctx)
+            .await
+            .unwrap();
+        let id2 = start2
+            .split("background process ")
+            .nth(1)
+            .and_then(|s| s.split(':').next())
+            .unwrap()
+            .to_string();
+        let kill = ShellKillTool.run(&json!({"id": id2}), &ctx).await.unwrap();
+        assert!(kill.contains("kill"), "kill acknowledged: {kill}");
+        // After the kill is reaped, status flips to exited.
+        let mut exited = false;
+        for _ in 0..50 {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            let s = ShellOutputTool
+                .run(&json!({"id": id2}), &ctx)
+                .await
+                .unwrap();
+            if s.contains("exited") {
+                exited = true;
+                break;
+            }
+        }
+        assert!(exited, "killed process should report exited");
+
+        // Listing (no id) shows both handles.
+        let list = ShellOutputTool.run(&json!({}), &ctx).await.unwrap();
+        assert!(list.contains(&id) && list.contains(&id2), "listing: {list}");
+    }
+
+    #[tokio::test]
+    async fn grep_matches_regex_literal_and_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ctx_in(dir.path());
+        std::fs::write(
+            dir.path().join("a.rs"),
+            "fn alpha() {}\nlet x = 1;\n// TODO: fix\nfn beta() {}\n",
+        )
+        .unwrap();
+
+        // Regex: match either function definition.
+        let r = GrepTool
+            .run(&json!({"query": r"fn \w+\("}), &ctx)
+            .await
+            .unwrap();
+        assert!(r.contains("a.rs:1:") && r.contains("a.rs:4:"), "got: {r}");
+        assert!(
+            !r.contains("let x"),
+            "regex should not match the let line: {r}"
+        );
+
+        // Literal mode: `.` is a metachar in regex but must match verbatim here.
+        std::fs::write(dir.path().join("b.txt"), "a.b\naxb\n").unwrap();
+        let lit = GrepTool
+            .run(
+                &json!({"query": "a.b", "literal": true, "glob": "b.txt"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(
+            lit.contains("b.txt:1:") && !lit.contains("b.txt:2:"),
+            "literal got: {lit}"
+        );
+
+        // Alternation + context: TODO with one line of surrounding context.
+        let ctxr = GrepTool
+            .run(
+                &json!({"query": "TODO|FIXME", "glob": "a.rs", "context": 1}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(
+            ctxr.contains("a.rs:2:") && ctxr.contains("a.rs:3:") && ctxr.contains("a.rs:4:"),
+            "context should show the line before and after the hit: {ctxr}"
+        );
+
+        // Invalid regex: a clear error, not a panic.
+        let bad = GrepTool
+            .run(&json!({"query": "("}), &ctx)
+            .await
+            .unwrap_err();
+        assert!(bad.contains("invalid regex"), "got: {bad}");
     }
 
     #[tokio::test]

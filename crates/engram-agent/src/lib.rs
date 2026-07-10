@@ -79,6 +79,10 @@ fn base_tools() -> ToolRegistry {
         .with(Arc::new(tools::CopyFileTool))
         .with(Arc::new(tools::DeleteFileTool))
         .with(Arc::new(tools::ShellTool))
+        // Background processes: start a long-running command, stream its output, kill it.
+        .with(Arc::new(tools::ShellStartTool))
+        .with(Arc::new(tools::ShellOutputTool))
+        .with(Arc::new(tools::ShellKillTool))
         .with(Arc::new(tools::BrowserReadTool))
         .with(Arc::new(tools::BrowserScreenshotTool))
         .with(Arc::new(tools::BrowserOpenTool))

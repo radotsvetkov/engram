@@ -1527,6 +1527,129 @@ impl Tool for EditFileTool {
     }
 }
 
+/// Apply a single `old`->`new` replacement to `text` with the SAME uniqueness + whitespace-tolerant
+/// fallback semantics as `edit_file`, returning the updated text (or a descriptive error). Shared by
+/// `multi_edit` so both tools behave identically per-edit.
+fn apply_edit(text: &str, old: &str, new: &str) -> Result<String, String> {
+    if old.is_empty() {
+        return Err("'old' must not be empty".into());
+    }
+    let count = text.matches(old).count();
+    if count == 1 {
+        return Ok(text.replacen(old, new, 1));
+    }
+    if count > 1 {
+        return Err(format!(
+            "'old' matched {count} times - include more surrounding context so it is unique"
+        ));
+    }
+    match fuzzy_locate(text, old) {
+        FuzzyMatch::Unique { start, end } => {
+            let mut u = String::with_capacity(text.len() + new.len());
+            u.push_str(&text[..start]);
+            u.push_str(new);
+            u.push_str(&text[end..]);
+            Ok(u)
+        }
+        FuzzyMatch::Ambiguous(n) => Err(format!(
+            "'old' was not found verbatim and matched {n} places ignoring whitespace - \
+             add more surrounding context so it is unique"
+        )),
+        FuzzyMatch::NotFound(hint) => Err(match hint {
+            Some(h) => format!("'old' text was not found. Did you mean:\n{h}"),
+            None => "'old' text was not found in the file".into(),
+        }),
+    }
+}
+
+/// Apply several `old`->`new` edits to ONE file atomically, in order — the multi-hunk companion to
+/// `edit_file`. Each edit must resolve to a unique location (same safety as `edit_file`); later edits
+/// see the result of earlier ones. If ANY edit fails, the file is left completely unchanged.
+pub struct MultiEditTool;
+
+#[async_trait]
+impl Tool for MultiEditTool {
+    fn name(&self) -> &str {
+        "multi_edit"
+    }
+    fn side_effecting(&self) -> bool {
+        true
+    }
+    fn description(&self) -> &str {
+        "Apply several edits to ONE file in a single atomic call. `edits` is a list of {old, new} \
+         replacements applied in order; each `old` must resolve to a unique location (verbatim \
+         preferred, with the same whitespace-tolerant fallback as edit_file). Later edits see the \
+         result of earlier ones. If ANY edit fails to apply, the file is left UNCHANGED. Prefer this \
+         over many edit_file calls when changing several places in the same file - one round-trip, \
+         all-or-nothing."
+    }
+    fn schema(&self) -> Value {
+        json!({ "type": "object",
+            "properties": {
+                "path": { "type": "string" },
+                "edits": {
+                    "type": "array",
+                    "description": "replacements applied in order; each `old` must resolve to a unique location",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "old": { "type": "string", "description": "text to replace (verbatim preferred; must be unique)" },
+                            "new": { "type": "string", "description": "replacement text (pass \"\" to delete)" }
+                        },
+                        "required": ["old", "new"]
+                    }
+                }
+            },
+            "required": ["path", "edits"] })
+    }
+    async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
+        if !ctx.policy.allow_write {
+            return Err("file writing is disabled".into());
+        }
+        let rel = arg_str_any(args, PATH_KEYS)?;
+        let path = confine(&ctx.workdir, rel)?;
+        let edits = args["edits"]
+            .as_array()
+            .ok_or("missing array argument 'edits' (a list of {old, new} objects)")?;
+        if edits.is_empty() {
+            return Err("'edits' must contain at least one {old, new} edit".into());
+        }
+        let mut text = tokio::fs::read_to_string(&path)
+            .await
+            .map_err(|e| e.to_string())?;
+        let original_len = text.len();
+        // Apply every edit in memory first; only write if ALL succeed (atomic - no partial edits).
+        for (i, e) in edits.iter().enumerate() {
+            let old = e["old"]
+                .as_str()
+                .ok_or_else(|| format!("edit #{}: missing string field 'old'", i + 1))?;
+            // 'new' is required: an omitted value silently deleting the match is a footgun. An
+            // explicit "" is a legitimate deletion.
+            let new = e["new"].as_str().ok_or_else(|| {
+                format!(
+                    "edit #{}: missing string field 'new' (pass \"\" to delete the matched text)",
+                    i + 1
+                )
+            })?;
+            text = apply_edit(&text, old, new)
+                .map_err(|err| format!("edit #{} failed (file left unchanged): {err}", i + 1))?;
+        }
+        tokio::fs::write(&path, &text)
+            .await
+            .map_err(|e| e.to_string())?;
+        let _ = ctx.ledger.append(
+            "agent.edit",
+            "agent",
+            json!({ "path": path.to_string_lossy(), "edits": edits.len(), "multi": true }),
+        );
+        Ok(format!(
+            "applied {} edit(s) to {rel} ({original_len} → {} bytes)",
+            edits.len(),
+            text.len()
+        ))
+    }
+}
+
 /// Outcome of fuzzy-locating `old` within a file.
 enum FuzzyMatch {
     /// A unique block; replace exactly `text[start..end]`.
@@ -4449,6 +4572,54 @@ mod file_tools_tests {
         assert!(
             out.starts_with("fn main() {\n") && out.ends_with("}\n"),
             "surroundings kept: {out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn multi_edit_applies_all_atomically_and_rolls_back_on_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ctx_in(dir.path());
+        let original = "const A = 1;\nconst B = 2;\nconst C = 3;\n";
+        std::fs::write(dir.path().join("f.js"), original).unwrap();
+
+        // Two edits in one call, applied in order, both unique -> both land.
+        let r = MultiEditTool
+            .run(
+                &json!({
+                    "path": "f.js",
+                    "edits": [
+                        {"old": "const A = 1;", "new": "const A = 10;"},
+                        {"old": "const C = 3;", "new": "const C = 30;"}
+                    ]
+                }),
+                &ctx,
+            )
+            .await;
+        assert!(r.is_ok(), "both unique edits should apply: {r:?}");
+        let out = std::fs::read_to_string(dir.path().join("f.js")).unwrap();
+        assert_eq!(out, "const A = 10;\nconst B = 2;\nconst C = 30;\n");
+
+        // Now: first edit valid, second edit's `old` is absent -> the WHOLE call must fail and the
+        // file must be byte-for-byte unchanged (no partial application).
+        let before = std::fs::read_to_string(dir.path().join("f.js")).unwrap();
+        let e = MultiEditTool
+            .run(
+                &json!({
+                    "path": "f.js",
+                    "edits": [
+                        {"old": "const A = 10;", "new": "const A = 99;"},
+                        {"old": "const NOPE = 0;", "new": "unused"}
+                    ]
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(e.contains("edit #2"), "error names the failing edit: {e}");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("f.js")).unwrap(),
+            before,
+            "a failed multi_edit must leave the file completely unchanged"
         );
     }
 

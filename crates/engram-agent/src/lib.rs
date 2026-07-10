@@ -68,6 +68,8 @@ fn base_tools() -> ToolRegistry {
         .with(Arc::new(tools::ReadFileTool))
         .with(Arc::new(tools::WriteFileTool))
         .with(Arc::new(tools::EditFileTool))
+        // Atomic multi-hunk edits to one file (companion to edit_file; all-or-nothing).
+        .with(Arc::new(tools::MultiEditTool))
         .with(Arc::new(tools::AppendFileTool))
         .with(Arc::new(tools::ListDirTool))
         .with(Arc::new(tools::GlobTool))

@@ -3209,6 +3209,16 @@ pub(crate) async fn run_agent_task_cb(
     tools = tools.with(std::sync::Arc::new(ScheduleTool {
         sched: app.sched.clone(),
     }));
+    // Inspect and tear down what schedule_task creates — the agent shouldn't be able to set up a
+    // recurring job but not see or cancel it.
+    tools = tools.with(std::sync::Arc::new(ScheduleListTool {
+        sched: app.sched.clone(),
+    }));
+    tools = tools.with(std::sync::Arc::new(ScheduleCancelTool {
+        sched: app.sched.clone(),
+    }));
+    // Read office documents / PDFs the plain-text read_file can't (extraction is panic-isolated).
+    tools = tools.with(std::sync::Arc::new(ReadDocumentTool));
     // base_tools() already dropped globally-disabled built-ins; we still filter here to (a) cover the
     // MCP tools added above, (b) apply the per-agent allowed_tools scope at this chokepoint, and
     // (c) strip the memory tools from untrusted-origin runs. An inbound channel/Telegram/webhook run
@@ -6432,6 +6442,174 @@ impl engram_agent::Tool for ScheduleTool {
         Ok(format!(
             "✓ Scheduled \"{name}\" — {when}. Next run: {next} (local). It runs automatically (no cron needed); the result appears as a task card and you can manage it in the Schedule view."
         ))
+    }
+}
+
+/// Read a binary document (PDF/DOCX/XLSX and plain-text formats) in the workdir as text. read_file
+/// only handles UTF-8, so without this the agent is blind to the office documents users actually
+/// work with. Extraction runs in the SAME panic-isolated subprocess the upload/ingest path uses, so
+/// a hostile file kills a short-lived child, not the daemon.
+struct ReadDocumentTool;
+
+#[async_trait::async_trait]
+impl engram_agent::Tool for ReadDocumentTool {
+    fn name(&self) -> &str {
+        "read_document"
+    }
+    // Reading a local document may surface private data — arm the no-egress trifecta like read_file.
+    fn reads_sensitive(&self) -> bool {
+        true
+    }
+    fn description(&self) -> &str {
+        "Extract the text of a document in the working directory that read_file can't handle: PDF, \
+         DOCX (Word), and XLSX/XLS/ODS (spreadsheets), plus plain-text formats. Returns the extracted \
+         text. Use this for office documents and PDFs; use read_file for source code and plain text."
+    }
+    fn schema(&self) -> Value {
+        json!({ "type": "object", "properties": {
+            "path": { "type": "string", "description": "path to the document, relative to the working directory" }
+        }, "required": ["path"] })
+    }
+    async fn run(
+        &self,
+        args: &Value,
+        ctx: &engram_agent::ToolCtx,
+    ) -> std::result::Result<String, String> {
+        let rel = args["path"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or("need a 'path' to the document (relative to the working directory)")?;
+        // Same workdir confinement as every file tool — no `../` escape, no symlink-out.
+        let path = engram_agent::tool::confine(&ctx.workdir, rel)?;
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| rel.to_string());
+        let bytes = tokio::fs::read(&path)
+            .await
+            .map_err(|e| format!("couldn't read {rel}: {e}"))?;
+        // Bound what we pull off disk before handing it to the parser (defense in depth; the parser
+        // also caps its own accumulation and runs isolated).
+        const MAX_DOC_BYTES: usize = 64 * 1024 * 1024;
+        if bytes.len() > MAX_DOC_BYTES {
+            return Err(format!(
+                "{rel} is {} MB — too large to extract (limit {} MB)",
+                bytes.len() / (1024 * 1024),
+                MAX_DOC_BYTES / (1024 * 1024)
+            ));
+        }
+        match extract_document_text_isolated(&name, &bytes).await {
+            Some(text) => {
+                // Cap the returned text so a huge document can't blow the observation budget.
+                const OUT_CAP: usize = 200 * 1024;
+                Ok(cap_text_on_boundary(text, OUT_CAP))
+            }
+            None => Err(format!(
+                "couldn't extract text from {rel} — unsupported format, an empty/scanned document, \
+                 or the parser failed. Supported: pdf, docx, xlsx/xls/ods, and plain-text files."
+            )),
+        }
+    }
+}
+
+/// List the recurring/one-time jobs the scheduler is holding — so the agent can see what it (or the
+/// user) has set up before adding or cancelling one.
+struct ScheduleListTool {
+    sched: Arc<Scheduler>,
+}
+
+#[async_trait::async_trait]
+impl engram_agent::Tool for ScheduleListTool {
+    fn name(&self) -> &str {
+        "schedule_list"
+    }
+    fn description(&self) -> &str {
+        "List the scheduled (recurring or one-time) tasks Engram will run automatically, with each \
+         one's id, name, what it does, and next run time. Use this before creating a duplicate or to \
+         find the id to cancel with `schedule_cancel`."
+    }
+    fn schema(&self) -> Value {
+        json!({ "type": "object", "properties": {} })
+    }
+    async fn run(
+        &self,
+        _args: &Value,
+        _ctx: &engram_agent::ToolCtx,
+    ) -> std::result::Result<String, String> {
+        let jobs = self.sched.list();
+        if jobs.is_empty() {
+            return Ok("(no scheduled tasks)".into());
+        }
+        let mut lines = Vec::new();
+        for j in &jobs {
+            let what = j
+                .payload
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let next = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(j.next_fire_ms)
+                .map(|t| {
+                    t.with_timezone(&chrono::Local)
+                        .format("%a %d %b %H:%M")
+                        .to_string()
+                })
+                .unwrap_or_else(|| "soon".into());
+            lines.push(format!(
+                "{}\t{}\tnext: {} (local)\t{}",
+                j.id, j.name, next, what
+            ));
+        }
+        Ok(lines.join("\n"))
+    }
+}
+
+/// Cancel a scheduled job by id (the companion to `schedule_task`/`schedule_list`).
+struct ScheduleCancelTool {
+    sched: Arc<Scheduler>,
+}
+
+#[async_trait::async_trait]
+impl engram_agent::Tool for ScheduleCancelTool {
+    fn name(&self) -> &str {
+        "schedule_cancel"
+    }
+    fn side_effecting(&self) -> bool {
+        true
+    }
+    fn description(&self) -> &str {
+        "Cancel a scheduled task by its id (get ids from `schedule_list`). Stops it from running \
+         again. Reports clearly if no job with that id exists."
+    }
+    fn schema(&self) -> Value {
+        json!({ "type": "object", "properties": {
+            "id": { "type": "string", "description": "the job id from schedule_list" }
+        }, "required": ["id"] })
+    }
+    async fn run(
+        &self,
+        args: &Value,
+        ctx: &engram_agent::ToolCtx,
+    ) -> std::result::Result<String, String> {
+        let id = args["id"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or("need the 'id' of the job to cancel (see schedule_list)")?;
+        if ctx.policy.dry_run {
+            return Ok(format!("[dry-run] would cancel schedule {id}"));
+        }
+        let removed = self.sched.remove(id).map_err(|e| e.to_string())?;
+        if removed {
+            let _ = ctx
+                .ledger
+                .append("agent.schedule_cancel", "agent", json!({ "id": id }));
+            Ok(format!("✓ Cancelled scheduled task {id}."))
+        } else {
+            Err(format!(
+                "no scheduled task with id '{id}' — use schedule_list to see current ids"
+            ))
+        }
     }
 }
 

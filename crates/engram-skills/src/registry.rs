@@ -9,7 +9,8 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use engram_core::{now_ms, Ledger};
 use serde::{Deserialize, Serialize};
@@ -35,6 +36,8 @@ pub enum RegistryError {
     Hex(#[from] hex::FromHexError),
     #[error("not found: {0}")]
     NotFound(String),
+    #[error("invalid skill id: {0:?}")]
+    InvalidId(String),
 }
 
 type Result<T> = std::result::Result<T, RegistryError>;
@@ -94,6 +97,58 @@ pub struct Registry {
     dir: PathBuf,
     signer: Arc<SkillSigner>,
     ledger: Arc<Ledger>,
+    /// Serialises version allocation and `active` pointer writes so concurrent installs
+    /// of the same skill can't both claim the same version.
+    write_lock: Mutex<()>,
+}
+
+/// A skill id maps to one directory name under `skills/`, so it must not be able to
+/// name anything else (parent dirs, hidden files, absolute paths).
+fn id_is_safe(id: &str) -> bool {
+    !id.is_empty() && !id.starts_with('.') && !id.contains(['/', '\\', '\0']) && !id.contains("..")
+}
+
+/// Replace `path` with `data` atomically: write a temp file in the same directory,
+/// fsync it, then rename over the target. A crash leaves either the old or new contents.
+fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+    let tmp = dir.join(format!(
+        ".{name}.tmp.{}.{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    let res = (|| {
+        let mut f = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        f.write_all(data)?;
+        f.sync_all()?;
+        fs::rename(&tmp, path)
+    })();
+    if res.is_err() {
+        let _ = fs::remove_file(&tmp);
+        return res;
+    }
+    // Persist the rename itself; not all platforms allow opening a dir, so best effort.
+    if let Ok(d) = fs::File::open(dir) {
+        let _ = d.sync_all();
+    }
+    Ok(())
+}
+
+/// Create `path` with `data`, failing if it already exists.
+fn write_new(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut f = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    f.write_all(data)?;
+    f.sync_all()
 }
 
 impl Registry {
@@ -108,7 +163,15 @@ impl Registry {
             dir,
             signer,
             ledger,
+            write_lock: Mutex::new(()),
         })
+    }
+
+    fn lock_writes(&self) -> MutexGuard<'_, ()> {
+        // The guarded data is `()`, so a poisoned lock carries no broken state.
+        self.write_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     pub fn ledger(&self) -> &Ledger {
@@ -128,15 +191,18 @@ impl Registry {
         self.signer.sign_policy(policy)
     }
 
-    fn skill_dir(&self, id: &str) -> PathBuf {
-        self.dir.join("skills").join(id)
+    fn skill_dir(&self, id: &str) -> Result<PathBuf> {
+        if !id_is_safe(id) {
+            return Err(RegistryError::InvalidId(id.to_string()));
+        }
+        Ok(self.dir.join("skills").join(id))
     }
 
     /// Locate the artifact file for a version. Skills are stored as `v{N}.<ext>` where the extension
     /// varies by runtime (wasm/py/js/sh/...), so we match on the `v{N}.` prefix rather than a fixed
     /// `.wasm` suffix. This is the single place the "any extension" rule is implemented.
     fn artifact_path(&self, id: &str, version: u32) -> Option<PathBuf> {
-        let sd = self.skill_dir(id);
+        let sd = self.skill_dir(id).ok()?;
         let prefix = format!("v{version}.");
         let rd = fs::read_dir(&sd).ok()?;
         for entry in rd.flatten() {
@@ -164,7 +230,9 @@ impl Registry {
     }
 
     fn install_inner(&self, new: NewSkill, wasm: &[u8], activate: bool) -> Result<u32> {
-        let sd = self.skill_dir(&new.id);
+        let sd = self.skill_dir(&new.id)?;
+        // Held from version allocation through the ledger append.
+        let _guard = self.lock_writes();
         fs::create_dir_all(&sd)?;
         let version = self.next_version(&new.id)?;
         // A process skill's entry is its script filename; a WASM skill keeps the "run" export.
@@ -187,13 +255,20 @@ impl Registry {
             when_to_use: new.when_to_use,
         };
         let signed = self.signer.sign(&manifest)?;
-        fs::write(sd.join(format!("v{version}.{ext}")), wasm)?;
-        fs::write(
-            sd.join(format!("manifest-v{version}.json")),
-            serde_json::to_vec_pretty(&signed)?,
-        )?;
+        // create_new: if another process already claimed this version, fail instead of
+        // overwriting it. The manifest name doesn't depend on the extension, so it is the
+        // reservation that catches a racing install of a different runtime.
+        let artifact = sd.join(format!("v{version}.{ext}"));
+        write_new(&artifact, wasm)?;
+        if let Err(e) = write_new(
+            &sd.join(format!("manifest-v{version}.json")),
+            &serde_json::to_vec_pretty(&signed)?,
+        ) {
+            let _ = fs::remove_file(&artifact);
+            return Err(e.into());
+        }
         if activate && self.active_version(&new.id)?.is_none() {
-            fs::write(sd.join("active"), version.to_string())?;
+            write_atomic(&sd.join("active"), version.to_string().as_bytes())?;
         }
         self.ledger.append(
             "skill.install",
@@ -208,10 +283,13 @@ impl Registry {
     /// version to bring it back). The retirement is signed into the ledger. Used by the skill-sleep
     /// prune to clear away proposed-but-never-adopted skills.
     pub fn retire(&self, id: &str, actor: &str) -> Result<()> {
-        let sd = self.skill_dir(id);
+        let sd = self
+            .skill_dir(id)
+            .map_err(|_| RegistryError::NotFound(id.to_string()))?;
         if !sd.exists() {
             return Err(RegistryError::NotFound(id.to_string()));
         }
+        let _guard = self.lock_writes();
         let _ = fs::remove_file(sd.join("active"));
         fs::write(sd.join("retired"), b"1")?;
         self.ledger
@@ -221,7 +299,9 @@ impl Registry {
 
     /// True if the skill has been soft-retired.
     pub fn is_retired(&self, id: &str) -> bool {
-        self.skill_dir(id).join("retired").exists()
+        self.skill_dir(id)
+            .map(|sd| sd.join("retired").exists())
+            .unwrap_or(false)
     }
 
     /// The user-facing on/off switch. Toggles ONLY the `retired` marker (the active pointer and all
@@ -229,7 +309,9 @@ impl Registry {
     /// re-enablable and still inspectable in the UI — unlike [`retire`](Self::retire), which also
     /// drops the active pointer (used by the prune).
     pub fn set_enabled(&self, id: &str, enabled: bool) -> Result<()> {
-        let sd = self.skill_dir(id);
+        let sd = self
+            .skill_dir(id)
+            .map_err(|_| RegistryError::NotFound(id.to_string()))?;
         if !sd.exists() {
             return Err(RegistryError::NotFound(id.to_string()));
         }
@@ -266,7 +348,7 @@ impl Registry {
 
     /// Load a specific signed version and its bytes.
     pub fn load(&self, id: &str, version: u32) -> Result<(SignedSkill, Vec<u8>)> {
-        let sd = self.skill_dir(id);
+        let sd = self.skill_dir(id)?;
         let manifest_path = sd.join(format!("manifest-v{version}.json"));
         let Some(artifact_path) = self.artifact_path(id, version) else {
             return Err(RegistryError::NotFound(format!("{id} v{version}")));
@@ -288,7 +370,11 @@ impl Registry {
     }
 
     pub fn active_version(&self, id: &str) -> Result<Option<u32>> {
-        let p = self.skill_dir(id).join("active");
+        // An unsafe id can't name a skill, so it has no active version.
+        let Ok(sd) = self.skill_dir(id) else {
+            return Ok(None);
+        };
+        let p = sd.join("active");
         match fs::read_to_string(&p) {
             Ok(s) => Ok(s.trim().parse().ok()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -297,8 +383,10 @@ impl Registry {
     }
 
     pub fn versions(&self, id: &str) -> Result<Vec<u32>> {
-        let sd = self.skill_dir(id);
         let mut out = Vec::new();
+        let Ok(sd) = self.skill_dir(id) else {
+            return Ok(out);
+        };
         if let Ok(rd) = fs::read_dir(&sd) {
             for entry in rd.flatten() {
                 if let Some(name) = entry.file_name().to_str() {
@@ -350,8 +438,10 @@ impl Registry {
         if self.artifact_path(id, version).is_none() {
             return Err(RegistryError::NotFound(format!("{id} v{version}")));
         }
+        let sd = self.skill_dir(id)?;
+        let _guard = self.lock_writes();
         let prev = self.active_version(id)?;
-        fs::write(self.skill_dir(id).join("active"), version.to_string())?;
+        write_atomic(&sd.join("active"), version.to_string().as_bytes())?;
         self.ledger.append(
             kind,
             actor,
@@ -377,7 +467,7 @@ impl Registry {
             reward,
             ts_ms: now_ms(),
         };
-        let sd = self.skill_dir(id);
+        let sd = self.skill_dir(id)?;
         fs::create_dir_all(&sd)?;
         let mut f = fs::OpenOptions::new()
             .create(true)
@@ -391,7 +481,10 @@ impl Registry {
 
     /// Accepted runs (reward ≥ 0.75) as (input, gold) pairs - the replay set.
     pub fn accepted_runs(&self, id: &str) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
-        let p = self.skill_dir(id).join("runs.jsonl");
+        let Ok(sd) = self.skill_dir(id) else {
+            return Ok(Vec::new());
+        };
+        let p = sd.join("runs.jsonl");
         let content = match fs::read_to_string(&p) {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -408,5 +501,142 @@ impl Registry {
             }
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn setup() -> (Arc<Registry>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Arc::new(Ledger::open(dir.path()).unwrap());
+        let signer = Arc::new(SkillSigner::load_or_create(dir.path().join("skill.key")).unwrap());
+        let reg = Arc::new(Registry::open(dir.path(), signer, ledger).unwrap());
+        (reg, dir)
+    }
+
+    fn skill(id: &str) -> NewSkill {
+        NewSkill::wasm(id, "test", "a test skill", vec![], "exact_match")
+    }
+
+    #[test]
+    fn concurrent_installs_get_distinct_versions() {
+        let (reg, _dir) = setup();
+        let n = 16;
+        let handles: Vec<_> = (0..n)
+            .map(|i| {
+                let reg = reg.clone();
+                std::thread::spawn(move || {
+                    let bytes = format!("module-{i}").into_bytes();
+                    let v = reg.install(skill("racer"), &bytes).unwrap();
+                    (v, bytes)
+                })
+            })
+            .collect();
+        let results: Vec<(u32, Vec<u8>)> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+        let mut versions: Vec<u32> = results.iter().map(|(v, _)| *v).collect();
+        versions.sort_unstable();
+        assert_eq!(versions, (1..=n).collect::<Vec<u32>>());
+        assert_eq!(reg.versions("racer").unwrap(), versions);
+
+        // Each version's bytes and manifest belong to the install that claimed it.
+        for (v, bytes) in &results {
+            let (signed, loaded) = reg.load("racer", *v).unwrap();
+            assert_eq!(&loaded, bytes);
+            assert_eq!(signed.manifest.version, *v);
+            assert_eq!(signed.manifest.module_hash, module_hash(bytes));
+            crate::manifest::verify(&signed, &loaded, reg.verifying()).unwrap();
+        }
+
+        // One ledger install entry per version, no duplicates.
+        let mut logged: Vec<u64> = reg
+            .ledger()
+            .read_all()
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.kind == "skill.install")
+            .map(|e| {
+                let v: serde_json::Value = serde_json::from_str(e.payload.get()).unwrap();
+                v["version"].as_u64().unwrap()
+            })
+            .collect();
+        logged.sort_unstable();
+        assert_eq!(logged, (1..=n as u64).collect::<Vec<u64>>());
+        assert_eq!(reg.active_version("racer").unwrap(), Some(1));
+    }
+
+    #[test]
+    fn install_refuses_to_overwrite_an_existing_version() {
+        let (reg, dir) = setup();
+        assert_eq!(reg.install(skill("s"), b"one").unwrap(), 1);
+        // Simulate another process having claimed v2 with a different runtime's artifact.
+        let sd = dir.path().join("skills").join("s");
+        fs::write(sd.join("manifest-v2.json"), b"{}").unwrap();
+        assert!(reg.install(skill("s"), b"two").is_err());
+        assert!(!sd.join("v2.wasm").exists());
+    }
+
+    #[test]
+    fn unsafe_ids_are_rejected() {
+        let (reg, dir) = setup();
+        for id in [
+            "../x",
+            "..",
+            ".",
+            ".hidden",
+            "a/b",
+            "a\\b",
+            "",
+            "a\0b",
+            "x/../../y",
+        ] {
+            assert!(
+                matches!(
+                    reg.install(skill(id), b"m"),
+                    Err(RegistryError::InvalidId(_))
+                ),
+                "{id:?}"
+            );
+            assert!(reg.record_run(id, 1, b"i", b"o", 1.0).is_err());
+            assert!(reg.set_active(id, 1, "user", "skill.promote").is_err());
+            assert!(reg.retire(id, "user").is_err());
+            assert!(reg.set_enabled(id, false).is_err());
+            assert!(reg.load(id, 1).is_err());
+            assert_eq!(reg.active_version(id).unwrap(), None);
+            assert!(reg.versions(id).unwrap().is_empty());
+            assert!(reg.accepted_runs(id).unwrap().is_empty());
+            assert!(!reg.is_retired(id));
+        }
+        // Nothing was created next to the skills dir.
+        assert!(!dir.path().join("x").exists());
+        assert!(!dir.path().join("y").exists());
+        assert!(reg.skills_all().unwrap().is_empty());
+    }
+
+    #[test]
+    fn active_pointer_is_replaced_atomically() {
+        let (reg, dir) = setup();
+        reg.install(skill("s"), b"one").unwrap();
+        reg.install(skill("s"), b"two").unwrap();
+        reg.set_active("s", 2, "user", "skill.promote").unwrap();
+        assert_eq!(reg.active_version("s").unwrap(), Some(2));
+        // No temp files left behind.
+        let leftovers: Vec<_> = fs::read_dir(dir.path().join("skills").join("s"))
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
+            .collect();
+        assert!(leftovers.is_empty());
+    }
+
+    #[test]
+    fn ordinary_ids_still_work() {
+        let (reg, _dir) = setup();
+        for id in ["csv2json", "web_fetch-v2", "a.b"] {
+            assert_eq!(reg.install(skill(id), b"m").unwrap(), 1, "{id}");
+            assert_eq!(reg.active_version(id).unwrap(), Some(1));
+        }
     }
 }

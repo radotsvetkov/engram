@@ -6372,8 +6372,9 @@ struct TailQuery {
 }
 
 async fn ledger_tail(State(app): State<App>, Query(q): Query<TailQuery>) -> ApiResult {
-    // Bounded: the response is built in memory on every poll.
-    let entries = app.ledger.tail(q.n.unwrap_or(50).min(1000)).map_err(err)?;
+    // Bounded: the response is built in memory on every poll. 5000 matches the dashboard's
+    // "load older entries" ceiling.
+    let entries = app.ledger.tail(q.n.unwrap_or(50).min(5000)).map_err(err)?;
     Ok(Json(serde_json::to_value(entries).map_err(err)?))
 }
 
@@ -6388,9 +6389,14 @@ async fn ledger_verify(State(app): State<App>) -> ApiResult {
             "bad_seq": seq,
             "error": format!("chain broken at seq {seq}: {reason}"),
         }))),
-        Err(e) => Ok(Json(
-            json!({ "ok": false, "entries": 0, "error": e.to_string() }),
-        )),
+        // A mid-file line that no longer parses is tampering too.
+        Err(e @ engram_core::LedgerError::Json(_)) => Ok(Json(json!({
+            "ok": false,
+            "entries": 0,
+            "error": e.to_string(),
+        }))),
+        // I/O and key errors say nothing about the chain: report them as errors, not tampering.
+        Err(e) => Err(err(e)),
     }
 }
 

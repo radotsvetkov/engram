@@ -795,6 +795,15 @@ fn write_owner_only(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     // truncated one (a truncated config.json silently falls back to defaults and loses the API
     // token, allowlist and provider settings on the next save).
     use std::io::Write;
+    // Write through a symlink (e.g. a dotfiles-managed config.json) instead of replacing the link.
+    let resolved;
+    let path = match std::fs::canonicalize(path) {
+        Ok(p) => {
+            resolved = p;
+            resolved.as_path()
+        }
+        Err(_) => path,
+    };
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
@@ -817,7 +826,15 @@ fn write_owner_only(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         f.write_all(bytes)?;
         f.sync_all()?;
         drop(f);
-        std::fs::rename(&tmp, path)
+        std::fs::rename(&tmp, path)?;
+        // Make the rename itself durable (best effort; not supported on every platform).
+        #[cfg(unix)]
+        if let Some(dir) = path.parent() {
+            if let Ok(d) = std::fs::File::open(dir) {
+                let _ = d.sync_all();
+            }
+        }
+        Ok(())
     })();
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp);
@@ -844,6 +861,22 @@ mod tests {
             let mode = std::fs::metadata(&p).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600);
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owner_only_write_goes_through_a_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real.json");
+        let link = dir.path().join("config.json");
+        std::fs::write(&real, "old").unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        write_owner_only(&link, b"new").unwrap();
+        assert!(std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), "new");
     }
 
     #[test]

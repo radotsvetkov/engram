@@ -351,7 +351,16 @@ fn truncate_torn_tail(path: &Path) -> Result<(), LedgerError> {
         return Ok(());
     };
     let terminated = line.ends_with(b"\n");
-    if terminated && serde_json::from_slice::<Entry>(line).is_ok() {
+    if serde_json::from_slice::<Entry>(line).is_ok() {
+        if !terminated {
+            // A complete entry that only lost its newline (the crash hit between the JSON and the
+            // `\n`, or a tool stripped the final newline). `replay_tip` already counted it, so it
+            // must be kept: dropping it would break the chain at the next append. Terminate it so
+            // the next append starts on its own line.
+            let mut f = OpenOptions::new().append(true).open(path)?;
+            f.write_all(b"\n")?;
+            f.sync_all()?;
+        }
         return Ok(());
     }
     tracing::warn!(
@@ -525,6 +534,31 @@ mod tests {
         let l = Ledger::open(dir.path()).unwrap();
         assert_eq!(l.head().0, 2);
         assert_eq!(verify_file(&path, &verifying).unwrap(), 2);
+    }
+
+    #[test]
+    fn complete_last_entry_without_newline_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let l = Ledger::open(dir.path()).unwrap();
+            l.append("t", "a", serde_json::json!({"n": 1})).unwrap();
+            l.append("t", "a", serde_json::json!({"n": 2})).unwrap();
+        }
+        // Strip the final newline: the last entry is complete but unterminated.
+        let path = dir.path().join("ledger.jsonl");
+        let mut bytes = std::fs::read(&path).unwrap();
+        assert_eq!(bytes.pop(), Some(b'\n'));
+        std::fs::write(&path, &bytes).unwrap();
+        {
+            let l = Ledger::open(dir.path()).unwrap();
+            l.append("t", "a", serde_json::json!({"n": 3})).unwrap();
+        }
+        let l = Ledger::open(dir.path()).unwrap();
+        assert_eq!(
+            l.verify().unwrap(),
+            3,
+            "the unterminated entry must survive"
+        );
     }
 
     #[test]

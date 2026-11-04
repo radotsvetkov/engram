@@ -1465,9 +1465,10 @@ async fn bg_kill_tree(child: &mut tokio::process::Child, docker_name: Option<&st
     let _ = child.wait().await;
 }
 
-/// The checks shared by `shell_output` and `shell_kill`: the shell must be enabled for this run.
-/// (Taint is not checked: a run that read a web page must still be able to stop its own server,
-/// and output reads are flagged `reads_sensitive`, so the egress trifecta gate still applies.)
+/// Gate for `shell_output`: the shell must be enabled for this run. (Taint is not checked: output
+/// reads are flagged `reads_sensitive`, so the egress trifecta gate still applies.) `shell_kill`
+/// is not gated: stopping a process is a safety action and must work even after the shell is
+/// turned off.
 fn bg_gate(ctx: &ToolCtx) -> Result<(), String> {
     if !ctx.policy.allow_shell {
         return Err("shell tool is disabled (set ENGRAM_TOOLS_SHELL=1 to enable)".into());
@@ -1529,7 +1530,9 @@ impl Tool for ShellStartTool {
         );
         let (program, mut cmd_args) = shell_command(backend, &ctx.workdir, &command);
         // Name a Docker container so `shell_kill` can stop it (killing the client doesn't).
-        let docker_name = (program == "docker").then(|| format!("engram-{id}"));
+        // Ids restart at 1 with the daemon, and a container can outlive a crash, so include the pid.
+        let docker_name =
+            (program == "docker").then(|| format!("engram-{}-{id}", std::process::id()));
         if let Some(name) = &docker_name {
             cmd_args.splice(1..1, ["--name".to_string(), name.clone()]);
         }
@@ -1587,6 +1590,14 @@ impl Tool for ShellStartTool {
     }
 }
 
+/// Whether this run may see or stop `p`. A process is always visible to runs in the workdir that
+/// started it. Trusted runs may also reach processes from other workdirs: with worktree isolation
+/// each task gets its own workdir, so a server started by a finished task would otherwise be
+/// impossible to stop. Untrusted runs are kept to their own workdir.
+fn bg_visible(p: &BgProc, ctx: &ToolCtx) -> bool {
+    p.workdir == ctx.workdir || !ctx.taint.is_untrusted()
+}
+
 /// Read new output from a backgrounded process (incremental since the last read) and its status.
 pub struct ShellOutputTool;
 
@@ -1612,17 +1623,22 @@ impl Tool for ShellOutputTool {
     async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
         bg_gate(ctx)?;
         let mut t = bg_table();
-        // No id → a compact listing of every process this workdir started.
+        // No id → a compact listing of the processes this run can reach.
         let Some(id) = args["id"].as_str() else {
             let mut rows: Vec<(usize, String)> = t
                 .iter()
-                .filter(|(_, p)| p.workdir == ctx.workdir)
+                .filter(|(_, p)| bg_visible(p, ctx))
                 .map(|(id, p)| {
                     let st = p
                         .exit_code()
                         .map(|c| format!("exited({c})"))
                         .unwrap_or_else(|| "running".into());
-                    (bg_id_num(id), format!("{id}\t{st}\t{}", p.command))
+                    let place = if p.workdir == ctx.workdir {
+                        String::new()
+                    } else {
+                        format!("\t(in {})", p.workdir.display())
+                    };
+                    (bg_id_num(id), format!("{id}\t{st}\t{}{place}", p.command))
                 })
                 .collect();
             if rows.is_empty() {
@@ -1679,10 +1695,9 @@ impl Tool for ShellKillTool {
         json!({ "type": "object", "properties": { "id": { "type": "string" } }, "required": ["id"] })
     }
     async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
-        bg_gate(ctx)?;
         let id = arg_str(args, "id")?;
         let mut t = bg_table();
-        let Some(p) = t.get_mut(id).filter(|p| p.workdir == ctx.workdir) else {
+        let Some(p) = t.get_mut(id).filter(|p| bg_visible(p, ctx)) else {
             return Err(format!("no background process with id '{id}'"));
         };
         if let Some(c) = p.exit_code() {

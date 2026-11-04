@@ -175,10 +175,18 @@ fn args_error_value(what: &str, raw: &str) -> serde_json::Value {
 /// parse are marked; `last_was_cut` also marks the final call, for providers that report the
 /// block being written when the limit hit.
 #[cfg(feature = "http")]
-fn mark_truncated_calls(calls: &mut [crate::types::ToolCall], last_was_cut: bool, why: &str) {
+fn mark_truncated_calls(
+    calls: &mut [crate::types::ToolCall],
+    last_was_cut: bool,
+    flag_empty: bool,
+    why: &str,
+) {
     let n = calls.len();
     for (i, c) in calls.iter_mut().enumerate() {
-        let empty = c.arguments.as_object().is_none_or(|o| o.is_empty());
+        // `flag_empty`: treat empty arguments as cut off. Right for OpenAI-style streams, where a
+        // truncated call often arrives with no arguments at all; wrong for Anthropic, where a
+        // complete call to a no-argument tool legitimately has `{}`.
+        let empty = flag_empty && c.arguments.as_object().is_none_or(|o| o.is_empty());
         let cut = last_was_cut && i + 1 == n;
         if cut || empty || c.arguments.get(ARGS_ERROR_KEY).is_some() {
             c.arguments = serde_json::json!({ ARGS_ERROR_KEY: format!(
@@ -838,7 +846,9 @@ mod anthropic {
             if let Some(e) = self.error.take() {
                 return Err(GatewayError::Provider(e));
             }
-            if !self.saw_stop {
+            // A final stop_reason (from message_delta) also proves the stream completed: some
+            // compatible gateways omit or drop the trailing message_stop event.
+            if !self.saw_stop && self.stop_reason.is_none() {
                 return Err(GatewayError::Provider(
                     "anthropic stream ended before message_stop (connection closed early)".into(),
                 ));
@@ -851,7 +861,12 @@ mod anthropic {
             }
             if self.stop_reason.as_deref() == Some("max_tokens") {
                 let last_is_tool = self.last_block_tool;
-                mark_truncated_calls(&mut self.tool_calls, last_is_tool, "stop_reason=max_tokens");
+                mark_truncated_calls(
+                    &mut self.tool_calls,
+                    last_is_tool,
+                    false,
+                    "stop_reason=max_tokens",
+                );
             }
             Ok(Completion {
                 text: self.text,
@@ -916,7 +931,12 @@ mod anthropic {
                     .as_array()
                     .and_then(|b| b.last())
                     .is_some_and(|b| b["type"] == "tool_use");
-                mark_truncated_calls(&mut tool_calls, last_is_tool, "stop_reason=max_tokens");
+                mark_truncated_calls(
+                    &mut tool_calls,
+                    last_is_tool,
+                    false,
+                    "stop_reason=max_tokens",
+                );
             }
             let u = &json["usage"];
             let cache_read = u["cache_read_input_tokens"].as_u64().unwrap_or(0);
@@ -1225,6 +1245,39 @@ mod anthropic {
         }
 
         #[test]
+        fn stream_with_stop_reason_but_no_message_stop_is_complete() {
+            // Some compatible gateways drop the trailing message_stop.
+            let c = run_stream(&[
+                START,
+                r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"done"}}"#,
+                r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}"#,
+            ])
+            .unwrap();
+            assert_eq!(c.text, "done");
+        }
+
+        #[test]
+        fn max_tokens_keeps_a_complete_no_argument_call() {
+            let c = run_stream(&[
+                START,
+                r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"a","name":"schedule_list","input":{}}}"#,
+                r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{}"}}"#,
+                r#"{"type":"content_block_stop","index":0}"#,
+                r#"{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"b","name":"write"}}"#,
+                r#"{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"y\""}}"#,
+                r#"{"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":9}}"#,
+                STOP,
+            ])
+            .unwrap();
+            assert_eq!(c.tool_calls.len(), 2);
+            assert!(
+                c.tool_calls[0].arguments.get(ARGS_ERROR_KEY).is_none(),
+                "complete no-arg call was marked truncated"
+            );
+            assert!(c.tool_calls[1].arguments.get(ARGS_ERROR_KEY).is_some());
+        }
+
+        #[test]
         fn truncation_helpers_are_char_safe() {
             let s = "é".repeat(1500); // 3000 bytes
             let t = truncate_at_char_boundary(&s, 2001);
@@ -1495,7 +1548,7 @@ mod http {
             // finish_reason=length means the arguments ended at the token limit, not by intent.
             let mut tool_calls = tool_calls;
             if finish == "length" {
-                mark_truncated_calls(&mut tool_calls, false, "finish_reason=length");
+                mark_truncated_calls(&mut tool_calls, false, true, "finish_reason=length");
             }
             let tokens_in = json["usage"]["prompt_tokens"].as_u64().unwrap_or(0) as u32;
             let tokens_out = json["usage"]["completion_tokens"].as_u64().unwrap_or(0) as u32;

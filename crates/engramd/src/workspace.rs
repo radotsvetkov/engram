@@ -92,6 +92,10 @@ struct Data {
 pub struct WorkspaceStore {
     path: PathBuf,
     data: Mutex<Data>,
+    /// Snapshot generation, taken under the `data` lock: a higher number is newer data.
+    generation: AtomicU64,
+    /// Serialises disk writes and remembers the newest generation already on disk.
+    written: Mutex<u64>,
 }
 
 static SEQ: AtomicU64 = AtomicU64::new(1);
@@ -132,6 +136,8 @@ impl WorkspaceStore {
         let store = WorkspaceStore {
             path,
             data: Mutex::new(data),
+            generation: AtomicU64::new(0),
+            written: Mutex::new(0),
         };
         store.persist();
         store
@@ -148,11 +154,20 @@ impl WorkspaceStore {
     /// project/session gone). With a per-write tmp path the writers can't corrupt each other and the
     /// last rename to land is a consistent, complete snapshot. Stale tmp files are cleaned up by the
     /// writer that created them.
+    ///
+    /// Snapshots are numbered under the data lock and written under a separate write lock, and a
+    /// snapshot older than the one already on disk is skipped. Without that, two persists could
+    /// snapshot v1 and v2, then rename in the order v2, v1, leaving the older state on disk.
     fn persist(&self) {
-        let bytes = {
+        let (generation, bytes) = {
             let d = self.data.lock().expect("workspace mutex");
-            serde_json::to_vec_pretty(&*d).unwrap_or_default()
+            let g = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
+            (g, serde_json::to_vec_pretty(&*d).unwrap_or_default())
         };
+        let mut written = self.written.lock().unwrap_or_else(|e| e.into_inner());
+        if generation <= *written {
+            return; // a newer snapshot is already on disk
+        }
         // Unique per write: pid + a process-monotonic counter, so concurrent writers never share a tmp.
         let uniq = format!(
             "{}-{}",
@@ -162,7 +177,9 @@ impl WorkspaceStore {
         let tmp = self.path.with_extension(format!("json.tmp.{uniq}"));
         if std::fs::write(&tmp, &bytes).is_ok() {
             restrict(&tmp);
-            if std::fs::rename(&tmp, &self.path).is_err() {
+            if std::fs::rename(&tmp, &self.path).is_ok() {
+                *written = generation;
+            } else {
                 // Rename failed: don't leak the tmp file.
                 let _ = std::fs::remove_file(&tmp);
             }
@@ -588,6 +605,29 @@ fn restrict(path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn concurrent_writes_leave_the_newest_state_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = std::sync::Arc::new(WorkspaceStore::open(dir.path()));
+        let threads: Vec<_> = (0..8)
+            .map(|t| {
+                let ws = ws.clone();
+                std::thread::spawn(move || {
+                    for i in 0..10 {
+                        ws.create_project(format!("p{t}-{i}"), None);
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        // Reopening reads what is on disk: every project must be there.
+        let reopened = WorkspaceStore::open(dir.path());
+        assert_eq!(reopened.projects().len(), ws.projects().len());
+        assert_eq!(ws.projects().len(), 81); // 80 + the default "personal"
+    }
 
     #[test]
     fn project_brief_resolves_by_project_id_directly() {

@@ -6374,14 +6374,23 @@ struct TailQuery {
 async fn ledger_tail(State(app): State<App>, Query(q): Query<TailQuery>) -> ApiResult {
     // Bounded: the response is built in memory on every poll. 5000 matches the dashboard's
     // "load older entries" ceiling.
-    let entries = app.ledger.tail(q.n.unwrap_or(50).min(5000)).map_err(err)?;
+    let (ledger, n) = (app.ledger.clone(), q.n.unwrap_or(50).min(5000));
+    let entries = tokio::task::spawn_blocking(move || ledger.tail(n))
+        .await
+        .map_err(err)?
+        .map_err(err)?;
     Ok(Json(serde_json::to_value(entries).map_err(err)?))
 }
 
 async fn ledger_verify(State(app): State<App>) -> ApiResult {
     // A broken chain is a verification RESULT, not a server error: report it as `ok:false` so the
     // UI, CLI and TUI show the tamper warning instead of a generic failure (or a stale green chip).
-    match app.ledger.verify() {
+    // Verifying re-hashes and checks the signature of every entry: run it off the async workers.
+    let ledger = app.ledger.clone();
+    let verified = tokio::task::spawn_blocking(move || ledger.verify())
+        .await
+        .map_err(err)?;
+    match verified {
         Ok(n) => Ok(Json(json!({ "ok": true, "entries": n }))),
         Err(engram_core::LedgerError::Broken { seq, reason }) => Ok(Json(json!({
             "ok": false,
@@ -7037,9 +7046,43 @@ async fn config_set(State(app): State<App>, Json(patch): Json<Value>) -> ApiResu
         || cfg.browser.chrome_path != before.browser.chrome_path
         || cfg.browser.cdp_port != before.browser.cdp_port;
 
-    // Capture before the move so the ledger entry doesn't re-lock the config we just took.
+    // Commit against the LIVE config, not the clone taken at the start: the MCP reconnect above
+    // can take seconds, and another writer (an egress approval, the shell toggle, Telegram
+    // connect/disconnect, the background keyring load, or a second settings save) may have changed
+    // the config meanwhile. Re-applying this patch on top of the live value keeps their changes
+    // and ours. Only the provider key is carried over from `cfg`, where it was resolved above.
+    let cfg = {
+        let mut live = app.config.write().expect("config lock");
+        let mut merged = live.clone();
+        apply_config_patch(&mut merged, &patch);
+        if merged.provider.kind == cfg.provider.kind {
+            let key_typed = patch
+                .get("provider")
+                .and_then(|p| p.get("api_key"))
+                .and_then(|k| k.as_str())
+                .is_some_and(|k| !k.is_empty());
+            if key_typed || cfg.provider.kind != before.provider.kind {
+                merged.provider.api_key = cfg.provider.api_key.clone();
+            }
+        }
+        // Did another writer change anything while we were away? (The key may be skipped in
+        // serialization, so compare it explicitly.)
+        let changed = serde_json::to_value(&merged).ok() != serde_json::to_value(&cfg).ok()
+            || merged.provider.api_key != cfg.provider.api_key;
+        if changed {
+            merged
+                .save(&app.home)
+                .map_err(|e| err(format!("could not save settings: {e}")))?;
+            app.gateway.set_provider(Arc::from(merged.build_provider()));
+            app.allow_shell.store(
+                merged.security.allow_shell,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        }
+        *live = merged.clone();
+        merged
+    };
     let (provider_kind, model) = (cfg.provider.kind.clone(), cfg.model());
-    *app.config.write().expect("config lock") = cfg;
     app.ledger
         .append(
             "config.update",

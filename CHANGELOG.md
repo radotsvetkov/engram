@@ -26,8 +26,17 @@ All notable changes to this project are documented here. The format is based on
   a truncated answer, and tool calls cut off at the output limit trigger the limit bump.
 - `/v1/open` on Windows no longer passes the URL through `cmd`.
 - CLI help says `engram projects new` (the real command).
+- A settings save no longer undoes a change made while it was running (e.g. turning the shell on
+  or approving a destination while MCP servers reconnect).
+- Chat state on disk can no longer be overwritten by an older snapshot when two writes race.
+- Concurrent installs of the same skill no longer collide on a version number, and a crash can't
+  leave a skill's active-version pointer empty.
+- `grep` with `context` merges overlapping windows instead of repeating lines; `edit_file` and
+  `multi_edit` share one matching path and write atomically, keeping file permissions.
 
 ### Changed
+- The ledger tail reads only the end of the file, and ledger verification and task diffs run
+  off the async worker threads, so the dashboard stays responsive as the ledger grows.
 - Minimum supported Rust version is now 1.88, which the locked dependencies already required.
 - `make ci` runs the full CI matrix locally (format check, every clippy and test feature
   combination, eval).

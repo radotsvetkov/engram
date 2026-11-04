@@ -228,10 +228,11 @@ impl Ledger {
     }
 
     /// Read the last `n` entries - the live tail for the "Live Cortex" feed.
+    ///
+    /// Reads backwards from the end of the file only as far as it needs to, so polling the tail
+    /// stays cheap however long the ledger grows (it used to parse the whole file each time).
     pub fn tail(&self, n: usize) -> Result<Vec<Entry>, LedgerError> {
-        let mut all = read_entries(&self.path)?;
-        let start = all.len().saturating_sub(n);
-        Ok(all.split_off(start))
+        read_tail(&self.path, n)
     }
 }
 
@@ -258,6 +259,62 @@ fn read_entries(path: &Path) -> Result<Vec<Entry>, LedgerError> {
         }
     }
     Ok(out)
+}
+
+/// The last `n` entries of the file, reading backwards in chunks. Same result as taking the tail
+/// of `read_entries`: blank lines are ignored and one unparseable trailing line (an interrupted
+/// append) is skipped; any other unparseable line in the window is an error.
+fn read_tail(path: &Path, n: usize) -> Result<Vec<Entry>, LedgerError> {
+    use std::io::{Read, Seek, SeekFrom};
+    if n == 0 {
+        return Ok(Vec::new());
+    }
+    let mut file = match File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e.into()),
+    };
+    const CHUNK: u64 = 64 * 1024;
+    let len = file.metadata()?.len();
+    let mut pos = len;
+    // Bytes from `pos` to the end of the file.
+    let mut buf: Vec<u8> = Vec::new();
+    // Read until the window holds n+1 complete lines (one extra for a torn trailing line and one
+    // for the possibly partial first line), or the whole file.
+    loop {
+        let lines = buf.iter().filter(|b| **b == b'\n').count();
+        if pos == 0 || lines > n + 1 {
+            break;
+        }
+        let step = CHUNK.min(pos);
+        pos -= step;
+        file.seek(SeekFrom::Start(pos))?;
+        let mut chunk = vec![0u8; step as usize];
+        file.read_exact(&mut chunk)?;
+        chunk.extend_from_slice(&buf);
+        buf = chunk;
+    }
+    // Unless we reached the start of the file, the first line in the window may be partial.
+    let window: &[u8] = if pos == 0 {
+        &buf
+    } else {
+        match buf.iter().position(|b| *b == b'\n') {
+            Some(i) => &buf[i + 1..],
+            None => &[],
+        }
+    };
+    let text = String::from_utf8_lossy(window);
+    let nonempty: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    let mut out = Vec::with_capacity(nonempty.len());
+    for (i, line) in nonempty.iter().enumerate() {
+        match serde_json::from_str::<Entry>(line) {
+            Ok(e) => out.push(e),
+            Err(_) if i + 1 == nonempty.len() => break,
+            Err(e) => return Err(e.into()),
+        }
+    }
+    let start = out.len().saturating_sub(n);
+    Ok(out.split_off(start))
 }
 
 /// Read every entry from a ledger file WITHOUT a signing key — for offline auditing/tooling that has
@@ -534,6 +591,34 @@ mod tests {
         let l = Ledger::open(dir.path()).unwrap();
         assert_eq!(l.head().0, 2);
         assert_eq!(verify_file(&path, &verifying).unwrap(), 2);
+    }
+
+    #[test]
+    fn tail_matches_the_full_read_for_any_n() {
+        let dir = tempfile::tempdir().unwrap();
+        let l = Ledger::open(dir.path()).unwrap();
+        // Big payloads so the backwards read crosses several 64 KiB chunks.
+        for i in 0..300 {
+            l.append(
+                "t",
+                "a",
+                serde_json::json!({ "i": i, "pad": "é".repeat(400) }),
+            )
+            .unwrap();
+        }
+        let all = read_entries(&l.path).unwrap();
+        for n in [0, 1, 2, 50, 299, 300, 1000] {
+            let t = l.tail(n).unwrap();
+            let want = &all[all.len().saturating_sub(n)..];
+            assert_eq!(t.len(), want.len(), "n={n}");
+            assert!(t.iter().zip(want).all(|(a, b)| a.seq == b.seq), "n={n}");
+        }
+        // A torn trailing line is skipped, as in the full read.
+        let mut f = OpenOptions::new().append(true).open(&l.path).unwrap();
+        f.write_all(b"{\"seq\":301,\"ts").unwrap();
+        let t = l.tail(3).unwrap();
+        assert_eq!(t.last().unwrap().seq, 300);
+        assert_eq!(t.len(), 3);
     }
 
     #[test]

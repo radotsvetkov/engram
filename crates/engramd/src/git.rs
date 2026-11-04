@@ -241,24 +241,34 @@ pub async fn git_diff(State(app): State<App>, Query(q): Query<GitQuery>) -> ApiR
 /// GET /v1/tasks/{id}/changes — files the run touched, with unified diffs for text files, computed
 /// against the auto-checkpoint taken just before the run.
 pub async fn task_changes(State(app): State<App>, AxPath(id): AxPath<String>) -> ApiResult {
+    // Walking and diffing up to thousands of files is blocking work: keep it off the async workers.
+    let home = app.home.clone();
+    let v = tokio::task::spawn_blocking(move || task_changes_blocking(&home, &id))
+        .await
+        .map_err(err)?
+        .map_err(err)?;
+    Ok(Json(v))
+}
+
+fn task_changes_blocking(home: &str, id: &str) -> Result<Value, String> {
     // Latest checkpoint recorded for this task (snapshot() tags it with the task id).
-    let cps = crate::checkpoints::list(&app.home);
+    let cps = crate::checkpoints::list(home);
     let cp = cps
         .into_iter()
-        .filter(|c| c.task.as_deref() == Some(id.as_str()))
+        .filter(|c| c.task.as_deref() == Some(id))
         .max_by_key(|c| c.created_ms)
-        .ok_or_else(|| err("no checkpoint recorded for this task"))?;
-    let cp_root = Path::new(&app.home)
+        .ok_or("no checkpoint recorded for this task")?;
+    let cp_root = Path::new(home)
         .join("checkpoints")
         .join(&cp.id)
         .join("files");
     let workdir = PathBuf::from(&cp.workdir);
     if !workdir.is_dir() {
-        return Err(err("the task's working directory no longer exists"));
+        return Err("the task's working directory no longer exists".into());
     }
 
     // Current tree, bounded the same way the snapshot was.
-    let now_files = crate::checkpoints::collect_tree(&workdir, &app.home);
+    let now_files = crate::checkpoints::collect_tree(&workdir, home);
     let before: BTreeMap<&str, ()> = cp.files.iter().map(|f| (f.as_str(), ())).collect();
 
     let mut changes: Vec<Value> = Vec::new();
@@ -305,7 +315,7 @@ pub async fn task_changes(State(app): State<App>, AxPath(id): AxPath<String>) ->
         }
     }
 
-    Ok(Json(json!({
+    Ok(json!({
         "task": id,
         "checkpoint": cp.id,
         "label": cp.label,
@@ -313,7 +323,7 @@ pub async fn task_changes(State(app): State<App>, AxPath(id): AxPath<String>) ->
         "truncated_snapshot": cp.truncated,
         "files": changes,
         "more": more,
-    })))
+    }))
 }
 
 fn files_equal(a: &Path, b: &Path) -> bool {

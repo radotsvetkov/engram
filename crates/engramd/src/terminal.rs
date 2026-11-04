@@ -285,6 +285,25 @@ fn serves_inline(mime: &str, view: bool) -> bool {
     )
 }
 
+/// Whether content of this type can run script when a browser renders it (HTML, SVG, XML, ...).
+/// Anything that isn't a raster image, PDF, or plain text is treated as active.
+pub(crate) fn is_active_content(mime: &str) -> bool {
+    let m = mime.split(';').next().unwrap_or("").trim();
+    !(m.starts_with("image/") && m != "image/svg+xml"
+        || m == "application/pdf"
+        || m == "text/plain"
+        || m == "text/csv"
+        || m == "application/json"
+        || m.starts_with("audio/")
+        || m.starts_with("video/"))
+}
+
+/// CSP that renders a page in an opaque origin: its scripts still run (so an HTML report works),
+/// but it can't read or call the daemon's API, and its requests carry `Origin: null`, which the
+/// Host/Origin guard rejects. Applied to every inline response of active content.
+pub(crate) const SANDBOX_CSP: &str =
+    "sandbox allow-scripts allow-popups allow-forms allow-modals allow-downloads";
+
 /// How much of a file the JSON preview returns; bigger files are truncated with a flag so the UI
 /// can say so and offer the raw download instead.
 const PREVIEW_CAP: u64 = 1_500_000;
@@ -347,6 +366,12 @@ pub async fn fs_read_handler(State(app): State<App>, Query(q): Query<FsReadQuery
             header::X_CONTENT_TYPE_OPTIONS,
             HeaderValue::from_static("nosniff"),
         );
+        if inline && is_active_content(mime) {
+            resp.headers_mut().insert(
+                header::CONTENT_SECURITY_POLICY,
+                HeaderValue::from_static(SANDBOX_CSP),
+            );
+        }
         let dispo = format!(
             "{}; filename=\"{}\"",
             if inline { "inline" } else { "attachment" },
@@ -478,6 +503,16 @@ mod tests {
         // view=1 (explicit open-in-browser) opts anything back into inline.
         assert!(serves_inline(mime_for("evil.html"), true));
         assert!(serves_inline(mime_for("doc.pdf"), true));
+    }
+
+    #[test]
+    fn active_content_is_detected() {
+        assert!(is_active_content(mime_for("a.html")));
+        assert!(is_active_content(mime_for("a.svg")));
+        assert!(is_active_content("application/xhtml+xml"));
+        assert!(!is_active_content(mime_for("a.png")));
+        assert!(!is_active_content(mime_for("a.pdf")));
+        assert!(!is_active_content(mime_for("a.txt")));
     }
 
     #[test]

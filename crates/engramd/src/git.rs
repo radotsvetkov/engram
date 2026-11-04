@@ -23,6 +23,29 @@ use crate::{err, ApiResult, App};
 
 const GIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(6);
 const MAX_DIFF_BYTES: usize = 200 * 1024;
+
+/// The path from a porcelain-v2 changed-entry line.
+///   ordinary: `1 XY sub mH mI mW hH hI <path>`
+///   renamed:  `2 XY sub mH mI mW hH hI X<score> <path>\t<origPath>`
+/// The path is everything after the fixed fields, so a path containing spaces stays whole.
+fn porcelain_v2_path(line: &str) -> &str {
+    if line.starts_with("2 ") {
+        let rest = line.splitn(10, ' ').nth(9).unwrap_or("");
+        rest.split('\t').next().unwrap_or("")
+    } else {
+        line.splitn(9, ' ').nth(8).unwrap_or("")
+    }
+}
+
+/// The largest char boundary of `s` at or below `i`, so a byte cap never splits a UTF-8 character
+/// (which would panic, and under the release profile's `panic = "abort"` take down the daemon).
+fn floor_char_boundary(s: &str, i: usize) -> usize {
+    let mut i = i.min(s.len());
+    while !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
 const MAX_CHANGE_FILES: usize = 60;
 const MAX_TEXT_BYTES: u64 = 256 * 1024;
 
@@ -111,11 +134,8 @@ pub async fn git_status(State(app): State<App>, Query(q): Query<GitQuery>) -> Ap
         } else if let Some(rest) = line.strip_prefix("? ") {
             untracked.push(json!({ "path": rest, "status": "untracked" }));
         } else if line.starts_with("1 ") || line.starts_with("2 ") {
-            // "1 XY sub mH mI mW hH hI path" — XY: index then worktree status letters.
-            let mut toks = line.split(' ');
-            let _kind = toks.next();
-            let xy = toks.next().unwrap_or("..");
-            let path = line.split(' ').nth(8).unwrap_or("").to_string();
+            let path = porcelain_v2_path(line).to_string();
+            let xy = line.split(' ').nth(1).unwrap_or("..");
             if path.is_empty() {
                 continue;
             }
@@ -208,7 +228,7 @@ pub async fn git_diff(State(app): State<App>, Query(q): Query<GitQuery>) -> ApiR
     };
     let truncated = text.len() > MAX_DIFF_BYTES;
     if truncated {
-        text.truncate(MAX_DIFF_BYTES);
+        text.truncate(floor_char_boundary(&text, MAX_DIFF_BYTES));
         text.push_str("\n… (truncated)");
     }
     Ok(Json(
@@ -338,7 +358,10 @@ fn unified(old: &Path, new: &Path, rel: &str) -> (String, usize, usize) {
         .header(&format!("a/{rel}"), &format!("b/{rel}"))
         .to_string();
     let text = if text.len() > MAX_DIFF_BYTES {
-        format!("{}\n… (truncated)", &text[..MAX_DIFF_BYTES])
+        format!(
+            "{}\n… (truncated)",
+            &text[..floor_char_boundary(&text, MAX_DIFF_BYTES)]
+        )
     } else {
         text
     };
@@ -570,4 +593,35 @@ pub async fn git_worktree_remove(
         .await
         .map_err(err)?;
     Ok(Json(json!({ "removed": q.path })))
+}
+
+#[cfg(test)]
+mod boundary_tests {
+    use super::floor_char_boundary;
+
+    #[test]
+    fn diff_cap_never_splits_a_multibyte_char() {
+        // 3-byte chars: the byte cap lands mid-character for most offsets.
+        let text = "日本語".repeat(100_000);
+        let end = floor_char_boundary(&text, MAX);
+        assert!(text.is_char_boundary(end));
+        assert!(end <= MAX && MAX - end < 3);
+        let mut t = text.clone();
+        t.truncate(end); // must not panic
+        assert_eq!(floor_char_boundary("abc", 99), 3);
+    }
+    const MAX: usize = super::MAX_DIFF_BYTES;
+
+    #[test]
+    fn porcelain_paths_keep_spaces_and_handle_renames() {
+        use super::porcelain_v2_path as p;
+        assert_eq!(
+            p("1 .M N... 100644 100644 100644 abc def my notes.md"),
+            "my notes.md"
+        );
+        assert_eq!(
+            p("2 R. N... 100644 100644 100644 abc def R100 new name.rs\told.rs"),
+            "new name.rs"
+        );
+    }
 }

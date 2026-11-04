@@ -281,6 +281,11 @@ pub fn restore(home: &str, id: &str) -> Result<RestoreResult, String> {
         }
         let dst = workdir.join(relp);
         if let Some(parent) = dst.parent() {
+            // Check BEFORE creating anything: if an existing ancestor is a symlink out of the
+            // workdir, `create_dir_all` would otherwise make directories at the link's target.
+            if !nearest_existing_ancestor_within(parent, &root) {
+                continue;
+            }
             let _ = std::fs::create_dir_all(parent);
             match std::fs::canonicalize(parent) {
                 Ok(p) if p.starts_with(&root) => {}
@@ -323,6 +328,20 @@ pub fn restore(home: &str, id: &str) -> Result<RestoreResult, String> {
         restored,
         created_since,
     })
+}
+
+/// Whether the deepest existing ancestor of `path` (itself included) resolves inside `root`.
+fn nearest_existing_ancestor_within(path: &Path, root: &Path) -> bool {
+    let mut cur = Some(path);
+    while let Some(p) = cur {
+        if p.exists() {
+            return std::fs::canonicalize(p)
+                .map(|c| c.starts_with(root))
+                .unwrap_or(false);
+        }
+        cur = p.parent();
+    }
+    false
 }
 
 #[cfg(test)]
@@ -409,6 +428,39 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(work.join("config.txt")).unwrap(),
             "OLD SECRET"
+        );
+
+        for d in [&home, &work, &outside] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restore_does_not_create_directories_through_a_symlinked_parent() {
+        use std::os::unix::fs::symlink;
+        let pid = std::process::id();
+        let home = std::env::temp_dir().join(format!("engram-cp-h3-{pid}"));
+        let work = std::env::temp_dir().join(format!("engram-cp-w3-{pid}"));
+        let outside = std::env::temp_dir().join(format!("engram-cp-out3-{pid}"));
+        for d in [&home, &work, &outside] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+        std::fs::create_dir_all(work.join("out/deep/er")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(work.join("out/deep/er/file.txt"), "x").unwrap();
+
+        let cp = snapshot(home.to_str().unwrap(), &work, "before", None, None, 1000).unwrap();
+
+        // The run swaps `out` for a symlink to a directory outside the workdir.
+        std::fs::remove_dir_all(work.join("out")).unwrap();
+        symlink(&outside, work.join("out")).unwrap();
+
+        let res = restore(home.to_str().unwrap(), &cp.id).unwrap();
+        assert_eq!(res.restored, 0);
+        assert!(
+            !outside.join("deep").exists(),
+            "restore created directories outside the workdir"
         );
 
         for d in [&home, &work, &outside] {

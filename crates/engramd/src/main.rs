@@ -250,14 +250,24 @@ fn next_wake_cmd(home_arg: Option<&str>) -> i32 {
         .map(String::from)
         .or_else(|| std::env::var("ENGRAM_HOME").ok())
         .unwrap_or_else(|| "./brain".into());
-    let ledger = match Ledger::open(&home) {
+    // This runs alongside the live daemon without taking the home lock, so it must not open the
+    // real ledger (opening repairs a torn last line, which could cut the daemon's in-flight
+    // append). Reading the schedule only needs a ledger handle, so give it a throwaway one.
+    let scratch = std::env::temp_dir().join(format!("engram-next-wake-{}", std::process::id()));
+    let ledger = match std::fs::create_dir_all(&scratch)
+        .map_err(|e| e.to_string())
+        .and_then(|_| Ledger::open(&scratch).map_err(|e| e.to_string()))
+    {
         Ok(l) => Arc::new(l),
         Err(e) => {
-            eprintln!("cannot open ledger: {e}");
+            eprintln!("cannot open scratch ledger: {e}");
+            let _ = std::fs::remove_dir_all(&scratch);
             return 2;
         }
     };
-    match Scheduler::open(&home, ledger).map(|s| s.next_wake()) {
+    let result = Scheduler::open(&home, ledger).map(|s| s.next_wake());
+    let _ = std::fs::remove_dir_all(&scratch);
+    match result {
         Ok(Some(ms)) => {
             println!("{ms}");
             0
@@ -1303,27 +1313,22 @@ async fn require_auth(
                     .into_response();
             }
         }
-        // Reject a foreign Origin on state-changing methods (CSRF / rebind write). Same-origin
-        // first-party requests either omit Origin or send a loopback one; a null Origin (opaque
-        // sandbox) is also rejected for writes.
-        let method = req.method().clone();
-        let mutating = !matches!(
-            method,
-            axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS
-        );
-        if mutating {
-            if let Some(origin) = req
-                .headers()
-                .get(axum::http::header::ORIGIN)
-                .and_then(|h| h.to_str().ok())
-            {
-                if !is_loopback_origin(origin) {
-                    return (
-                        axum::http::StatusCode::FORBIDDEN,
-                        "forbidden: cross-origin write blocked",
-                    )
-                        .into_response();
-                }
+        // Reject a foreign Origin on every request, not just writes. Browsers send Origin on
+        // cross-origin fetches and on WebSocket upgrades (which are GETs): without this, any web
+        // page could open `/v1/voice/stream` and drive the agent, or read `/v1/events`. Same-origin
+        // first-party requests either omit Origin or send a loopback one; a null Origin (an opaque
+        // sandboxed page, e.g. an agent-written HTML artifact) is rejected too.
+        if let Some(origin) = req
+            .headers()
+            .get(axum::http::header::ORIGIN)
+            .and_then(|h| h.to_str().ok())
+        {
+            if !is_loopback_origin(origin) {
+                return (
+                    axum::http::StatusCode::FORBIDDEN,
+                    "forbidden: cross-origin request blocked",
+                )
+                    .into_response();
             }
         }
     }
@@ -1768,16 +1773,29 @@ async fn artifact_get(State(app): State<App>, Query(q): Query<ArtifactQuery>) ->
     } else {
         format!("attachment; filename=\"{fname}\"")
     };
+    let rendered_inline = inline || q.view.is_some();
     match tokio::fs::read(&full).await {
-        Ok(bytes) => (
-            [
-                (header::CONTENT_TYPE, ct.to_string()),
-                (header::CONTENT_DISPOSITION, disp),
-                (header::CACHE_CONTROL, "no-store".to_string()),
-            ],
-            bytes,
-        )
-            .into_response(),
+        Ok(bytes) => {
+            let mut resp = (
+                [
+                    (header::CONTENT_TYPE, ct.to_string()),
+                    (header::CONTENT_DISPOSITION, disp),
+                    (header::CACHE_CONTROL, "no-store".to_string()),
+                    (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+                ],
+                bytes,
+            )
+                .into_response();
+            // An agent-written HTML/SVG page must not run on the daemon's origin, where its
+            // scripts could call the API. Render it in an opaque origin instead.
+            if rendered_inline && terminal::is_active_content(ct) {
+                resp.headers_mut().insert(
+                    header::CONTENT_SECURITY_POLICY,
+                    axum::http::HeaderValue::from_static(terminal::SANDBOX_CSP),
+                );
+            }
+            resp
+        }
         Err(_) => (StatusCode::NOT_FOUND, "not found").into_response(),
     }
 }
@@ -5923,12 +5941,20 @@ async fn open_url(State(app): State<App>, Json(r): Json<OpenUrlReq>) -> ApiResul
     let spawned = std::process::Command::new("open").arg(&url).spawn();
     #[cfg(target_os = "linux")]
     let spawned = std::process::Command::new("xdg-open").arg(&url).spawn();
+    // Not `cmd /C start`: cmd.exe treats `&`, `|` and `^` in the URL as shell syntax, so a link
+    // like `https://x.example/?a=1&calc.exe` would run a second command.
     #[cfg(target_os = "windows")]
-    let spawned = std::process::Command::new("cmd")
-        .args(["/C", "start", "", &url])
+    let spawned = std::process::Command::new("rundll32")
+        .args(["url.dll,FileProtocolHandler", &url])
         .spawn();
     match spawned {
-        Ok(_) => Ok(Json(json!({ "ok": true }))),
+        Ok(mut child) => {
+            // Reap the opener when it exits so each click doesn't leave a zombie process.
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+            Ok(Json(json!({ "ok": true })))
+        }
         Err(e) => Err(ApiError(format!("couldn't open the link: {e}"))),
     }
 }
@@ -6346,13 +6372,26 @@ struct TailQuery {
 }
 
 async fn ledger_tail(State(app): State<App>, Query(q): Query<TailQuery>) -> ApiResult {
-    let entries = app.ledger.tail(q.n.unwrap_or(50)).map_err(err)?;
+    // Bounded: the response is built in memory on every poll.
+    let entries = app.ledger.tail(q.n.unwrap_or(50).min(1000)).map_err(err)?;
     Ok(Json(serde_json::to_value(entries).map_err(err)?))
 }
 
 async fn ledger_verify(State(app): State<App>) -> ApiResult {
-    let n = app.ledger.verify().map_err(err)?;
-    Ok(Json(json!({ "ok": true, "entries": n })))
+    // A broken chain is a verification RESULT, not a server error: report it as `ok:false` so the
+    // UI, CLI and TUI show the tamper warning instead of a generic failure (or a stale green chip).
+    match app.ledger.verify() {
+        Ok(n) => Ok(Json(json!({ "ok": true, "entries": n }))),
+        Err(engram_core::LedgerError::Broken { seq, reason }) => Ok(Json(json!({
+            "ok": false,
+            "entries": 0,
+            "bad_seq": seq,
+            "error": format!("chain broken at seq {seq}: {reason}"),
+        }))),
+        Err(e) => Ok(Json(
+            json!({ "ok": false, "entries": 0, "error": e.to_string() }),
+        )),
+    }
 }
 
 /// The agent-facing tool that creates a scheduled task in Engram's OWN scheduler. Lives here (not in
@@ -6591,6 +6630,14 @@ impl engram_agent::Tool for ScheduleCancelTool {
         args: &Value,
         ctx: &engram_agent::ToolCtx,
     ) -> std::result::Result<String, String> {
+        // Same injection guard as schedule_task: a run steered by untrusted content must not be
+        // able to silently delete the user's recurring jobs.
+        if ctx.taint.is_untrusted() {
+            return Err(
+                "cancelling a schedule refused: this run read untrusted content (injection guard)"
+                    .into(),
+            );
+        }
         let id = args["id"]
             .as_str()
             .map(str::trim)

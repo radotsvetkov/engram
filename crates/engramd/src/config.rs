@@ -790,29 +790,61 @@ fn write_secret_key(home: &str, key: &str) {
 /// Write `bytes` to `path`, truncating, with mode 0600 set at creation time (Unix) so the file is
 /// never momentarily world/group-readable. On non-Unix this is a plain create+write.
 fn write_owner_only(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    // Write a uniquely named temp file next to the target, fsync it, then rename it over the
+    // target. A crash or a full disk mid-save then leaves the previous file intact instead of a
+    // truncated one (a truncated config.json silently falls back to defaults and loses the API
+    // token, allowlist and provider settings on the next save).
     use std::io::Write;
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".into());
+    let tmp = path.with_file_name(format!(".{file_name}.{}.{nanos}.tmp", std::process::id()));
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
     #[cfg(unix)]
-    let mut f = {
+    {
         use std::os::unix::fs::OpenOptionsExt;
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)?
-    };
-    #[cfg(not(unix))]
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(path)?;
-    f.write_all(bytes)
+        // Owner-only from creation: no chmod-after-write window.
+        opts.mode(0o600);
+    }
+    let result = (|| {
+        let mut f = opts.open(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        drop(f);
+        std::fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn owner_only_write_replaces_atomically_and_leaves_no_temp_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config.json");
+        write_owner_only(&p, b"first").unwrap();
+        write_owner_only(&p, b"second").unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "second");
+        let names: Vec<_> = std::fs::read_dir(dir.path()).unwrap().flatten().collect();
+        assert_eq!(names.len(), 1, "temp files left behind");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+    }
 
     #[test]
     fn shell_backend_resolves_to_the_policy_string() {

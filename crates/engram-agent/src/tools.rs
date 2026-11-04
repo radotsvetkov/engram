@@ -2013,43 +2013,8 @@ impl Tool for EditFileTool {
         let text = tokio::fs::read_to_string(&path)
             .await
             .map_err(|e| e.to_string())?;
-        let count = text.matches(old).count();
-        let (updated, how) = if count == 1 {
-            (text.replacen(old, new, 1), "exact")
-        } else if count > 1 {
-            return Err(format!(
-                "'old' matched {count} times - include more surrounding context so it is unique"
-            ));
-        } else {
-            // Exact match failed — the dominant cause is whitespace/indent drift in `old`. Try a
-            // whitespace-tolerant block match that STILL requires a unique location before writing.
-            match fuzzy_locate(&text, old) {
-                FuzzyMatch::Unique { start, end } => {
-                    let mut u = String::with_capacity(text.len() + new.len());
-                    u.push_str(&text[..start]);
-                    u.push_str(new);
-                    u.push_str(&text[end..]);
-                    (u, "whitespace-insensitive")
-                }
-                FuzzyMatch::Ambiguous(n) => {
-                    return Err(format!(
-                        "'old' was not found verbatim and matched {n} places ignoring whitespace - \
-                         add more surrounding context so it is unique"
-                    ))
-                }
-                FuzzyMatch::NotFound(hint) => {
-                    return Err(match hint {
-                        Some(h) => {
-                            format!("'old' text was not found in the file. Did you mean:\n{h}")
-                        }
-                        None => "'old' text was not found in the file".into(),
-                    })
-                }
-            }
-        };
-        tokio::fs::write(&path, &updated)
-            .await
-            .map_err(|e| e.to_string())?;
+        let (updated, how) = apply_edit(&text, old, new)?;
+        write_atomic(&path, updated.as_bytes()).await?;
         let _ = ctx.ledger.append(
             "agent.edit",
             "agent",
@@ -2063,39 +2028,86 @@ impl Tool for EditFileTool {
     }
 }
 
-/// Apply a single `old`->`new` replacement to `text` with the SAME uniqueness + whitespace-tolerant
-/// fallback semantics as `edit_file`, returning the updated text (or a descriptive error). Shared by
-/// `multi_edit` so both tools behave identically per-edit.
-fn apply_edit(text: &str, old: &str, new: &str) -> Result<String, String> {
+/// Apply a single `old`->`new` replacement to `text`: `old` must occur exactly once, with a
+/// whitespace-tolerant fallback that still requires a unique location. Returns the updated text and
+/// the match kind ("exact" or "whitespace-insensitive"). Shared by `edit_file` and `multi_edit`.
+fn apply_edit(text: &str, old: &str, new: &str) -> Result<(String, &'static str), String> {
     if old.is_empty() {
         return Err("'old' must not be empty".into());
     }
     let count = text.matches(old).count();
     if count == 1 {
-        return Ok(text.replacen(old, new, 1));
+        return Ok((text.replacen(old, new, 1), "exact"));
     }
     if count > 1 {
         return Err(format!(
             "'old' matched {count} times - include more surrounding context so it is unique"
         ));
     }
+    // No exact match - usually whitespace/indent drift in `old`.
     match fuzzy_locate(text, old) {
         FuzzyMatch::Unique { start, end } => {
             let mut u = String::with_capacity(text.len() + new.len());
             u.push_str(&text[..start]);
             u.push_str(new);
             u.push_str(&text[end..]);
-            Ok(u)
+            Ok((u, "whitespace-insensitive"))
         }
         FuzzyMatch::Ambiguous(n) => Err(format!(
             "'old' was not found verbatim and matched {n} places ignoring whitespace - \
              add more surrounding context so it is unique"
         )),
         FuzzyMatch::NotFound(hint) => Err(match hint {
-            Some(h) => format!("'old' text was not found. Did you mean:\n{h}"),
+            Some(h) => format!("'old' text was not found in the file. Did you mean:\n{h}"),
             None => "'old' text was not found in the file".into(),
         }),
     }
+}
+
+/// Replace `path` without a window where it is truncated: write a temp file in the same directory,
+/// then rename it over the target. A symlink is written through to its resolved target, and the
+/// target's permissions are kept.
+async fn write_atomic(path: &std::path::Path, data: &[u8]) -> Result<(), String> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use tokio::io::AsyncWriteExt;
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+
+    let target = tokio::fs::canonicalize(path)
+        .await
+        .unwrap_or_else(|_| path.to_path_buf());
+    let perms = tokio::fs::metadata(&target)
+        .await
+        .ok()
+        .map(|m| m.permissions());
+    let name = target
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".into());
+    let tmp = target.with_file_name(format!(
+        ".{name}.{}.{}.tmp",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    let res = async {
+        let mut f = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+            .await?;
+        f.write_all(data).await?;
+        f.sync_all().await?;
+        drop(f);
+        if let Some(p) = perms {
+            tokio::fs::set_permissions(&tmp, p).await?;
+        }
+        tokio::fs::rename(&tmp, &target).await
+    }
+    .await;
+    if let Err(e) = res {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(e.to_string());
+    }
+    Ok(())
 }
 
 /// Apply several `old`->`new` edits to ONE file atomically, in order — the multi-hunk companion to
@@ -2168,11 +2180,10 @@ impl Tool for MultiEditTool {
                 )
             })?;
             text = apply_edit(&text, old, new)
-                .map_err(|err| format!("edit #{} failed (file left unchanged): {err}", i + 1))?;
+                .map_err(|err| format!("edit #{} failed (file left unchanged): {err}", i + 1))?
+                .0;
         }
-        tokio::fs::write(&path, &text)
-            .await
-            .map_err(|e| e.to_string())?;
+        write_atomic(&path, text.as_bytes()).await?;
         let _ = ctx.ledger.append(
             "agent.edit",
             "agent",
@@ -2653,20 +2664,23 @@ impl Tool for GrepTool {
                     continue;
                 };
                 let lines: Vec<&str> = text.lines().collect();
+                // Next line index not yet printed in this file, so overlapping context windows
+                // merge (like `grep -C`) instead of repeating lines.
+                let mut next_unprinted = 0usize;
                 for (i, line) in lines.iter().enumerate() {
                     if re.is_match(line) {
                         if context > 0 {
-                            // Show `context` lines on each side, prefixed with the file:line so a
-                            // multi-file result stays unambiguous. A blank separator between hits.
-                            if !out.is_empty() {
+                            let lo = i.saturating_sub(context).max(next_unprinted);
+                            let hi = (i + context + 1).min(lines.len());
+                            // Separate only when there is a real gap (or a new file).
+                            if !out.is_empty() && (next_unprinted == 0 || lo > next_unprinted) {
                                 out.push("--".to_string());
                             }
-                            let lo = i.saturating_sub(context);
-                            let hi = (i + context + 1).min(lines.len());
                             for (j, ln) in lines[lo..hi].iter().enumerate() {
                                 let shown: String = ln.chars().take(200).collect();
                                 out.push(format!("{rels}:{}: {}", lo + j + 1, shown));
                             }
+                            next_unprinted = hi;
                         } else {
                             let shown: String = line.chars().take(200).collect();
                             out.push(format!("{rels}:{}: {}", i + 1, shown.trim()));
@@ -5256,6 +5270,93 @@ mod file_tools_tests {
             .await
             .unwrap_err();
         assert!(bad.contains("invalid regex"), "got: {bad}");
+    }
+
+    #[tokio::test]
+    async fn grep_context_merges_overlapping_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ctx_in(dir.path());
+        std::fs::write(
+            dir.path().join("m.txt"),
+            "l1\nl2\nl3\nHIT a\nl5\nHIT b\nl7\nl8\nl9\nl10\nl11\nl12\nHIT c\nl14\n",
+        )
+        .unwrap();
+        let r = GrepTool
+            .run(
+                &json!({"query": "HIT", "glob": "m.txt", "context": 2}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let lines: Vec<&str> = r.lines().collect();
+        let mut seen = std::collections::HashSet::new();
+        for l in &lines {
+            if *l != "--" {
+                assert!(seen.insert(*l), "duplicate line {l:?} in: {r}");
+            }
+        }
+        // Hits on lines 4 and 6 share one window (2..=8); line 13's window (11..=14) is separate.
+        let expected: Vec<String> = (2..=8)
+            .map(|n| format!("m.txt:{n}:"))
+            .chain(std::iter::once("--".to_string()))
+            .chain((11..=14).map(|n| format!("m.txt:{n}:")))
+            .collect();
+        assert_eq!(lines.len(), expected.len(), "got: {r}");
+        for (l, e) in lines.iter().zip(&expected) {
+            assert!(
+                l.starts_with(e.as_str()),
+                "expected {e:?}, got {l:?} in: {r}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn edits_preserve_file_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ctx_in(dir.path());
+        let f = dir.path().join("run.sh");
+        std::fs::write(&f, "echo one\necho two\n").unwrap();
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o750)).unwrap();
+        EditFileTool
+            .run(&json!({"path":"run.sh","old":"one","new":"uno"}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::metadata(&f).unwrap().permissions().mode() & 0o777,
+            0o750
+        );
+        MultiEditTool
+            .run(
+                &json!({"path":"run.sh","edits":[{"old":"two","new":"dos"}]}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::metadata(&f).unwrap().permissions().mode() & 0o777,
+            0o750
+        );
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "echo uno\necho dos\n");
+        // A symlinked file is edited through the link; the link itself stays a link.
+        let link = dir.path().join("link.sh");
+        std::os::unix::fs::symlink(&f, &link).unwrap();
+        EditFileTool
+            .run(&json!({"path":"link.sh","old":"uno","new":"one"}), &ctx)
+            .await
+            .unwrap();
+        assert!(std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "echo one\necho dos\n");
+        // No temp files left behind.
+        let names: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.iter().all(|n| !n.ends_with(".tmp")), "got: {names:?}");
     }
 
     #[tokio::test]

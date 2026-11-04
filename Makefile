@@ -51,8 +51,8 @@ ci: fmt-check lint-all test-all eval ## The full CI matrix, locally (run before 
 desktop: ## Build & launch the native desktop app (needs tauri-cli ^2)
 	scripts/desktop.sh
 
-install: ## Install engramd + engram into ~/.cargo/bin
-	cargo install --path crates/engramd --locked
+install: ## Install engramd + engram into ~/.cargo/bin (real providers + document ingest)
+	cargo install --path crates/engramd --locked --features http,docs
 	cargo install --path crates/engram-cli --locked
 
 clean: ## Remove build artifacts

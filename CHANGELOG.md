@@ -48,6 +48,8 @@ All notable changes to this project are documented here. The format is based on
   `multi_edit` share one matching path and write atomically, keeping file permissions.
 
 ### Changed
+- `make install` builds the daemon with real providers and document ingest (`http,docs`), like
+  the release binaries; it used to install an offline, mock-only daemon.
 - The ledger tail reads only the end of the file, and ledger verification and task diffs run
   off the async worker threads, so the dashboard stays responsive as the ledger grows.
 - Minimum supported Rust version is now 1.88, which the locked dependencies already required.

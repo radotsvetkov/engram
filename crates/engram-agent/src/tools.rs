@@ -1296,27 +1296,66 @@ fn shell_gate(ctx: &ToolCtx) -> Result<Option<&str>, String> {
 // handle to read their streaming output and kill them, instead of fire-and-forget `&`.
 // ---------------------------------------------------------------------------
 
+/// A background process's retained output: the most recent bytes plus how many older bytes were
+/// trimmed off the front. Read positions are absolute (bytes ever produced), so a reader's cursor
+/// stays meaningful after the front of the buffer has been dropped.
+#[derive(Default)]
+struct BgBuf {
+    text: String,
+    /// Total bytes trimmed from the front of `text` since the process started.
+    dropped: usize,
+}
+
+impl BgBuf {
+    /// Absolute position just past the last byte produced.
+    fn end(&self) -> usize {
+        self.dropped + self.text.len()
+    }
+}
+
 /// One backgrounded process: its captured output, live status, and a one-shot kill switch.
 struct BgProc {
     command: String,
+    /// The working directory of the run that started it. `shell_output`/`shell_kill` only see
+    /// processes started from the same workdir, so one project can't read or kill another's.
+    workdir: std::path::PathBuf,
     /// stdout+stderr interleaved as lines arrive, capped to the tail (see `BG_BUF_CAP`).
-    output: std::sync::Arc<std::sync::Mutex<String>>,
+    output: std::sync::Arc<std::sync::Mutex<BgBuf>>,
     /// `None` while running; `Some(code)` once exited (code -1 = killed / no code).
     status: std::sync::Arc<std::sync::Mutex<Option<i32>>>,
-    /// How many bytes of `output` `shell_output` has already returned (incremental reads).
+    /// Absolute output position `shell_output` has already returned up to (incremental reads).
     read_cursor: usize,
     /// Taken and fired by `shell_kill`.
     kill: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
+impl BgProc {
+    fn exit_code(&self) -> Option<i32> {
+        self.status.lock().ok().and_then(|s| *s)
+    }
+}
+
 /// Cap each process's retained output so a chatty server can't grow the buffer unbounded; we keep
 /// the most recent bytes (the tail is what matters for "is it up / what did it just log").
 const BG_BUF_CAP: usize = 256 * 1024;
+/// The most output one `shell_output` call returns; older unread bytes are skipped (and counted),
+/// so a first read of a busy server doesn't flood the model's context.
+const BG_READ_CAP: usize = 32 * 1024;
+/// At most this many background processes may be running at once.
+const BG_MAX_LIVE: usize = 16;
+/// Exited processes are kept (so their final output and code can still be read) up to this many;
+/// beyond it the oldest exited entries are evicted.
+const BG_MAX_EXITED: usize = 16;
 
-fn bg_table() -> &'static std::sync::Mutex<std::collections::HashMap<String, BgProc>> {
+/// Lock the background table, recovering from a poisoned lock instead of failing every later call
+/// (the table holds plain data, so a panic elsewhere can't leave it logically inconsistent).
+fn bg_table() -> std::sync::MutexGuard<'static, std::collections::HashMap<String, BgProc>> {
     static TABLE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, BgProc>>> =
         std::sync::OnceLock::new();
-    TABLE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+    TABLE
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
 }
 
 fn bg_next_id() -> String {
@@ -1327,21 +1366,113 @@ fn bg_next_id() -> String {
     )
 }
 
-/// Append `line` to the shared buffer, trimming the front if it exceeds the cap.
-fn bg_append(buf: &std::sync::Arc<std::sync::Mutex<String>>, line: &str) {
-    if let Ok(mut b) = buf.lock() {
-        b.push_str(line);
-        b.push('\n');
-        if b.len() > BG_BUF_CAP {
-            let cut = b.len() - BG_BUF_CAP;
-            // Trim to a char boundary so we never split a UTF-8 sequence.
-            let mut start = cut;
-            while start < b.len() && !b.is_char_boundary(start) {
-                start += 1;
-            }
-            *b = b[start..].to_string();
-        }
+/// Numeric part of a `bg-N` id, for ordering (oldest first).
+fn bg_id_num(id: &str) -> usize {
+    id.trim_start_matches("bg-").parse().unwrap_or(0)
+}
+
+/// Round `i` up to the nearest char boundary of `s` (or `s.len()`).
+fn ceil_char_boundary(s: &str, mut i: usize) -> usize {
+    while i < s.len() && !s.is_char_boundary(i) {
+        i += 1;
     }
+    i.min(s.len())
+}
+
+/// Append `line` to the shared buffer, trimming the front if it exceeds the cap.
+fn bg_append(buf: &std::sync::Arc<std::sync::Mutex<BgBuf>>, line: &str) {
+    let mut b = buf.lock().unwrap_or_else(|e| e.into_inner());
+    b.text.push_str(line);
+    b.text.push('\n');
+    if b.text.len() > BG_BUF_CAP {
+        // Trim to a char boundary so we never split a UTF-8 sequence.
+        let start = ceil_char_boundary(&b.text, b.text.len() - BG_BUF_CAP);
+        b.text.drain(..start);
+        b.dropped += start;
+    }
+}
+
+/// Take the output produced since `cursor`. Returns `(new_text, skipped_bytes, new_cursor)`, where
+/// `skipped_bytes` counts unread output that was lost to the buffer cap or left out by the per-read
+/// cap (only the most recent `BG_READ_CAP` bytes are returned).
+fn bg_read_since(buf: &BgBuf, cursor: usize) -> (String, usize, usize) {
+    let end = buf.end();
+    let cursor = cursor.min(end);
+    // Unread bytes that were trimmed off the front before we got to them.
+    let mut skipped = buf.dropped.saturating_sub(cursor);
+    let mut rel = cursor.saturating_sub(buf.dropped);
+    if buf.text.len() - rel > BG_READ_CAP {
+        let keep_from = buf.text.len() - BG_READ_CAP;
+        skipped += keep_from - rel;
+        rel = keep_from;
+    }
+    let rel_aligned = ceil_char_boundary(&buf.text, rel);
+    skipped += rel_aligned - rel;
+    (buf.text[rel_aligned..].to_string(), skipped, end)
+}
+
+/// Drain one of the child's output streams into the shared buffer, line by line. Bytes that aren't
+/// valid UTF-8 are replaced rather than ending the capture: if we stopped reading, the pipe would
+/// fill and the child would block on its next write forever.
+fn bg_drain<R>(stream: R, buf: std::sync::Arc<std::sync::Mutex<BgBuf>>)
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        use tokio::io::AsyncBufReadExt;
+        let mut reader = tokio::io::BufReader::new(stream);
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            match reader.read_until(b'\n', &mut line).await {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    while matches!(line.last(), Some(b'\n' | b'\r')) {
+                        line.pop();
+                    }
+                    bg_append(&buf, &String::from_utf8_lossy(&line));
+                }
+            }
+        }
+    });
+}
+
+/// Forcefully stop a background process and everything it spawned. `sh -c "npm run dev"` forks
+/// npm, which forks node: killing only `sh` would leave the server running and holding its port,
+/// so the child is started as its own process group and the whole group is killed.
+async fn bg_kill_tree(child: &mut tokio::process::Child, docker_name: Option<&str>) {
+    #[cfg(unix)]
+    if let Some(pid) = child.id() {
+        let _ = tokio::process::Command::new("kill")
+            .args(["-KILL", &format!("-{pid}")])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .await;
+    }
+    // Killing the `docker run` client doesn't stop the container; stop it by name.
+    if let Some(name) = docker_name {
+        let _ = tokio::process::Command::new("docker")
+            .args(["kill", name])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .await;
+    }
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+}
+
+/// The checks shared by `shell_output` and `shell_kill`: the shell must be enabled for this run.
+/// (Taint is not checked: a run that read a web page must still be able to stop its own server,
+/// and output reads are flagged `reads_sensitive`, so the egress trifecta gate still applies.)
+fn bg_gate(ctx: &ToolCtx) -> Result<(), String> {
+    if !ctx.policy.allow_shell {
+        return Err("shell tool is disabled (set ENGRAM_TOOLS_SHELL=1 to enable)".into());
+    }
+    Ok(())
 }
 
 /// Start a shell command in the background and return a handle id. Same safety gate as `shell`.
@@ -1367,49 +1498,64 @@ impl Tool for ShellStartTool {
     async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
         let backend = shell_gate(ctx)?;
         let command = arg_str(args, "command")?.to_string();
+
+        let id = bg_next_id();
+        {
+            let mut t = bg_table();
+            let live = t.values().filter(|p| p.exit_code().is_none()).count();
+            if live >= BG_MAX_LIVE {
+                return Err(format!(
+                    "too many background processes running ({live}); stop one with shell_kill first"
+                ));
+            }
+            // Evict the oldest exited entries so the table can't grow without bound.
+            let mut exited: Vec<String> = t
+                .iter()
+                .filter(|(_, p)| p.exit_code().is_some())
+                .map(|(k, _)| k.clone())
+                .collect();
+            if exited.len() >= BG_MAX_EXITED {
+                exited.sort_by_key(|k| bg_id_num(k));
+                for k in exited.iter().take(exited.len() + 1 - BG_MAX_EXITED) {
+                    t.remove(k);
+                }
+            }
+        }
+
         let _ = ctx.ledger.append(
             "agent.shell_start",
             "agent",
-            json!({ "command": command, "backend": backend.unwrap_or("local") }),
+            json!({ "command": command, "backend": backend.unwrap_or("local"), "id": id }),
         );
-        let (program, cmd_args) = shell_command(backend, &ctx.workdir, &command);
+        let (program, mut cmd_args) = shell_command(backend, &ctx.workdir, &command);
+        // Name a Docker container so `shell_kill` can stop it (killing the client doesn't).
+        let docker_name = (program == "docker").then(|| format!("engram-{id}"));
+        if let Some(name) = &docker_name {
+            cmd_args.splice(1..1, ["--name".to_string(), name.clone()]);
+        }
         use std::process::Stdio;
-        let mut child = tokio::process::Command::new(&program)
-            .args(&cmd_args)
+        let mut cmd = tokio::process::Command::new(&program);
+        cmd.args(&cmd_args)
             .current_dir(&ctx.workdir)
+            .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             // If the daemon exits, don't leave orphaned background children behind.
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| format!("failed to start: {e}"))?;
+            .kill_on_drop(true);
+        // Its own process group, so `shell_kill` can stop the children it spawns too.
+        #[cfg(unix)]
+        cmd.process_group(0);
+        let mut child = cmd.spawn().map_err(|e| format!("failed to start: {e}"))?;
 
-        let output = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let output = std::sync::Arc::new(std::sync::Mutex::new(BgBuf::default()));
         let status = std::sync::Arc::new(std::sync::Mutex::new(None::<i32>));
         let (kill_tx, kill_rx) = tokio::sync::oneshot::channel::<()>();
 
-        let stdout = child.stdout.take();
-        let stderr = child.stderr.take();
-        // Drain both streams into the shared buffer as lines arrive.
-        if let Some(so) = stdout {
-            let buf = output.clone();
-            tokio::spawn(async move {
-                use tokio::io::AsyncBufReadExt;
-                let mut lines = tokio::io::BufReader::new(so).lines();
-                while let Ok(Some(l)) = lines.next_line().await {
-                    bg_append(&buf, &l);
-                }
-            });
+        if let Some(so) = child.stdout.take() {
+            bg_drain(so, output.clone());
         }
-        if let Some(se) = stderr {
-            let buf = output.clone();
-            tokio::spawn(async move {
-                use tokio::io::AsyncBufReadExt;
-                let mut lines = tokio::io::BufReader::new(se).lines();
-                while let Ok(Some(l)) = lines.next_line().await {
-                    bg_append(&buf, &l);
-                }
-            });
+        if let Some(se) = child.stderr.take() {
+            bg_drain(se, output.clone());
         }
         // Manager task: wait for exit OR a kill request, then record the exit status.
         let st = status.clone();
@@ -1417,29 +1563,24 @@ impl Tool for ShellStartTool {
             let code = tokio::select! {
                 r = child.wait() => r.ok().and_then(|s| s.code()).unwrap_or(-1),
                 _ = kill_rx => {
-                    let _ = child.start_kill();
-                    let _ = child.wait().await;
+                    bg_kill_tree(&mut child, docker_name.as_deref()).await;
                     -1
                 }
             };
-            if let Ok(mut s) = st.lock() {
-                *s = Some(code);
-            }
+            *st.lock().unwrap_or_else(|e| e.into_inner()) = Some(code);
         });
 
-        let id = bg_next_id();
-        if let Ok(mut t) = bg_table().lock() {
-            t.insert(
-                id.clone(),
-                BgProc {
-                    command: command.clone(),
-                    output,
-                    status,
-                    read_cursor: 0,
-                    kill: Some(kill_tx),
-                },
-            );
-        }
+        bg_table().insert(
+            id.clone(),
+            BgProc {
+                command: command.clone(),
+                workdir: ctx.workdir.clone(),
+                output,
+                status,
+                read_cursor: 0,
+                kill: Some(kill_tx),
+            },
+        );
         Ok(format!(
             "started background process {id}: {command}\nread its output with shell_output {{\"id\":\"{id}\"}}, stop it with shell_kill {{\"id\":\"{id}\"}}"
         ))
@@ -1459,62 +1600,62 @@ impl Tool for ShellOutputTool {
     }
     fn description(&self) -> &str {
         "Read output from a background process started with `shell_start`. Returns whatever it has \
-         printed SINCE THE LAST shell_output call (stdout+stderr interleaved) plus whether it is \
-         still running or its exit code. Omit `id` to list all background processes."
+         printed SINCE THE LAST shell_output call (stdout+stderr interleaved, at most the latest \
+         32 KB) plus whether it is still running or its exit code. Omit `id` to list all \
+         background processes."
     }
     fn schema(&self) -> Value {
         json!({ "type": "object", "properties": {
             "id": { "type": "string", "description": "the handle from shell_start; omit to list all" }
         } })
     }
-    async fn run(&self, args: &Value, _ctx: &ToolCtx) -> Result<String, String> {
-        let table = bg_table();
-        // No id → a compact listing of every tracked process.
+    async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
+        bg_gate(ctx)?;
+        let mut t = bg_table();
+        // No id → a compact listing of every process this workdir started.
         let Some(id) = args["id"].as_str() else {
-            let t = table.lock().map_err(|_| "background table poisoned")?;
-            if t.is_empty() {
-                return Ok("(no background processes)".into());
-            }
-            let mut lines: Vec<String> = t
+            let mut rows: Vec<(usize, String)> = t
                 .iter()
+                .filter(|(_, p)| p.workdir == ctx.workdir)
                 .map(|(id, p)| {
                     let st = p
-                        .status
-                        .lock()
-                        .ok()
-                        .and_then(|s| *s)
+                        .exit_code()
                         .map(|c| format!("exited({c})"))
                         .unwrap_or_else(|| "running".into());
-                    format!("{id}\t{st}\t{}", p.command)
+                    (bg_id_num(id), format!("{id}\t{st}\t{}", p.command))
                 })
                 .collect();
-            lines.sort();
-            return Ok(lines.join("\n"));
+            if rows.is_empty() {
+                return Ok("(no background processes)".into());
+            }
+            rows.sort();
+            return Ok(rows
+                .into_iter()
+                .map(|(_, r)| r)
+                .collect::<Vec<_>>()
+                .join("\n"));
         };
-        let mut t = table.lock().map_err(|_| "background table poisoned")?;
-        let Some(p) = t.get_mut(id) else {
+        let Some(p) = t.get_mut(id).filter(|p| p.workdir == ctx.workdir) else {
             return Err(format!("no background process with id '{id}'"));
         };
-        let full = p
-            .output
-            .lock()
-            .map_err(|_| "output buffer poisoned")?
-            .clone();
-        // Incremental: return only what's new since last read. If the capped buffer trimmed past
-        // our cursor, reset to the start of what's still retained.
-        let start = p.read_cursor.min(full.len());
-        let new = &full[start..];
-        p.read_cursor = full.len();
-        let status = p.status.lock().ok().and_then(|s| *s);
-        let state = match status {
+        let (new, skipped, cursor) = {
+            let buf = p.output.lock().unwrap_or_else(|e| e.into_inner());
+            bg_read_since(&buf, p.read_cursor)
+        };
+        p.read_cursor = cursor;
+        let state = match p.exit_code() {
             None => "running".to_string(),
             Some(c) => format!("exited (code {c})"),
         };
-        let body = if new.is_empty() {
-            "(no new output)".to_string()
+        let mut body = String::new();
+        if skipped > 0 {
+            body.push_str(&format!("[{skipped} earlier bytes skipped]\n"));
+        }
+        if new.is_empty() {
+            body.push_str("(no new output)");
         } else {
-            new.to_string()
-        };
+            body.push_str(&new);
+        }
         Ok(format!("[{id}] {state}\n{body}"))
     }
 }
@@ -1531,23 +1672,23 @@ impl Tool for ShellKillTool {
         true
     }
     fn description(&self) -> &str {
-        "Stop a background process started with `shell_start`, by its handle id. Idempotent - \
-         killing an already-exited process just reports its state."
+        "Stop a background process started with `shell_start` (and everything it spawned), by its \
+         handle id. Idempotent - killing an already-exited process just reports its state."
     }
     fn schema(&self) -> Value {
         json!({ "type": "object", "properties": { "id": { "type": "string" } }, "required": ["id"] })
     }
     async fn run(&self, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
+        bg_gate(ctx)?;
         let id = arg_str(args, "id")?;
-        let mut t = bg_table().lock().map_err(|_| "background table poisoned")?;
-        let Some(p) = t.get_mut(id) else {
+        let mut t = bg_table();
+        let Some(p) = t.get_mut(id).filter(|p| p.workdir == ctx.workdir) else {
             return Err(format!("no background process with id '{id}'"));
         };
-        let already = p.status.lock().ok().and_then(|s| *s);
-        if let Some(c) = already {
+        if let Some(c) = p.exit_code() {
             return Ok(format!("{id} already exited (code {c})"));
         }
-        // Fire the one-shot kill; the manager task performs start_kill + reaps the child.
+        // Fire the one-shot kill; the manager task kills the process group and reaps the child.
         if let Some(tx) = p.kill.take() {
             let _ = tx.send(());
             let _ = ctx
@@ -1557,6 +1698,110 @@ impl Tool for ShellKillTool {
         } else {
             Ok(format!("{id} is already being stopped"))
         }
+    }
+}
+
+#[cfg(test)]
+mod bg_shell_tests {
+    use super::*;
+
+    fn buf() -> std::sync::Arc<std::sync::Mutex<BgBuf>> {
+        std::sync::Arc::new(std::sync::Mutex::new(BgBuf::default()))
+    }
+
+    #[test]
+    fn incremental_reads_return_only_new_output() {
+        let b = buf();
+        bg_append(&b, "one");
+        let (t, skipped, c) = bg_read_since(&b.lock().unwrap(), 0);
+        assert_eq!((t.as_str(), skipped), ("one\n", 0));
+        bg_append(&b, "two");
+        let (t, skipped, c2) = bg_read_since(&b.lock().unwrap(), c);
+        assert_eq!((t.as_str(), skipped), ("two\n", 0));
+        let (t, _, _) = bg_read_since(&b.lock().unwrap(), c2);
+        assert!(t.is_empty());
+    }
+
+    #[test]
+    fn reads_keep_working_after_the_buffer_cap_with_multibyte_text() {
+        // Past the cap the front is trimmed. Reads must still return the newest output (they used
+        // to go silent forever) and must never slice inside a multibyte character (it used to panic).
+        let b = buf();
+        let line = "héllo wörld 🌍 ".repeat(20);
+        let mut cursor = 0;
+        for i in 0..4000 {
+            bg_append(&b, &format!("{i} {line}"));
+            if i < 2000 && i % 97 == 0 {
+                let (_, _, c) = bg_read_since(&b.lock().unwrap(), cursor);
+                cursor = c;
+            }
+        }
+        assert!(b.lock().unwrap().text.len() <= BG_BUF_CAP);
+        bg_append(&b, "THE-LATEST-LINE");
+        let (t, skipped, _) = bg_read_since(&b.lock().unwrap(), cursor);
+        assert!(
+            t.ends_with("THE-LATEST-LINE\n"),
+            "newest output is returned"
+        );
+        assert!(t.len() <= BG_READ_CAP);
+        assert!(skipped > 0, "skipped bytes are reported");
+    }
+
+    #[tokio::test]
+    async fn invalid_utf8_output_does_not_stop_capture() {
+        let b = buf();
+        let mut child = tokio::process::Command::new("sh")
+            .args(["-c", r"printf 'bad \377 byte\n'; echo after"])
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        bg_drain(child.stdout.take().unwrap(), b.clone());
+        child.wait().await.unwrap();
+        for _ in 0..50 {
+            if b.lock().unwrap().text.contains("after") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let text = b.lock().unwrap().text.clone();
+        assert!(text.contains("bad"), "{text}");
+        assert!(
+            text.contains("after"),
+            "capture continued past invalid UTF-8: {text}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kill_stops_grandchildren_too() {
+        // `sh` forks a long sleep: killing only `sh` would leave the sleep running.
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", "sleep 30 & echo $!; wait"])
+            .stdout(std::process::Stdio::piped())
+            .process_group(0);
+        let mut child = cmd.spawn().unwrap();
+        use tokio::io::AsyncBufReadExt;
+        let mut lines = tokio::io::BufReader::new(child.stdout.take().unwrap()).lines();
+        let grandchild = lines.next_line().await.unwrap().unwrap();
+        let alive = |pid: &str| {
+            std::process::Command::new("kill")
+                .args(["-0", pid])
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        };
+        assert!(alive(&grandchild));
+        bg_kill_tree(&mut child, None).await;
+        let mut gone = false;
+        for _ in 0..50 {
+            if !alive(&grandchild) {
+                gone = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(gone, "grandchild {grandchild} survived the kill");
     }
 }
 

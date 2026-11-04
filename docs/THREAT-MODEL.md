@@ -410,7 +410,10 @@ fully-compromised root could sign a fabricated chain. The ledger therefore prove
 what the keyholder attested,"* not *"this is objectively what happened,"* against a
 compromised host. **[DEFERRED]** Closing that gap needs the key held or co-signed by a party
 the host can't impersonate: hardware-backed keys (TPM/Secure Enclave/YubiKey), and/or
-periodically anchoring the chain head to an external transparency log / remote co-signer.
+automatically anchoring the chain head to an external transparency log / remote co-signer.
+(Manual anchoring ships today: export a signed head with `engram ledger head`, keep it off the
+machine, and check it with `engramd verify --anchor` - that proves nothing was cut off since,
+though it can't stop a keyholder from signing a fabricated continuation.)
 The local chain is tamper-*evident* today; external co-signing makes it tamper-*proof*
 against host compromise. We do not claim the latter until it ships.
 

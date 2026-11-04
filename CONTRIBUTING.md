@@ -5,7 +5,7 @@ bug reports, docs fixes, new skills, and features alike.
 
 ## Getting set up
 
-You need a stable Rust toolchain (see [`rust-toolchain.toml`](./rust-toolchain.toml)). Then:
+You need a stable Rust toolchain, 1.88 or newer (see [`rust-toolchain.toml`](./rust-toolchain.toml)). Then:
 
 ```sh
 git clone https://github.com/radotsvetkov/engram.git

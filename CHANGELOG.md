@@ -6,16 +6,18 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-05
+
 ### Added
 - Signed ledger head checkpoints. The ledger keeps `ledger.head` (the latest seq and hash,
-  signed) up to date within a second, and verification requires the chain to reach it, so deleting entries
-  from the end is now detected; before, the remaining chain still verified. A truncation done
-  while the daemon was stopped is caught on the next start: the old head is kept as
-  `ledger.head.rejected-<time>`, a `ledger.truncation_detected` entry is recorded, and
+  signed) up to date within a second, and verification requires the chain to reach it, so
+  deleting entries from the end is now detected; before, the remaining chain still verified.
+  A truncation done while the daemon was stopped is caught on the next start: the old head is
+  kept as `ledger.head.rejected-<time>`, a `ledger.truncation_detected` entry is recorded, and
   verification fails until the kept file is removed. A missing head is re-created on start and
-  recorded as `ledger.head_created`. `engram ledger head`
-  / `GET /v1/ledger/head` export a signed head to keep off the machine, and
-  `engramd verify HOME --anchor FILE` checks the ledger against it.
+  recorded as `ledger.head_created`. `engram ledger head` / `GET /v1/ledger/head` export a
+  signed head to keep off the machine, and `engramd verify HOME --anchor FILE` checks the
+  ledger against it.
 
 ### Fixed
 - Background shell processes (`shell_start`): output reads no longer go silent or crash after
@@ -379,7 +381,8 @@ The foundation: a reactive core, a signed ledger, and hybrid memory.
   learning loop with an A/B promotion gate.
 - **Benchmark harness** (`engram-bench`) for paraphrase recall and footprint.
 
-[Unreleased]: https://github.com/radotsvetkov/engram/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/radotsvetkov/engram/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/radotsvetkov/engram/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/radotsvetkov/engram/compare/v0.3.9...v0.4.0
 [0.3.9]: https://github.com/radotsvetkov/engram/compare/v0.3.8...v0.3.9
 [0.3.8]: https://github.com/radotsvetkov/engram/compare/v0.3.7...v0.3.8

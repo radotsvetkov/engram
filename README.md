@@ -232,7 +232,7 @@ heavy ML crate, just a distilled matrix read from `model.safetensors`), download
 to with one command: **100%** recall@10 on the same benchmark, hybrid included (see
 `crates/engram-bench/BENCHMARKS.md`).
 
-**Footprint** (from the same run): **8.5 MB** full-agent binary · **0 MB** resident memory at
+**Footprint** (from the same run): **9.4 MB** full-agent binary · **0 MB** resident memory at
 idle (socket-activated).
 
 **Agent regression suite** — `cargo run -p engram-eval` — replays real tasks through the real
@@ -375,7 +375,7 @@ reasoning — threat by threat, with what ships today versus what's deferred —
 
 ## Building & testing
 
-Requires a stable Rust toolchain (see [`rust-toolchain.toml`](./rust-toolchain.toml)). The
+Requires a stable Rust toolchain, 1.88 or newer (see [`rust-toolchain.toml`](./rust-toolchain.toml)). The
 release profile is tuned for a small, fast-to-load binary (`opt-level = "z"`, thin LTO,
 `codegen-units = 1`, `panic = "abort"`, stripped). Everything builds and tests **offline**;
 the network provider (`--features http`), document ingest (`--features docs`), and the
@@ -386,6 +386,7 @@ cargo build --release        # optimized workspace build
 cargo test --workspace       # kernel, memory, gateway, skills, scheduler, agent
 cargo run -p engram-bench    # recall + footprint numbers
 cargo run -p engram-eval     # deterministic agent regression suite
+make ci                      # everything CI runs, across every feature combination
 ```
 
 CI runs `fmt`, `clippy` (with `-D warnings`), the full test matrix across feature shapes, the

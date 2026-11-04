@@ -15,7 +15,7 @@ use engram_core::{ScopeCtx, Taint};
 use engram_gateway::{Call, CompletionRequest, Gateway, Message};
 use engram_memory::{Memory, Region, WriteReq};
 use tokio::runtime::Handle;
-use wasmi::{Caller, Engine, Extern, Linker, Module, Store};
+use wasmi::{Caller, Engine, Extern, Linker, Module, Store, StoreLimits, StoreLimitsBuilder};
 
 use crate::capability::Capability;
 use crate::manifest::{self, ManifestError, SignedSkill};
@@ -104,7 +104,43 @@ pub struct HostState {
     taint: Taint,
     scope: ScopeCtx,
     logs: Vec<String>,
+    /// Total bytes held in `logs`, for the log cap.
+    log_bytes: usize,
     host_calls: u64,
+    limits: StoreLimits,
+}
+
+/// Linear memory ceiling for one skill run.
+const MAX_GUEST_MEMORY: usize = 64 * 1024 * 1024;
+/// Guest log caps: entries and total bytes. Past either, one marker is kept and the rest dropped.
+const MAX_LOG_ENTRIES: usize = 1000;
+const MAX_LOG_BYTES: usize = 1024 * 1024;
+const LOG_TRUNCATED: &str = "[log truncated]";
+
+impl HostState {
+    /// Append a guest log line, enforcing the entry and byte caps.
+    fn push_log(&mut self, line: String) {
+        if self.logs.last().is_some_and(|l| l == LOG_TRUNCATED) {
+            return;
+        }
+        if self.logs.len() + 1 >= MAX_LOG_ENTRIES || self.log_bytes + line.len() > MAX_LOG_BYTES {
+            self.logs.push(LOG_TRUNCATED.to_string());
+            return;
+        }
+        self.log_bytes += line.len();
+        self.logs.push(line);
+    }
+}
+
+/// Validate a guest `(ptr, len)` region against a memory of `mem_len` bytes. Negative values,
+/// overflow and out-of-bounds all yield None.
+fn guest_range(ptr: i32, len: i32, mem_len: usize) -> Option<std::ops::Range<usize>> {
+    if ptr < 0 || len < 0 {
+        return None;
+    }
+    let start = ptr as usize;
+    let end = start.checked_add(len as usize)?;
+    (end <= mem_len).then_some(start..end)
 }
 
 /// Owns the WASM engine. One host serves many runs.
@@ -202,9 +238,14 @@ fn run_inner(
         taint: ctx.taint,
         scope: ctx.scope.clone(),
         logs: Vec::new(),
+        log_bytes: 0,
         host_calls: 0,
+        limits: StoreLimitsBuilder::new()
+            .memory_size(MAX_GUEST_MEMORY)
+            .build(),
     };
     let mut store = Store::new(engine, state);
+    store.limiter(|st| &mut st.limits);
     store
         .set_fuel(ctx.fuel)
         .map_err(|e| SkillError::Wasm(e.to_string()))?;
@@ -300,11 +341,8 @@ fn read_str(caller: &Caller<'_, HostState>, ptr: i32, len: i32) -> Option<String
         _ => return None,
     };
     let data = mem.data(caller);
-    let (s, e) = (ptr as usize, ptr as usize + len.max(0) as usize);
-    if e > data.len() {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&data[s..e]).to_string())
+    let r = guest_range(ptr, len, data.len())?;
+    Some(String::from_utf8_lossy(&data[r]).to_string())
 }
 
 fn add_log(linker: &mut Linker<HostState>) -> Result<(), SkillError> {
@@ -315,7 +353,7 @@ fn add_log(linker: &mut Linker<HostState>) -> Result<(), SkillError> {
             |mut caller: Caller<'_, HostState>, level: i32, ptr: i32, len: i32| {
                 if let Some(msg) = read_str(&caller, ptr, len) {
                     let st = caller.data_mut();
-                    st.logs.push(format!("[{level}] {msg}"));
+                    st.push_log(format!("[{level}] {msg}"));
                     st.host_calls += 1;
                 }
             },
@@ -358,11 +396,10 @@ fn add_recall(linker: &mut Linker<HostState>) -> Result<(), SkillError> {
                 };
                 let n = json.len().min(out_cap.max(0) as usize);
                 let (data, state) = mem.data_and_store_mut(&mut caller);
-                let (s, e) = (out_ptr as usize, out_ptr as usize + n);
-                if e > data.len() {
+                let Some(r) = guest_range(out_ptr, n as i32, data.len()) else {
                     return -1;
-                }
-                data[s..e].copy_from_slice(&json[..n]);
+                };
+                data[r].copy_from_slice(&json[..n]);
                 state.host_calls += 1;
                 json.len() as i32
             },
@@ -426,7 +463,7 @@ fn add_net(linker: &mut Linker<HostState>) -> Result<(), SkillError> {
                 // the egress proxy - but the gating it demonstrates is the point.
                 if let Some(url) = read_str(&caller, ptr, len) {
                     let st = caller.data_mut();
-                    st.logs.push(format!("net: {url}"));
+                    st.push_log(format!("net: {url}"));
                     st.host_calls += 1;
                 }
                 -1
@@ -478,11 +515,10 @@ fn add_llm(linker: &mut Linker<HostState>) -> Result<(), SkillError> {
                 };
                 let n = bytes.len().min(out_cap.max(0) as usize);
                 let (data, state) = mem.data_and_store_mut(&mut caller);
-                let (s, e) = (out_ptr as usize, out_ptr as usize + n);
-                if e > data.len() {
+                let Some(r) = guest_range(out_ptr, n as i32, data.len()) else {
                     return -1;
-                }
-                data[s..e].copy_from_slice(&bytes[..n]);
+                };
+                data[r].copy_from_slice(&bytes[..n]);
                 state.host_calls += 1;
                 bytes.len() as i32
             },
@@ -659,6 +695,63 @@ mod tests {
                             (i64.extend_i32_u (local.get $n)))))"#
         );
         wat::parse_str(&wat).unwrap()
+    }
+
+    #[test]
+    fn negative_guest_pointers_are_rejected_not_panicking() {
+        // log(0, -1, 2) and log(0, 0, -1): both must be ignored, never panic the host.
+        let wat = format!(
+            r#"(module
+                (import "engram" "log" (func $log (param i32 i32 i32)))
+                (memory (export "memory") 1)
+                {ALLOC}
+                (func (export "run") (param $ptr i32) (param $len i32) (result i64)
+                    (call $log (i32.const 0) (i32.const -1) (i32.const 2))
+                    (call $log (i32.const 0) (i32.const 0) (i32.const -1))
+                    (call $log (i32.const 0) (i32.const 2147483647) (i32.const 2147483647))
+                    (i64.const 0)))"#
+        );
+        let wasm = wat::parse_str(&wat).unwrap();
+        let out = SkillHost::new().run(&wasm, b"", RunCtx::pure()).unwrap();
+        assert!(out.logs.is_empty(), "{:?}", out.logs);
+        assert_eq!(guest_range(-1, 2, 100), None);
+        assert_eq!(guest_range(10, 5, 100), Some(10..15));
+        assert_eq!(guest_range(98, 5, 100), None);
+    }
+
+    #[test]
+    fn guest_logs_are_capped() {
+        let wat = format!(
+            r#"(module
+                (import "engram" "log" (func $log (param i32 i32 i32)))
+                (memory (export "memory") 1)
+                {ALLOC}
+                (func (export "run") (param $ptr i32) (param $len i32) (result i64)
+                    (local $i i32)
+                    (loop $l
+                        (call $log (i32.const 0) (i32.const 0) (i32.const 4))
+                        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+                        (br_if $l (i32.lt_u (local.get $i) (i32.const 5000))))
+                    (i64.const 0)))"#
+        );
+        let wasm = wat::parse_str(&wat).unwrap();
+        let out = SkillHost::new().run(&wasm, b"", RunCtx::pure()).unwrap();
+        assert_eq!(out.logs.len(), MAX_LOG_ENTRIES);
+        assert_eq!(out.logs.last().unwrap(), LOG_TRUNCATED);
+    }
+
+    #[test]
+    fn guest_memory_is_capped() {
+        // 2000 pages = 125 MiB, over the 64 MiB ceiling: instantiation must fail.
+        let wat = format!(
+            r#"(module
+                (memory (export "memory") 2000)
+                {ALLOC}
+                (func (export "run") (param $ptr i32) (param $len i32) (result i64)
+                    (i64.const 0)))"#
+        );
+        let wasm = wat::parse_str(&wat).unwrap();
+        assert!(SkillHost::new().run(&wasm, b"", RunCtx::pure()).is_err());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

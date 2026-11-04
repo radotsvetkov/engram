@@ -133,6 +133,9 @@ impl Ledger {
 
         let path = dir.join("ledger.jsonl");
         let (seq, prev) = replay_tip(&path)?;
+        // Drop the torn tail of an interrupted append so the next append starts on a clean
+        // line; otherwise it would merge with the fragment and corrupt the chain mid-file.
+        truncate_torn_tail(&path)?;
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
 
         Ok(Ledger {
@@ -173,8 +176,12 @@ impl Ledger {
 
         let mut line = serde_json::to_vec(&entry)?;
         line.push(b'\n');
-        tip.file.write_all(&line)?;
-        tip.file.flush()?;
+        // On a failed write, cut the file back so no partial line is left behind.
+        let len_before = tip.file.metadata()?.len();
+        if let Err(e) = tip.file.write_all(&line).and_then(|_| tip.file.flush()) {
+            let _ = tip.file.set_len(len_before);
+            return Err(e.into());
+        }
 
         tip.seq = seq;
         tip.prev = hash;
@@ -323,37 +330,101 @@ fn replay_tip(path: &Path) -> Result<(u64, Hash), LedgerError> {
     }
 }
 
+/// If the last non-empty line of the ledger is unterminated or unparseable (the line
+/// `read_entries` tolerates), cut the file back to the end of the last good line.
+fn truncate_torn_tail(path: &Path) -> Result<(), LedgerError> {
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+    // Start offset of the last non-empty line, and that line's bytes.
+    let mut start = 0usize;
+    let mut last: Option<(usize, &[u8])> = None;
+    for line in bytes.split_inclusive(|b| *b == b'\n') {
+        if !line.iter().all(|b| b.is_ascii_whitespace()) {
+            last = Some((start, line));
+        }
+        start += line.len();
+    }
+    let Some((offset, line)) = last else {
+        return Ok(());
+    };
+    let terminated = line.ends_with(b"\n");
+    if terminated && serde_json::from_slice::<Entry>(line).is_ok() {
+        return Ok(());
+    }
+    tracing::warn!(
+        path = %path.display(),
+        dropped_bytes = bytes.len() - offset,
+        "ledger ends with a torn entry from an interrupted append; truncating it"
+    );
+    let f = OpenOptions::new().write(true).open(path)?;
+    f.set_len(offset as u64)?;
+    f.sync_all()?;
+    Ok(())
+}
+
 fn load_or_create_key(path: &Path) -> Result<SigningKey, LedgerError> {
-    if let Ok(bytes) = std::fs::read(path) {
-        let seed: [u8; 32] = bytes.as_slice().try_into().map_err(|_| LedgerError::Key)?;
-        return Ok(SigningKey::from_bytes(&seed));
+    match std::fs::read(path) {
+        Ok(bytes) => return key_from_bytes(&bytes),
+        // Only a missing key may be generated. Any other error (permissions, I/O) must
+        // surface: replacing the key would invalidate every past signature.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
     }
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(dir)?;
     let mut seed = [0u8; 32];
     getrandom::getrandom(&mut seed).map_err(|e| LedgerError::Rand(e.to_string()))?;
-    write_secret(path, &seed)?;
+
+    // Write the key to a temp file, fsync it, then link it into place. The link fails if
+    // another process created a key in the meantime, in which case that key wins.
+    let tmp = dir.join(format!(".ledger.key.{}.tmp", std::process::id()));
+    write_secret(&tmp, &seed)?;
+    let placed = match std::fs::hard_link(&tmp, path) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        // Filesystems without hard links: fall back to an atomic rename.
+        Err(_) => std::fs::rename(&tmp, path).map(|_| true),
+    };
+    let _ = std::fs::remove_file(&tmp);
+    if !placed? {
+        return key_from_bytes(&std::fs::read(path)?);
+    }
+    #[cfg(unix)]
+    {
+        if let Ok(d) = File::open(dir) {
+            let _ = d.sync_all();
+        }
+    }
+    Ok(SigningKey::from_bytes(&seed))
+}
+
+fn key_from_bytes(bytes: &[u8]) -> Result<SigningKey, LedgerError> {
+    let seed: [u8; 32] = bytes.try_into().map_err(|_| LedgerError::Key)?;
     Ok(SigningKey::from_bytes(&seed))
 }
 
 fn write_secret(path: &Path, bytes: &[u8]) -> Result<(), LedgerError> {
     #[cfg(unix)]
-    {
+    let mut f = {
         use std::os::unix::fs::OpenOptionsExt;
-        let mut f = OpenOptions::new()
+        OpenOptions::new()
             .create(true)
             .write(true)
             .truncate(true)
             .mode(0o600)
-            .open(path)?;
-        f.write_all(bytes)?;
-        f.flush()?;
-    }
+            .open(path)?
+    };
     #[cfg(not(unix))]
-    {
-        std::fs::write(path, bytes)?;
-    }
+    let mut f = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(path)?;
+    f.write_all(bytes)?;
+    f.sync_all()?;
     Ok(())
 }
 
@@ -454,6 +525,54 @@ mod tests {
         let l = Ledger::open(dir.path()).unwrap();
         assert_eq!(l.head().0, 2);
         assert_eq!(verify_file(&path, &verifying).unwrap(), 2);
+    }
+
+    #[test]
+    fn torn_tail_is_truncated_so_later_appends_stay_valid() {
+        let dir = temp();
+        let path = dir.path().join("ledger.jsonl");
+        {
+            let l = Ledger::open(dir.path()).unwrap();
+            l.append("a", "core", json!(1)).unwrap();
+            l.append("b", "core", json!(2)).unwrap();
+        }
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        f.write_all(b"{\"seq\":3,\"kind\":\"c\",\"act").unwrap();
+        drop(f);
+        {
+            let l = Ledger::open(dir.path()).unwrap();
+            assert_eq!(l.head().0, 2);
+            l.append("c", "core", json!(3)).unwrap();
+            l.append("d", "core", json!(4)).unwrap();
+        }
+        let l = Ledger::open(dir.path()).unwrap();
+        assert_eq!(l.verify().unwrap(), 4);
+        assert_eq!(l.read_all().unwrap().len(), 4);
+        assert!(std::fs::read(&path).unwrap().ends_with(b"\n"));
+    }
+
+    #[test]
+    fn existing_key_is_reused_and_unreadable_key_is_not_replaced() {
+        let dir = temp();
+        let pk = Ledger::open(dir.path()).unwrap().pubkey_hex();
+        assert_eq!(Ledger::open(dir.path()).unwrap().pubkey_hex(), pk);
+        // No temp files are left next to the key.
+        let names: Vec<_> = std::fs::read_dir(dir.path().join("keys"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, vec![std::ffi::OsString::from("ledger.key")]);
+
+        // A read error other than "not found" must fail rather than mint a new key.
+        // A directory in place of the key file yields such an error on every platform.
+        let other = temp();
+        std::fs::create_dir_all(other.path().join("keys").join("ledger.key")).unwrap();
+        assert!(Ledger::open(other.path()).is_err());
+        assert!(other.path().join("keys").join("ledger.key").is_dir());
     }
 
     #[test]

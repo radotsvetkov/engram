@@ -38,7 +38,11 @@ impl Recurrence {
                 let at = Utc.timestamp_millis_opt(*at_ms).single()?;
                 (at > after).then_some(at)
             }
-            Recurrence::Interval { secs } => Some(after + Duration::seconds(*secs)),
+            Recurrence::Interval { secs } => {
+                // A persisted job is not re-validated, so overflow must yield None, not panic.
+                let step = Duration::try_seconds((*secs).max(1))?;
+                after.checked_add_signed(step)
+            }
             Recurrence::Daily { hour, min } => Some(next_daily(after, *hour, *min)),
             Recurrence::Weekdays { hour, min } => {
                 let mut c = next_daily(after, *hour, *min);
@@ -71,7 +75,8 @@ fn next_daily(after: DateTime<Utc>, hour: u32, min: u32) -> DateTime<Utc> {
     if today > after {
         today
     } else {
-        local_at(local_date + Duration::days(1), t)
+        let next_date = local_date.succ_opt().unwrap_or(local_date);
+        local_at(next_date, t)
     }
 }
 
@@ -116,8 +121,11 @@ pub fn parse(input: &str, now: DateTime<Utc>) -> Result<Recurrence, ParseError> 
 
     if let Some(rest) = s.strip_prefix("in ") {
         let dur = parse_duration(rest).ok_or_else(|| ParseError(input.to_string()))?;
+        let at = now
+            .checked_add_signed(dur)
+            .ok_or_else(|| ParseError(input.to_string()))?;
         return Ok(Recurrence::Once {
-            at_ms: (now + dur).timestamp_millis(),
+            at_ms: at.timestamp_millis(),
         });
     }
 
@@ -220,7 +228,12 @@ fn find_iso_date(s: &str) -> Option<(i32, u32, u32)> {
     None
 }
 
+/// Longest accepted delay or interval (about 10 years). Larger values are rejected rather
+/// than risking chrono overflow panics further down.
+const MAX_DURATION_SECS: i64 = 10 * 366 * 24 * 3600;
+
 /// Parse "N unit" or "unit" durations: minutes/mins/m, hours/hr/h, seconds/secs/s, days.
+/// Returns `None` for unknown units or anything longer than [`MAX_DURATION_SECS`].
 fn parse_duration(s: &str) -> Option<Duration> {
     let toks: Vec<&str> = s.split_whitespace().collect();
     let (n, unit) = match toks.as_slice() {
@@ -230,13 +243,18 @@ fn parse_duration(s: &str) -> Option<Duration> {
     };
     let n = n.max(1);
     let u = unit.trim_end_matches('s');
-    match u {
-        "second" | "sec" | "s" => Some(Duration::seconds(n)),
-        "minute" | "min" | "m" => Some(Duration::minutes(n)),
-        "hour" | "hr" | "h" => Some(Duration::hours(n)),
-        "day" | "d" => Some(Duration::days(n)),
-        _ => None,
+    let unit_secs: i64 = match u {
+        "second" | "sec" | "s" => 1,
+        "minute" | "min" | "m" => 60,
+        "hour" | "hr" | "h" => 3600,
+        "day" | "d" => 86_400,
+        _ => return None,
+    };
+    let secs = n.checked_mul(unit_secs)?;
+    if secs > MAX_DURATION_SECS {
+        return None;
     }
+    Duration::try_seconds(secs)
 }
 
 /// Find a clock time anywhere in the string: "9am", "9:30 pm", "17:00", "at 8".
@@ -370,6 +388,21 @@ mod tests {
             parse("every 30 seconds", now()).unwrap(),
             Recurrence::Interval { secs: 30 }
         );
+    }
+
+    #[test]
+    fn huge_durations_error_instead_of_panicking() {
+        assert!(parse("every 100000000 days", now()).is_err());
+        assert!(parse("in 99999999999999999 days", now()).is_err());
+        // Just under the cap still parses.
+        assert!(parse("in 3650 days", now()).is_ok());
+        assert!(parse("every 3650 days", now()).is_ok());
+    }
+
+    #[test]
+    fn corrupt_interval_does_not_panic() {
+        let r = Recurrence::Interval { secs: i64::MAX };
+        assert_eq!(r.next_after(now()), None);
     }
 
     #[test]

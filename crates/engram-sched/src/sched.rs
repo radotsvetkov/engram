@@ -193,6 +193,15 @@ impl Scheduler {
         agent_id: Option<Option<String>>,
         now: DateTime<Utc>,
     ) -> Result<Job> {
+        // Compute the new fire time before taking the lock, so a bad recurrence can never
+        // fail (or panic) while the job list is held.
+        let retime = match recurrence {
+            Some(r) => {
+                let next = r.next_after(now);
+                Some((r, next))
+            }
+            None => None,
+        };
         let job = {
             let mut jobs = self.jobs.lock().expect("sched mutex poisoned");
             let j = jobs
@@ -205,10 +214,8 @@ impl Scheduler {
             if let Some(p) = payload {
                 j.payload = p;
             }
-            if let Some(r) = recurrence {
-                let next = r
-                    .next_after(now)
-                    .ok_or_else(|| SchedError::NeverFires(j.name.clone()))?;
+            if let Some((r, next)) = retime {
+                let next = next.ok_or_else(|| SchedError::NeverFires(j.name.clone()))?;
                 j.recurrence = r;
                 j.next_fire_ms = next.timestamp_millis();
             }
@@ -279,16 +286,31 @@ impl Scheduler {
 /// add/mark_fired/set_last_task/remove, i.e. constantly on an unattended box; a bare
 /// `std::fs::write` can be interrupted mid-write and leave a truncated file, so we write a
 /// sibling temp file and rename it into place (rename is atomic on the same filesystem).
+/// The temp file is fsynced before the rename, and the directory after it, so a power loss
+/// cannot leave a zero-length jobs.json behind.
 fn save(path: &Path, jobs: &[Job]) -> Result<()> {
+    use std::io::Write;
     let bytes = serde_json::to_vec_pretty(jobs)?;
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, &bytes)?;
-    #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+        let mut f = std::fs::File::create(&tmp)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = f.set_permissions(std::fs::Permissions::from_mode(0o600));
+        }
+        f.write_all(&bytes)?;
+        f.sync_all()?;
     }
     std::fs::rename(&tmp, path)?;
+    #[cfg(unix)]
+    {
+        if let Some(dir) = path.parent() {
+            if let Ok(d) = std::fs::File::open(dir) {
+                let _ = d.sync_all();
+            }
+        }
+    }
     Ok(())
 }
 
@@ -394,6 +416,32 @@ mod tests {
         let s = Scheduler::open(dir.path(), ledger).unwrap();
         assert_eq!(s.list().len(), 1);
         assert!(s.next_wake().is_some());
+    }
+
+    #[test]
+    fn overflowing_recurrence_is_an_error_not_a_poisoned_mutex() {
+        let (s, _d) = scheduler();
+        let huge = Recurrence::Interval { secs: i64::MAX };
+        assert!(matches!(
+            s.add("huge", json!({}), huge.clone(), None, now()),
+            Err(SchedError::NeverFires(_))
+        ));
+        let job = s
+            .add(
+                "ok",
+                json!({}),
+                Recurrence::Interval { secs: 60 },
+                None,
+                now(),
+            )
+            .unwrap();
+        assert!(matches!(
+            s.update(&job.id, None, None, Some(huge), None, now()),
+            Err(SchedError::NeverFires(_))
+        ));
+        // The scheduler is still usable afterwards.
+        assert_eq!(s.list().len(), 1);
+        assert_eq!(s.list()[0].recurrence, Recurrence::Interval { secs: 60 });
     }
 
     #[test]

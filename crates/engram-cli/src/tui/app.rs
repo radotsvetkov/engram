@@ -767,7 +767,7 @@ impl App {
             }
         }
         // Periodic refresh: spine every ~3s; the live data view every ~3s.
-        if self.tick % 28 == 0 {
+        if self.tick.is_multiple_of(28) {
             // If the daemon was up and has since gone away (zero-idle exit), bring
             // it back before refreshing.
             let down = !self.health.as_ref().map(|h| h.ok).unwrap_or(false);

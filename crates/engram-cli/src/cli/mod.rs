@@ -204,7 +204,7 @@ pub enum ProjectsCmd {
     /// List projects (name, id, working directory).
     List,
     /// Create a new project, optionally bound to a working directory.
-    /// Quote a multi-word name: `engram project new "My App" --dir ~/code/my-app`.
+    /// Quote a multi-word name: `engram projects new "My App" --dir ~/code/my-app`.
     New {
         /// The project name (quote it if it has spaces).
         name: String,
@@ -517,7 +517,7 @@ pub enum ConfigCmd {
 pub enum ModelCmd {
     /// Download the real, offline-capable-once-fetched (model2vec) embedding model and switch
     /// memory recall to it - a one-time network fetch (~30MB, no API key) that upgrades recall
-    /// quality from the zero-dependency trigram-hash default. See BENCHMARKS.md for the numbers.
+    /// quality from the zero-dependency trigram-hash default. See crates/engram-bench/BENCHMARKS.md for the numbers.
     /// Requires a daemon restart to take effect (same as any other embedder-affecting setting).
     Fetch,
 }

@@ -11,8 +11,24 @@ All notable changes to this project are documented here. The format is based on
   256 KB of output, non-UTF-8 output no longer freezes the process, `shell_kill` now stops the
   whole process tree (and Docker containers), and processes are scoped to the workdir that
   started them.
+- Web pages could open the voice WebSocket and drive the agent: the daemon now rejects any
+  foreign `Origin` on every request, not just writes.
+- Agent-written HTML/SVG opened in the browser now renders sandboxed, so its scripts can't call
+  the daemon's API.
+- `schedule_cancel` is refused on runs that read untrusted content, like `schedule_task`.
+- Daemon crashes: large non-ASCII git diffs, long tool-call logs, huge schedule intervals, and
+  negative pointers from WASM skills no longer abort the daemon.
+- A crash mid-write no longer corrupts the ledger (which stopped the daemon booting), the
+  scheduler's jobs, or `config.json`; a read error on the ledger key no longer replaces it.
+- `GET /v1/ledger/verify` reports tampering as `ok: false` instead of an error, so the TUI's
+  ledger chip and `engram ledger verify` show the tamper warning.
+- Streaming provider errors and early-closed streams are retried instead of being accepted as
+  a truncated answer, and tool calls cut off at the output limit trigger the limit bump.
+- `/v1/open` on Windows no longer passes the URL through `cmd`.
+- CLI help says `engram projects new` (the real command).
 
 ### Changed
+- Minimum supported Rust version is now 1.88, which the locked dependencies already required.
 - `make ci` runs the full CI matrix locally (format check, every clippy and test feature
   combination, eval).
 

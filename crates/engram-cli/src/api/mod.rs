@@ -537,7 +537,7 @@ impl Client {
 
     pub async fn sessions(&self, project: Option<&str>) -> Result<Vec<SessionMeta>> {
         let path = match project {
-            Some(p) => format!("/v1/sessions?project={p}"),
+            Some(p) => format!("/v1/sessions?project={}", urlencode(p)),
             None => "/v1/sessions".to_string(),
         };
         self.get(&path).await

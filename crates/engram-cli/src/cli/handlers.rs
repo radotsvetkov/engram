@@ -567,7 +567,7 @@ async fn projects(client: &Client, cmd: ProjectsCmd, json: bool) -> Result<i32> 
             if name.is_empty() {
                 println!(
                     "{}",
-                    bad("a project name is required: engram project new <name> [--dir <path>]")
+                    bad("a project name is required: engram projects new <name> [--dir <path>]")
                 );
                 return Ok(2);
             }

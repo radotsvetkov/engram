@@ -170,6 +170,36 @@ fn args_error_value(what: &str, raw: &str) -> serde_json::Value {
         format!("{what} (starts: {prefix}…). Re-send this tool call with arguments as one strict JSON object; for large file content, write in smaller chunks with append_file.") })
 }
 
+/// Mark tool calls cut off at the output-token limit with a TRUNCATED diagnosis (the agent loop
+/// keys its max_tokens bump on that word). Calls whose arguments are empty or already failed to
+/// parse are marked; `last_was_cut` also marks the final call, for providers that report the
+/// block being written when the limit hit.
+#[cfg(feature = "http")]
+fn mark_truncated_calls(calls: &mut [crate::types::ToolCall], last_was_cut: bool, why: &str) {
+    let n = calls.len();
+    for (i, c) in calls.iter_mut().enumerate() {
+        let empty = c.arguments.as_object().is_none_or(|o| o.is_empty());
+        let cut = last_was_cut && i + 1 == n;
+        if cut || empty || c.arguments.get(ARGS_ERROR_KEY).is_some() {
+            c.arguments = serde_json::json!({ ARGS_ERROR_KEY: format!(
+                "this tool call was TRUNCATED at the output-token limit ({why}) - its arguments never fully arrived. Re-send it with smaller arguments; for large file content, write the file in parts with append_file.") });
+        }
+    }
+}
+
+/// The longest prefix of `s` that is at most `max` bytes and ends on a char boundary.
+#[cfg(feature = "http")]
+fn truncate_at_char_boundary(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 /// Find a tool call's arguments WHEREVER the backend put them. The OpenAI spec location is
 /// function.arguments, but live traffic shows calls with arguments at the call level, under
 /// legacy/alternate keys, or absent entirely (reasoning models occasionally emit the call shell
@@ -690,6 +720,149 @@ mod anthropic {
         }
     }
 
+    // Tool calls arrive as a `content_block_start` (with the id+name) followed by one or more
+    // `input_json_delta` fragments that must be concatenated, finalized on `content_block_stop`.
+    // Partial state is keyed by the block index the stream reports.
+    struct PartialTool {
+        id: String,
+        name: String,
+        json: String,
+    }
+
+    /// Accumulated state of one Anthropic streaming response.
+    #[derive(Default)]
+    struct StreamState {
+        text: String,
+        tool_calls: Vec<ToolCall>,
+        partials: std::collections::HashMap<u64, PartialTool>,
+        tin: u64,
+        tout: u64,
+        cread: u64,
+        ccreate: u64,
+        stop_reason: Option<String>,
+        /// Whether the most recently started content block is a tool_use.
+        last_block_tool: bool,
+        saw_stop: bool,
+        /// Set by an `error` event; the caller turns it into an Err.
+        error: Option<String>,
+    }
+
+    impl StreamState {
+        fn handle(&mut self, v: &serde_json::Value, on_delta: &mut (dyn FnMut(String) + Send)) {
+            match v["type"].as_str() {
+                Some("content_block_start") => {
+                    let cb = &v["content_block"];
+                    self.last_block_tool = cb["type"] == "tool_use";
+                    if self.last_block_tool {
+                        let idx = v["index"].as_u64().unwrap_or(0);
+                        self.partials.insert(
+                            idx,
+                            PartialTool {
+                                id: cb["id"].as_str().unwrap_or("").to_string(),
+                                name: cb["name"].as_str().unwrap_or("").to_string(),
+                                json: String::new(),
+                            },
+                        );
+                    }
+                }
+                Some("content_block_delta") if v["delta"]["type"] == "text_delta" => {
+                    if let Some(t) = v["delta"]["text"].as_str() {
+                        self.text.push_str(t);
+                        on_delta(t.to_string());
+                    }
+                }
+                Some("content_block_delta") if v["delta"]["type"] == "input_json_delta" => {
+                    let idx = v["index"].as_u64().unwrap_or(0);
+                    if let Some(p) = self.partials.get_mut(&idx) {
+                        if let Some(j) = v["delta"]["partial_json"].as_str() {
+                            p.json.push_str(j);
+                        }
+                    }
+                }
+                Some("content_block_stop") => {
+                    let idx = v["index"].as_u64().unwrap_or(0);
+                    if let Some(p) = self.partials.remove(&idx) {
+                        self.push_tool(p);
+                    }
+                }
+                Some("message_start") => {
+                    let u = &v["message"]["usage"];
+                    self.tin += u["input_tokens"].as_u64().unwrap_or(0);
+                    self.cread += u["cache_read_input_tokens"].as_u64().unwrap_or(0);
+                    self.ccreate += u["cache_creation_input_tokens"].as_u64().unwrap_or(0);
+                }
+                Some("message_delta") => {
+                    // usage.output_tokens in message_delta is cumulative - take it, not add.
+                    self.tout = v["usage"]["output_tokens"].as_u64().unwrap_or(self.tout);
+                    if let Some(r) = v["delta"]["stop_reason"].as_str() {
+                        self.stop_reason = Some(r.to_string());
+                    }
+                }
+                Some("message_stop") => self.saw_stop = true,
+                Some("error") => {
+                    let e = &v["error"];
+                    let etype = e["type"].as_str().unwrap_or("stream_error");
+                    let msg = e["message"].as_str().unwrap_or("error event in stream");
+                    if self.error.is_none() {
+                        self.error = Some(format!("{etype}: {msg}"));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        fn push_tool(&mut self, p: PartialTool) {
+            // An empty input object serializes as ""; treat that as `{}` so a no-arg tool call
+            // still surfaces. Unparseable fragments carry a diagnosis instead.
+            let arguments = if p.json.trim().is_empty() {
+                serde_json::json!({})
+            } else {
+                serde_json::from_str(&p.json)
+                    .ok()
+                    .or_else(|| repair_json(&p.json))
+                    .unwrap_or_else(|| {
+                        args_error_value(
+                            "tool arguments were not valid JSON (possibly truncated at the token limit)",
+                            &p.json,
+                        )
+                    })
+            };
+            self.tool_calls.push(ToolCall {
+                id: p.id,
+                name: p.name,
+                arguments,
+            });
+        }
+
+        fn finish(mut self, model: String) -> Result<Completion, GatewayError> {
+            if let Some(e) = self.error.take() {
+                return Err(GatewayError::Provider(e));
+            }
+            if !self.saw_stop {
+                return Err(GatewayError::Provider(
+                    "anthropic stream ended before message_stop (connection closed early)".into(),
+                ));
+            }
+            // Blocks that never got a content_block_stop still surface (in index order).
+            let mut left: Vec<(u64, PartialTool)> = self.partials.drain().collect();
+            left.sort_by_key(|(i, _)| *i);
+            for (_, p) in left {
+                self.push_tool(p);
+            }
+            if self.stop_reason.as_deref() == Some("max_tokens") {
+                let last_is_tool = self.last_block_tool;
+                mark_truncated_calls(&mut self.tool_calls, last_is_tool, "stop_reason=max_tokens");
+            }
+            Ok(Completion {
+                text: self.text,
+                model,
+                tokens_in: (self.tin + self.cread + self.ccreate) as u32,
+                tokens_out: self.tout as u32,
+                tool_calls: self.tool_calls,
+            })
+        }
+    }
+
     #[async_trait]
     impl Provider for AnthropicProvider {
         async fn complete(&self, req: &CompletionRequest) -> Result<Completion, GatewayError> {
@@ -735,6 +908,15 @@ mod anthropic {
                         _ => {}
                     }
                 }
+            }
+            // stop_reason=max_tokens: the last block was cut mid-write. If it was a tool_use, its
+            // input is partial and must not run.
+            if json["stop_reason"] == "max_tokens" {
+                let last_is_tool = json["content"]
+                    .as_array()
+                    .and_then(|b| b.last())
+                    .is_some_and(|b| b["type"] == "tool_use");
+                mark_truncated_calls(&mut tool_calls, last_is_tool, "stop_reason=max_tokens");
             }
             let u = &json["usage"];
             let cache_read = u["cache_read_input_tokens"].as_u64().unwrap_or(0);
@@ -782,91 +964,21 @@ mod anthropic {
             }
             let mut stream = resp.bytes_stream();
             let mut buf: Vec<u8> = Vec::new();
-            let mut text = String::new();
-            let (mut tin, mut tout, mut cread, mut ccreate) = (0u64, 0u64, 0u64, 0u64);
-            // Tool calls arrive as a `content_block_start` (with the id+name) followed by one or more
-            // `input_json_delta` fragments that must be concatenated, finalized on
-            // `content_block_stop`. We key partial state by the block index the stream reports. Without
-            // this, streamed runs on Anthropic silently drop every tool call the model requests,
-            // stalling any tool loop with an empty assistant turn — unlike `complete`, which returns them.
-            struct PartialTool {
-                id: String,
-                name: String,
-                json: String,
-            }
-            let mut partials: std::collections::HashMap<u64, PartialTool> =
-                std::collections::HashMap::new();
-            let mut tool_calls: Vec<ToolCall> = Vec::new();
+            let mut st = StreamState::default();
             while let Some(chunk) = stream.next().await {
                 let bytes = chunk.map_err(|e| GatewayError::Provider(e.to_string()))?;
                 buf.extend_from_slice(&bytes);
-                drain_sse(&mut buf, |v| match v["type"].as_str() {
-                    Some("content_block_start") if v["content_block"]["type"] == "tool_use" => {
-                        let cb = &v["content_block"];
-                        let idx = v["index"].as_u64().unwrap_or(0);
-                        partials.insert(
-                            idx,
-                            PartialTool {
-                                id: cb["id"].as_str().unwrap_or("").to_string(),
-                                name: cb["name"].as_str().unwrap_or("").to_string(),
-                                json: String::new(),
-                            },
-                        );
-                    }
-                    Some("content_block_delta") if v["delta"]["type"] == "text_delta" => {
-                        if let Some(t) = v["delta"]["text"].as_str() {
-                            text.push_str(t);
-                            on_delta(t.to_string());
-                        }
-                    }
-                    Some("content_block_delta") if v["delta"]["type"] == "input_json_delta" => {
-                        let idx = v["index"].as_u64().unwrap_or(0);
-                        if let Some(p) = partials.get_mut(&idx) {
-                            if let Some(j) = v["delta"]["partial_json"].as_str() {
-                                p.json.push_str(j);
-                            }
-                        }
-                    }
-                    Some("content_block_stop") => {
-                        let idx = v["index"].as_u64().unwrap_or(0);
-                        if let Some(p) = partials.remove(&idx) {
-                            // An empty input object serializes as ""; treat that (and any unparseable
-                            // fragment) as `{}` so a no-arg tool call still surfaces.
-                            let arguments = if p.json.trim().is_empty() {
-                                serde_json::json!({})
-                            } else {
-                                serde_json::from_str(&p.json)
-                                    .ok()
-                                    .or_else(|| repair_json(&p.json))
-                                    .unwrap_or_else(|| args_error_value("tool arguments were not valid JSON (possibly truncated at the token limit)", &p.json))
-                            };
-                            tool_calls.push(ToolCall {
-                                id: p.id,
-                                name: p.name,
-                                arguments,
-                            });
-                        }
-                    }
-                    Some("message_start") => {
-                        let u = &v["message"]["usage"];
-                        tin += u["input_tokens"].as_u64().unwrap_or(0);
-                        cread += u["cache_read_input_tokens"].as_u64().unwrap_or(0);
-                        ccreate += u["cache_creation_input_tokens"].as_u64().unwrap_or(0);
-                    }
-                    Some("message_delta") => {
-                        // usage.output_tokens in message_delta is cumulative - take it, not add.
-                        tout = v["usage"]["output_tokens"].as_u64().unwrap_or(tout);
-                    }
-                    _ => {}
-                });
+                drain_sse(&mut buf, |v| st.handle(v, on_delta));
+                if let Some(e) = st.error.take() {
+                    return Err(GatewayError::Provider(e));
+                }
             }
-            Ok(Completion {
-                text,
-                model: req.model.clone(),
-                tokens_in: (tin + cread + ccreate) as u32,
-                tokens_out: tout as u32,
-                tool_calls,
-            })
+            // A final frame without its blank-line terminator is still a complete event.
+            if !buf.iter().all(u8::is_ascii_whitespace) {
+                buf.extend_from_slice(b"\n\n");
+                drain_sse(&mut buf, |v| st.handle(v, on_delta));
+            }
+            st.finish(req.model.clone())
         }
 
         async fn embed(&self, _texts: &[String]) -> Result<Vec<Vec<f32>>, GatewayError> {
@@ -1043,6 +1155,82 @@ mod anthropic {
             assert_eq!(got, "café");
             assert!(buf.is_empty());
         }
+
+        fn run_stream(frames: &[&str]) -> Result<Completion, GatewayError> {
+            let mut st = StreamState::default();
+            let mut sink = |_: String| {};
+            for f in frames {
+                let v: serde_json::Value = serde_json::from_str(f).unwrap();
+                st.handle(&v, &mut sink);
+            }
+            st.finish("m".into())
+        }
+
+        const START: &str = r#"{"type":"message_start","message":{"usage":{"input_tokens":3}}}"#;
+        const STOP: &str = r#"{"type":"message_stop"}"#;
+
+        #[test]
+        fn stream_error_event_is_an_error() {
+            let r = run_stream(&[
+                START,
+                r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"par"}}"#,
+                r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#,
+            ]);
+            let e = r.unwrap_err().to_string();
+            assert!(e.contains("overloaded_error: Overloaded"), "{e}");
+        }
+
+        #[test]
+        fn stream_without_message_stop_is_an_error() {
+            let r = run_stream(&[
+                START,
+                r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}"#,
+            ]);
+            assert!(r.unwrap_err().to_string().contains("message_stop"));
+        }
+
+        #[test]
+        fn stream_max_tokens_marks_the_cut_tool_call_truncated() {
+            let c = run_stream(&[
+                START,
+                r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"a","name":"read"}}"#,
+                r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"x\"}"}}"#,
+                r#"{"type":"content_block_stop","index":0}"#,
+                r#"{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"b","name":"write"}}"#,
+                r#"{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"y\",\"content\":\"abc"}}"#,
+                r#"{"type":"content_block_stop","index":1}"#,
+                r#"{"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":9}}"#,
+                STOP,
+            ])
+            .unwrap();
+            assert_eq!(c.tool_calls.len(), 2);
+            assert_eq!(c.tool_calls[0].arguments["path"], "x");
+            let msg = c.tool_calls[1].arguments[ARGS_ERROR_KEY].as_str().unwrap();
+            assert!(msg.contains("TRUNCATED"), "{msg}");
+            assert_eq!(c.tokens_out, 9);
+        }
+
+        #[test]
+        fn stream_end_turn_keeps_tool_calls() {
+            let c = run_stream(&[
+                START,
+                r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"a","name":"read"}}"#,
+                r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"x\"}"}}"#,
+                r#"{"type":"content_block_stop","index":0}"#,
+                r#"{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":4}}"#,
+                STOP,
+            ])
+            .unwrap();
+            assert_eq!(c.tool_calls[0].arguments["path"], "x");
+        }
+
+        #[test]
+        fn truncation_helpers_are_char_safe() {
+            let s = "é".repeat(1500); // 3000 bytes
+            let t = truncate_at_char_boundary(&s, 2001);
+            assert_eq!(t.len(), 2000);
+            assert_eq!(truncate_at_char_boundary("abc", 10), "abc");
+        }
     }
 }
 
@@ -1154,6 +1342,47 @@ mod http {
         o
     }
 
+    /// Parse an OpenAI-style embeddings response. Items are ordered by their `index` field (not
+    /// array position), and the result must hold one non-empty vector per input text.
+    fn parse_embeddings(
+        json: &serde_json::Value,
+        expected: usize,
+    ) -> Result<Vec<Vec<f32>>, GatewayError> {
+        let arr = json["data"].as_array().ok_or_else(|| {
+            GatewayError::Provider("embeddings response has no data array".into())
+        })?;
+        let mut items: Vec<(u64, Vec<f32>)> = arr
+            .iter()
+            .enumerate()
+            .map(|(pos, d)| {
+                let idx = d["index"].as_u64().unwrap_or(pos as u64);
+                let v = d["embedding"]
+                    .as_array()
+                    .map(|v| {
+                        v.iter()
+                            .filter_map(|x| x.as_f64().map(|f| f as f32))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                (idx, v)
+            })
+            .collect();
+        items.sort_by_key(|(i, _)| *i);
+        let out: Vec<Vec<f32>> = items.into_iter().map(|(_, v)| v).collect();
+        if out.len() != expected {
+            return Err(GatewayError::Provider(format!(
+                "embeddings response has {} vectors for {expected} inputs",
+                out.len()
+            )));
+        }
+        if out.iter().any(|v| v.is_empty()) {
+            return Err(GatewayError::Provider(
+                "embeddings response contains an empty vector".into(),
+            ));
+        }
+        Ok(out)
+    }
+
     #[async_trait]
     impl Provider for HttpProvider {
         async fn complete(&self, req: &CompletionRequest) -> Result<Completion, GatewayError> {
@@ -1243,7 +1472,7 @@ mod http {
                                 // backend quirk is a log line, not a debugging session.
                                 let raw = c.to_string();
                                 tracing::warn!(tool = %name,
-                                    raw = %&raw[..raw.len().min(2000)],
+                                    raw = %truncate_at_char_boundary(&raw, 2000),
                                     "tool call arrived with empty arguments after normalization");
                             }
                             // A missing id breaks tool_result pairing on the NEXT request
@@ -1266,13 +1495,7 @@ mod http {
             // finish_reason=length means the arguments ended at the token limit, not by intent.
             let mut tool_calls = tool_calls;
             if finish == "length" {
-                for c in &mut tool_calls {
-                    let empty = c.arguments.as_object().is_none_or(|o| o.is_empty());
-                    if empty || c.arguments.get(ARGS_ERROR_KEY).is_some() {
-                        c.arguments = serde_json::json!({ ARGS_ERROR_KEY:
-                            "this tool call was TRUNCATED at the output-token limit (finish_reason=length) - its arguments never fully arrived. Re-send it with smaller arguments; for large file content, write the file in parts with append_file." });
-                    }
-                }
+                mark_truncated_calls(&mut tool_calls, false, "finish_reason=length");
             }
             let tokens_in = json["usage"]["prompt_tokens"].as_u64().unwrap_or(0) as u32;
             let tokens_out = json["usage"]["completion_tokens"].as_u64().unwrap_or(0) as u32;
@@ -1402,28 +1625,28 @@ mod http {
                 .json()
                 .await
                 .map_err(|e| GatewayError::Provider(e.to_string()))?;
-            let out = json["data"]
-                .as_array()
-                .map(|arr| {
-                    arr.iter()
-                        .map(|d| {
-                            d["embedding"]
-                                .as_array()
-                                .map(|v| {
-                                    v.iter()
-                                        .filter_map(|x| x.as_f64().map(|f| f as f32))
-                                        .collect()
-                                })
-                                .unwrap_or_default()
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            Ok(out)
+            parse_embeddings(&json, texts.len())
         }
 
         fn id(&self) -> &str {
             &self.id
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn embeddings_are_ordered_by_index_and_counted() {
+            let j = serde_json::json!({"data": [
+                {"index": 1, "embedding": [2.0]},
+                {"index": 0, "embedding": [1.0]},
+            ]});
+            assert_eq!(parse_embeddings(&j, 2).unwrap(), vec![vec![1.0], vec![2.0]]);
+            assert!(parse_embeddings(&j, 3).is_err());
+            let empty = serde_json::json!({"data": [{"index": 0, "embedding": []}]});
+            assert!(parse_embeddings(&empty, 1).is_err());
         }
     }
 }

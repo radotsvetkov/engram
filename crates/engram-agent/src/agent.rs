@@ -1113,7 +1113,7 @@ pub(crate) fn host_of(s: &str) -> String {
 }
 
 /// Is a gateway error worth retrying? Rate limits (429) and transient server/network failures clear
-/// on their own; hard client errors (401/403/404/400 — bad key, unknown model, malformed request) do
+/// on their own; other client errors (4xx — bad key, unknown model, malformed request, payment) do
 /// NOT, so retrying them just wastes the run's retry budget before it fails anyway. `GatewayError`
 /// only carries a message string (`"{status}: {body}"` from the HTTP providers), so we classify by
 /// the status code embedded in it. A `Ledger` error is handled separately (never retried).
@@ -1131,12 +1131,31 @@ fn is_transient(e: &GatewayError) -> bool {
         .collect::<String>()
         .parse()
         .unwrap_or(0);
-    // Hard client errors never clear by waiting — fail fast rather than burning the retry budget.
-    // 429 (rate limit) is explicitly NOT hard: it IS transient and gets the longer backoff.
-    if matches!(lead, 400 | 401 | 403 | 404 | 405 | 406 | 409 | 410 | 422) {
-        return false;
+    // Client errors never clear by waiting — fail fast rather than burning the retry budget.
+    // 408 (timeout), 425 (too early) and 429 (rate limit) are the exceptions: they DO clear.
+    if (400..500).contains(&lead) {
+        return matches!(lead, 408 | 425 | 429);
     }
     let low = msg.to_ascii_lowercase();
+    // Error events inside an Anthropic stream carry the error type instead of an HTTP status.
+    if ["overloaded_error", "rate_limit_error", "api_error"]
+        .iter()
+        .any(|t| low.contains(t))
+    {
+        return true;
+    }
+    if [
+        "invalid_request_error",
+        "authentication_error",
+        "permission_error",
+        "not_found_error",
+        "request_too_large",
+    ]
+    .iter()
+    .any(|t| low.contains(t))
+    {
+        return false;
+    }
     if low.contains("invalid")
         && (low.contains("key") || low.contains("model") || low.contains("api"))
     {

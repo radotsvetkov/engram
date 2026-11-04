@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+- Background shell processes (`shell_start`): output reads no longer go silent or crash after
+  256 KB of output, non-UTF-8 output no longer freezes the process, `shell_kill` now stops the
+  whole process tree (and Docker containers), and processes are scoped to the workdir that
+  started them.
+
+### Changed
+- `make ci` runs the full CI matrix locally (format check, every clippy and test feature
+  combination, eval).
+
 ## [0.4.0] - 2026-07-10
 
 ### Added
@@ -333,9 +343,18 @@ The foundation: a reactive core, a signed ledger, and hybrid memory.
   learning loop with an A/B promotion gate.
 - **Benchmark harness** (`engram-bench`) for paraphrase recall and footprint.
 
-[Unreleased]: https://github.com/radotsvetkov/engram/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/radotsvetkov/engram/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/radotsvetkov/engram/compare/v0.3.9...v0.4.0
+[0.3.9]: https://github.com/radotsvetkov/engram/compare/v0.3.8...v0.3.9
+[0.3.8]: https://github.com/radotsvetkov/engram/compare/v0.3.7...v0.3.8
+[0.3.7]: https://github.com/radotsvetkov/engram/compare/v0.3.6...v0.3.7
+[0.3.6]: https://github.com/radotsvetkov/engram/compare/v0.3.5...v0.3.6
+[0.3.5]: https://github.com/radotsvetkov/engram/compare/v0.3.4...v0.3.5
+[0.3.4]: https://github.com/radotsvetkov/engram/compare/v0.3.3...v0.3.4
+[0.3.3]: https://github.com/radotsvetkov/engram/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/radotsvetkov/engram/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/radotsvetkov/engram/compare/v0.3.0...v0.3.1
-[0.3.0]: https://github.com/radotsvetkov/engram/compare/v0.2.0...v0.3.0
+[0.3.0]: https://github.com/radotsvetkov/engram/compare/v0.2.1...v0.3.0
+[0.2.1]: https://github.com/radotsvetkov/engram/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/radotsvetkov/engram/releases/tag/v0.2.0
 [0.1.0]: https://github.com/radotsvetkov/engram/releases/tag/v0.1.0

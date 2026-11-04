@@ -144,10 +144,13 @@ no-egress taint gate holds. With a native Anthropic key it adds prompt caching o
 tools+system prefix and token streaming.
 
 The built-in tools are deliberately small and auditable: hybrid `memory_recall` /
-`memory_remember`; workdir-confined `read_file` / `write_file` / `list_dir`; a `shell` with
-local / Docker / SSH backends (off by default); `web_search` / `web_fetch` that work with
-no API key; a headless and an interactive Chrome browser over the DevTools Protocol;
-`delegate_task` for depth-bounded subagents; `vision_analyze` / `image_generate` /
+`memory_remember`; workdir-confined `read_file` / `write_file` / `list_dir`, `edit_file` /
+`multi_edit` for atomic multi-hunk edits, and regex `grep` / `glob`; a `shell` with
+local / Docker / SSH backends (off by default), plus background `shell_start` /
+`shell_output` / `shell_kill` for long-running processes; `read_document` for PDF / DOCX /
+XLSX; `web_search` / `web_fetch` that work with no API key; a headless and an interactive
+Chrome browser over the DevTools Protocol; `schedule_task` / `schedule_list` /
+`schedule_cancel` for recurring jobs; `delegate_task` for depth-bounded subagents; `vision_analyze` / `image_generate` /
 `text_to_speech` through the metered gateway; `send_message` plus a Telegram channel; and an
 MCP client that turns any Model Context Protocol server into a native, audited tool.
 

@@ -111,8 +111,9 @@ curl -fsSL https://raw.githubusercontent.com/radotsvetkov/engram/main/install.sh
 
 # or a plain Cargo build:
 git clone https://github.com/radotsvetkov/engram.git && cd engram
-cargo build --release --features http     # omit --features for the offline/mock provider only
-./target/release/engramd                  # → open http://127.0.0.1:8088
+cargo build --release -p engramd --features http,docs   # omit --features for the offline/mock provider only
+cargo build --release -p engram-cli                     # the `engram` terminal client (optional)
+./target/release/engramd                                # → open http://127.0.0.1:8088
 ```
 
 **Run it on a server or VPS** — the same static binary, socket-activated so it costs
@@ -197,8 +198,9 @@ morphological recall.
 - **Deterministic scheduling.** Natural language ("every weekday at 9am") parsed with no
   model call, plus generated systemd socket-activation and wake-timer units that make
   zero-idle and scheduled wake real on a small VPS.
-- **A real toolset.** Memory, workdir-confined files, a multi-backend shell (local / Docker /
-  SSH), keyless web search and fetch, a headless and an interactive Chrome browser over CDP,
+- **A real toolset.** Memory, workdir-confined files with atomic multi-hunk edits and regex
+  grep/glob, a multi-backend shell (local / Docker / SSH) with background processes, PDF /
+  DOCX / XLSX reading, self-scheduling, keyless web search and fetch, a headless and an interactive Chrome browser over CDP,
   depth-bounded subagents, vision/image/speech through the metered gateway, Telegram and
   webhook messaging, and an **MCP client** that turns any Model Context Protocol server into a
   native, audited tool.
@@ -292,9 +294,13 @@ environment variable, which is handy for headless deployments. The most useful o
 | `ENGRAM_EMBED` | _(unset)_ | `static` = pure-Rust synonym recall; `gateway` = provider embeddings; unset = offline trigram default. |
 | `ENGRAM_TOOLS_SHELL` | _(unset)_ | `1` enables the `shell` tool (off by default; always refused once a run is tainted). |
 | `ENGRAM_SHELL_BACKEND` | _(local)_ | `docker` (network-isolated) / `ssh` / `singularity`. |
+| `ENGRAM_DOCKER_IMAGE` | `alpine` | Image for the `docker` shell backend. |
+| `ENGRAM_SSH_HOST` | _(unset)_ | Target host for the `ssh` shell backend. |
+| `ENGRAM_SINGULARITY_IMAGE` | _(unset)_ | Image for the `singularity` shell backend. |
 | `ENGRAM_API_TOKEN` | _(unset)_ | Require `Authorization: Bearer <token>` on `/v1`. Set this whenever the daemon is exposed. |
+| `ENGRAM_ALLOW_INSECURE` | _(unset)_ | `1` lets the daemon bind a non-loopback address without an API token (not recommended). |
 
-The full list is in the source and the [Settings panel](#configuration); the offline defaults
+The full list is in the source and the desktop [Settings panel](#desktop); the offline defaults
 need none of it.
 
 ## Desktop

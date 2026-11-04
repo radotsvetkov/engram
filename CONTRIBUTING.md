@@ -22,7 +22,8 @@ A `Makefile` wraps the common tasks:
 
 ```sh
 make run     # start the daemon
-make check   # fmt + clippy + tests + the eval suite (what CI runs)
+make check   # quick local gate: fmt + clippy + tests + the eval suite
+make ci      # the full CI matrix: fmt --check, clippy and tests across every feature combination, eval
 make bench   # the recall + footprint benchmark
 ```
 
@@ -31,11 +32,11 @@ make bench   # the recall + footprint benchmark
 Please run the same gate CI does:
 
 ```sh
-cargo fmt --all
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-cargo run -p engram-eval
+make ci
 ```
+
+`make check` is the faster loop while you work; `make ci` is what CI runs, so run it before
+pushing.
 
 - Keep changes focused; one logical change per pull request is easiest to review.
 - Match the style of the surrounding code — comment density, naming, and idiom.

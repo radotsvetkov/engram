@@ -97,21 +97,26 @@ or unified-diff content) — in both the TUI chat pane and `engram ask` output.
 ## CLI subcommands
 
 ```
-engram ask <prompt…>            # chat in one shot; streams tool steps then the answer
+engram ask <prompt…> [--quiet]  # (alias: chat) one shot; streams tool steps then the answer (--quiet: answer only)
 engram run <task…>              # run the tool-using agent (one-shot, non-interactive)
 engram status                   # health, cost, ledger, memory summary
 engram doctor                   # provider, tools, ledger integrity, config
 
-engram tasks list|show <id>|new <title> [--run]|run <id>|receipt <id>
+engram tasks list|show <id>|new <title> [--detail <text>] [--run]|run <id>|receipt <id>
 engram projects list|new <name> [--dir <path>]     # (alias: proj) scoped projects
-engram memory stats|recent|recall <q>|remember <text>|forget <id>|consciousness
+engram memory stats|recent|recall <q> [--as-of <date>]|remember <text>|forget <id>   # (alias: mem)
+engram memory consciousness [--distill]|consciousness-edit <id> <text>|consciousness-add <text>|consciousness-remove <id>|consciousness-revert
+engram memory supersessions [--accept <id>|--reject <id>]   # proposed contradictions awaiting a decision
+engram memory reflections [--project <id>]                  # grounded-reflection facts, each citing its sources
 engram skills list [--filter]|show <id>|run <id> <input>|adopt <id>|enable <id>|disable <id>
+engram skills improve <id> --file <path>|revert <id> [--version <n>]|activate <id> <version>|teach <id> --input <in> --gold <out>
 engram sessions list [--project <id>]|show <id>    # (alias: sess) chat transcripts
 engram schedule list|add <name> <when> [--title --agent]|preview <when…>|run <id>|delete <id>
 engram autonomy report|pending|approve <scope> <dest>|deny <scope> <dest>
 engram agents list|create <name> [--charter --model --provider --emoji --home-project]|edit <id>|delete <id>|policy <id> [--egress --actions --max-actions --max-spend-cents --expires-days]|consciousness <id> [--distill]
 engram ledger tail|verify|pubkey
 engram config show|set <key> <value>|test
+engram model fetch              # download the model2vec embedding model for better recall (restart to apply)
 engram tools [list|enable <name>|disable <name>]   # agent tools on/off
 engram mcp list|add <name> <command> [--args --env --cwd]|remove <name>
 engram events

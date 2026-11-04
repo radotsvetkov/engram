@@ -2,7 +2,7 @@
 # `make` with no target prints this help.
 
 .DEFAULT_GOAL := help
-.PHONY: help build release run test fmt lint bench eval check desktop clean install
+.PHONY: help build release run test fmt fmt-check lint lint-all test-all bench eval check ci desktop clean install
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -23,8 +23,20 @@ test: ## Run the full test suite
 fmt: ## Format the code
 	cargo fmt --all
 
+fmt-check: ## Fail if any file needs formatting (what CI runs)
+	cargo fmt --all --check
+
 lint: ## Clippy with warnings denied
 	cargo clippy --workspace --all-targets -- -D warnings
+
+lint-all: lint ## Clippy across every feature combination CI checks
+	cargo clippy -p engramd --features http --all-targets -- -D warnings
+	cargo clippy -p engramd --features http,docs,keyring --all-targets -- -D warnings
+
+test-all: test ## Tests across every feature combination CI runs
+	cargo test -p engramd --features http
+	cargo test -p engramd --features http,docs
+	cargo test -p engram-agent --features browser-cdp
 
 bench: ## Paraphrase recall + footprint benchmark
 	cargo run -p engram-bench
@@ -32,7 +44,9 @@ bench: ## Paraphrase recall + footprint benchmark
 eval: ## Deterministic agent regression suite
 	cargo run -p engram-eval
 
-check: fmt lint test eval ## Everything CI runs, locally
+check: fmt lint test eval ## Quick local gate: format, lint, test, eval
+
+ci: fmt-check lint-all test-all eval ## The full CI matrix, locally (run before pushing)
 
 desktop: ## Build & launch the native desktop app (needs tauri-cli ^2)
 	scripts/desktop.sh

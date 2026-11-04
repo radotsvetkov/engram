@@ -11,6 +11,13 @@
 //!   disk at `0600` and is *never* handed to a skill/WASM. A forged entry cannot be
 //!   signed.
 //!
+//! - **Anchored**: a signed head checkpoint (`ledger.head`: the latest seq and hash) is kept
+//!   next to the chain - refreshed at most once a second during appends (after flushing the
+//!   chain to disk), and whenever the ledger is verified or closed. Verification requires the chain to reach
+//!   it, so deleting entries from the END - which the hash chain alone can't see - is caught
+//!   too. A head saved elsewhere ([`Ledger::signed_head`]) can be checked the same way with
+//!   [`verify_file_with_anchor`], which also covers someone deleting the local head file.
+//!
 //! This is what makes "transparent and auditable" real: the desktop (or anyone with
 //! the public key) can replay the chain and prove nothing was rewritten. A "revert"
 //! is itself an appended entry pointing at a prior good hash - history is added to,
@@ -33,6 +40,144 @@ pub type Hash = [u8; 32];
 pub const GENESIS: Hash = [0u8; 32];
 
 const DOMAIN: &[u8] = b"engram.ledger.v1";
+/// Domain tag for head-checkpoint signatures, so a head signature can never be mistaken for an
+/// entry signature (entries sign a 32-byte content hash; heads sign this tag + seq + hash).
+const HEAD_DOMAIN: &[u8] = b"engram.ledger.head.v1";
+/// File name of the head checkpoint, next to `ledger.jsonl`.
+const HEAD_FILE: &str = "ledger.head";
+
+/// A signed statement "the chain had reached `seq`, whose entry hash was `hash`". Written to
+/// `ledger.head` after every append, and exportable so an auditor can keep one off the machine.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SignedHead {
+    pub seq: u64,
+    /// Hex of the entry hash at `seq`.
+    pub hash: String,
+    /// Hex Ed25519 signature over `HEAD_DOMAIN || seq (LE) || hash`.
+    pub sig: String,
+}
+
+fn head_message(seq: u64, hash: &Hash) -> Vec<u8> {
+    let mut m = Vec::with_capacity(HEAD_DOMAIN.len() + 8 + 32);
+    m.extend_from_slice(HEAD_DOMAIN);
+    m.extend_from_slice(&seq.to_le_bytes());
+    m.extend_from_slice(hash);
+    m
+}
+
+impl SignedHead {
+    fn sign(signing: &SigningKey, seq: u64, hash: &Hash) -> Self {
+        SignedHead {
+            seq,
+            hash: hex::encode(hash),
+            sig: hex::encode(signing.sign(&head_message(seq, hash)).to_bytes()),
+        }
+    }
+
+    /// Check the signature. A head that fails this was not written by the keyholder.
+    pub fn verify_sig(&self, verifying: &VerifyingKey) -> Result<(), LedgerError> {
+        let malformed = || LedgerError::Broken {
+            seq: self.seq,
+            reason: "head checkpoint is malformed".into(),
+        };
+        let hash = to_hash(&self.hash).map_err(|_| malformed())?;
+        let sig_bytes: [u8; 64] = hex::decode(&self.sig)
+            .map_err(|_| malformed())?
+            .try_into()
+            .map_err(|_| malformed())?;
+        verifying
+            .verify(
+                &head_message(self.seq, &hash),
+                &Signature::from_bytes(&sig_bytes),
+            )
+            .map_err(|_| LedgerError::Broken {
+                seq: self.seq,
+                reason: "head checkpoint signature invalid".into(),
+            })
+    }
+}
+
+/// The local head, if it exists and the chain no longer reaches it (or it isn't validly
+/// signed). `None` when there is no head or it matches.
+fn rejected_head(ledger: &Path, entries: &[Entry], verifying: &VerifyingKey) -> Option<SignedHead> {
+    let head = match read_head(ledger) {
+        Ok(Some(h)) => h,
+        Ok(None) => return None,
+        // Unreadable: keep whatever is there as evidence too.
+        Err(_) => {
+            return Some(SignedHead {
+                seq: 0,
+                hash: String::new(),
+                sig: String::new(),
+            })
+        }
+    };
+    let hashes: Vec<Hash> = entries
+        .iter()
+        .filter_map(|e| to_hash(&e.hash).ok())
+        .collect();
+    match check_reaches(&hashes, &head, verifying) {
+        Ok(()) => None,
+        Err(_) => Some(head),
+    }
+}
+
+/// Heads that were set aside because the chain no longer reached them
+/// (`ledger.head.rejected-<ms>`). Verification fails while any exist.
+fn rejected_head_files(ledger: &Path) -> Vec<PathBuf> {
+    let dir = ledger.parent().unwrap_or_else(|| Path::new("."));
+    let prefix = format!("{HEAD_FILE}.rejected-");
+    let mut out: Vec<PathBuf> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with(&prefix))
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// Path of the head checkpoint that belongs to a ledger file.
+fn head_path(ledger: &Path) -> PathBuf {
+    ledger.with_file_name(HEAD_FILE)
+}
+
+/// Write the head checkpoint atomically (temp file, fsync, rename) so a crash leaves either the
+/// old head or the new one, never a torn file.
+fn write_head(ledger: &Path, head: &SignedHead) -> Result<(), LedgerError> {
+    let path = head_path(ledger);
+    let tmp = path.with_file_name(format!(".{HEAD_FILE}.{}.tmp", std::process::id()));
+    let bytes = serde_json::to_vec(head)?;
+    let result = (|| -> std::io::Result<()> {
+        let mut f = File::create(&tmp)?;
+        f.write_all(&bytes)?;
+        f.sync_data()?;
+        std::fs::rename(&tmp, &path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    Ok(result?)
+}
+
+/// Read the head checkpoint next to `ledger`, if there is one.
+fn read_head(ledger: &Path) -> Result<Option<SignedHead>, LedgerError> {
+    match std::fs::read(head_path(ledger)) {
+        Ok(b) => serde_json::from_slice(&b)
+            .map(Some)
+            .map_err(|_| LedgerError::Broken {
+                seq: 0,
+                reason: "head checkpoint (ledger.head) is unreadable".into(),
+            }),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum LedgerError {
@@ -110,7 +255,15 @@ struct Tip {
     file: File,
     seq: u64,
     prev: Hash,
+    /// The seq the on-disk head checkpoint was last written for, and when.
+    head_seq: u64,
+    head_written_ms: u64,
 }
+
+/// How often the head checkpoint is refreshed during a burst of appends. Writing it means
+/// flushing the ledger to disk first (so the head never points past a durable entry), which
+/// is too slow to do on every append.
+const HEAD_INTERVAL_MS: u64 = 1000;
 
 /// The append-only ledger. Cheap to share behind an `Arc`; appends are serialized.
 pub struct Ledger {
@@ -132,18 +285,68 @@ impl Ledger {
         let verifying = signing.verifying_key();
 
         let path = dir.join("ledger.jsonl");
-        let (seq, prev) = replay_tip(&path)?;
+        let entries = read_entries(&path)?;
+        let (seq, prev) = match entries.last() {
+            Some(e) => (e.seq, to_hash(&e.hash)?),
+            None => (0, GENESIS),
+        };
         // Drop the torn tail of an interrupted append so the next append starts on a clean
         // line; otherwise it would merge with the fragment and corrupt the chain mid-file.
         truncate_torn_tail(&path)?;
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
 
-        Ok(Ledger {
+        let ledger = Ledger {
             path,
-            tip: Mutex::new(Tip { file, seq, prev }),
+            tip: Mutex::new(Tip {
+                file,
+                seq,
+                prev,
+                head_seq: 0,
+                head_written_ms: 0,
+            }),
             signing,
             verifying,
-        })
+        };
+        // The existing head must still be reachable. If entries were cut off the end while we
+        // weren't running, the head is ahead of (or disagrees with) the chain. Rewriting it from
+        // the shortened chain would erase the evidence, so keep the old head beside the ledger
+        // (verification keeps failing while it exists) and record the event in the chain.
+        if let Some(rejected) = rejected_head(&ledger.path, &entries, &ledger.verifying) {
+            let kept = head_path(&ledger.path)
+                .with_file_name(format!("{HEAD_FILE}.rejected-{}", now_ms()));
+            std::fs::rename(head_path(&ledger.path), &kept)?;
+            tracing::error!(
+                head_seq = rejected.seq,
+                chain_seq = seq,
+                kept = %kept.display(),
+                "ledger head checkpoint does not match the chain: entries were removed or rewritten"
+            );
+            ledger.append(
+                "ledger.truncation_detected",
+                "core",
+                serde_json::json!({
+                    "head": rejected,
+                    "chain_seq": seq,
+                    "kept_as": kept.file_name().map(|n| n.to_string_lossy().into_owned()),
+                }),
+            )?;
+            ledger.sync_head()?;
+        }
+        // A non-empty chain with no head checkpoint: the first run of a version that writes
+        // one, or the file was removed. Record that in the chain itself (the append also writes
+        // a fresh head), so a removed checkpoint leaves a visible, signed trace in the audit log.
+        if seq > 0 && !head_path(&ledger.path).exists() {
+            ledger.append(
+                "ledger.head_created",
+                "core",
+                serde_json::json!({
+                    "at_seq": seq,
+                    "reason": "no head checkpoint was found (first run with head checkpoints, or ledger.head was removed)",
+                }),
+            )?;
+            ledger.sync_head()?;
+        }
+        Ok(ledger)
     }
 
     /// Append a new record and return it. Serializes concurrent callers.
@@ -185,7 +388,40 @@ impl Ledger {
 
         tip.seq = seq;
         tip.prev = hash;
+        // A failure here only means the head lags, which verification accepts (the chain may run
+        // past the head, never stop short of it).
+        if let Err(e) = self.refresh_head(&mut tip, false) {
+            tracing::warn!(error = %e, "could not update the ledger head checkpoint");
+        }
         Ok(entry)
+    }
+
+    /// Bring the on-disk head checkpoint up to the current tip now (rather than within
+    /// `HEAD_INTERVAL_MS`). Called before verifying and when the ledger is dropped.
+    pub fn sync_head(&self) -> Result<(), LedgerError> {
+        let mut tip = self.tip.lock().expect("ledger mutex poisoned");
+        self.refresh_head(&mut tip, true)
+    }
+
+    /// Write the head for the current tip if it is stale and (unless `force`) the interval has
+    /// passed. Runs under the tip lock, so heads are written in chain order. The ledger file is
+    /// flushed to disk first: a head must never survive a power cut that its entry didn't.
+    fn refresh_head(&self, tip: &mut Tip, force: bool) -> Result<(), LedgerError> {
+        if tip.seq == 0 || tip.seq == tip.head_seq {
+            return Ok(());
+        }
+        let now = now_ms();
+        if !force && now.saturating_sub(tip.head_written_ms) < HEAD_INTERVAL_MS {
+            return Ok(());
+        }
+        tip.file.sync_data()?;
+        write_head(
+            &self.path,
+            &SignedHead::sign(&self.signing, tip.seq, &tip.prev),
+        )?;
+        tip.head_seq = tip.seq;
+        tip.head_written_ms = now;
+        Ok(())
     }
 
     /// Record a revert pointing at a prior known-good `target` hash. History is added
@@ -209,9 +445,25 @@ impl Ledger {
         (tip.seq, hex::encode(tip.prev))
     }
 
+    /// The current tip as a signed checkpoint. Save it somewhere the host can't rewrite (another
+    /// machine, a printout, a transparency log); [`verify_file_with_anchor`] later proves the
+    /// chain still contains it and has only grown since.
+    ///
+    /// Flushes the chain (and the local head) to disk first, so an exported head never points
+    /// past an entry a power cut could still lose.
+    pub fn signed_head(&self) -> Result<SignedHead, LedgerError> {
+        let mut tip = self.tip.lock().expect("ledger mutex poisoned");
+        self.refresh_head(&mut tip, true)?;
+        Ok(SignedHead::sign(&self.signing, tip.seq, &tip.prev))
+    }
+
     /// Replay the whole chain from disk, checking every hash, signature, and link.
     /// Returns the number of valid entries or the first break found.
     pub fn verify(&self) -> Result<u64, LedgerError> {
+        // Make the head current first, so entries appended moments ago are covered too.
+        if let Err(e) = self.sync_head() {
+            tracing::warn!(error = %e, "could not update the ledger head checkpoint");
+        }
         verify_file(&self.path, &self.verifying)
     }
 
@@ -259,6 +511,16 @@ fn read_entries(path: &Path) -> Result<Vec<Entry>, LedgerError> {
         }
     }
     Ok(out)
+}
+
+impl Drop for Ledger {
+    fn drop(&mut self) {
+        // Leave the head current on a clean shutdown. Never panic here (a poisoned lock just
+        // means the head isn't refreshed).
+        if let Ok(mut tip) = self.tip.lock() {
+            let _ = self.refresh_head(&mut tip, true);
+        }
+    }
 }
 
 /// The last `n` entries of the file, reading backwards in chunks. Same result as taking the tail
@@ -333,7 +595,72 @@ pub fn verifying_key_from_hex(s: &str) -> Result<VerifyingKey, LedgerError> {
 
 /// Verify a ledger file against a public key without holding a `Ledger`.
 pub fn verify_file(path: &Path, verifying: &VerifyingKey) -> Result<u64, LedgerError> {
+    verify_file_with_anchor(path, verifying, None)
+}
+
+/// [`verify_file`], plus a check that the chain reaches `anchor`: a signed head saved earlier,
+/// possibly on another machine. The local `ledger.head` is always checked when present; the
+/// anchor additionally catches truncation by someone who also removed or rolled back that file.
+pub fn verify_file_with_anchor(
+    path: &Path,
+    verifying: &VerifyingKey,
+    anchor: Option<&SignedHead>,
+) -> Result<u64, LedgerError> {
+    // Read the head BEFORE the chain: a head is only written after its entry, so the chain read
+    // afterwards always reaches it, even while the daemon keeps appending. (In the other order an
+    // append landing between the two reads would look like truncation.)
+    let local = read_head(path)?;
+    let hashes = verify_chain(path, verifying)?;
+    for head in local.iter().chain(anchor) {
+        check_reaches(&hashes, head, verifying)?;
+    }
+    if let Some(kept) = rejected_head_files(path).first() {
+        return Err(LedgerError::Broken {
+            seq: hashes.len() as u64,
+            reason: format!(
+                "an earlier head checkpoint no longer matched the chain (entries were removed or rewritten); it is kept as {} - delete that file once you have investigated",
+                kept.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()
+            ),
+        });
+    }
+    Ok(hashes.len() as u64)
+}
+
+/// The chain must contain `head`: same hash at the same seq, and nothing cut off after it.
+fn check_reaches(
+    hashes: &[Hash],
+    head: &SignedHead,
+    verifying: &VerifyingKey,
+) -> Result<(), LedgerError> {
+    head.verify_sig(verifying)?;
+    if head.seq == 0 {
+        return Ok(());
+    }
+    let len = hashes.len() as u64;
+    if head.seq > len {
+        return Err(LedgerError::Broken {
+            seq: len + 1,
+            reason: format!(
+                "ledger truncated: a signed head checkpoint is at seq {} but the chain ends at seq {len}",
+                head.seq
+            ),
+        });
+    }
+    // (verify_sig above already checked that the hash decodes.)
+    if hashes[(head.seq - 1) as usize] != to_hash(&head.hash)? {
+        return Err(LedgerError::Broken {
+            seq: head.seq,
+            reason: "entry does not match the signed head checkpoint (history was rewritten)"
+                .into(),
+        });
+    }
+    Ok(())
+}
+
+/// Check every hash, signature and link; return each entry's hash in order.
+fn verify_chain(path: &Path, verifying: &VerifyingKey) -> Result<Vec<Hash>, LedgerError> {
     let entries = read_entries(path)?;
+    let mut hashes = Vec::with_capacity(entries.len());
     let mut prev = GENESIS;
     let mut expect_seq = 0u64;
     for entry in &entries {
@@ -376,15 +703,9 @@ pub fn verify_file(path: &Path, verifying: &VerifyingKey) -> Result<u64, LedgerE
             });
         }
         prev = stored;
+        hashes.push(stored);
     }
-    Ok(expect_seq)
-}
-
-fn replay_tip(path: &Path) -> Result<(u64, Hash), LedgerError> {
-    match read_entries(path)?.last() {
-        Some(entry) => Ok((entry.seq, to_hash(&entry.hash)?)),
-        None => Ok((0, GENESIS)),
-    }
+    Ok(hashes)
 }
 
 /// If the last non-empty line of the ledger is unterminated or unparseable (the line
@@ -591,6 +912,165 @@ mod tests {
         let l = Ledger::open(dir.path()).unwrap();
         assert_eq!(l.head().0, 2);
         assert_eq!(verify_file(&path, &verifying).unwrap(), 2);
+    }
+
+    fn drop_last_lines(dir: &Path, n: usize) {
+        let path = dir.join("ledger.jsonl");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        let kept = lines[..lines.len() - n].join("\n") + "\n";
+        std::fs::write(&path, kept).unwrap();
+    }
+
+    #[test]
+    fn deleting_entries_from_the_end_is_detected() {
+        let dir = tempfile::tempdir().unwrap();
+        let l = Ledger::open(dir.path()).unwrap();
+        for i in 0..5 {
+            l.append("t", "a", serde_json::json!({ "i": i })).unwrap();
+        }
+        assert_eq!(l.verify().unwrap(), 5);
+        drop_last_lines(dir.path(), 2);
+        match l.verify() {
+            Err(LedgerError::Broken { reason, .. }) => {
+                assert!(reason.contains("truncated"), "{reason}")
+            }
+            other => panic!("truncation not detected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn truncation_while_stopped_survives_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let l = Ledger::open(dir.path()).unwrap();
+            for i in 0..5 {
+                l.append("t", "a", serde_json::json!({ "i": i })).unwrap();
+            }
+        } // dropped: head is current (seq 5)
+        drop_last_lines(dir.path(), 2);
+        // Restart and carry on: the evidence must not be overwritten.
+        let l = Ledger::open(dir.path()).unwrap();
+        l.append("t", "a", serde_json::json!({ "after": true }))
+            .unwrap();
+        let all = l.read_all().unwrap();
+        let event = all
+            .iter()
+            .find(|e| e.kind == "ledger.truncation_detected")
+            .expect("truncation recorded in the chain");
+        let payload: serde_json::Value = serde_json::from_str(event.payload.get()).unwrap();
+        assert_eq!(payload["head"]["seq"], 5);
+        assert_eq!(payload["chain_seq"], 3);
+        assert!(l.verify().is_err(), "verify must keep failing");
+        assert!(l.verify().is_err(), "even after the head was refreshed");
+        // Once investigated, removing the kept head clears the alarm; the event stays.
+        for p in rejected_head_files(&dir.path().join("ledger.jsonl")) {
+            std::fs::remove_file(p).unwrap();
+        }
+        assert_eq!(l.verify().unwrap(), all.len() as u64);
+    }
+
+    #[test]
+    fn a_malformed_head_is_reported_as_tampering() {
+        let dir = tempfile::tempdir().unwrap();
+        let l = Ledger::open(dir.path()).unwrap();
+        l.append("t", "a", serde_json::json!({})).unwrap();
+        let path = dir.path().join("ledger.jsonl");
+        let bad = SignedHead {
+            seq: 1,
+            hash: "zz".into(),
+            sig: "not hex".into(),
+        };
+        assert!(matches!(
+            verify_file_with_anchor(&path, &l.verifying, Some(&bad)),
+            Err(LedgerError::Broken { .. })
+        ));
+    }
+
+    #[test]
+    fn a_removed_head_is_recreated_and_recorded_in_the_chain() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let l = Ledger::open(dir.path()).unwrap();
+            l.append("t", "a", serde_json::json!({})).unwrap();
+            l.append("t", "a", serde_json::json!({})).unwrap();
+        }
+        std::fs::remove_file(dir.path().join("ledger.head")).unwrap();
+        let l = Ledger::open(dir.path()).unwrap();
+        let all = l.read_all().unwrap();
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[2].kind, "ledger.head_created");
+        assert_eq!(l.verify().unwrap(), 3);
+        // A fresh, empty ledger needs no such entry.
+        let empty = tempfile::tempdir().unwrap();
+        assert!(Ledger::open(empty.path())
+            .unwrap()
+            .read_all()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn an_external_anchor_catches_truncation_even_without_the_local_head() {
+        let dir = tempfile::tempdir().unwrap();
+        let l = Ledger::open(dir.path()).unwrap();
+        for _ in 0..3 {
+            l.append("t", "a", serde_json::json!({})).unwrap();
+        }
+        let saved = l.signed_head().unwrap(); // kept off the machine
+        l.append("t", "a", serde_json::json!({})).unwrap();
+        let path = dir.path().join("ledger.jsonl");
+        // The chain grew past the anchor: fine.
+        assert_eq!(
+            verify_file_with_anchor(&path, &l.verifying, Some(&saved)).unwrap(),
+            4
+        );
+        // Cut back past the anchor and remove the local head: only the anchor can tell.
+        drop_last_lines(dir.path(), 2);
+        std::fs::remove_file(dir.path().join("ledger.head")).unwrap();
+        assert_eq!(verify_file(&path, &l.verifying).unwrap(), 2);
+        assert!(verify_file_with_anchor(&path, &l.verifying, Some(&saved)).is_err());
+    }
+
+    #[test]
+    fn a_forged_or_mismatched_head_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let l = Ledger::open(dir.path()).unwrap();
+        l.append("t", "a", serde_json::json!({})).unwrap();
+        let path = dir.path().join("ledger.jsonl");
+        let other = tempfile::tempdir().unwrap();
+        let foreign = Ledger::open(other.path()).unwrap();
+        foreign.append("t", "a", serde_json::json!({})).unwrap();
+        // Signed by a different key.
+        assert!(verify_file_with_anchor(
+            &path,
+            &l.verifying,
+            Some(&foreign.signed_head().unwrap())
+        )
+        .is_err());
+        // Valid signature over a hash that isn't in this chain.
+        let mut wrong = l.signed_head().unwrap();
+        wrong.hash = foreign.signed_head().unwrap().hash;
+        assert!(verify_file_with_anchor(&path, &l.verifying, Some(&wrong)).is_err());
+    }
+
+    #[test]
+    fn verifying_while_appending_never_reports_truncation() {
+        let dir = tempfile::tempdir().unwrap();
+        let l = std::sync::Arc::new(Ledger::open(dir.path()).unwrap());
+        let writer = {
+            let l = l.clone();
+            std::thread::spawn(move || {
+                for i in 0..400 {
+                    l.append("t", "a", serde_json::json!({ "i": i })).unwrap();
+                }
+            })
+        };
+        for _ in 0..40 {
+            l.verify().expect("verify during appends");
+        }
+        writer.join().unwrap();
+        assert_eq!(l.verify().unwrap(), 400);
     }
 
     #[test]

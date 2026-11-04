@@ -27,7 +27,8 @@ pub use autonomy::{
 };
 pub use event::{now_ms, Bus, Priority, Spike, Synapse, Taint};
 pub use ledger::{
-    entries_from_file, verify_file, verifying_key_from_hex, Entry, Ledger, LedgerError,
+    entries_from_file, verify_file, verify_file_with_anchor, verifying_key_from_hex, Entry, Ledger,
+    LedgerError, SignedHead,
 };
 pub use lifecycle::{run_until_idle, Activity, WakeReason};
 pub use scope::{Scope, ScopeCtx, ScopeKind};

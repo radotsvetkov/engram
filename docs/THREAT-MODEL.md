@@ -367,6 +367,25 @@ the system today. `crates/engram-core/src/ledger.rs` provides:
 - **Append-only, hash-chained:** each entry commits to the previous entry's BLAKE3
   hash, so editing or deleting any past entry breaks every hash after it and
   `verify()` detects it in O(n) (covered by the `detects_tampering` test).
+- **Anchored head (deleting from the end).** A hash chain alone can't tell that its last
+  entries were removed: what remains is still a valid chain. The ledger keeps a signed head
+  checkpoint (`ledger.head`: latest seq + hash) beside it, refreshed at most once a second
+  during appends (always after the chain is flushed to disk, so a power cut can't leave the
+  head ahead of a lost entry) and whenever the ledger is verified or closed. Verification
+  requires the chain to reach it, so cutting entries off the end is reported as truncation.
+  If that happens while the daemon is stopped, the next start does not overwrite the
+  evidence: the old head is kept as `ledger.head.rejected-<time>`, a signed
+  `ledger.truncation_detected` entry is appended, and verification keeps failing until
+  someone deletes the kept file after investigating. Entries appended within a second of the
+  last checkpoint are not covered until the next append, verify or clean shutdown refreshes
+  it. Copy `ledger.head` before `ledger.jsonl` (or stop the daemon) when backing up a live
+  brain, or the copy can look truncated.
+  Someone who can also delete or roll back `ledger.head` can hide a truncation locally; two
+  things cover it. The daemon records a `ledger.head_created` entry whenever it has to re-create a
+  missing head, so the removal leaves a signed trace. And a head exported with
+  `engram ledger head` (or `GET /v1/ledger/head`) and kept off the machine can be checked
+  later with `engramd verify HOME --anchor FILE`, which proves the chain still contains it
+  and has only grown since.
 - **Signed:** every entry is Ed25519-signed with a key held at `0600` on disk and never
   exposed to a skill/WASM guest - a compromised skill can request a write but cannot
   forge the signed record of it.

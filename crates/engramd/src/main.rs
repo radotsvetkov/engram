@@ -157,7 +157,17 @@ async fn main() {
     // against its published public key, WITHOUT starting (or trusting) the daemon.
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
-        Some("verify") => std::process::exit(verify_cmd(args.get(2).map(String::as_str))),
+        Some("verify") => {
+            // `engramd verify [HOME] [--anchor FILE]`
+            let rest: Vec<&str> = args.iter().skip(2).map(String::as_str).collect();
+            match parse_verify_args(&rest) {
+                Ok((home, anchor)) => std::process::exit(verify_cmd(home, anchor)),
+                Err(e) => {
+                    eprintln!("{e}\nusage: engramd verify [HOME] [--anchor FILE]");
+                    std::process::exit(2)
+                }
+            }
+        }
         // `engramd verify-autonomy [HOME]` - replay the ledger and reconstruct every autonomous
         // egress against the signed policy that authorized it (the offline "prove it" report).
         Some("verify-autonomy") => {
@@ -280,7 +290,37 @@ fn next_wake_cmd(home_arg: Option<&str>) -> i32 {
     }
 }
 
-fn verify_cmd(home_arg: Option<&str>) -> i32 {
+/// Parse `[HOME] [--anchor FILE]` (also `--anchor=FILE`), in any order. Anything else is an
+/// error: silently ignoring a mistyped anchor would quietly skip a security check.
+fn parse_verify_args<'a>(args: &[&'a str]) -> Result<(Option<&'a str>, Option<&'a str>), String> {
+    let (mut home, mut anchor) = (None, None);
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i];
+        if a == "--anchor" {
+            match args.get(i + 1) {
+                Some(f) if !f.starts_with("--") => anchor = Some(*f),
+                _ => return Err("--anchor needs a file".into()),
+            }
+            i += 2;
+            continue;
+        }
+        if let Some(f) = a.strip_prefix("--anchor=") {
+            if f.is_empty() {
+                return Err("--anchor needs a file".into());
+            }
+            anchor = Some(f);
+        } else if a.starts_with("--") {
+            return Err(format!("unknown option {a}"));
+        } else if home.replace(a).is_some() {
+            return Err(format!("unexpected argument {a}"));
+        }
+        i += 1;
+    }
+    Ok((home, anchor))
+}
+
+fn verify_cmd(home_arg: Option<&str>, anchor_arg: Option<&str>) -> i32 {
     let home = home_arg
         .map(String::from)
         .or_else(|| std::env::var("ENGRAM_HOME").ok())
@@ -314,12 +354,29 @@ fn verify_cmd(home_arg: Option<&str>) -> i32 {
             return 2;
         }
     };
-    match engram_core::verify_file(&ledger_path, &vk) {
+    // An anchor is a signed head saved earlier (`engram ledger head`, `GET /v1/ledger/head`),
+    // ideally kept off this machine: the chain must still contain it and only have grown since.
+    let anchor = match anchor_arg {
+        None => None,
+        Some(p) => match std::fs::read(p).map_err(|e| e.to_string()).and_then(|b| {
+            serde_json::from_slice::<engram_core::SignedHead>(&b).map_err(|e| e.to_string())
+        }) {
+            Ok(h) => Some(h),
+            Err(e) => {
+                eprintln!("cannot read anchor {p}: {e}");
+                return 2;
+            }
+        },
+    };
+    match engram_core::verify_file_with_anchor(&ledger_path, &vk, anchor.as_ref()) {
         Ok(n) => {
             println!(
                 "OK - {n} entries, signed hash-chain intact: {}",
                 ledger_path.display()
             );
+            if let Some(a) = &anchor {
+                println!("OK - chain contains the anchor at seq {}", a.seq);
+            }
             0
         }
         Err(e) => {
@@ -631,7 +688,9 @@ fn print_help() {
 USAGE:
     engramd                 Start the daemon and serve the dashboard (default)
     engramd doctor [HOME]   Health-check the local install (config, provider, ledger, ports)
-    engramd verify [HOME]   Verify the signed audit ledger offline, without trusting the daemon
+    engramd verify [HOME] [--anchor FILE]
+                            Verify the signed audit ledger offline, without trusting the daemon;
+                            --anchor also checks it against a saved signed head
     engramd verify-autonomy [HOME]  Reconstruct every autonomous egress from the signed ledger
     engramd --run-due       Fire any scheduled jobs that are due, then exit (systemd wake-timer)
     engramd --next-wake     Print the next scheduled job's fire time (epoch ms); exit 1 if none
@@ -1058,6 +1117,7 @@ async fn run(mode: RunMode) -> Result<(), Box<dyn std::error::Error>> {
                 .delete(session_delete),
         )
         .route("/v1/ledger/pubkey", get(ledger_pubkey))
+        .route("/v1/ledger/head", get(ledger_head))
         .route("/v1/policy", get(policy_get).post(policy_set))
         .route("/v1/shell", post(terminal::shell_handler))
         .route("/v1/fs", get(terminal::fs_handler))
@@ -5023,6 +5083,18 @@ async fn task_audit(State(app): State<App>, Path(id): Path<String>) -> ApiResult
     ))
 }
 
+/// The current chain tip as a signed checkpoint. Save it off the machine; `engramd verify HOME
+/// --anchor FILE` later proves the ledger still contains it (nothing was cut off since).
+async fn ledger_head(State(app): State<App>) -> ApiResult {
+    // Flushes the chain to disk first, so keep it off the async workers.
+    let ledger = app.ledger.clone();
+    let head = tokio::task::spawn_blocking(move || ledger.signed_head())
+        .await
+        .map_err(err)?
+        .map_err(err)?;
+    Ok(Json(serde_json::to_value(head).map_err(err)?))
+}
+
 /// The ledger's public key, for offline verification (`engramd verify`) by a third party.
 async fn ledger_pubkey(State(app): State<App>) -> ApiResult {
     Ok(Json(
@@ -7873,6 +7945,24 @@ fn init_tracing() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn verify_args_parse_strictly() {
+        assert_eq!(parse_verify_args(&[]), Ok((None, None)));
+        assert_eq!(parse_verify_args(&["h"]), Ok((Some("h"), None)));
+        assert_eq!(
+            parse_verify_args(&["--anchor", "a.json", "h"]),
+            Ok((Some("h"), Some("a.json")))
+        );
+        assert_eq!(
+            parse_verify_args(&["h", "--anchor=a.json"]),
+            Ok((Some("h"), Some("a.json")))
+        );
+        assert!(parse_verify_args(&["h", "--anchor"]).is_err());
+        assert!(parse_verify_args(&["h", "--anchor="]).is_err());
+        assert!(parse_verify_args(&["h", "--anchr", "a"]).is_err());
+        assert!(parse_verify_args(&["h", "extra"]).is_err());
+    }
 
     #[test]
     fn provision_workdir_if_missing_backfills_a_folder_but_never_overwrites_one() {

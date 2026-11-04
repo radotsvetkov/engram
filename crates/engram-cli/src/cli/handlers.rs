@@ -1376,6 +1376,11 @@ async fn ledger(client: &Client, cmd: LedgerCmd, json: bool) -> Result<i32> {
             print_json(&k);
             Ok(0)
         }
+        LedgerCmd::Head => {
+            let h = client.ledger_head().await?;
+            print_json(&h);
+            Ok(0)
+        }
     }
 }
 

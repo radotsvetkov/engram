@@ -185,7 +185,9 @@ morphological recall.
 - **A signed audit ledger.** Append-only, content-addressed (BLAKE3), hash-chained, and
   Ed25519-signed. `engramd verify` replays the whole chain against the published public key
   **offline, without trusting the daemon** — exit 0 if intact, 1 if tampered at a named
-  entry. A revert is a new entry pointing at a good hash; history is added to, never erased.
+  entry. A signed head checkpoint catches entries deleted from the end, and a head you export
+  (`engram ledger head`) and keep elsewhere can be checked later with `engramd verify --anchor`.
+  A revert is a new entry pointing at a good hash; history is added to, never erased.
 - **Security by construction.** The filesystem is confined to the workdir and the shell is
   off by default. The instant a run reads untrusted content it's *tainted*; after that the
   shell is refused and the model's secret-bearing context is stripped. **Egress** is cut once

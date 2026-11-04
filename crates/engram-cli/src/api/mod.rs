@@ -142,6 +142,10 @@ impl Client {
         self.get_value("/v1/ledger/pubkey").await
     }
 
+    pub async fn ledger_head(&self) -> Result<Value> {
+        self.get_value("/v1/ledger/head").await
+    }
+
     // ---- memory -----------------------------------------------------------
 
     pub async fn memory_stats(&self) -> Result<MemoryStats> {

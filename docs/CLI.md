@@ -114,7 +114,7 @@ engram sessions list [--project <id>]|show <id>    # (alias: sess) chat transcri
 engram schedule list|add <name> <when> [--title --agent]|preview <when…>|run <id>|delete <id>
 engram autonomy report|pending|approve <scope> <dest>|deny <scope> <dest>
 engram agents list|create <name> [--charter --model --provider --emoji --home-project]|edit <id>|delete <id>|policy <id> [--egress --actions --max-actions --max-spend-cents --expires-days]|consciousness <id> [--distill]
-engram ledger tail|verify|pubkey
+engram ledger tail|verify|pubkey|head
 engram config show|set <key> <value>|test
 engram model fetch              # download the model2vec embedding model for better recall (restart to apply)
 engram tools [list|enable <name>|disable <name>]   # agent tools on/off
@@ -141,6 +141,8 @@ engram skills adopt csv2json                    # activate a ◆ proposed skill
 engram tools disable browser_open               # switch an agent tool off
 engram mcp add fs npx --args "-y @modelcontextprotocol/server-filesystem /tmp"
 engram ledger verify                            # exit 0 = chain intact, 1 = tampered
+engram ledger head > anchor.json                # signed checkpoint; keep it off this machine
+engramd verify ~/.engram --anchor anchor.json   # later: prove nothing was cut off since
 engram schedule preview "every weekday at 9am"  # next-fire preview, no model call
 engram agents create Scout --charter "research thoroughly, cite sources" --home-project P1
 engram agents consciousness <id>                # what this agent has learned on its own

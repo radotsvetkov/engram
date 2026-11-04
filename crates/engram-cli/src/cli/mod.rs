@@ -501,6 +501,9 @@ pub enum LedgerCmd {
     Verify,
     /// Print the ledger public key.
     Pubkey,
+    /// Print the current chain head as a signed checkpoint. Save the output somewhere this
+    /// machine can't rewrite; `engramd verify HOME --anchor FILE` later proves nothing was cut off.
+    Head,
 }
 
 #[derive(Subcommand, Debug)]

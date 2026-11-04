@@ -64,7 +64,10 @@ The brainstem. It owns the primitives everything else fires through.
 - **Audit ledger.** An append-only, content-addressed (BLAKE3), hash-chained,
   Ed25519-signed record of every state change. Each entry commits to the previous entry's
   hash, so altering any past entry breaks every hash after it and tampering is detected on
-  replay. The signing key lives on disk at `0600` and is never handed to a skill. A
+  replay. A signed head checkpoint (latest seq + hash) is kept beside the chain, so
+  deleting entries from the end is detected too; a head exported off the
+  machine (`engram ledger head`) can be checked later with `engramd verify --anchor`. The
+  signing key lives on disk at `0600` and is never handed to a skill. A
   "revert" is itself an appended entry pointing at a prior good hash — history is added
   to, never erased. `engramd verify [HOME]` replays the chain against the published public
   key **offline, without starting or trusting the daemon** (exit 0 = intact, 1 = tampered
